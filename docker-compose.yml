@@ -1,0 +1,52 @@
+version: '3.8'
+
+services:
+  claude-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: claude-code-dev:latest
+    container_name: claude-dev-environment
+
+    # Interactive terminal
+    stdin_open: true
+    tty: true
+
+    # Environment variables
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - GIT_USER_NAME=${GIT_USER_NAME}
+      - GIT_USER_EMAIL=${GIT_USER_EMAIL}
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+
+    # Volume mounts
+    volumes:
+      # Mount current directory as workspace
+      - ./workspace:/workspace
+      # Persistent Claude Code data
+      - claude-data:/home/agent/.claude
+      # Persistent IntelliShell data
+      - intelli-data:/home/agent/.local/share/intelli-shell
+      # Persistent git config
+      - git-config:/home/agent/.gitconfig
+      # Persistent zsh history
+      - zsh-history:/home/agent/.zsh_history
+
+    # Network configuration
+    network_mode: bridge
+
+    # Working directory
+    working_dir: /workspace
+
+    # Keep container running
+    command: /bin/zsh
+
+volumes:
+  claude-data:
+    driver: local
+  intelli-data:
+    driver: local
+  git-config:
+    driver: local
+  zsh-history:
+    driver: local
