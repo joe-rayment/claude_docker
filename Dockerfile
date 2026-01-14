@@ -32,16 +32,20 @@ RUN sh -c "$(wget -O- https://github.com/deluan/zsh-in-docker/releases/download/
     -a 'autoload -U promptinit; promptinit' \
     -a 'prompt pure'
 
-# Install Helix editor
-RUN wget -qO- https://github.com/helix-editor/helix/releases/latest/download/helix-$(uname -m)-linux.tar.xz | tar -xJ && \
+# Install Helix editor from specific release (detect architecture)
+RUN HELIX_VERSION=25.07.1 && \
+    ARCH=$(uname -m) && \
+    if [ "$ARCH" = "aarch64" ]; then HELIX_ARCH="aarch64"; else HELIX_ARCH="x86_64"; fi && \
+    wget -qO helix.tar.xz https://github.com/helix-editor/helix/releases/download/${HELIX_VERSION}/helix-${HELIX_VERSION}-${HELIX_ARCH}-linux.tar.xz && \
+    tar -xf helix.tar.xz && \
     mv helix-*/hx /usr/local/bin/ && \
-    mv helix-*/runtime /usr/local/lib/helix-runtime && \
-    rm -rf helix-* && \
-    ln -s /usr/local/lib/helix-runtime /usr/local/bin/runtime
+    mkdir -p /usr/local/lib/helix && \
+    mv helix-*/runtime /usr/local/lib/helix/runtime && \
+    rm -rf helix-* helix.tar.xz && \
+    ln -s /usr/local/lib/helix/runtime /usr/local/bin/runtime
 
-# Upgrade pip and install Python packages
-RUN pip3 install --no-cache-dir --upgrade pip setuptools wheel && \
-    pip3 install --no-cache-dir \
+# Install Python packages (using --break-system-packages for container environment)
+RUN pip3 install --no-cache-dir --break-system-packages \
     numpy \
     pandas \
     requests \

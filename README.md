@@ -1,92 +1,85 @@
 # Claude Code Docker Development Environment
 
-A fully-configured Docker image for running Claude Code locally with a Mac-like terminal experience on Linux. This environment is designed for zero-configuration startup - just clone and run!
+## Quick Start (Fresh Machine)
 
-## Features
-
-- **Claude Code** pre-installed and ready to use
-- **Terminal Environment**:
-  - Zsh with Oh-My-Zsh
-  - Pure prompt theme
-  - Syntax highlighting
-  - IntelliShell integration
-- **Development Tools**:
-  - Helix editor (with base16_default theme)
-  - GitHub CLI
-  - Git
-  - Python 3 with common packages (numpy, pandas, requests, matplotlib, scikit-learn, jupyter)
-  - Node.js, Go, ripgrep, jq
-- **Persistent Data**: Claude credentials, git config, and shell history saved across container restarts
-- **Internet Access**: Fully configured for Claude authentication and web searches
-
-## Prerequisites
-
-- Docker installed and running
-- Docker Compose (optional, but recommended)
-- Anthropic API key for Claude Code
-
-## Quick Start
-
-### 1. Clone the Repository
+### If you don't have Docker installed:
 
 ```bash
+# macOS - Install Docker Desktop
+brew install --cask docker
+
+# Or download from: https://www.docker.com/products/docker-desktop
+
+# Start Docker Desktop (wait for it to fully start)
+open -a Docker
+```
+
+### Get it running:
+
+```bash
+# Clone this repo
 git clone https://github.com/joe-rayment/claude_docker.git
 cd claude_docker
+
+# Build and start
+docker compose build
+docker compose up -d
+
+# Get into the terminal
+docker compose exec claude-dev /bin/zsh
+
+# First time only - authenticate
+claude auth login
+git config --global user.name "Your Name"
+git config --global user.email "your.email@example.com"
 ```
 
-### 2. Set Up Environment Variables
-
-Create a `.env` file in the project root:
+### Daily use:
 
 ```bash
-# Required for Claude Code
-ANTHROPIC_API_KEY=your_api_key_here
+# Start the container (if not running)
+docker compose up -d
 
-# Optional: Git configuration
-GIT_USER_NAME="Your Name"
-GIT_USER_EMAIL="your.email@example.com"
+# Tab 1: Run Claude Code
+docker compose exec claude-dev /bin/zsh
+claude
 
-# Optional: GitHub authentication
-GITHUB_TOKEN=your_github_token
+# Tab 2: Open another terminal (new iTerm tab)
+docker compose exec claude-dev /bin/zsh
+hx myfile.txt
+
+# When done
+docker compose down
 ```
 
-### 3. Create Workspace Directory
+## What's Included
 
-```bash
-mkdir workspace
-```
-
-### 4. Build and Run
-
-#### Using Docker Compose (Recommended)
-
-```bash
-# Build the image
-docker-compose build
-
-# Start the container
-docker-compose up -d
-
-# Attach to the container
-docker-compose exec claude-dev /bin/zsh
-```
-
-#### Using Docker Directly
-
-```bash
-# Build the image
-docker build -t claude-code-dev .
-
-# Run the container
-docker run -it \
-  -e ANTHROPIC_API_KEY="your_api_key" \
-  -e GIT_USER_NAME="Your Name" \
-  -e GIT_USER_EMAIL="your.email@example.com" \
-  -v $(pwd)/workspace:/workspace \
-  claude-code-dev
-```
+- **Claude Code** with browser authentication
+- **Terminal**: Zsh, Oh-My-Zsh, Pure prompt, IntelliShell
+- **Editor**: Helix (base16_default theme)
+- **Dev Tools**: Git, GitHub CLI, Python 3 (numpy, pandas, matplotlib, scikit-learn, jupyter), Node.js, Go
+- **Persistent**: All configs, history, and credentials saved between sessions
 
 ## Usage
+
+### Opening Multiple Terminal Sessions
+
+You can open multiple iTerm tabs/windows connected to the same container. This is useful for running Claude Code in one tab and using Helix editor or other tools in another.
+
+```bash
+# Tab 1: Run Claude Code
+docker compose exec claude-dev /bin/zsh
+claude
+
+# Tab 2 (new iTerm tab): Open Helix editor
+docker compose exec claude-dev /bin/zsh
+hx myfile.txt
+
+# Tab 3 (new iTerm tab): Run tests, git commands, etc.
+docker compose exec claude-dev /bin/zsh
+```
+
+All tabs share the same filesystem and environment, so changes made in one are visible in all others.
 
 ### Starting Claude Code
 
@@ -159,7 +152,7 @@ RUN pip3 install --no-cache-dir \
 Then rebuild:
 
 ```bash
-docker-compose build
+docker compose build
 ```
 
 ### Modifying Zsh Configuration
@@ -186,28 +179,28 @@ The following data is persisted in Docker volumes:
 To reset everything, remove the volumes:
 
 ```bash
-docker-compose down -v
+docker compose down -v
 ```
 
 ## Troubleshooting
 
 ### Claude Code Authentication Issues
 
-If Claude Code fails to authenticate:
-
-1. Ensure your `ANTHROPIC_API_KEY` is set correctly in `.env`
-2. Try removing the Claude data volume and restart:
-   ```bash
-   docker-compose down
-   docker volume rm claude_docker_claude-data
-   docker-compose up -d
-   ```
-
-### GitHub CLI Not Authenticated
+If Claude Code fails to authenticate, try resetting the auth:
 
 ```bash
 # Inside the container
-gh auth login
+claude auth logout
+claude auth login
+```
+
+Or remove the volume and start fresh:
+
+```bash
+# On host machine
+docker compose down
+docker volume rm claude_docker_agent-home
+docker compose up -d
 ```
 
 ### Permission Issues
@@ -231,7 +224,7 @@ cp docker-compose.yml docker-compose.project1.yml
 
 # Edit the workspace mount in the new file
 # Then run with:
-docker-compose -f docker-compose.project1.yml up -d
+docker compose -f docker-compose.project1.yml up -d
 ```
 
 ### Accessing from VS Code
