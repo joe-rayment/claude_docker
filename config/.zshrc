@@ -1,22 +1,8 @@
 # Path configuration
 export PATH="$HOME/.local/bin:$HOME/bin:/usr/local/bin:$PATH"
 
-# Oh My Zsh installation path
-export ZSH="$HOME/.oh-my-zsh"
-
-# Disable oh-my-zsh theme (using Pure prompt instead)
-ZSH_THEME=""
-
-# Oh My Zsh plugins
-plugins=(git zsh-syntax-highlighting)
-
-# Source Oh My Zsh
-source $ZSH/oh-my-zsh.sh
-
-# Initialize Pure prompt
-fpath+=("$HOME/.zsh/pure")
-autoload -U promptinit; promptinit
-prompt pure
+# Pure prompt and plugins are configured by zsh-in-docker
+# No need to source oh-my-zsh manually
 
 # IntelliShell integration
 if [ -f "$HOME/.local/bin/intelli-shell" ]; then

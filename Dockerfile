@@ -80,6 +80,7 @@ RUN mkdir -p /home/agent/.config/helix /home/agent/.config/intelli-shell
 # Copy configuration files
 COPY --chown=agent:agent config/.zshrc /home/agent/.zshrc
 COPY --chown=agent:agent config/helix-config.toml /home/agent/.config/helix/config.toml
+COPY --chown=agent:agent config/intellishell-config.toml /home/agent/.config/intelli-shell/config.toml
 COPY --chown=agent:agent config/intellishell-defaults.txt /home/agent/.config/intelli-shell/defaults.txt
 COPY --chown=agent:agent config/claude-settings.json /home/agent/.config/claude-settings-template.json
 COPY --chown=agent:agent config/CLAUDE.md.template /home/agent/.config/

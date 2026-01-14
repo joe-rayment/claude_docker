@@ -1,0 +1,27 @@
+# IntelliShell Configuration
+# See https://github.com/lasantosr/intelli-shell for full documentation
+
+[general]
+# Theme for the shell interface
+theme = "plain"
+
+[key_bindings]
+# Mac-compatible keybindings
+# Note: In Docker containers, some Mac key combinations may not work
+# Using standard terminal keybindings that work across platforms
+
+# Ctrl+Space to search commands
+search = "ctrl-space"
+
+# Ctrl+R for history search (standard terminal binding)
+history = "ctrl-r"
+
+# Ctrl+B to bookmark current command
+bookmark = "ctrl-b"
+
+# Ctrl+X to fix command with AI
+fix = "ctrl-x"
+
+[generation]
+# Command generation settings
+max_history_size = 20
