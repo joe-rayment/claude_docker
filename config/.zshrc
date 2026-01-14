@@ -5,9 +5,9 @@ export PATH="$HOME/.local/bin:$HOME/bin:/usr/local/bin:$PATH"
 # No need to source oh-my-zsh manually
 
 # IntelliShell integration
-if [ -f "$HOME/.local/bin/intelli-shell" ]; then
-    export PATH="$HOME/.local/bin:$PATH"
-    source <("$HOME/.local/bin/intelli-shell" init zsh)
+if [ -f "$HOME/.local/share/intelli-shell/bin/intelli-shell" ]; then
+    export PATH="$HOME/.local/share/intelli-shell/bin:$PATH"
+    source <("$HOME/.local/share/intelli-shell/bin/intelli-shell" init zsh)
 fi
 
 # Preferred editor
