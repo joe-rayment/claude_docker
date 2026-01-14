@@ -7,7 +7,7 @@ DEFAULTS_FILE="/home/agent/.config/intelli-shell/defaults.txt"
 
 if [ -f "$DEFAULTS_FILE" ] && [ ! -f "$MARKER_FILE" ]; then
     mkdir -p "$(dirname "$MARKER_FILE")"
-    /home/agent/.local/bin/intelli-shell import "$DEFAULTS_FILE" 2>/dev/null || true
+    /home/agent/.local/share/intelli-shell/bin/intelli-shell import "$DEFAULTS_FILE" 2>/dev/null || true
     touch "$MARKER_FILE"
 fi
 
