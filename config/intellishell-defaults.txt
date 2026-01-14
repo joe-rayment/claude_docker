@@ -1,0 +1,17 @@
+# Quick start Claude Code (skip permissions) #claude #quick
+claude --dangerously-skip-permissions
+
+# Start Claude Code with debug logging #claude #debug
+claude --dangerously-skip-permissions --debug
+
+# Start Claude Code normally #claude
+claude
+
+# Start Ralph Wiggum loop (ALWAYS set max iterations!) #ralph #claude
+claude --dangerously-skip-permissions -c "/ralph-loop \"{{task}}\" --max-iterations {{iterations|10|20|50}}"
+
+# View latest debug log #claude #logs
+cat ~/.claude/debug/latest
+
+# Export session log to workspace #claude #logs
+cp ~/.claude/debug/latest /workspace/logs/session-$(date +%Y%m%d-%H%M%S).log

@@ -1,0 +1,22 @@
+{
+  "env": {
+    "ANTHROPIC_LOG": "debug"
+  },
+  "permissions": {
+    "allow": [
+      "Bash(**/ralph-wiggum/**)",
+      "Bash(setup-ralph)",
+      "Bash(view-logs)",
+      "Read(~/.claude/debug/**)",
+      "Write(/workspace/logs/**)"
+    ]
+  },
+  "hooks": {
+    "Stop": [
+      {
+        "command": "mkdir -p /workspace/logs && cp ~/.claude/debug/latest /workspace/logs/last-session.log 2>/dev/null || true",
+        "description": "Auto-export session log to workspace"
+      }
+    ]
+  }
+}

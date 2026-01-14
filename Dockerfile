@@ -20,10 +20,14 @@ RUN apt-get update && apt-get install -y \
     build-essential \
     python3-pip \
     python3-dev \
+    jq \
+    figlet \
     && locale-gen en_US.UTF-8 \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Oh-My-Zsh with Pure theme and plugins
+# Install Oh-My-Zsh for agent user (switching to agent first)
+USER agent
+WORKDIR /home/agent
 RUN sh -c "$(wget -O- https://github.com/deluan/zsh-in-docker/releases/download/v1.2.1/zsh-in-docker.sh)" -- \
     -t https://github.com/sindresorhus/pure \
     -p git \
@@ -31,6 +35,9 @@ RUN sh -c "$(wget -O- https://github.com/deluan/zsh-in-docker/releases/download/
     -a 'fpath+=("$HOME/.zsh/pure")' \
     -a 'autoload -U promptinit; promptinit' \
     -a 'prompt pure'
+
+# Switch back to root for remaining installations
+USER root
 
 # Install Helix editor from specific release (detect architecture)
 RUN HELIX_VERSION=25.07.1 && \
@@ -68,16 +75,28 @@ USER agent
 RUN curl -sSf https://raw.githubusercontent.com/lasantosr/intelli-shell/main/install.sh | sh
 
 # Create config directories
-RUN mkdir -p /home/agent/.config/helix
+RUN mkdir -p /home/agent/.config/helix /home/agent/.config/intelli-shell
 
 # Copy configuration files
 COPY --chown=agent:agent config/.zshrc /home/agent/.zshrc
 COPY --chown=agent:agent config/helix-config.toml /home/agent/.config/helix/config.toml
+COPY --chown=agent:agent config/intellishell-defaults.txt /home/agent/.config/intelli-shell/defaults.txt
+COPY --chown=agent:agent config/claude-settings.json /home/agent/.config/claude-settings-template.json
+COPY --chown=agent:agent config/CLAUDE.md.template /home/agent/.config/
+COPY --chown=agent:agent config/TODO.md.template /home/agent/.config/
 COPY --chown=agent:agent scripts/entrypoint.sh /usr/local/bin/entrypoint.sh
 
-# Make entrypoint executable
+# Copy helper scripts
+COPY --chown=agent:agent scripts/container-welcome.sh /usr/local/bin/container-welcome
+COPY --chown=agent:agent scripts/setup-ralph.sh /usr/local/bin/setup-ralph
+COPY --chown=agent:agent scripts/view-logs.sh /usr/local/bin/view-logs
+
+# Make scripts executable
 USER root
-RUN chmod +x /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh \
+             /usr/local/bin/container-welcome \
+             /usr/local/bin/setup-ralph \
+             /usr/local/bin/view-logs
 USER agent
 
 # Set default shell to zsh

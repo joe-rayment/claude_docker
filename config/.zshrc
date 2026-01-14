@@ -54,6 +54,19 @@ alias gl='git log --oneline --graph --decorate'
 alias vim='hx'
 alias vi='hx'
 
+# Claude Code shortcuts
+alias cs='claude --dangerously-skip-permissions'  # Quick start
+alias csd='claude --dangerously-skip-permissions --debug'  # With debug logging
+alias cn='claude'  # Normal start
+
+# Log viewing shortcuts
+alias clogs='view-logs'  # View Claude logs
+alias clog-latest='cat ~/.claude/debug/latest'  # Quick peek at latest log
+alias clog-export='cp ~/.claude/debug/latest /workspace/logs/session-$(date +%Y%m%d-%H%M%S).log && echo "Log exported to workspace/logs/"'
+
+# Ralph shortcuts
+alias ralph-setup='setup-ralph'  # Run Ralph setup wizard
+
 # History configuration
 HISTFILE=~/.zsh_history
 HISTSIZE=10000
@@ -71,8 +84,4 @@ bindkey '^[[A' history-substring-search-up
 bindkey '^[[B' history-substring-search-down
 
 # Welcome message
-if [ -t 0 ]; then
-    echo "🐳 Claude Code Development Environment"
-    echo "📁 Working directory: $(pwd)"
-    echo "🔧 Type 'claude' to start Claude Code"
-fi
+container-welcome

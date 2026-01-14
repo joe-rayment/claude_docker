@@ -58,7 +58,77 @@ docker compose down
 - **Terminal**: Zsh, Oh-My-Zsh, Pure prompt, IntelliShell
 - **Editor**: Helix (base16_default theme)
 - **Dev Tools**: Git, GitHub CLI, Python 3 (numpy, pandas, matplotlib, scikit-learn, jupyter), Node.js, Go
+- **Ralph Wiggum**: Autonomous iterative development plugin (pre-configured)
+- **Detailed Logging**: Auto-enabled debug logs with easy export
 - **Persistent**: All configs, history, and credentials saved between sessions
+
+## Ralph Wiggum - Autonomous Development
+
+This container includes the **Ralph Wiggum** plugin for autonomous, iterative development loops.
+
+### First-Time Ralph Setup (CRITICAL - DO IN ORDER)
+
+```bash
+# 1. Setup Ralph (run this ONCE)
+setup-ralph
+
+# 2. Create/edit your task in TODO.md
+hx TODO.md
+
+# 3. Commit your work (safety checkpoint)
+git add . && git commit -m "Before Ralph run"
+
+# 4. Start Claude and run Ralph
+cs
+/ralph-loop "Complete task in TODO.md" --max-iterations 10
+```
+
+### Ralph Best Practices
+
+**ALWAYS:**
+- Set `--max-iterations` (start with 10-20, NOT 50+)
+- Commit to git before running
+- Keep tasks small and specific
+- Have automated validation (tests)
+
+**NEVER:**
+- Run without --max-iterations (will burn tokens!)
+- Use on security-sensitive code without review
+- Skip the setup-ralph wizard
+
+### Quick Commands
+- `cs` - Start Claude (skip permissions)
+- `csd` - Start Claude with debug logging
+- `setup-ralph` - Run Ralph setup wizard
+- `view-logs` - View/export session logs
+
+## Logging & Debugging
+
+All Claude Code sessions are automatically logged with detailed debug information.
+
+### View Logs
+
+```bash
+# Quick view latest log
+clog-latest
+
+# Interactive log viewer
+view-logs
+
+# Export log to workspace
+clog-export
+
+# Manual export
+cp ~/.claude/debug/latest /workspace/logs/my-session.log
+```
+
+### Log Locations
+- Debug logs: `~/.claude/debug/`
+- Session transcripts: `~/.claude/projects/`
+- Exported logs: `/workspace/logs/`
+- Latest log symlink: `~/.claude/debug/latest`
+
+All logs persist across container restarts in the `agent-home` volume.
 
 ## Usage
 
