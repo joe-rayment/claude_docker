@@ -12,8 +12,8 @@ services:
 
     # Volume mounts
     volumes:
-      # Mount current directory as workspace
-      - ./workspace:/workspace
+      # Mount your project as workspace (set PROJECT_PATH in .env)
+      - ${PROJECT_PATH:-.}/:/workspace
       # Persistent home directory (includes .claude, .gitconfig, .zsh_history, etc.)
       - agent-home:/home/agent
 
