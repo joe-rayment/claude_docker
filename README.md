@@ -58,49 +58,167 @@ docker compose down
 - **Terminal**: Zsh, Oh-My-Zsh, Pure prompt, IntelliShell
 - **Editor**: Helix (base16_default theme)
 - **Dev Tools**: Git, GitHub CLI, Python 3 (numpy, pandas, matplotlib, scikit-learn, jupyter), Node.js, Go
-- **Ralph Wiggum**: Autonomous iterative development plugin (pre-configured)
+- **Ralph Wiggum**: Simple bash loop for autonomous development (no plugin needed)
 - **Detailed Logging**: Auto-enabled debug logs with easy export
 - **Persistent**: All configs, history, and credentials saved between sessions
 
+---
+
 ## Ralph Wiggum - Autonomous Development
 
-This container includes the **Ralph Wiggum** plugin for autonomous, iterative development loops.
+This container implements the **simple bash loop approach** to Ralph Wiggum, as recommended by the community. No plugins required.
 
-### First-Time Ralph Setup (CRITICAL - DO IN ORDER)
+### Why This Approach?
 
-```bash
-# 1. Setup Ralph (run this ONCE)
-setup-ralph
+1. **Fresh context each iteration** - No context degradation from accumulating history
+2. **Spec is the source of truth** - Not conversation history
+3. **True simplicity** - Ralph is literally just a bash while loop
+4. **You own the spec** - Read every line, edit it yourself
 
-# 2. Create/edit your task in TODO.md
-hx TODO.md
+### The Workflow
 
-# 3. Commit your work (safety checkpoint)
-git add . && git commit -m "Before Ralph run"
-
-# 4. Start Claude and run Ralph
-cs
-/ralph-loop "Complete task in TODO.md" --max-iterations 10
+```
+┌─────────────────────────────────────────────────────────────┐
+│  1. ralph-init        Initialize project with SPEC.md      │
+│  2. Edit SPEC.md      Define requirements & constraints    │
+│  3. cs                Bidirectional planning with Claude   │
+│  4. Edit PLAN.md      Break down into atomic tasks         │
+│  5. git commit        Safety checkpoint                    │
+│  6. ralph -n 10       Run the autonomous loop              │
+│  7. git diff          Review changes                       │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-### Ralph Best Practices
+### Quick Start
 
-**ALWAYS:**
-- Set `--max-iterations` (start with 10-20, NOT 50+)
-- Commit to git before running
-- Keep tasks small and specific
-- Have automated validation (tests)
+```bash
+# 1. Initialize Ralph for your project
+ralph-init
 
-**NEVER:**
-- Run without --max-iterations (will burn tokens!)
-- Use on security-sensitive code without review
-- Skip the setup-ralph wizard
+# 2. Edit the spec file (define what you're building)
+ralph-spec   # or: hx SPEC.md
 
-### Quick Commands
-- `cs` - Start Claude (skip permissions)
-- `csd` - Start Claude with debug logging
-- `setup-ralph` - Run Ralph setup wizard
-- `view-logs` - View/export session logs
+# 3. Do bidirectional planning with Claude
+cs
+# Ask Claude questions, let Claude ask you questions
+# Refine your spec until it's bulletproof
+
+# 4. Edit the plan file (break into tasks)
+ralph-plan   # or: hx PLAN.md
+
+# 5. Commit your work (safety checkpoint!)
+git add -A && git commit -m "Before Ralph run"
+
+# 6. Run Ralph
+ralph -n 10   # Run 10 iterations
+
+# 7. Review what Ralph did
+git diff
+```
+
+### Key Principles
+
+| Principle | Why It Matters |
+|-----------|----------------|
+| **Fresh context** | Each iteration starts clean - no context rot |
+| **Spec is truth** | The spec file, not conversation history |
+| **You own the spec** | Read every line, understand it, edit it yourself |
+| **Keep it small** | Bloated specs leave no room for implementation |
+| **Bidirectional planning** | Both you and Claude ask questions until aligned |
+| **Always --max-iterations** | Start with 10-20, never run unlimited |
+| **Git before running** | Always commit - it's your rollback point |
+
+### Commands Reference
+
+| Command | Description |
+|---------|-------------|
+| `ralph -n 10` | Run 10 iterations of the loop |
+| `ralph --help` | Show all options |
+| `ralph-init` | Initialize Ralph for a project |
+| `ralph-spec` | Edit SPEC.md in Helix |
+| `ralph-plan` | Edit PLAN.md in Helix |
+
+### How It Works
+
+Ralph is a simple bash loop:
+
+```bash
+while :; do
+    cat SPEC.md | claude --dangerously-skip-permissions --print
+    sleep 2
+done
+```
+
+Each iteration:
+1. Claude gets a **fresh context** (no accumulated history)
+2. Reads your **SPEC.md** to understand the project
+3. Reads **PLAN.md** to find the next unchecked task
+4. Completes ONE task, marks it done
+5. Exits, loop repeats
+
+The spec and codebase (via git) are the source of truth.
+
+### Writing Good Specs
+
+Your SPEC.md should include:
+
+```markdown
+# Project Specification
+
+## Context
+[What is this? What problem does it solve?]
+
+## Requirements
+[Specific, testable requirements - be precise]
+
+## Technical Constraints
+Build: npm run build
+Test:  npm test
+Lint:  npm run lint
+
+## Completion Criteria
+- [ ] All requirements met
+- [ ] All tests pass
+- [ ] No lint errors
+
+## Current Task
+See PLAN.md
+```
+
+**Keep specs focused.** Bloated specs leave no room for implementation in each iteration.
+
+### Writing Good Plans
+
+Your PLAN.md should have atomic, ordered tasks:
+
+```markdown
+# Implementation Plan
+
+## Tasks
+- [ ] Create user model with email, password fields
+- [ ] Add validation for email format
+- [ ] Write unit tests for user model
+- [ ] Create registration endpoint
+- [ ] Add integration tests
+
+## Completed
+- [x] Set up project structure
+```
+
+Each task should be completable in one iteration.
+
+### Bidirectional Planning
+
+Before running Ralph, have a conversation with Claude:
+
+1. **You ask Claude**: "What's unclear about this spec?"
+2. **Claude asks you**: "How should X handle Y?"
+3. **Repeat** until both sides have no questions
+4. **Update** SPEC.md and PLAN.md with what you learned
+
+This surfaces implicit assumptions that cause bugs.
+
+---
 
 ## Logging & Debugging
 
@@ -130,6 +248,8 @@ cp ~/.claude/debug/latest /workspace/logs/my-session.log
 
 All logs persist across container restarts in the `agent-home` volume.
 
+---
+
 ## Usage
 
 ### Opening Multiple Terminal Sessions
@@ -156,7 +276,9 @@ All tabs share the same filesystem and environment, so changes made in one are v
 Once inside the container:
 
 ```bash
-claude
+cs    # Quick start (skip permissions)
+csd   # With debug logging
+claude   # Normal start
 ```
 
 ### Working with Projects
@@ -192,6 +314,8 @@ hx filename.txt
 - **Ctrl+B** - Bookmark current command
 - **Ctrl+X** - Fix command with AI
 
+---
+
 ## Project Structure
 
 ```
@@ -200,12 +324,19 @@ claude_docker/
 ├── docker-compose.yml      # Docker Compose configuration
 ├── config/
 │   ├── .zshrc             # Zsh configuration
-│   └── helix-config.toml  # Helix editor configuration
+│   ├── helix-config.toml  # Helix editor configuration
+│   ├── SPEC.md.template   # Ralph spec template
+│   └── PLAN.md.template   # Ralph plan template
 ├── scripts/
-│   └── entrypoint.sh      # Container initialization script
+│   ├── entrypoint.sh      # Container initialization script
+│   ├── ralph.sh           # Ralph Wiggum bash loop
+│   ├── setup-ralph.sh     # Ralph setup wizard
+│   └── view-logs.sh       # Log viewer
 ├── workspace/             # Your working directory (gitignored)
 └── README.md              # This file
 ```
+
+---
 
 ## Customization
 
@@ -237,6 +368,8 @@ Edit `config/helix-config.toml` to change the Helix theme:
 theme = "your_theme_name"
 ```
 
+---
+
 ## Persistent Data
 
 The following data is persisted in Docker volumes:
@@ -251,6 +384,8 @@ To reset everything, remove the volumes:
 ```bash
 docker compose down -v
 ```
+
+---
 
 ## Troubleshooting
 
@@ -282,6 +417,8 @@ If you encounter permission issues with the workspace:
 chmod -R 755 workspace
 ```
 
+---
+
 ## Advanced Usage
 
 ### Running Multiple Projects
@@ -301,6 +438,8 @@ docker compose -f docker-compose.project1.yml up -d
 
 Install the "Remote - Containers" extension and attach to the running container for a full IDE experience.
 
+---
+
 ## Contributing
 
 Feel free to open issues or submit pull requests for improvements!
@@ -316,3 +455,4 @@ MIT
 - [Pure prompt](https://github.com/sindresorhus/pure) theme
 - [IntelliShell](https://github.com/lasantosr/intelli-shell) for intelligent command management
 - [Helix editor](https://helix-editor.com/)
+- Ralph Wiggum approach inspired by [Geoffrey Huntley](https://ghuntley.com/) and community best practices

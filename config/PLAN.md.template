@@ -1,0 +1,32 @@
+# Implementation Plan
+
+## Current Phase
+
+[Phase name - e.g., "Initial Setup", "Core Features", "Testing"]
+
+## Tasks
+
+Complete these in order, one per iteration:
+
+- [ ] Task 1: [Specific, atomic task description]
+- [ ] Task 2: [Another specific task]
+- [ ] Task 3: [Keep tasks small enough to complete in one iteration]
+
+## Completed
+
+- [x] Created project structure
+- [x] Set up development environment
+
+## Notes
+
+[Any context that helps with implementation. Reference specific files,
+patterns to follow, or decisions made during planning.]
+
+---
+
+**INSTRUCTIONS:**
+
+- Complete ONE task per iteration
+- Mark task complete when done (change `[ ]` to `[x]`)
+- Keep tasks atomic - if a task is too big, break it down
+- When all tasks are done, check SPEC.md completion criteria

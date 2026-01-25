@@ -29,10 +29,10 @@ echo ""
 
 # Check Ralph setup status
 if [ -f "$RALPH_READY" ]; then
-    echo -e "${C_GREEN}✓${C_RESET} Ralph Wiggum: ${C_BOLD}Ready${C_RESET}"
+    echo -e "${C_GREEN}✓${C_RESET} Ralph Wiggum: ${C_BOLD}Ready${C_RESET} (simple bash loop)"
 else
     echo -e "${C_YELLOW}⚠${C_RESET} Ralph Wiggum: ${C_BOLD}Not Configured${C_RESET}"
-    echo -e "  Run: ${C_BOLD}setup-ralph${C_RESET} to configure"
+    echo -e "  Run: ${C_BOLD}ralph-init${C_RESET} to set up"
 fi
 
 # Check git authentication
@@ -60,7 +60,7 @@ ${C_BLUE}━━━━━━━━━━━━━━━━━━━━━━━�
   ${C_BOLD}First Time Setup${C_RESET}
 ${C_BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${C_RESET}
 
-${C_BOLD}Setup Order (DO IN THIS ORDER):${C_RESET}
+${C_BOLD}Setup Order:${C_RESET}
 
 ${C_YELLOW}1.${C_RESET} Authenticate with Claude:
    ${C_BOLD}claude auth login${C_RESET}
@@ -69,29 +69,35 @@ ${C_YELLOW}2.${C_RESET} Configure Git:
    ${C_BOLD}git config --global user.name "Your Name"${C_RESET}
    ${C_BOLD}git config --global user.email "your@email.com"${C_RESET}
 
-${C_YELLOW}3.${C_RESET} Setup Ralph Wiggum (for autonomous development):
-   ${C_BOLD}setup-ralph${C_RESET}
-
-${C_YELLOW}4.${C_RESET} Start coding:
-   ${C_BOLD}cs${C_RESET}    (Quick start Claude, skip permissions)
+${C_YELLOW}3.${C_RESET} Start coding:
+   ${C_BOLD}cs${C_RESET}    (Start Claude, skip permissions)
    ${C_BOLD}csd${C_RESET}   (With debug logging)
 
-${C_BOLD}Quick Commands:${C_RESET}
-  ${C_BOLD}cs${C_RESET}            - Start Claude quickly
-  ${C_BOLD}setup-ralph${C_RESET}   - Setup Ralph Wiggum plugin
-  ${C_BOLD}view-logs${C_RESET}     - View/export Claude logs
-  ${C_BOLD}clog-latest${C_RESET}   - Quick peek at latest log
+${C_BOLD}Ralph Wiggum (Autonomous Development):${C_RESET}
 
-${C_BOLD}IntelliShell Shortcuts:${C_RESET}
-  ${C_BOLD}Ctrl+Space${C_RESET}   - Search saved commands
-  ${C_BOLD}Ctrl+B${C_RESET}       - Bookmark current command
+${C_YELLOW}1.${C_RESET} Initialize:  ${C_BOLD}ralph-init${C_RESET}
+${C_YELLOW}2.${C_RESET} Edit spec:   ${C_BOLD}ralph-spec${C_RESET}   (or hx SPEC.md)
+${C_YELLOW}3.${C_RESET} Plan:        ${C_BOLD}cs${C_RESET}           (bidirectional planning with Claude)
+${C_YELLOW}4.${C_RESET} Edit plan:   ${C_BOLD}ralph-plan${C_RESET}   (or hx PLAN.md)
+${C_YELLOW}5.${C_RESET} Commit:      ${C_BOLD}git add -A && git commit -m "checkpoint"${C_RESET}
+${C_YELLOW}6.${C_RESET} Run loop:    ${C_BOLD}ralph -n 10${C_RESET}  (10 iterations)
+
+${C_BOLD}Key Principle:${C_RESET} Fresh context each iteration. The spec is truth.
+
+${C_BOLD}IntelliShell:${C_RESET}
+  ${C_BOLD}Ctrl+Space${C_RESET}   Search saved commands
+  ${C_BOLD}Ctrl+B${C_RESET}       Bookmark current command
 
 ${C_BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${C_RESET}
 EOF
     touch "$FIRST_TIME"
 else
     # Returning user - brief message
-    echo -e "${C_BOLD}Quick Start:${C_RESET} ${C_BOLD}cs${C_RESET} (Claude), ${C_BOLD}setup-ralph${C_RESET} (Ralph setup), ${C_BOLD}view-logs${C_RESET} (Logs)"
+    echo -e "${C_BOLD}Quick Start:${C_RESET}"
+    echo -e "  ${C_BOLD}cs${C_RESET}           Start Claude"
+    echo -e "  ${C_BOLD}ralph -n 10${C_RESET}  Run autonomous loop (10 iterations)"
+    echo -e "  ${C_BOLD}ralph-init${C_RESET}   Set up Ralph for a project"
+    echo -e "  ${C_BOLD}view-logs${C_RESET}    View Claude logs"
 fi
 
 echo ""

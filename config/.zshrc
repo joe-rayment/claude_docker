@@ -50,8 +50,11 @@ alias clogs='view-logs'  # View Claude logs
 alias clog-latest='cat ~/.claude/debug/latest'  # Quick peek at latest log
 alias clog-export='cp ~/.claude/debug/latest /workspace/logs/session-$(date +%Y%m%d-%H%M%S).log && echo "Log exported to workspace/logs/"'
 
-# Ralph shortcuts
-alias ralph-setup='setup-ralph'  # Run Ralph setup wizard
+# Ralph Wiggum shortcuts (simple bash loop approach)
+alias ralph='ralph.sh'              # Run the autonomous loop
+alias ralph-init='setup-ralph'      # Initialize Ralph for a project
+alias ralph-spec='hx SPEC.md'       # Edit spec file
+alias ralph-plan='hx PLAN.md'       # Edit plan file
 
 # History configuration
 HISTFILE=~/.zsh_history

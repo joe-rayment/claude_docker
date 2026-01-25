@@ -1,4 +1,10 @@
 #!/bin/bash
+#
+# Ralph Wiggum Setup Wizard
+#
+# Sets up the simple bash loop approach to Ralph Wiggum.
+# No plugins required - just a spec file and the ralph command.
+#
 
 # Colors
 C_GREEN="\e[32m"
@@ -8,126 +14,152 @@ C_BOLD="\e[1m"
 C_RESET="\e[0m"
 
 # State tracking
-STATE_DIR="/home/agent/.ralph-setup"
 RALPH_READY="/home/agent/.ralph-ready"
-mkdir -p "$STATE_DIR"
 
-echo -e "${C_BOLD}${C_BLUE}Ralph Wiggum Setup Wizard${C_RESET}"
+echo -e "${C_BOLD}${C_BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${C_RESET}"
+echo -e "${C_BOLD}  Ralph Wiggum Setup Wizard${C_RESET}"
+echo -e "${C_BOLD}${C_BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${C_RESET}"
+echo ""
+echo "This sets up Ralph Wiggum - the simple bash loop approach."
+echo "No plugins needed. Just a spec file and fresh context each iteration."
 echo ""
 
-# Step 1: Check jq
-echo -e "${C_BOLD}[Step 1/6]${C_RESET} Checking prerequisites..."
-if ! command -v jq &> /dev/null; then
-    echo -e "${C_YELLOW}⚠${C_RESET} jq not found (should be installed in container)"
-    echo "Contact administrator if this persists"
-    exit 1
-fi
-echo -e "${C_GREEN}✓${C_RESET} jq installed"
+# Step 1: Check we're in a valid project directory
+echo -e "${C_BOLD}[Step 1/4]${C_RESET} Checking project directory..."
 
-# Step 2: Initialize git if needed
-echo ""
-echo -e "${C_BOLD}[Step 2/6]${C_RESET} Checking git repository..."
-if [ ! -d "/workspace/.git" ]; then
-    echo -e "${C_YELLOW}⚠${C_RESET} Not a git repository. Initializing..."
+if [ ! -d "/workspace" ]; then
+    echo -e "${C_YELLOW}⚠${C_RESET} Not in workspace. Changing to /workspace..."
     cd /workspace
+fi
+
+# Initialize git if needed
+if [ ! -d ".git" ]; then
+    echo -e "${C_YELLOW}⚠${C_RESET} Not a git repository. Initializing..."
     git init
     echo -e "${C_GREEN}✓${C_RESET} Git repository initialized"
 else
     echo -e "${C_GREEN}✓${C_RESET} Git repository exists"
 fi
 
-# Step 3: Install Ralph plugin
+# Step 2: Create SPEC.md if needed
 echo ""
-echo -e "${C_BOLD}[Step 3/6]${C_RESET} Installing Ralph Wiggum plugin..."
-echo "This will start Claude Code briefly to install the plugin."
-echo ""
-read -p "Press Enter to continue..."
+echo -e "${C_BOLD}[Step 2/4]${C_RESET} Setting up spec file..."
 
-# Create temporary command file
-cat > /tmp/install-ralph.txt <<'EOF'
-/plugin marketplace add anthropics/claude-code
-/plugin install ralph-wiggum@claude-plugins-official
-/exit
-EOF
+if [ -f "SPEC.md" ]; then
+    echo -e "${C_BLUE}ℹ${C_RESET} SPEC.md already exists - keeping it"
+else
+    if [ -f "/home/agent/.config/SPEC.md.template" ]; then
+        cp /home/agent/.config/SPEC.md.template SPEC.md
+    else
+        cat > SPEC.md << 'EOF'
+# Project Specification
 
-echo "Starting Claude Code to install plugin..."
-claude < /tmp/install-ralph.txt 2>&1 | grep -E "(Installing|Installed|Success|Error)" || true
-rm /tmp/install-ralph.txt
+## Context
 
-echo -e "${C_GREEN}✓${C_RESET} Plugin installation complete"
+[What is this project? What problem does it solve?]
 
-# Step 4: Create CLAUDE.md if not exists
-echo ""
-echo -e "${C_BOLD}[Step 4/6]${C_RESET} Setting up project files..."
-if [ ! -f "/workspace/CLAUDE.md" ]; then
-    cp /home/agent/.config/CLAUDE.md.template /workspace/CLAUDE.md 2>/dev/null || cat > /workspace/CLAUDE.md <<'EOF'
-# Project Context for Claude Code
+## Requirements
 
-## Build & Test Commands
-- Build: npm run build
-- Test: npm test
-- Lint: npm run lint
+1. [Specific requirement]
+2. [Another requirement]
 
-## Task Complete When
+## Technical Constraints
+
+```
+Build:  [your build command]
+Test:   [your test command]
+Lint:   [your lint command]
+```
+
+## Completion Criteria
+
+- [ ] All requirements implemented
 - [ ] All tests pass
 - [ ] No lint errors
-- [ ] Code is committed to git
 
-## Coding Standards
-- Follow existing code style
-- Write tests for new features
-- Update documentation
+## Current Task
 
-## Ralph Wiggum Notes
-- Always use --max-iterations (start with 10-20)
-- Clear success criteria in TODO.md
-- Run tests before starting Ralph
-- Git commit before starting Ralph (rollback point)
-EOF
-    echo -e "${C_GREEN}✓${C_RESET} Created CLAUDE.md"
-else
-    echo -e "${C_BLUE}ℹ${C_RESET} CLAUDE.md already exists"
-fi
-
-# Step 5: Create TODO.md if not exists
-if [ ! -f "/workspace/TODO.md" ]; then
-    cp /home/agent/.config/TODO.md.template /workspace/TODO.md 2>/dev/null || cat > /workspace/TODO.md <<'EOF'
-# Project Tasks
-
-## Current Sprint
-- [ ] Example task: Add hello world function
-
-## Backlog
-- [ ] Future tasks here
-
-## Completed
-- [x] Setup development environment
-- [x] Install Ralph Wiggum
+See PLAN.md for implementation tasks.
 
 ---
-**Ralph Tips:** Keep tasks specific, automated validation, use --max-iterations
+
+**INSTRUCTIONS FOR CLAUDE:**
+
+1. Read PLAN.md for the next unchecked task
+2. Complete ONE task
+3. Mark it complete in PLAN.md
+4. Exit
+
+If all tasks done and criteria met, output "TASK COMPLETE".
 EOF
-    echo -e "${C_GREEN}✓${C_RESET} Created TODO.md"
-else
-    echo -e "${C_BLUE}ℹ${C_RESET} TODO.md already exists"
+    fi
+    echo -e "${C_GREEN}✓${C_RESET} Created SPEC.md"
 fi
 
-# Step 6: Complete
+# Step 3: Create PLAN.md if needed
 echo ""
-echo -e "${C_BOLD}[Step 6/6]${C_RESET} Setup complete!"
+echo -e "${C_BOLD}[Step 3/4]${C_RESET} Setting up plan file..."
+
+if [ -f "PLAN.md" ]; then
+    echo -e "${C_BLUE}ℹ${C_RESET} PLAN.md already exists - keeping it"
+else
+    if [ -f "/home/agent/.config/PLAN.md.template" ]; then
+        cp /home/agent/.config/PLAN.md.template PLAN.md
+    else
+        cat > PLAN.md << 'EOF'
+# Implementation Plan
+
+## Current Phase
+
+[Phase name]
+
+## Tasks
+
+- [ ] Task 1: [Specific task]
+- [ ] Task 2: [Another task]
+
+## Completed
+
+- [x] Set up Ralph Wiggum
+
+---
+
+Complete ONE task per iteration. Mark done when complete.
+EOF
+    fi
+    echo -e "${C_GREEN}✓${C_RESET} Created PLAN.md"
+fi
+
+# Step 4: Done
 echo ""
-echo -e "${C_GREEN}✓${C_RESET} Ralph Wiggum is ready to use"
+echo -e "${C_BOLD}[Step 4/4]${C_RESET} Setup complete!"
 echo ""
-echo -e "${C_BOLD}Quick Start:${C_RESET}"
-echo "  1. Edit TODO.md with a small, clear task"
-echo "  2. Run: ${C_BOLD}cs${C_RESET} (starts Claude)"
-echo "  3. In Claude, run: ${C_BOLD}/ralph-loop \"Complete task in TODO.md\" --max-iterations 10${C_RESET}"
+echo -e "${C_BOLD}${C_BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${C_RESET}"
+echo -e "${C_GREEN}✓ Ralph Wiggum is ready${C_RESET}"
+echo -e "${C_BOLD}${C_BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${C_RESET}"
 echo ""
-echo -e "${C_BOLD}Important Ralph Rules:${C_RESET}"
-echo "  • ${C_YELLOW}ALWAYS${C_RESET} set --max-iterations (start with 10-20)"
-echo "  • Make tasks small and specific"
-echo "  • Commit to git before running Ralph"
-echo "  • Monitor first run closely"
+echo -e "${C_BOLD}The Workflow:${C_RESET}"
+echo ""
+echo -e "  ${C_YELLOW}1.${C_RESET} Edit your spec:        ${C_BOLD}hx SPEC.md${C_RESET}"
+echo -e "  ${C_YELLOW}2.${C_RESET} Plan with Claude:      ${C_BOLD}cs${C_RESET}  (bidirectional planning)"
+echo -e "  ${C_YELLOW}3.${C_RESET} Edit your plan:        ${C_BOLD}hx PLAN.md${C_RESET}"
+echo -e "  ${C_YELLOW}4.${C_RESET} Commit (checkpoint):   ${C_BOLD}git add -A && git commit -m \"Before Ralph\"${C_RESET}"
+echo -e "  ${C_YELLOW}5.${C_RESET} Run Ralph:             ${C_BOLD}ralph -n 10${C_RESET}"
+echo -e "  ${C_YELLOW}6.${C_RESET} Review:                ${C_BOLD}git diff${C_RESET}"
+echo ""
+echo -e "${C_BOLD}Key Principles:${C_RESET}"
+echo ""
+echo -e "  • ${C_BOLD}Fresh context${C_RESET} - Each iteration starts clean"
+echo -e "  • ${C_BOLD}Spec is truth${C_RESET} - Not conversation history"
+echo -e "  • ${C_BOLD}You own it${C_RESET}    - Read every line of your spec"
+echo -e "  • ${C_BOLD}Keep it small${C_RESET} - Leave room for implementation"
+echo ""
+echo -e "${C_BOLD}Quick Commands:${C_RESET}"
+echo ""
+echo -e "  ${C_BOLD}ralph -n 10${C_RESET}      Run 10 iterations"
+echo -e "  ${C_BOLD}ralph --help${C_RESET}    Show all options"
+echo -e "  ${C_BOLD}ralph-spec${C_RESET}      Edit SPEC.md"
+echo -e "  ${C_BOLD}ralph-plan${C_RESET}      Edit PLAN.md"
 echo ""
 
 touch "$RALPH_READY"

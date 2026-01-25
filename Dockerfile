@@ -83,13 +83,14 @@ COPY --chown=agent:agent config/helix-config.toml /home/agent/.config/helix/conf
 COPY --chown=agent:agent config/intellishell-config.toml /home/agent/.config/intelli-shell/config.toml
 COPY --chown=agent:agent config/intellishell-defaults.txt /home/agent/.config/intelli-shell/defaults.txt
 COPY --chown=agent:agent config/claude-settings.json /home/agent/.config/claude-settings-template.json
-COPY --chown=agent:agent config/CLAUDE.md.template /home/agent/.config/
-COPY --chown=agent:agent config/TODO.md.template /home/agent/.config/
+COPY --chown=agent:agent config/SPEC.md.template /home/agent/.config/
+COPY --chown=agent:agent config/PLAN.md.template /home/agent/.config/
 COPY --chown=agent:agent scripts/entrypoint.sh /usr/local/bin/entrypoint.sh
 
 # Copy helper scripts
 COPY --chown=agent:agent scripts/container-welcome.sh /usr/local/bin/container-welcome
 COPY --chown=agent:agent scripts/setup-ralph.sh /usr/local/bin/setup-ralph
+COPY --chown=agent:agent scripts/ralph.sh /usr/local/bin/ralph.sh
 COPY --chown=agent:agent scripts/view-logs.sh /usr/local/bin/view-logs
 
 # Make scripts executable
@@ -97,6 +98,7 @@ USER root
 RUN chmod +x /usr/local/bin/entrypoint.sh \
              /usr/local/bin/container-welcome \
              /usr/local/bin/setup-ralph \
+             /usr/local/bin/ralph.sh \
              /usr/local/bin/view-logs
 USER agent
 
