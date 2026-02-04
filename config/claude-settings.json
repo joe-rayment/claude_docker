@@ -14,8 +14,13 @@
   "hooks": {
     "Stop": [
       {
-        "command": "mkdir -p /workspace/logs && cp ~/.claude/debug/latest /workspace/logs/last-session.log 2>/dev/null || true",
-        "description": "Auto-export session log to workspace"
+        "matcher": {},
+        "hooks": [
+          {
+            "type": "command",
+            "command": "mkdir -p /workspace/logs && cp ~/.claude/debug/latest /workspace/logs/last-session.log 2>/dev/null || true"
+          }
+        ]
       }
     ]
   }
