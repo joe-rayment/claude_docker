@@ -1,6 +1,6 @@
 # Claude Code Docker Development Environment
 
-A portable, pre-configured development environment for Claude Code. Clone it once per project, point it at your code, and start building.
+A portable, pre-configured development environment for Claude Code. Run one command from any project directory and start building.
 
 ---
 
@@ -8,65 +8,58 @@ A portable, pre-configured development environment for Claude Code. Clone it onc
 
 ### Prerequisites
 
-1. **Docker Desktop** installed and running
-   ```bash
-   # macOS
-   brew install --cask docker
-   open -a Docker   # Wait for it to fully start
-   ```
+**Docker Desktop** installed and running
+```bash
+# macOS
+brew install --cask docker
+open -a Docker   # Wait for it to fully start
+```
 
-2. **A project to work on** (or create one)
+### One-Line Setup
 
-### Setup (5 minutes)
+From your project directory:
 
 ```bash
-# 1. Clone this repo INTO your project directory
-cd /path/to/your/project
-git clone https://github.com/joe-rayment/claude_docker.git .claude-dev
-
-# 2. Configure it to use your project
-cd .claude-dev
-echo "PROJECT_PATH=.." > .env
-
-# 3. Build the container (first time only)
-docker compose build
-
-# 4. Start the container
-docker compose up -d
-
-# 5. Enter the container
-docker compose exec claude-dev /bin/zsh
+curl -fsSL https://raw.githubusercontent.com/joe-rayment/claude_docker/main/bootstrap.sh | bash
 ```
+
+This will:
+- Clone the environment into `.claude-dev/`
+- Build the container (first time only)
+- Create a uniquely-named container for your project
+- Start everything up
+
+Then enter your container:
+
+```bash
+docker exec -it {your-project}-claude-dev /bin/zsh
+```
+
+The bootstrap script will show you the exact command.
 
 ### First Time Inside Container
 
-```bash
-# Authenticate Claude (opens browser)
-claude auth login
-
-# Configure git
-git config --global user.name "Your Name"
-git config --global user.email "your@email.com"
-```
+The container will guide you through:
+- Claude authentication (opens browser)
+- Git configuration
+- Dependency installation (auto-detected)
+- Getting started menu
 
 ### Daily Use
 
 ```bash
-# From your .claude-dev directory:
+# From your project directory:
 cd /path/to/your/project/.claude-dev
 
 # Start the container
 docker compose up -d
 
 # Enter the container
-docker compose exec claude-dev /bin/zsh
+docker exec -it {your-project}-claude-dev /bin/zsh
 
-# Start Claude
-cs
-
-# When done for the day
-exit
-docker compose down
+# Or re-run bootstrap (it's idempotent):
+cd /path/to/your/project
+curl -fsSL https://raw.githubusercontent.com/joe-rayment/claude_docker/main/bootstrap.sh | bash
 ```
 
 ---
@@ -79,6 +72,7 @@ docker compose down
 - **Dev Tools**: Git, GitHub CLI, Python 3 (numpy, pandas, matplotlib, scikit-learn, jupyter), Node.js, Go
 - **Ralph Wiggum**: Simple bash loop for autonomous development
 - **Persistent**: Auth, history, and configs saved between sessions
+- **Auto-detection**: Recognizes package.json, requirements.txt, go.mod, Cargo.toml, Gemfile
 
 ---
 
@@ -88,10 +82,9 @@ After setup, your project looks like this:
 
 ```
 your-project/
-├── .claude-dev/          # This repo (gitignored or separate)
-│   ├── docker-compose.yml
+├── .claude-dev/          # Claude Docker environment
+│   ├── docker-compose.yml  # Generated with unique names
 │   ├── Dockerfile
-│   ├── .env              # Points to parent directory
 │   └── ...
 ├── src/                  # Your actual project files
 ├── package.json
@@ -99,6 +92,12 @@ your-project/
 ```
 
 Your project files appear at `/workspace` inside the container.
+
+Container naming convention:
+| Project Folder | Container Name | Volume Name |
+|----------------|----------------|-------------|
+| MyProject | myproject-claude-dev | myproject-agent-home |
+| my-web-app | my-web-app-claude-dev | my-web-app-agent-home |
 
 ---
 
@@ -186,15 +185,15 @@ Open multiple tabs connected to the same container:
 
 ```bash
 # Tab 1: Claude
-docker compose exec claude-dev /bin/zsh
+docker exec -it {your-project}-claude-dev /bin/zsh
 cs
 
 # Tab 2: Editor (new terminal tab)
-docker compose exec claude-dev /bin/zsh
+docker exec -it {your-project}-claude-dev /bin/zsh
 hx src/main.py
 
 # Tab 3: Tests (new terminal tab)
-docker compose exec claude-dev /bin/zsh
+docker exec -it {your-project}-claude-dev /bin/zsh
 npm test
 ```
 
@@ -210,6 +209,7 @@ Docker Desktop isn't running. Open Docker Desktop and wait for it to start.
 
 ### "container name already in use"
 ```bash
+cd .claude-dev
 docker compose down
 docker compose up -d
 ```
@@ -223,6 +223,7 @@ claude auth login
 ### Configs not updating after rebuild
 The home directory is persisted in a volume. To reset:
 ```bash
+cd .claude-dev
 docker compose down -v   # Warning: removes auth, history
 docker compose up -d
 # Re-authenticate after this
@@ -236,20 +237,34 @@ chmod -R 755 /path/to/your/project
 
 ---
 
+## Manual Setup (Alternative)
+
+If you prefer not to use the bootstrap script:
+
+```bash
+# 1. Clone this repo INTO your project directory
+cd /path/to/your/project
+git clone https://github.com/joe-rayment/claude_docker.git .claude-dev
+cd .claude-dev
+
+# 2. Create docker-compose.yml with your project name
+# (copy from docker-compose.yml.example and update container/volume names)
+
+# 3. Build and start
+docker compose build
+docker compose up -d
+
+# 4. Enter the container
+docker compose exec claude-dev /bin/zsh
+```
+
+---
+
 ## Configuration
 
 ### Using a Different Project Path
 
-Edit `.env`:
-```bash
-PROJECT_PATH=/absolute/path/to/project
-```
-
-Or use a relative path from the `.claude-dev` directory:
-```bash
-PROJECT_PATH=..           # Parent directory
-PROJECT_PATH=../other     # Sibling directory
-```
+The bootstrap script automatically configures the parent directory. For manual setup, the docker-compose.yml mounts `../` as `/workspace`.
 
 ### Adding Python Packages
 
@@ -274,14 +289,14 @@ docker compose down && docker compose up -d
 │  │  your-project/                                    │  │
 │  │  ├── src/                                         │  │
 │  │  ├── .claude-dev/  ◄── This repo                  │  │
-│  │  │   ├── .env      ◄── PROJECT_PATH=..            │  │
+│  │  │   ├── docker-compose.yml  ◄── Generated        │  │
 │  │  │   └── ...                                      │  │
 │  │  └── ...                                          │  │
 │  └───────────────────────────────────────────────────┘  │
 │                         │                               │
 │                         ▼                               │
 │  ┌───────────────────────────────────────────────────┐  │
-│  │  Docker Container                                 │  │
+│  │  Docker Container (your-project-claude-dev)      │  │
 │  │  /workspace/  ◄── your-project files mounted here │  │
 │  │  /home/agent/ ◄── persistent (auth, config, etc.) │  │
 │  └───────────────────────────────────────────────────┘  │

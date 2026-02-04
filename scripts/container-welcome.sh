@@ -1,16 +1,20 @@
 #!/bin/bash
 
+# Container Welcome Script
+# Displays status and launches guided setup
+
 # Colors
 C_RED="\e[31m"
 C_GREEN="\e[32m"
 C_YELLOW="\e[33m"
 C_BLUE="\e[34m"
 C_BOLD="\e[1m"
+C_DIM="\e[2m"
 C_RESET="\e[0m"
 
 # State files
-RALPH_READY="/home/agent/.ralph-ready"
 FIRST_TIME="/home/agent/.first-login"
+RALPH_READY="/home/agent/.ralph-ready"
 
 # Only for interactive shells
 if [ ! -t 0 ]; then
@@ -27,77 +31,94 @@ else
 fi
 echo ""
 
-# Check Ralph setup status
-if [ -f "$RALPH_READY" ]; then
-    echo -e "${C_GREEN}✓${C_RESET} Ralph Wiggum: ${C_BOLD}Ready${C_RESET} (simple bash loop)"
-else
-    echo -e "${C_YELLOW}⚠${C_RESET} Ralph Wiggum: ${C_BOLD}Not Configured${C_RESET}"
-    echo -e "  Run: ${C_BOLD}ralph-init${C_RESET} to set up"
-fi
+# Status section
+echo -e "${C_BOLD}Status:${C_RESET}"
 
-# Check git authentication
-if git config user.name &> /dev/null; then
-    echo -e "${C_GREEN}✓${C_RESET} Git: Configured ($(git config user.name))"
-else
-    echo -e "${C_YELLOW}⚠${C_RESET} Git: Not configured"
-    echo -e "  Run: ${C_BOLD}git config --global user.name \"Your Name\"${C_RESET}"
-fi
-
-# Check Claude authentication
+# Claude authentication
 if [ -f "/home/agent/.claude/credentials" ] || claude auth status &>/dev/null; then
-    echo -e "${C_GREEN}✓${C_RESET} Claude: Authenticated"
+    echo -e "  ${C_GREEN}[✓]${C_RESET} Claude: Authenticated"
+    CLAUDE_OK=true
 else
-    echo -e "${C_YELLOW}⚠${C_RESET} Claude: Not authenticated"
-    echo -e "  Run: ${C_BOLD}claude auth login${C_RESET}"
+    echo -e "  ${C_YELLOW}[!]${C_RESET} Claude: Not authenticated"
+    CLAUDE_OK=false
+fi
+
+# Git configuration
+if git config user.name &> /dev/null && git config user.email &> /dev/null; then
+    echo -e "  ${C_GREEN}[✓]${C_RESET} Git: Configured ($(git config user.name))"
+    GIT_OK=true
+else
+    echo -e "  ${C_YELLOW}[!]${C_RESET} Git: Not configured"
+    GIT_OK=false
+fi
+
+# Ralph status
+if [ -f "$RALPH_READY" ]; then
+    echo -e "  ${C_GREEN}[✓]${C_RESET} Ralph: Ready"
+    RALPH_OK=true
+else
+    echo -e "  ${C_DIM}[ ]${C_RESET} Ralph: Not initialized ${C_DIM}(optional)${C_RESET}"
+    RALPH_OK=false
+fi
+
+# Dependency detection
+DEP_COUNT=$(/usr/local/bin/detect-dependencies.sh --count 2>/dev/null || echo "0")
+if [ "$DEP_COUNT" -gt 0 ]; then
+    # Check if node_modules or other install indicators exist
+    if [ -d "/workspace/node_modules" ] || [ -d "/workspace/venv" ] || [ -d "/workspace/.venv" ] || [ -d "/workspace/vendor" ]; then
+        echo -e "  ${C_GREEN}[✓]${C_RESET} Dependencies: Installed"
+        DEPS_INSTALLED=true
+    else
+        echo -e "  ${C_DIM}[ ]${C_RESET} Dependencies: ${DEP_COUNT} detected (not installed)"
+        DEPS_INSTALLED=false
+    fi
+else
+    DEPS_INSTALLED=true  # Nothing to install
 fi
 
 echo ""
 
-# First time detailed instructions
-if [ ! -f "$FIRST_TIME" ]; then
-    cat <<EOF
-${C_BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${C_RESET}
-  ${C_BOLD}First Time Setup${C_RESET}
-${C_BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${C_RESET}
+# Determine if we need guided setup or quick menu
+NEEDS_SETUP=false
+if [ "$CLAUDE_OK" = false ] || [ "$GIT_OK" = false ]; then
+    NEEDS_SETUP=true
+fi
 
-${C_BOLD}Setup Order:${C_RESET}
-
-${C_YELLOW}1.${C_RESET} Authenticate with Claude:
-   ${C_BOLD}claude auth login${C_RESET}
-
-${C_YELLOW}2.${C_RESET} Configure Git:
-   ${C_BOLD}git config --global user.name "Your Name"${C_RESET}
-   ${C_BOLD}git config --global user.email "your@email.com"${C_RESET}
-
-${C_YELLOW}3.${C_RESET} Start coding:
-   ${C_BOLD}cs${C_RESET}    (Start Claude, skip permissions)
-   ${C_BOLD}csd${C_RESET}   (With debug logging)
-
-${C_BOLD}Ralph Wiggum (Autonomous Development):${C_RESET}
-
-${C_YELLOW}1.${C_RESET} Initialize:  ${C_BOLD}ralph-init${C_RESET}
-${C_YELLOW}2.${C_RESET} Edit spec:   ${C_BOLD}ralph-spec${C_RESET}   (or hx SPEC.md)
-${C_YELLOW}3.${C_RESET} Plan:        ${C_BOLD}cs${C_RESET}           (bidirectional planning with Claude)
-${C_YELLOW}4.${C_RESET} Edit plan:   ${C_BOLD}ralph-plan${C_RESET}   (or hx PLAN.md)
-${C_YELLOW}5.${C_RESET} Commit:      ${C_BOLD}git add -A && git commit -m "checkpoint"${C_RESET}
-${C_YELLOW}6.${C_RESET} Run loop:    ${C_BOLD}ralph -n 10${C_RESET}  (10 iterations)
-
-${C_BOLD}Key Principle:${C_RESET} Fresh context each iteration. The spec is truth.
-
-${C_BOLD}IntelliShell:${C_RESET}
-  ${C_BOLD}Ctrl+Space${C_RESET}   Search saved commands
-  ${C_BOLD}Ctrl+B${C_RESET}       Bookmark current command
-
-${C_BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${C_RESET}
-EOF
+# First time users or users needing setup get the full guided experience
+if [ ! -f "$FIRST_TIME" ] || [ "$NEEDS_SETUP" = true ]; then
+    # Run guided setup (handles auth, git config, deps, and menu)
+    /usr/local/bin/guided-setup.sh
     touch "$FIRST_TIME"
 else
-    # Returning user - brief message
-    echo -e "${C_BOLD}Quick Start:${C_RESET}"
-    echo -e "  ${C_BOLD}cs${C_RESET}           Start Claude"
-    echo -e "  ${C_BOLD}ralph -n 10${C_RESET}  Run autonomous loop (10 iterations)"
-    echo -e "  ${C_BOLD}ralph-init${C_RESET}   Set up Ralph for a project"
-    echo -e "  ${C_BOLD}view-logs${C_RESET}    View Claude logs"
-fi
+    # Returning user with everything configured - show quick menu
+    echo -e "${C_BOLD}Quick Start${C_RESET} ${C_DIM}(auto-skip in 3s, press 's' to skip now)${C_RESET}"
+    echo ""
+    echo -e "  ${C_BOLD}[1]${C_RESET} cs - Start Claude"
+    echo -e "  ${C_BOLD}[2]${C_RESET} ralph -n 10 - Run loop"
+    echo -e "  ${C_BOLD}[m]${C_RESET} Full menu"
+    echo -e "  ${C_BOLD}[s]${C_RESET} Shell"
+    echo ""
 
-echo ""
+    # Read with timeout
+    read -t 3 -p "Choice: " choice || choice="timeout"
+
+    case "$choice" in
+        1)
+            echo ""
+            exec cs
+            ;;
+        2)
+            echo ""
+            exec ralph -n 10
+            ;;
+        m|M)
+            /usr/local/bin/guided-setup.sh
+            ;;
+        s|S|""|timeout)
+            echo ""
+            ;;
+        *)
+            echo ""
+            ;;
+    esac
+fi

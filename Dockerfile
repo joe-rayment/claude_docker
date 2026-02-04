@@ -92,6 +92,8 @@ COPY --chown=agent:agent scripts/container-welcome.sh /usr/local/bin/container-w
 COPY --chown=agent:agent scripts/setup-ralph.sh /usr/local/bin/setup-ralph
 COPY --chown=agent:agent scripts/ralph.sh /usr/local/bin/ralph.sh
 COPY --chown=agent:agent scripts/view-logs.sh /usr/local/bin/view-logs
+COPY --chown=agent:agent scripts/detect-dependencies.sh /usr/local/bin/detect-dependencies.sh
+COPY --chown=agent:agent scripts/guided-setup.sh /usr/local/bin/guided-setup.sh
 
 # Make scripts executable
 USER root
@@ -99,7 +101,9 @@ RUN chmod +x /usr/local/bin/entrypoint.sh \
              /usr/local/bin/container-welcome \
              /usr/local/bin/setup-ralph \
              /usr/local/bin/ralph.sh \
-             /usr/local/bin/view-logs
+             /usr/local/bin/view-logs \
+             /usr/local/bin/detect-dependencies.sh \
+             /usr/local/bin/guided-setup.sh
 USER agent
 
 # Set default shell to zsh
