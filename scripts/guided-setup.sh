@@ -20,8 +20,12 @@ is_git_configured() {
     git config user.name &>/dev/null && git config user.email &>/dev/null
 }
 
+is_github_authenticated() {
+    gh auth status &>/dev/null
+}
+
 is_ralph_ready() {
-    [ -f "/home/agent/.ralph-ready" ]
+    [ -f "/workspace/.ralph/PROMPT.md" ]
 }
 
 get_dependency_count() {
@@ -70,6 +74,25 @@ prompt_git_config() {
     fi
 }
 
+# Prompt for GitHub authentication
+prompt_github_auth() {
+    echo ""
+    echo -e "${C_BOLD}GitHub Authentication${C_RESET}"
+    echo -e "${C_DIM}This enables pushing, PRs, and issue imports.${C_RESET}"
+    echo ""
+    read -p "Authenticate with GitHub? (y/n): " choice
+
+    if [ "$choice" = "y" ] || [ "$choice" = "Y" ]; then
+        gh auth login
+        echo ""
+        if is_github_authenticated; then
+            echo -e "${C_GREEN}✓${C_RESET} GitHub authenticated successfully"
+        else
+            echo -e "${C_YELLOW}⚠${C_RESET} Authentication may have failed. Try 'gh auth login' manually."
+        fi
+    fi
+}
+
 # Prompt for dependency installation
 prompt_install_deps() {
     local dep_count=$(get_dependency_count)
@@ -103,11 +126,12 @@ show_main_menu() {
     echo -e "${C_BOLD}${C_BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${C_RESET}"
     echo ""
     echo -e "  ${C_BOLD}[1]${C_RESET} Start Claude (interactive)"
-    echo -e "  ${C_BOLD}[2]${C_RESET} Initialize Ralph Wiggum"
-    echo -e "  ${C_BOLD}[3]${C_RESET} Edit project spec (SPEC.md)"
-    echo -e "  ${C_BOLD}[4]${C_RESET} Edit project plan (PLAN.md)"
-    echo -e "  ${C_BOLD}[5]${C_RESET} Run Ralph loop"
-    echo -e "  ${C_BOLD}[6]${C_RESET} View logs"
+    echo -e "  ${C_BOLD}[2]${C_RESET} Initialize Ralph (ralph-enable)"
+    echo -e "  ${C_BOLD}[3]${C_RESET} Edit project spec (.ralph/PROMPT.md)"
+    echo -e "  ${C_BOLD}[4]${C_RESET} Edit task list (.ralph/fix_plan.md)"
+    echo -e "  ${C_BOLD}[5]${C_RESET} Run Ralph loop (with auto-commit)"
+    echo -e "  ${C_BOLD}[6]${C_RESET} Run Ralph with monitor (tmux)"
+    echo -e "  ${C_BOLD}[7]${C_RESET} View logs"
     echo -e "  ${C_BOLD}[s]${C_RESET} Skip to shell"
     echo ""
     read -p "Choice: " choice
@@ -119,34 +143,41 @@ show_main_menu() {
             ;;
         2)
             echo ""
-            ralph-init
+            ralph-enable
             show_main_menu
             ;;
         3)
             echo ""
-            if [ -f "/workspace/SPEC.md" ]; then
-                hx /workspace/SPEC.md
+            if [ -f "/workspace/.ralph/PROMPT.md" ]; then
+                hx /workspace/.ralph/PROMPT.md
             else
-                echo -e "${C_YELLOW}⚠${C_RESET} SPEC.md not found. Run 'ralph-init' first or create it manually."
+                echo -e "${C_YELLOW}⚠${C_RESET} .ralph/PROMPT.md not found. Run 'ralph-enable' first."
             fi
             show_main_menu
             ;;
         4)
             echo ""
-            if [ -f "/workspace/PLAN.md" ]; then
-                hx /workspace/PLAN.md
+            if [ -f "/workspace/.ralph/fix_plan.md" ]; then
+                hx /workspace/.ralph/fix_plan.md
             else
-                echo -e "${C_YELLOW}⚠${C_RESET} PLAN.md not found. Run 'ralph-init' first or create it manually."
+                echo -e "${C_YELLOW}⚠${C_RESET} .ralph/fix_plan.md not found. Run 'ralph-enable' first."
             fi
             show_main_menu
             ;;
         5)
             echo ""
-            read -p "Number of iterations (default 10): " iterations
-            iterations=${iterations:-10}
-            exec ralph -n "$iterations"
+            exec /usr/local/bin/ralph-wrapper.sh
             ;;
         6)
+            echo ""
+            if command -v tmux &>/dev/null; then
+                exec ralph --monitor
+            else
+                echo -e "${C_RED}tmux not available${C_RESET}"
+                show_main_menu
+            fi
+            ;;
+        7)
             echo ""
             view-logs
             show_main_menu
@@ -168,7 +199,7 @@ show_quick_menu() {
     echo -e "${C_BOLD}Quick Start${C_RESET} ${C_DIM}(auto-skip in 3s, press 's' to skip now)${C_RESET}"
     echo ""
     echo -e "  ${C_BOLD}[1]${C_RESET} cs - Start Claude"
-    echo -e "  ${C_BOLD}[2]${C_RESET} ralph -n 10 - Run loop"
+    echo -e "  ${C_BOLD}[2]${C_RESET} ralph-run - Run loop with git"
     echo -e "  ${C_BOLD}[m]${C_RESET} Full menu"
     echo -e "  ${C_BOLD}[s]${C_RESET} Shell"
     echo ""
@@ -183,7 +214,7 @@ show_quick_menu() {
             ;;
         2)
             echo ""
-            exec ralph -n 10
+            exec /usr/local/bin/ralph-wrapper.sh
             ;;
         m|M)
             show_main_menu
@@ -212,6 +243,12 @@ main() {
     if ! is_git_configured; then
         needs_setup=true
         prompt_git_config
+    fi
+
+    # GitHub authentication (after git config)
+    if ! is_github_authenticated; then
+        needs_setup=true
+        prompt_github_auth
     fi
 
     # Always offer dependency installation if detected

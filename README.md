@@ -42,6 +42,7 @@ The bootstrap script will show you the exact command.
 The container will guide you through:
 - Claude authentication (opens browser)
 - Git configuration
+- GitHub authentication (for pushing, PRs, issues)
 - Dependency installation (auto-detected)
 - Getting started menu
 
@@ -101,51 +102,76 @@ Container naming convention:
 
 ---
 
-## Ralph Wiggum - Autonomous Development
+## Ralph - Autonomous Development
 
-Ralph is a simple bash loop that runs Claude autonomously with fresh context each iteration.
+Ralph ([frankbria/ralph-claude-code](https://github.com/frankbria/ralph-claude-code)) provides intelligent autonomous development with built-in safety features.
 
-### Why This Approach?
+### Features
 
-- **Fresh context each iteration** - No context degradation
-- **Spec is the source of truth** - Not conversation history
-- **Simple** - It's just a bash while loop
+- **Intelligent exit detection** - Dual-condition completion (indicators + EXIT_SIGNAL)
+- **Rate limiting** - Configurable calls/hour (default 100)
+- **Circuit breaker** - Detects stuck loops (3x no progress = exit)
+- **Session continuity** - 24-hour sessions with `--resume`
+- **Git automation** - Auto-commits before and after loop runs
+
+### Project Structure
+
+Ralph uses a `.ralph/` folder to organize project files:
+
+```
+your-project/
+├── .ralph/
+│   ├── PROMPT.md       # Project specification
+│   ├── fix_plan.md     # Task list
+│   ├── AGENT.md        # Agent instructions
+│   └── ...
+├── .ralphrc            # Configuration
+└── ...
+```
 
 ### Workflow
 
 ```bash
-# 1. Initialize Ralph
-ralph-init
+# 1. Initialize Ralph (interactive wizard)
+ralph-enable
 
-# 2. Edit your spec (what you're building)
+# 2. Edit your spec
 ralph-spec
 
 # 3. Plan with Claude interactively
 cs
-# Ask questions, let Claude ask questions, refine the spec
 
-# 4. Edit your plan (break into tasks)
+# 4. Edit your task list
 ralph-plan
 
-# 5. Commit (safety checkpoint!)
-git add -A && git commit -m "Before Ralph"
+# 5. Run with git automation (auto-commits!)
+ralph-run
 
-# 6. Run the loop
-ralph -n 10
-
-# 7. Review
-git diff
+# 6. Review
+git log --oneline -5
 ```
 
 ### Commands
 
 | Command | Description |
 |---------|-------------|
-| `ralph -n 10` | Run 10 iterations |
-| `ralph --help` | Show options |
-| `ralph-init` | Initialize for a project |
-| `ralph-spec` | Edit SPEC.md |
-| `ralph-plan` | Edit PLAN.md |
+| `ralph` | Run the autonomous loop |
+| `ralph --resume` | Resume previous session |
+| `ralph --monitor` | Run with tmux dashboard |
+| `ralph-run` | Run with git automation (auto-commits) |
+| `ralph-enable` | Interactive setup wizard |
+| `ralph-init` | Alias for ralph-enable |
+| `ralph-spec` | Edit .ralph/PROMPT.md |
+| `ralph-plan` | Edit .ralph/fix_plan.md |
+
+### Git Automation
+
+The `ralph-run` command wraps ralph with automatic git commits:
+
+1. **Before loop**: Creates a checkpoint commit if there are uncommitted changes
+2. **After loop**: Generates an AI commit message and commits automatically
+
+This ensures you always have a safety checkpoint and clean commits for each Ralph session.
 
 ---
 

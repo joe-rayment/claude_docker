@@ -14,7 +14,6 @@ C_RESET="\e[0m"
 
 # State files
 FIRST_TIME="/home/agent/.first-login"
-RALPH_READY="/home/agent/.ralph-ready"
 
 # Only for interactive shells
 if [ ! -t 0 ]; then
@@ -52,9 +51,19 @@ else
     GIT_OK=false
 fi
 
-# Ralph status
-if [ -f "$RALPH_READY" ]; then
-    echo -e "  ${C_GREEN}[✓]${C_RESET} Ralph: Ready"
+# GitHub authentication
+if gh auth status &>/dev/null; then
+    GH_USER=$(gh api user --jq '.login' 2>/dev/null || echo "authenticated")
+    echo -e "  ${C_GREEN}[✓]${C_RESET} GitHub: Authenticated ($GH_USER)"
+    GITHUB_OK=true
+else
+    echo -e "  ${C_YELLOW}[!]${C_RESET} GitHub: Not authenticated"
+    GITHUB_OK=false
+fi
+
+# Ralph status (check for .ralph/PROMPT.md)
+if [ -f "/workspace/.ralph/PROMPT.md" ]; then
+    echo -e "  ${C_GREEN}[✓]${C_RESET} Ralph: Initialized"
     RALPH_OK=true
 else
     echo -e "  ${C_DIM}[ ]${C_RESET} Ralph: Not initialized ${C_DIM}(optional)${C_RESET}"
@@ -94,7 +103,7 @@ else
     echo -e "${C_BOLD}Quick Start${C_RESET} ${C_DIM}(auto-skip in 3s, press 's' to skip now)${C_RESET}"
     echo ""
     echo -e "  ${C_BOLD}[1]${C_RESET} cs - Start Claude"
-    echo -e "  ${C_BOLD}[2]${C_RESET} ralph -n 10 - Run loop"
+    echo -e "  ${C_BOLD}[2]${C_RESET} ralph-run - Run loop with git"
     echo -e "  ${C_BOLD}[m]${C_RESET} Full menu"
     echo -e "  ${C_BOLD}[s]${C_RESET} Shell"
     echo ""
@@ -109,7 +118,7 @@ else
             ;;
         2)
             echo ""
-            exec ralph -n 10
+            exec /usr/local/bin/ralph-wrapper.sh
             ;;
         m|M)
             /usr/local/bin/guided-setup.sh

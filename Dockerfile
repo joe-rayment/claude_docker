@@ -22,6 +22,7 @@ RUN apt-get update && apt-get install -y \
     python3-dev \
     jq \
     figlet \
+    tmux \
     && locale-gen en_US.UTF-8 \
     && rm -rf /var/lib/apt/lists/*
 
@@ -74,6 +75,13 @@ USER agent
 # Install IntelliShell for the agent user
 RUN curl -sSf https://raw.githubusercontent.com/lasantosr/intelli-shell/main/install.sh | sh
 
+# Install frankbria/ralph-claude-code
+RUN git clone https://github.com/frankbria/ralph-claude-code.git /tmp/ralph-claude-code \
+    && cd /tmp/ralph-claude-code \
+    && chmod +x install.sh \
+    && ./install.sh \
+    && rm -rf /tmp/ralph-claude-code
+
 # Create config directories
 RUN mkdir -p /home/agent/.config/helix /home/agent/.config/intelli-shell
 
@@ -83,14 +91,11 @@ COPY --chown=agent:agent config/helix-config.toml /home/agent/.config/helix/conf
 COPY --chown=agent:agent config/intellishell-config.toml /home/agent/.config/intelli-shell/config.toml
 COPY --chown=agent:agent config/intellishell-defaults.txt /home/agent/.config/intelli-shell/defaults.txt
 COPY --chown=agent:agent config/claude-settings.json /home/agent/.config/claude-settings-template.json
-COPY --chown=agent:agent config/SPEC.md.template /home/agent/.config/
-COPY --chown=agent:agent config/PLAN.md.template /home/agent/.config/
 COPY --chown=agent:agent scripts/entrypoint.sh /usr/local/bin/entrypoint.sh
 
 # Copy helper scripts
 COPY --chown=agent:agent scripts/container-welcome.sh /usr/local/bin/container-welcome
-COPY --chown=agent:agent scripts/setup-ralph.sh /usr/local/bin/setup-ralph
-COPY --chown=agent:agent scripts/ralph.sh /usr/local/bin/ralph.sh
+COPY --chown=agent:agent scripts/ralph-wrapper.sh /usr/local/bin/ralph-wrapper.sh
 COPY --chown=agent:agent scripts/view-logs.sh /usr/local/bin/view-logs
 COPY --chown=agent:agent scripts/detect-dependencies.sh /usr/local/bin/detect-dependencies.sh
 COPY --chown=agent:agent scripts/guided-setup.sh /usr/local/bin/guided-setup.sh
@@ -99,8 +104,7 @@ COPY --chown=agent:agent scripts/guided-setup.sh /usr/local/bin/guided-setup.sh
 USER root
 RUN chmod +x /usr/local/bin/entrypoint.sh \
              /usr/local/bin/container-welcome \
-             /usr/local/bin/setup-ralph \
-             /usr/local/bin/ralph.sh \
+             /usr/local/bin/ralph-wrapper.sh \
              /usr/local/bin/view-logs \
              /usr/local/bin/detect-dependencies.sh \
              /usr/local/bin/guided-setup.sh
