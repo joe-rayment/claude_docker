@@ -20,6 +20,11 @@ if [ ! -t 0 ]; then
     return 2>/dev/null || exit 0
 fi
 
+# Skip welcome in tmux panes (e.g., ralph --monitor)
+if [ -n "$TMUX" ]; then
+    return 2>/dev/null || exit 0
+fi
+
 # Header
 if command -v figlet &> /dev/null; then
     echo -e "${C_BLUE}$(figlet -f slant 'Claude Dev' 2>/dev/null || echo 'Claude Development Container')${C_RESET}"
