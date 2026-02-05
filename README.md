@@ -71,7 +71,7 @@ curl -fsSL https://raw.githubusercontent.com/joe-rayment/claude_docker/main/boot
 - **Terminal**: Zsh, Oh-My-Zsh, Pure prompt, IntelliShell
 - **Editor**: Helix
 - **Dev Tools**: Git, GitHub CLI, Python 3 (numpy, pandas, matplotlib, scikit-learn, jupyter), Node.js, Go
-- **Ralph Wiggum**: Simple bash loop for autonomous development
+- **Ralph**: Autonomous development loop ([frankbria/ralph-claude-code](https://github.com/frankbria/ralph-claude-code))
 - **Persistent**: Auth, history, and configs saved between sessions
 - **Auto-detection**: Recognizes package.json, requirements.txt, go.mod, Cargo.toml, Gemfile
 

@@ -4,8 +4,8 @@
   },
   "permissions": {
     "allow": [
-      "Bash(**/ralph-wiggum/**)",
-      "Bash(setup-ralph)",
+      "Bash(ralph)",
+      "Bash(ralph-*)",
       "Bash(view-logs)",
       "Read(~/.claude/debug/**)",
       "Write(/workspace/logs/**)"

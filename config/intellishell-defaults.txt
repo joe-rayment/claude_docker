@@ -7,8 +7,8 @@ claude --dangerously-skip-permissions --debug
 # Start Claude Code normally #claude
 claude
 
-# Start Ralph Wiggum loop (ALWAYS set max iterations!) #ralph #claude
-claude --dangerously-skip-permissions -c "/ralph-loop \"{{task}}\" --max-iterations {{iterations|10|20|50}}"
+# Run Ralph autonomous loop with git automation #ralph #claude
+ralph-run
 
 # View latest debug log #claude #logs
 cat ~/.claude/debug/latest
