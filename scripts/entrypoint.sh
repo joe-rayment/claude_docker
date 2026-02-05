@@ -15,11 +15,9 @@ fi
 mkdir -p /workspace/logs
 mkdir -p /workspace/specs
 
-# Copy Claude settings if not exists
-if [ ! -f "/home/agent/.claude/settings.json" ]; then
-    mkdir -p /home/agent/.claude
-    cp /home/agent/.config/claude-settings-template.json /home/agent/.claude/settings.json 2>/dev/null || true
-fi
+# Copy Claude settings template (always overwrite to propagate fixes)
+mkdir -p /home/agent/.claude
+cp /home/agent/.config/claude-settings-template.json /home/agent/.claude/settings.json 2>/dev/null || true
 
 # Change to workspace directory
 cd /workspace
