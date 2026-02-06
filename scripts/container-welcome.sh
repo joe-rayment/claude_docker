@@ -29,6 +29,23 @@ fi
 # The session marker is in /tmp which is cleared on container restart
 SESSION_MARKER="/tmp/.claude-dev-welcome-shown"
 if [ -f "$SESSION_MARKER" ]; then
+    # If Claude isn't authenticated, trigger auth — nothing else works without it
+    if [ ! -f "/home/agent/.claude/credentials" ]; then
+        echo ""
+        echo -e "${C_YELLOW}⚠${C_RESET}  Claude is not authenticated — starting login..."
+        echo ""
+        claude auth login
+        echo ""
+        if [ -f "/home/agent/.claude/credentials" ]; then
+            echo -e "${C_GREEN}✓${C_RESET} Claude authenticated"
+        else
+            echo -e "${C_YELLOW}⚠${C_RESET}  Not authenticated. Run ${C_BOLD}claude auth login${C_RESET} to connect."
+        fi
+    fi
+    # Returning session — show compact command hint
+    echo ""
+    echo -e "${C_DIM}Commands: ${C_RESET}${C_BOLD}menu${C_RESET}${C_DIM} (setup)  ${C_RESET}${C_BOLD}cs${C_RESET}${C_DIM} (claude)  ${C_RESET}${C_BOLD}ralph-run${C_RESET}${C_DIM} (ralph loop)${C_RESET}"
+    echo ""
     return 2>/dev/null || exit 0
 fi
 touch "$SESSION_MARKER"

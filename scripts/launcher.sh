@@ -205,6 +205,12 @@ cmd_update() {
     chmod +x "$SCRIPT_DIR/claude-dev"
     echo -e "${C_GREEN}✓${C_RESET} Launcher updated"
 
+    # Stop old container so next ./claude-dev creates fresh one from new image
+    if is_running || container_exists; then
+        echo -e "${C_YELLOW}→${C_RESET} Stopping old container..."
+        dc down 2>/dev/null || true
+    fi
+
     echo ""
     echo -e "\033[2mNote: Auth, git config, and history are preserved in the volume.\033[0m"
     echo -e "${C_GREEN}Update complete.${C_RESET} Run ${C_BOLD}./claude-dev${C_RESET} to start."
