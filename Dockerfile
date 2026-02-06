@@ -121,6 +121,7 @@ COPY --chown=agent:agent scripts/view-logs.sh /usr/local/bin/view-logs
 COPY --chown=agent:agent scripts/detect-dependencies.sh /usr/local/bin/detect-dependencies.sh
 COPY --chown=agent:agent scripts/guided-setup.sh /usr/local/bin/guided-setup.sh
 COPY --chown=agent:agent scripts/ralph-watchdog.sh /usr/local/bin/ralph-watchdog
+COPY --chown=agent:agent scripts/ralph-tail-logs.sh /usr/local/bin/ralph-tail-logs
 COPY --chown=agent:agent scripts/ralph-tmux.sh /usr/local/bin/ralph-tmux
 
 # Make scripts executable
@@ -132,6 +133,7 @@ RUN chmod +x /usr/local/bin/entrypoint.sh \
              /usr/local/bin/detect-dependencies.sh \
              /usr/local/bin/guided-setup.sh \
              /usr/local/bin/ralph-watchdog \
+             /usr/local/bin/ralph-tail-logs \
              /usr/local/bin/ralph-tmux
 USER agent
 

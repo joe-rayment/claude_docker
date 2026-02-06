@@ -36,40 +36,6 @@ else
     RALPH_CMD="ralph $RALPH_ARGS"
 fi
 
-# Determine which log to tail (try ralph logs first, fall back to claude debug)
-# The tail command tries multiple sources in priority order
-TAIL_CMD='bash -c '"'"'
-    echo "Waiting for output logs..."
-    # Wait for a log file to appear
-    for i in $(seq 1 60); do
-        if [ -f /workspace/.ralph/live.log ]; then
-            echo "Tailing: .ralph/live.log"
-            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-            tail -f /workspace/.ralph/live.log
-            break
-        fi
-        LOG=$(ls -t /workspace/.ralph/logs/claude_output_*.log 2>/dev/null | head -1)
-        if [ -n "$LOG" ]; then
-            echo "Tailing: $LOG"
-            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-            tail -f "$LOG"
-            break
-        fi
-        if [ -f "$HOME/.claude/debug/latest" ] && [ -s "$HOME/.claude/debug/latest" ]; then
-            echo "Tailing: ~/.claude/debug/latest"
-            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-            tail -f "$HOME/.claude/debug/latest"
-            break
-        fi
-        sleep 2
-    done
-    if [ $i -eq 60 ]; then
-        echo "No log files found after 2 minutes."
-        echo "Press any key to exit."
-        read -n 1
-    fi
-'"'"''
-
 echo -e "${C_BOLD}${C_BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${C_RESET}"
 echo -e "${C_BOLD}  Ralph TMux Monitor${C_RESET}"
 echo -e "${C_BOLD}${C_BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${C_RESET}"
@@ -89,12 +55,11 @@ tmux new-session -d -s "$SESSION_NAME" -c /workspace
 tmux send-keys -t "$SESSION_NAME:0.0" "$RALPH_CMD" Enter
 
 # Split right for live output tail (40% width)
-tmux split-window -h -p 40 -t "$SESSION_NAME:0.0" -c /workspace
-tmux send-keys -t "$SESSION_NAME:0.1" "$TAIL_CMD" Enter
+# Run directly in split-window to avoid shell startup race and quoting issues
+tmux split-window -h -p 40 -t "$SESSION_NAME:0.0" -c /workspace "ralph-tail-logs"
 
 # Split bottom for watchdog (30% height, spans full width)
-tmux split-window -v -p 30 -t "$SESSION_NAME:0.0" -c /workspace
-tmux send-keys -t "$SESSION_NAME:0.2" "ralph-watchdog" Enter
+tmux split-window -v -p 30 -t "$SESSION_NAME:0.0" -c /workspace "ralph-watchdog"
 
 # Focus on the ralph loop pane
 tmux select-pane -t "$SESSION_NAME:0.0"
