@@ -28,7 +28,7 @@ COMPOSE_FILE="$CLAUDE_DEV_DIR/docker-compose.yml"
 if [ ! -d "$CLAUDE_DEV_DIR" ]; then
     echo -e "${C_RED}Error: .claude-dev/ not found at $CLAUDE_DEV_DIR${C_RESET}"
     echo "Run the bootstrap script first:"
-    echo "  curl -fsSL https://raw.githubusercontent.com/joe-rayment/claude_docker/main/bootstrap.sh | bash"
+    echo "  gh api repos/joe-rayment/claude_docker/contents/bootstrap.sh -H 'Accept: application/vnd.github.raw' | bash"
     exit 1
 fi
 

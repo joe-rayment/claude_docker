@@ -10,15 +10,17 @@ A portable, pre-configured development environment for Claude Code. Apply it to 
 
 ### Apply to a project
 
+Requires [GitHub CLI](https://cli.github.com/) (`gh`) authenticated with access to this repo.
+
 ```bash
 cd /path/to/your/project
-curl -fsSL https://raw.githubusercontent.com/joe-rayment/claude_docker/main/bootstrap.sh | bash
+gh api repos/joe-rayment/claude_docker/contents/bootstrap.sh -H "Accept: application/vnd.github.raw" | bash
 ```
 
 Or pass the path directly:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/joe-rayment/claude_docker/main/bootstrap.sh | bash -s -- /path/to/project
+gh api repos/joe-rayment/claude_docker/contents/bootstrap.sh -H "Accept: application/vnd.github.raw" | bash -s -- /path/to/project
 ```
 
 This clones the environment into `.claude-dev/`, builds the image, and installs a `./claude-dev` launcher in your project root. Both are auto-added to `.gitignore`.
