@@ -107,6 +107,7 @@ COPY config/.zshrc /etc/claude-dev/configs/.zshrc
 COPY config/helix-config.toml /etc/claude-dev/configs/helix-config.toml
 COPY config/intellishell-config.toml /etc/claude-dev/configs/intellishell-config.toml
 COPY config/intellishell-defaults.txt /etc/claude-dev/configs/intellishell-defaults.txt
+COPY config/claude-settings.json /etc/claude-dev/configs/claude-settings.json
 USER agent
 
 COPY --chown=agent:agent scripts/entrypoint.sh /usr/local/bin/entrypoint.sh
