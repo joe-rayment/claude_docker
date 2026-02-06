@@ -213,7 +213,11 @@ cmd_update() {
 
     echo ""
     echo -e "\033[2mNote: Auth, git config, and history are preserved in the volume.\033[0m"
-    echo -e "${C_GREEN}Update complete.${C_RESET} Run ${C_BOLD}./claude-dev${C_RESET} to start."
+    echo -e "${C_GREEN}✓ Update complete${C_RESET}"
+
+    # Start fresh container and exec in
+    start_container
+    exec_into
 }
 
 cmd_rebuild() {
