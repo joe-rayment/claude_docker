@@ -32,13 +32,11 @@ if [ -z "$(ls -A /workspace 2>/dev/null)" ]; then
     echo ""
 fi
 
-# Create workspace structure
-mkdir -p /workspace/logs
-mkdir -p /workspace/specs
-
-# Copy Claude settings template (always overwrite to propagate fixes)
+# Copy Claude settings template only if not already present (preserve user customizations)
 mkdir -p /home/agent/.claude
-cp /home/agent/.config/claude-settings-template.json /home/agent/.claude/settings.json 2>/dev/null || true
+if [ ! -f /home/agent/.claude/settings.json ]; then
+    cp /home/agent/.config/claude-settings-template.json /home/agent/.claude/settings.json 2>/dev/null || true
+fi
 
 # Change to workspace directory
 cd /workspace

@@ -69,6 +69,11 @@ RUN pip3 install --no-cache-dir --break-system-packages \
     selenium \
     urllib3
 
+# Install common package managers so dependency detection can actually install
+RUN pip3 install --no-cache-dir --break-system-packages poetry uv \
+    && npm install -g pnpm yarn \
+    && gem install bundler 2>/dev/null || true
+
 # Switch back to agent user (default user in Claude sandbox)
 USER agent
 

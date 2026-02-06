@@ -33,6 +33,18 @@ has_uncommitted_changes() {
     ! git diff-index --quiet HEAD -- 2>/dev/null || [ -n "$(git ls-files --others --exclude-standard)" ]
 }
 
+# Stage tracked changes and new files, respecting .gitignore
+# Excludes common secret/sensitive file patterns
+stage_changes() {
+    # Stage modified tracked files
+    git add -u
+
+    # Stage new untracked files (respects .gitignore), but exclude secrets
+    git ls-files --others --exclude-standard \
+        | grep -v -E '(\.env$|\.env\.|credentials|\.secret|\.key$|\.pem$|\.p12$|\.pfx$|\.jks$|id_rsa|id_ed25519)' \
+        | xargs -r git add --
+}
+
 # Create a checkpoint commit before running ralph
 create_checkpoint() {
     echo -e "${C_BLUE}Checking git status...${C_RESET}"
@@ -51,7 +63,7 @@ create_checkpoint() {
     echo ""
     echo -e "${C_BLUE}Creating safety checkpoint...${C_RESET}"
 
-    git add -A
+    stage_changes
     git commit -m "checkpoint: before ralph loop"
 
     if [ $? -eq 0 ]; then
@@ -100,13 +112,11 @@ Diff stats:
 $diff_stat"
 
     # Use Claude to generate commit message
-    local commit_msg=$(echo "$changes_summary" | claude -p "Generate a concise git commit message for these changes.
+    local commit_msg
+    if ! commit_msg=$(echo "$changes_summary" | claude -p "Generate a concise git commit message for these changes.
 Start with 'ralph:' prefix. Be specific about what was implemented.
 Keep it under 72 characters for the first line.
-Only output the commit message, nothing else." --output-format text 2>/dev/null)
-
-    # Fallback if Claude fails
-    if [ -z "$commit_msg" ] || [ $? -ne 0 ]; then
+Only output the commit message, nothing else." --output-format text 2>/dev/null) || [ -z "$commit_msg" ]; then
         commit_msg="ralph: automated changes from ralph loop"
     fi
 
@@ -115,7 +125,7 @@ Only output the commit message, nothing else." --output-format text 2>/dev/null)
     echo ""
     echo -e "${C_BLUE}Committing automatically...${C_RESET}"
 
-    git add -A
+    stage_changes
     git commit -m "$commit_msg"
 
     if [ $? -eq 0 ]; then

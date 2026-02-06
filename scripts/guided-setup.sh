@@ -109,9 +109,16 @@ prompt_install_deps() {
 
     if [ "$choice" = "y" ] || [ "$choice" = "Y" ]; then
         while IFS= read -r cmd; do
+            # Extract the package manager (first word of the command)
+            local mgr="${cmd%% *}"
+            if ! command -v "$mgr" &>/dev/null; then
+                echo ""
+                echo -e "${C_RED}✗${C_RESET} Skipping: $cmd (${mgr} not found)"
+                continue
+            fi
             echo ""
             echo -e "${C_YELLOW}→${C_RESET} Running: $cmd"
-            eval "$cmd"
+            (cd /workspace && $cmd)
         done < <(/usr/local/bin/detect-dependencies.sh --commands)
         echo ""
         echo -e "${C_GREEN}✓${C_RESET} Dependencies installed"
