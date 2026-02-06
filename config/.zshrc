@@ -44,6 +44,7 @@ alias vi='hx'
 alias cs='claude --dangerously-skip-permissions'  # Quick start
 alias csd='claude --dangerously-skip-permissions --debug'  # With debug logging
 alias cn='claude'  # Normal start
+alias menu='/usr/local/bin/guided-setup.sh'  # Setup menu (auth, git, deps, Ralph)
 
 # Log viewing shortcuts
 alias clogs='view-logs'  # View Claude logs
