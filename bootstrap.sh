@@ -111,15 +111,11 @@ sed -e "s|\${CONTAINER_NAME}|${CONTAINER_NAME}|g" \
 
 echo -e "${C_GREEN}✓${C_RESET} Generated docker-compose.yml"
 
-# Check if image exists
-if ! docker image inspect "$IMAGE_TAG" &> /dev/null; then
-    echo ""
-    echo -e "${C_YELLOW}→${C_RESET} Building container (first time, this may take a few minutes)..."
-    docker compose build --quiet
-    echo -e "${C_GREEN}✓${C_RESET} Container built"
-else
-    echo -e "${C_GREEN}✓${C_RESET} Using existing image"
-fi
+# Always build — Docker layer caching makes this fast when nothing changed
+echo ""
+echo -e "${C_YELLOW}→${C_RESET} Building container..."
+docker compose build --quiet
+echo -e "${C_GREEN}✓${C_RESET} Container built"
 
 # Record build SHA for auto-rebuild detection
 git rev-parse HEAD > .last-build-sha 2>/dev/null || true

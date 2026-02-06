@@ -8,7 +8,7 @@ A portable, pre-configured development environment for Claude Code. Apply it to 
 
 **Prerequisite:** [Docker Desktop](https://www.docker.com/products/docker-desktop/) installed and running.
 
-### Apply to a project
+### First-time setup (or pulling updates)
 
 Requires [GitHub CLI](https://cli.github.com/) (`gh`) authenticated with access to this repo.
 
@@ -23,15 +23,15 @@ Or pass the path directly:
 gh api repos/joe-rayment/claude_docker/contents/bootstrap.sh -H "Accept: application/vnd.github.raw" | bash -s -- /path/to/project
 ```
 
-This clones the environment into `.claude-dev/`, builds the image, and installs a `./claude-dev` launcher in your project root. Both are auto-added to `.gitignore`.
+This clones (or pulls) the environment into `.claude-dev/`, builds the image, and installs a `./claude-dev` launcher in your project root. Both are auto-added to `.gitignore`. Re-running it always pulls the latest code and rebuilds, so use it to pick up upstream changes.
 
-### Enter the container
+### Daily use
 
 ```bash
 ./claude-dev
 ```
 
-That's it. Builds if needed, starts if stopped, execs in. First time inside, the container walks you through Claude auth, git config, and dependency detection.
+That's it. Builds only if needed (image missing or local repo changed), starts if stopped, execs in. First time inside, the container walks you through Claude auth, git config, and dependency detection.
 
 ---
 
