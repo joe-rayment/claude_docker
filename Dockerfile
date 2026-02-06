@@ -110,6 +110,7 @@ COPY --chown=agent:agent scripts/ralph-wrapper.sh /usr/local/bin/ralph-wrapper.s
 COPY --chown=agent:agent scripts/view-logs.sh /usr/local/bin/view-logs
 COPY --chown=agent:agent scripts/detect-dependencies.sh /usr/local/bin/detect-dependencies.sh
 COPY --chown=agent:agent scripts/guided-setup.sh /usr/local/bin/guided-setup.sh
+COPY --chown=agent:agent scripts/ralph-watchdog.sh /usr/local/bin/ralph-watchdog
 
 # Make scripts executable
 USER root
@@ -118,7 +119,8 @@ RUN chmod +x /usr/local/bin/entrypoint.sh \
              /usr/local/bin/ralph-wrapper.sh \
              /usr/local/bin/view-logs \
              /usr/local/bin/detect-dependencies.sh \
-             /usr/local/bin/guided-setup.sh
+             /usr/local/bin/guided-setup.sh \
+             /usr/local/bin/ralph-watchdog
 USER agent
 
 # Set default shell to zsh
