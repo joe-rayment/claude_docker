@@ -4,6 +4,7 @@
   },
   "permissions": {
     "allow": [
+      "Bash(*)",
       "Bash(ralph)",
       "Bash(ralph-*)",
       "Bash(view-logs)",

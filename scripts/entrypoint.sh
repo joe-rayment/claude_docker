@@ -41,14 +41,16 @@ if [ ! -f /home/agent/.claude/settings.json ]; then
     cp /home/agent/.config/claude-settings-template.json /home/agent/.claude/settings.json 2>/dev/null || true
 fi
 
-# Patch Ralph to use --dangerously-skip-permissions (container is sandboxed by Docker)
+# Patch Ralph for sandboxed Docker execution:
+# 1. Add --dangerously-skip-permissions to CLAUDE_CODE_CMD (robust pattern)
+# 2. Clear CLAUDE_ALLOWED_TOOLS so --allowedTools flag is not passed
+#    (--allowedTools overrides --dangerously-skip-permissions)
 RALPH_LOOP="/home/agent/.ralph/ralph_loop.sh"
 if [ -f "$RALPH_LOOP" ]; then
+    sed -i 's|^CLAUDE_CODE_CMD=.*|CLAUDE_CODE_CMD="env NODE_TLS_REJECT_UNAUTHORIZED=0 claude --dangerously-skip-permissions"|' "$RALPH_LOOP"
+    sed -i 's|^CLAUDE_ALLOWED_TOOLS=.*|CLAUDE_ALLOWED_TOOLS=""|' "$RALPH_LOOP"
     if ! grep -q 'dangerously-skip-permissions' "$RALPH_LOOP"; then
-        sed -i 's|CLAUDE_CODE_CMD="env NODE_TLS_REJECT_UNAUTHORIZED=0 claude"|CLAUDE_CODE_CMD="env NODE_TLS_REJECT_UNAUTHORIZED=0 claude --dangerously-skip-permissions"|' "$RALPH_LOOP"
-        if ! grep -q 'dangerously-skip-permissions' "$RALPH_LOOP"; then
-            echo -e "\033[33m⚠  WARNING: Failed to patch Ralph permissions — Claude may prompt for tool approval.\033[0m" >&2
-        fi
+        echo -e "\033[33m⚠  WARNING: Failed to patch Ralph permissions — Claude may prompt for tool approval.\033[0m" >&2
     fi
 fi
 

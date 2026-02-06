@@ -247,6 +247,15 @@ main() {
         exit 1
     fi
 
+    # Auto-reset stale circuit breaker from previous sessions
+    if [ -f ".ralph/.circuit_breaker_state" ]; then
+        cb_state=$(jq -r '.state' ".ralph/.circuit_breaker_state" 2>/dev/null)
+        if [ "$cb_state" = "OPEN" ]; then
+            echo -e "  ${C_YELLOW}!${C_RESET} Resetting stale circuit breaker from previous session"
+            ralph --reset-circuit 2>/dev/null || true
+        fi
+    fi
+
     echo ""
     echo -e "${C_BLUE}Starting Ralph autonomous loop...${C_RESET}"
     echo ""

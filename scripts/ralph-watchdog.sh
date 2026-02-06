@@ -128,7 +128,45 @@ main() {
         local claude_pid=$(pgrep -x claude 2>/dev/null | head -1)
 
         if [ -z "$claude_pid" ]; then
-            echo -e "${C_DIM}[${timestamp}]${C_RESET} ${C_YELLOW}No claude process running${C_RESET}"
+            # Check if Ralph has halted with an error
+            local ralph_status=""
+            local ralph_action=""
+            if [ -f "/workspace/.ralph/status.json" ]; then
+                ralph_status=$(jq -r '.status // ""' /workspace/.ralph/status.json 2>/dev/null)
+                ralph_action=$(jq -r '.last_action // ""' /workspace/.ralph/status.json 2>/dev/null)
+            fi
+
+            local cb_state=""
+            if [ -f "/workspace/.ralph/.circuit_breaker_state" ]; then
+                cb_state=$(jq -r '.state // ""' /workspace/.ralph/.circuit_breaker_state 2>/dev/null)
+            fi
+
+            if [ "$ralph_status" = "halted" ] || [ "$cb_state" = "OPEN" ]; then
+                echo -e "${C_RED}${C_BOLD}[${timestamp}] ERROR: Ralph has stopped${C_RESET}"
+                if [ "$ralph_action" = "permission_denied" ]; then
+                    echo -e "  ${C_RED}! Permission denied — Claude was blocked from running commands${C_RESET}"
+                    echo -e "  ${C_DIM}  This usually means --dangerously-skip-permissions wasn't applied${C_RESET}"
+                fi
+                if [ "$cb_state" = "OPEN" ]; then
+                    local cb_reason=$(jq -r '.reason // "unknown"' /workspace/.ralph/.circuit_breaker_state 2>/dev/null)
+                    echo -e "  ${C_RED}! Circuit breaker OPEN: ${cb_reason}${C_RESET}"
+                    echo -e "  ${C_DIM}  Run: ralph --reset-circuit${C_RESET}"
+                fi
+                # Show last few errors from ralph.log
+                if [ -f "/workspace/.ralph/logs/ralph.log" ]; then
+                    local errors=$(grep -E '\[(ERROR|WARN)\]' /workspace/.ralph/logs/ralph.log | tail -3)
+                    if [ -n "$errors" ]; then
+                        echo -e "  ${C_DIM}┌─ recent errors ─────────────────────${C_RESET}"
+                        echo "$errors" | while IFS= read -r line; do
+                            printf "  ${C_DIM}│${C_RESET} ${C_RED}%.100s${C_RESET}\n" "$line"
+                        done
+                        echo -e "  ${C_DIM}└────────────────────────────────────${C_RESET}"
+                    fi
+                fi
+            else
+                echo -e "${C_DIM}[${timestamp}]${C_RESET} ${C_YELLOW}No claude process running${C_RESET}"
+            fi
+
             LAST_DEBUG_SIZE=0
             LAST_LIVE_LOG_SIZE=0
             LAST_OUTPUT_LOG_SIZE=0
@@ -188,6 +226,11 @@ main() {
 
         # Print status header
         echo -e "${C_DIM}[${timestamp}]${C_RESET} PID ${C_BOLD}${claude_pid}${C_RESET} | ${runtime} | ${status_color}${C_BOLD}${status_label}${C_RESET} | silent: $(format_duration "$silent_secs") | ${C_DIM}${proc_state}${C_RESET}"
+
+        # JSON mode buffers all output — warn user if output log stays empty
+        if [ -n "$output_log" ] && [ "$cur_output_log_size" -eq 0 ] && [ "$elapsed" -ge 60 ]; then
+            echo -e "  ${C_DIM}i Output log empty — JSON mode buffers until completion (normal)${C_RESET}"
+        fi
 
         # Show recent output (only when it changed, to reduce noise)
         local current_output
