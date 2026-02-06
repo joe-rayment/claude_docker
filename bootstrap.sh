@@ -3,6 +3,8 @@
 # Claude Docker Bootstrap Script
 # Run from any project directory with:
 #   curl -fsSL https://raw.githubusercontent.com/joe-rayment/claude_docker/main/bootstrap.sh | bash
+# Or specify a project path:
+#   curl -fsSL https://raw.githubusercontent.com/joe-rayment/claude_docker/main/bootstrap.sh | bash -s -- /path/to/project
 
 set -e
 
@@ -19,6 +21,21 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 echo "  Claude Docker Bootstrap"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo -e "${C_RESET}"
+
+# Accept optional project path argument, default to $PWD
+if [ -n "$1" ]; then
+    if [ ! -d "$1" ]; then
+        echo -e "${C_RED}Error: Directory does not exist: $1${C_RESET}"
+        exit 1
+    fi
+    PROJECT_DIR="$(cd "$1" && pwd)" || {
+        echo -e "${C_RED}Error: Cannot access directory: $1${C_RESET}"
+        exit 1
+    }
+else
+    PROJECT_DIR="$PWD"
+fi
+cd "$PROJECT_DIR"
 
 # Check Docker is installed
 if ! command -v docker &> /dev/null; then
@@ -47,8 +64,8 @@ fi
 
 echo -e "${C_GREEN}✓${C_RESET} Git is available"
 
-# Get project name from current directory
-RAW_PROJECT_NAME=$(basename "$PWD")
+# Get project name from project directory
+RAW_PROJECT_NAME=$(basename "$PROJECT_DIR")
 
 # Sanitize project name: lowercase, replace spaces/special chars with hyphens, remove consecutive hyphens
 PROJECT_NAME=$(echo "$RAW_PROJECT_NAME" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g' | sed 's/--*/-/g' | sed 's/^-//' | sed 's/-$//')
@@ -140,6 +157,23 @@ docker compose up -d
 
 echo -e "${C_GREEN}✓${C_RESET} Container started"
 
+# Install launcher to project root
+cd "$PROJECT_DIR"
+cp "$CLONE_DIR/scripts/launcher.sh" "claude-dev"
+chmod +x "claude-dev"
+echo -e "${C_GREEN}✓${C_RESET} Installed ./claude-dev launcher"
+
+# Add .claude-dev/ and claude-dev to project .gitignore if not already present
+GITIGNORE="$PROJECT_DIR/.gitignore"
+touch "$GITIGNORE"
+if ! grep -qxF '.claude-dev/' "$GITIGNORE"; then
+    echo '.claude-dev/' >> "$GITIGNORE"
+fi
+if ! grep -qxF 'claude-dev' "$GITIGNORE"; then
+    echo 'claude-dev' >> "$GITIGNORE"
+fi
+echo -e "${C_GREEN}✓${C_RESET} Updated .gitignore"
+
 echo ""
 echo -e "${C_BOLD}${C_GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${C_RESET}"
 echo -e "${C_BOLD}  Container Ready!${C_RESET}"
@@ -147,5 +181,5 @@ echo -e "${C_BOLD}${C_GREEN}━━━━━━━━━━━━━━━━━�
 echo ""
 echo -e "Enter your container with:"
 echo ""
-echo -e "  ${C_BOLD}docker exec -it ${CONTAINER_NAME} /bin/zsh${C_RESET}"
+echo -e "  ${C_BOLD}./claude-dev${C_RESET}"
 echo ""

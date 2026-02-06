@@ -10,17 +10,11 @@ When rebuilding the image, the `agent-home` volume persists old config files (`.
 **Workaround**: `docker compose down -v` before rebuild
 **Fix**: Entrypoint script should check and update configs, or use a version marker
 
-### 2. Container Name Conflict
-`container_name: claude-dev-environment` is hardcoded. Running multiple projects simultaneously will fail.
+### ~~2. Container Name Conflict~~ ✅ RESOLVED
+Bootstrap now generates unique container names from the project directory name (e.g. `myproject-claude-dev`).
 
-**Workaround**: Use different compose files with different container names
-**Fix**: Remove hardcoded container name or make it configurable via .env
-
-### 3. Volume Name Conflict
-`agent-home` volume is shared across all instances using this compose file. Different projects will share Claude auth, git config, shell history.
-
-**Workaround**: This might actually be desirable (shared auth). But if isolation needed, change volume name per project.
-**Fix**: Make volume name configurable or use project-specific naming
+### ~~3. Volume Name Conflict~~ ✅ RESOLVED
+Bootstrap now generates unique volume names from the project directory name (e.g. `myproject-agent-home`).
 
 ### 4. No Validation of PROJECT_PATH
 If PROJECT_PATH is invalid or doesn't exist, Docker will create an empty directory.
@@ -50,8 +44,8 @@ Helix binary selection handles this, but not tested on all architectures.
 
 ## Nice-to-Have Features
 
-- [ ] `./setup.sh` script that handles first-time setup interactively
+- [x] ~~`./setup.sh` script that handles first-time setup interactively~~ — Superseded by `./claude-dev` launcher
 - [ ] Health check to verify Claude auth status on container start
 - [ ] Automatic `.env` creation from `.env.example` if missing
-- [ ] Support for multiple concurrent projects (unique container/volume names)
+- [x] ~~Support for multiple concurrent projects (unique container/volume names)~~ — Done via bootstrap naming
 - [ ] Pre-built image on Docker Hub to skip build step

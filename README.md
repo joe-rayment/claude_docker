@@ -23,19 +23,24 @@ From your project directory:
 curl -fsSL https://raw.githubusercontent.com/joe-rayment/claude_docker/main/bootstrap.sh | bash
 ```
 
+Or specify a project path:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/joe-rayment/claude_docker/main/bootstrap.sh | bash -s -- /path/to/project
+```
+
 This will:
 - Clone the environment into `.claude-dev/`
 - Build the container (first time only)
 - Create a uniquely-named container for your project
+- Install a `./claude-dev` launcher in your project root
 - Start everything up
 
 Then enter your container:
 
 ```bash
-docker exec -it {your-project}-claude-dev /bin/zsh
+./claude-dev
 ```
-
-The bootstrap script will show you the exact command.
 
 ### First Time Inside Container
 
@@ -49,18 +54,14 @@ The container will guide you through:
 ### Daily Use
 
 ```bash
-# From your project directory:
-cd /path/to/your/project/.claude-dev
+# From your project directory — builds, starts, and execs in one step:
+./claude-dev
 
-# Start the container
-docker compose up -d
-
-# Enter the container
-docker exec -it {your-project}-claude-dev /bin/zsh
-
-# Or re-run bootstrap (it's idempotent):
-cd /path/to/your/project
-curl -fsSL https://raw.githubusercontent.com/joe-rayment/claude_docker/main/bootstrap.sh | bash
+# Other commands:
+./claude-dev --stop      # Stop the container
+./claude-dev --status    # Show container status
+./claude-dev --update    # Pull latest environment, rebuild, update launcher
+./claude-dev --rebuild   # Force rebuild (no cache)
 ```
 
 ---
@@ -83,6 +84,7 @@ After setup, your project looks like this:
 
 ```
 your-project/
+├── claude-dev            # Launcher (run ./claude-dev to enter container)
 ├── .claude-dev/          # Claude Docker environment
 │   ├── docker-compose.yml  # Generated with unique names
 │   ├── Dockerfile
@@ -91,6 +93,8 @@ your-project/
 ├── package.json
 └── ...
 ```
+
+Both `claude-dev` and `.claude-dev/` are automatically added to your `.gitignore`.
 
 Your project files appear at `/workspace` inside the container.
 
@@ -207,19 +211,19 @@ This ensures you always have a safety checkpoint and clean commits for each Ralp
 
 ## Multiple Terminal Sessions
 
-Open multiple tabs connected to the same container:
+Open multiple tabs connected to the same container. Use `./claude-dev --status` to see the container name, then:
 
 ```bash
 # Tab 1: Claude
-docker exec -it {your-project}-claude-dev /bin/zsh
+./claude-dev
 cs
 
 # Tab 2: Editor (new terminal tab)
-docker exec -it {your-project}-claude-dev /bin/zsh
+./claude-dev
 hx src/main.py
 
 # Tab 3: Tests (new terminal tab)
-docker exec -it {your-project}-claude-dev /bin/zsh
+./claude-dev
 npm test
 ```
 
@@ -235,9 +239,13 @@ Docker Desktop isn't running. Open Docker Desktop and wait for it to start.
 
 ### "container name already in use"
 ```bash
-cd .claude-dev
-docker compose down
-docker compose up -d
+./claude-dev --stop
+./claude-dev
+```
+
+### "./claude-dev: Permission denied"
+```bash
+chmod +x ./claude-dev
 ```
 
 ### Claude authentication issues
@@ -251,7 +259,8 @@ The home directory is persisted in a volume. To reset:
 ```bash
 cd .claude-dev
 docker compose down -v   # Warning: removes auth, history
-docker compose up -d
+cd ..
+./claude-dev             # Rebuilds and re-enters
 # Re-authenticate after this
 ```
 
@@ -280,8 +289,13 @@ cd .claude-dev
 docker compose build
 docker compose up -d
 
-# 4. Enter the container
-docker compose exec claude-dev /bin/zsh
+# 4. Copy the launcher to project root
+cp scripts/launcher.sh ../claude-dev
+chmod +x ../claude-dev
+
+# 5. Enter the container
+cd ..
+./claude-dev
 ```
 
 ---
@@ -313,16 +327,19 @@ docker compose down && docker compose up -d
 │  Your Machine                                           │
 │  ┌───────────────────────────────────────────────────┐  │
 │  │  your-project/                                    │  │
+│  │  ├── claude-dev     ◄── Launcher (./claude-dev)   │  │
 │  │  ├── src/                                         │  │
-│  │  ├── .claude-dev/  ◄── This repo                  │  │
+│  │  ├── .claude-dev/   ◄── This repo                 │  │
 │  │  │   ├── docker-compose.yml  ◄── Generated        │  │
 │  │  │   └── ...                                      │  │
 │  │  └── ...                                          │  │
 │  └───────────────────────────────────────────────────┘  │
 │                         │                               │
+│                    ./claude-dev                          │
+│                         │                               │
 │                         ▼                               │
 │  ┌───────────────────────────────────────────────────┐  │
-│  │  Docker Container (your-project-claude-dev)      │  │
+│  │  Docker Container (your-project-claude-dev)       │  │
 │  │  /workspace/  ◄── your-project files mounted here │  │
 │  │  /home/agent/ ◄── persistent (auth, config, etc.) │  │
 │  └───────────────────────────────────────────────────┘  │
