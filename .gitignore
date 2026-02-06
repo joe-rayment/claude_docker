@@ -18,3 +18,7 @@ workspace/
 *.tmp
 *.swp
 *~
+
+# Build tracking
+.last-build-sha
+.last-update-check

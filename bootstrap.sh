@@ -156,6 +156,9 @@ else
     echo -e "${C_GREEN}✓${C_RESET} Using existing image"
 fi
 
+# Record build SHA for auto-rebuild detection
+git rev-parse HEAD > .last-build-sha 2>/dev/null || true
+
 # Stop existing container if running (don't fail if it doesn't exist)
 docker compose down 2>/dev/null || true
 

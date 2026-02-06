@@ -31,7 +31,7 @@ check_deps() {
     if [ -f "$WORKSPACE/requirements.txt" ]; then
         DETECTED_FILES+=("requirements.txt")
         DETECTED_MANAGERS+=("pip")
-        INSTALL_COMMANDS+=("pip install -r requirements.txt")
+        INSTALL_COMMANDS+=("pip install --break-system-packages -r requirements.txt")
     fi
 
     if [ -f "$WORKSPACE/pyproject.toml" ]; then
@@ -44,7 +44,7 @@ check_deps() {
             INSTALL_COMMANDS+=("uv sync")
         else
             DETECTED_MANAGERS+=("pip")
-            INSTALL_COMMANDS+=("pip install -e .")
+            INSTALL_COMMANDS+=("pip install --break-system-packages -e .")
         fi
     fi
 

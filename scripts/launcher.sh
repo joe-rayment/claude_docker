@@ -66,6 +66,54 @@ image_exists() {
     docker image inspect claude-code-dev:latest &>/dev/null
 }
 
+# Helper: record the current git SHA after a successful build
+record_build_sha() {
+    git -C "$CLAUDE_DEV_DIR" rev-parse HEAD > "$CLAUDE_DEV_DIR/.last-build-sha" 2>/dev/null || true
+}
+
+# Helper: check if repo has changed since last build
+repo_has_changed() {
+    local current_sha last_build_sha
+    current_sha=$(git -C "$CLAUDE_DEV_DIR" rev-parse HEAD 2>/dev/null) || return 1
+    last_build_sha=$(cat "$CLAUDE_DEV_DIR/.last-build-sha" 2>/dev/null) || return 0
+    [ "$current_sha" != "$last_build_sha" ]
+}
+
+# Helper: check for upstream updates (rate-limited, silent on failure)
+check_for_updates() {
+    local check_file="$CLAUDE_DEV_DIR/.last-update-check"
+    local check_interval=14400  # 4 hours
+
+    # Rate limit
+    if [ -f "$check_file" ]; then
+        local last_check now
+        last_check=$(cat "$check_file" 2>/dev/null || echo "0")
+        now=$(date +%s)
+        if [ $((now - last_check)) -lt $check_interval ]; then
+            return 0
+        fi
+    fi
+
+    date +%s > "$check_file" 2>/dev/null || true
+
+    # Fetch silently — skip on any failure
+    if ! git -C "$CLAUDE_DEV_DIR" fetch --quiet 2>/dev/null; then
+        return 0
+    fi
+
+    local local_sha remote_sha
+    local_sha=$(git -C "$CLAUDE_DEV_DIR" rev-parse HEAD 2>/dev/null) || return 0
+    remote_sha=$(git -C "$CLAUDE_DEV_DIR" rev-parse origin/main 2>/dev/null) || return 0
+
+    if [ "$local_sha" != "$remote_sha" ]; then
+        if git -C "$CLAUDE_DEV_DIR" merge-base --is-ancestor HEAD origin/main 2>/dev/null; then
+            echo ""
+            echo -e "  ${C_YELLOW}Update available${C_RESET} — run ${C_BOLD}./claude-dev --update${C_RESET} to get the latest environment"
+            echo ""
+        fi
+    fi
+}
+
 # Helper: build image
 build_image() {
     local extra_args="$1"
@@ -90,10 +138,20 @@ exec_into() {
 # --- Commands ---
 
 cmd_default() {
-    # Build if image doesn't exist
+    check_for_updates
+
+    # Build if image doesn't exist, or rebuild if repo has changed
     if ! image_exists; then
         echo -e "${C_YELLOW}→${C_RESET} First run — building image (this may take a few minutes)..."
         build_image
+        record_build_sha
+    elif repo_has_changed; then
+        echo -e "${C_YELLOW}→${C_RESET} Environment updated — rebuilding image..."
+        if is_running || container_exists; then
+            dc down 2>/dev/null || true
+        fi
+        build_image
+        record_build_sha
     fi
 
     # Start if not running
@@ -121,6 +179,7 @@ cmd_update() {
 
     # Rebuild image
     build_image
+    record_build_sha
 
     # Re-copy launcher
     cp "$CLAUDE_DEV_DIR/scripts/launcher.sh" "$SCRIPT_DIR/claude-dev"
@@ -142,6 +201,7 @@ cmd_rebuild() {
     fi
 
     build_image "--no-cache"
+    record_build_sha
 
     echo ""
     echo -e "\033[2mNote: Auth, git config, and history are preserved in the volume.\033[0m"
