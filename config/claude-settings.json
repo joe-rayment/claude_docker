@@ -1,7 +1,4 @@
 {
-  "env": {
-    "ANTHROPIC_LOG": "debug"
-  },
   "permissions": {
     "allow": [
       "Bash(*)",

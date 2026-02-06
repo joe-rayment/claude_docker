@@ -40,7 +40,6 @@ find_spec_files() {
     local candidates=(
         "$RALPH_DIR/PROMPT.md"
         "$WORKSPACE/spec.md"
-        "$WORKSPACE/SPEC.md"
         "$WORKSPACE/PROMPT.md"
         "$WORKSPACE/README.md"
         "$WORKSPACE/docs/spec.md"
@@ -224,9 +223,11 @@ $spec_contents
 
 Output ONLY the Markdown task list, nothing else."
 
-    # Call Claude
+    # Call Claude (strip SDK debug logs that leak to stdout before the markdown)
+    local raw_result
+    raw_result=$(echo "$prompt" | claude -p "Generate the task list as described." --output-format text 2>/dev/null)
     local result
-    result=$(echo "$prompt" | claude -p "Generate the task list as described." --output-format text 2>/dev/null)
+    result=$(echo "$raw_result" | sed -n '/^#/,$p')
 
     # Step 6: Write result or restore backup
     if [ -z "$result" ]; then
