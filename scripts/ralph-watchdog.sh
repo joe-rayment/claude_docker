@@ -3,10 +3,10 @@
 # Ralph Watchdog - Claude Code Execution Monitor
 #
 # Monitors the claude process in real-time, showing:
-# - Whether a claude process is running + its PID
-# - How long it's been running
-# - Whether output is being received (via debug log file growth)
-# - Clear WAITING / ACTIVE / STALLED status labels
+# - Process status, PID, and runtime
+# - ACTIVE / WAITING / STALLED status based on log file growth
+# - Last few lines of actual Claude output for visibility into what's happening
+# - Process state from /proc (running, sleeping, disk I/O, etc.)
 #
 # Usage:
 #   ralph-watchdog        # Start monitoring (Ctrl+C to stop)
@@ -23,14 +23,16 @@ C_DIM="\e[2m"
 C_RESET="\e[0m"
 
 # Configuration
-POLL_INTERVAL=10
+POLL_INTERVAL=5
 STALL_THRESHOLD=120  # seconds with no file growth = STALLED
+OUTPUT_LINES=6       # number of recent output lines to show
 
 # State tracking
 LAST_DEBUG_SIZE=0
 LAST_LIVE_LOG_SIZE=0
 LAST_OUTPUT_LOG_SIZE=0
 LAST_CHANGE_TIME=0
+PREV_OUTPUT_HASH=""
 
 # Format seconds into human-readable duration
 format_duration() {
@@ -74,13 +76,46 @@ find_latest_output_log() {
     fi
 }
 
+# Get process state description from /proc
+get_process_state() {
+    local pid=$1
+    local state
+    state=$(cat /proc/$pid/status 2>/dev/null | grep "^State:" | awk '{print $2, $3}')
+    case "$state" in
+        S*) echo "sleeping (waiting for I/O or event)" ;;
+        R*) echo "running" ;;
+        D*) echo "disk I/O wait (uninterruptible)" ;;
+        T*) echo "stopped" ;;
+        Z*) echo "zombie" ;;
+        *)  echo "${state:-unknown}" ;;
+    esac
+}
+
+# Get the best available output log for tailing
+get_output_tail() {
+    local lines=$1
+
+    # Priority: ralph live.log > latest output log > debug log
+    local live_log="/workspace/.ralph/live.log"
+    local output_log=$(find_latest_output_log)
+    local debug_log="$HOME/.claude/debug/latest"
+
+    if [ -f "$live_log" ] && [ -s "$live_log" ]; then
+        tail -n "$lines" "$live_log" 2>/dev/null
+    elif [ -n "$output_log" ] && [ -f "$output_log" ] && [ -s "$output_log" ]; then
+        tail -n "$lines" "$output_log" 2>/dev/null
+    elif [ -f "$debug_log" ] && [ -s "$debug_log" ]; then
+        # Debug log is JSON-ish, extract readable bits
+        tail -n $((lines * 3)) "$debug_log" 2>/dev/null | grep -oP '"message":\s*"\K[^"]+' | tail -n "$lines"
+    fi
+}
+
 # Main monitoring loop
 main() {
     echo -e "${C_BOLD}${C_BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${C_RESET}"
     echo -e "${C_BOLD}  Ralph Watchdog — Claude Code Monitor${C_RESET}"
     echo -e "${C_BOLD}${C_BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${C_RESET}"
-    echo -e "${C_DIM}  Polling every ${POLL_INTERVAL}s | Stall threshold: ${STALL_THRESHOLD}s${C_RESET}"
-    echo -e "${C_DIM}  Press Ctrl+C to stop${C_RESET}"
+    echo -e "${C_DIM}  Polling every ${POLL_INTERVAL}s | Stall: ${STALL_THRESHOLD}s | Ctrl+C to stop${C_RESET}"
     echo ""
 
     LAST_CHANGE_TIME=$(date +%s)
@@ -94,16 +129,16 @@ main() {
 
         if [ -z "$claude_pid" ]; then
             echo -e "${C_DIM}[${timestamp}]${C_RESET} ${C_YELLOW}No claude process running${C_RESET}"
-            # Reset state when no process
             LAST_DEBUG_SIZE=0
             LAST_LIVE_LOG_SIZE=0
             LAST_OUTPUT_LOG_SIZE=0
             LAST_CHANGE_TIME=$now
+            PREV_OUTPUT_HASH=""
             sleep "$POLL_INTERVAL"
             continue
         fi
 
-        # Get process elapsed time in seconds
+        # Get process elapsed time
         local elapsed
         elapsed=$(ps -o etimes= -p "$claude_pid" 2>/dev/null | tr -d ' ')
         if [ -z "$elapsed" ]; then
@@ -113,6 +148,7 @@ main() {
         fi
 
         local runtime=$(format_duration "$elapsed")
+        local proc_state=$(get_process_state "$claude_pid")
 
         # Track file sizes
         local debug_file="$HOME/.claude/debug/latest"
@@ -138,27 +174,45 @@ main() {
         local silent_secs=$((now - LAST_CHANGE_TIME))
 
         # Determine status
-        local status_label status_detail status_color
+        local status_label status_color
         if [ "$grew" = true ]; then
             status_label="ACTIVE"
-            status_detail="receiving output (debug: $(format_size "$cur_debug_size"))"
             status_color="$C_GREEN"
-        elif [ "$cur_debug_size" -eq 0 ] 2>/dev/null && [ "$silent_secs" -lt "$STALL_THRESHOLD" ]; then
-            status_label="WAITING"
-            status_detail="no response from API yet"
-            status_color="$C_YELLOW"
         elif [ "$silent_secs" -ge "$STALL_THRESHOLD" ]; then
-            status_label="STALLED?"
-            status_detail="no new output for $(format_duration "$silent_secs")"
+            status_label="STALLED"
             status_color="$C_RED"
         else
             status_label="WAITING"
-            status_detail="last output $(format_duration "$silent_secs") ago (debug: $(format_size "$cur_debug_size"))"
             status_color="$C_YELLOW"
         fi
 
-        # Print status line
-        echo -e "${C_DIM}[${timestamp}]${C_RESET} claude PID ${C_BOLD}${claude_pid}${C_RESET} | runtime: ${runtime} | ${status_color}${C_BOLD}${status_label}${C_RESET} — ${status_detail}"
+        # Print status header
+        echo -e "${C_DIM}[${timestamp}]${C_RESET} PID ${C_BOLD}${claude_pid}${C_RESET} | ${runtime} | ${status_color}${C_BOLD}${status_label}${C_RESET} | silent: $(format_duration "$silent_secs") | ${C_DIM}${proc_state}${C_RESET}"
+
+        # Show recent output (only when it changed, to reduce noise)
+        local current_output
+        current_output=$(get_output_tail "$OUTPUT_LINES")
+        local current_hash
+        current_hash=$(echo "$current_output" | md5sum 2>/dev/null | cut -d' ' -f1)
+
+        if [ -n "$current_output" ] && [ "$current_hash" != "$PREV_OUTPUT_HASH" ]; then
+            echo -e "${C_DIM}  ┌─ recent output ──────────────────────${C_RESET}"
+            echo "$current_output" | while IFS= read -r line; do
+                # Truncate long lines for readability
+                printf "  ${C_DIM}│${C_RESET} %.100s\n" "$line"
+            done
+            echo -e "${C_DIM}  └────────────────────────────────────${C_RESET}"
+            PREV_OUTPUT_HASH="$current_hash"
+        fi
+
+        # Stall diagnostics
+        if [ "$status_label" = "STALLED" ]; then
+            echo -e "  ${C_RED}! Stalled for $(format_duration "$silent_secs").${C_RESET} Process state: ${proc_state}"
+            # Check network connections
+            local net_conns
+            net_conns=$(ls /proc/$claude_pid/fd 2>/dev/null | wc -l)
+            echo -e "  ${C_DIM}  Open file descriptors: ${net_conns}${C_RESET}"
+        fi
 
         # Update tracked sizes
         LAST_DEBUG_SIZE=$cur_debug_size

@@ -55,6 +55,7 @@ alias ralph-init='ralph-enable'                    # Initialize Ralph for a proj
 alias ralph-spec='hx .ralph/PROMPT.md'             # Edit project spec
 alias ralph-plan='hx .ralph/fix_plan.md'           # Edit task list
 alias ralph-run='/usr/local/bin/ralph-wrapper.sh'  # Run Ralph with git automation
+alias ralph-monitor='ralph-tmux'                     # Run Ralph with full tmux monitoring
 alias ralph-watch='ralph-watchdog'                   # Monitor Claude Code execution health
 
 # History configuration

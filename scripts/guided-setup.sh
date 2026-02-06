@@ -178,7 +178,7 @@ show_main_menu() {
         6)
             echo ""
             if command -v tmux &>/dev/null; then
-                exec ralph --monitor
+                exec ralph-tmux
             else
                 echo -e "${C_RED}tmux not available${C_RESET}"
                 show_main_menu
