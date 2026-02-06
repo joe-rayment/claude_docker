@@ -90,6 +90,8 @@ echo ""
 if [ -d "$CLONE_DIR" ]; then
     echo -e "${C_YELLOW}→${C_RESET} Updating existing .claude-dev..."
     cd "$CLONE_DIR"
+    # Reset generated files before pulling to avoid conflicts
+    git checkout -- docker-compose.yml 2>/dev/null || true
     git pull --quiet
     cd ..
 else

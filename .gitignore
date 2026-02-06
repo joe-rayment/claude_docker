@@ -19,6 +19,9 @@ workspace/
 *.swp
 *~
 
+# Generated docker-compose (bootstrap generates per-project)
+docker-compose.yml
+
 # Build tracking
 .last-build-sha
 .last-update-check
