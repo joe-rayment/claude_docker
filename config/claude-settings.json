@@ -14,7 +14,7 @@
   "hooks": {
     "Stop": [
       {
-        "matcher": {},
+        "matcher": "",
         "hooks": [
           {
             "type": "command",

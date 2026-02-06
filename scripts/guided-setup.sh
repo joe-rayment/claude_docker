@@ -59,23 +59,30 @@ require_claude_auth() {
     return 1
 }
 
-# Prompt for Claude authentication
+# Prompt for Claude authentication (mandatory — loops until authenticated)
 prompt_claude_auth() {
     echo ""
     echo -e "${C_BOLD}Claude Authentication${C_RESET}"
+    echo -e "${C_DIM}Claude authentication is required to use this environment.${C_RESET}"
     echo -e "${C_DIM}This will open a browser window to authenticate.${C_RESET}"
-    echo ""
-    read -p "Press ENTER to authenticate with Claude (or 's' to skip): " choice
 
-    if [ "$choice" != "s" ] && [ "$choice" != "S" ]; then
+    while true; do
+        echo ""
+        read -p "Press ENTER to authenticate with Claude: " _
         claude auth login
         echo ""
         if is_claude_authenticated; then
             echo -e "${C_GREEN}✓${C_RESET} Claude authenticated successfully"
-        else
-            echo -e "${C_YELLOW}⚠${C_RESET} Authentication may have failed. Try 'claude auth login' manually."
+            return 0
         fi
-    fi
+        echo -e "${C_RED}✗${C_RESET} Authentication failed. Please try again."
+        echo -e "${C_DIM}(You can also run 'claude auth login' manually from the shell later)${C_RESET}"
+        read -p "Retry? (y/n): " retry
+        if [ "$retry" = "n" ] || [ "$retry" = "N" ]; then
+            echo -e "${C_YELLOW}⚠${C_RESET} Dropping to shell. Run ${C_BOLD}claude auth login${C_RESET} when ready."
+            return 1
+        fi
+    done
 }
 
 # Prompt for Git configuration
@@ -173,7 +180,12 @@ show_main_menu() {
         case "$choice" in
             1)
                 echo ""
-                require_claude_auth && cs
+                if require_claude_auth; then
+                    claude --dangerously-skip-permissions
+                    echo ""
+                    echo -e "${C_DIM}Type ${C_RESET}${C_BOLD}menu${C_RESET}${C_DIM} for options${C_RESET}"
+                    return
+                fi
                 ;;
             2)
                 echo ""
@@ -203,6 +215,9 @@ show_main_menu() {
                     else
                         /usr/local/bin/ralph-wrapper.sh
                     fi
+                    echo ""
+                    echo -e "${C_DIM}Type ${C_RESET}${C_BOLD}menu${C_RESET}${C_DIM} for options${C_RESET}"
+                    return
                 fi
                 ;;
             6)
@@ -238,7 +253,12 @@ show_quick_menu() {
         case "$choice" in
             1)
                 echo ""
-                require_claude_auth && cs
+                if require_claude_auth; then
+                    claude --dangerously-skip-permissions
+                    echo ""
+                    echo -e "${C_DIM}Type ${C_RESET}${C_BOLD}menu${C_RESET}${C_DIM} for options${C_RESET}"
+                    return
+                fi
                 ;;
             2)
                 echo ""
@@ -248,6 +268,9 @@ show_quick_menu() {
                     else
                         /usr/local/bin/ralph-wrapper.sh
                     fi
+                    echo ""
+                    echo -e "${C_DIM}Type ${C_RESET}${C_BOLD}menu${C_RESET}${C_DIM} for options${C_RESET}"
+                    return
                 fi
                 ;;
             m|M)
@@ -269,10 +292,13 @@ show_quick_menu() {
 main() {
     local needs_setup=false
 
-    # Check what needs to be set up
+    # Claude auth is mandatory — if it fails, drop to shell
     if ! is_claude_authenticated; then
         needs_setup=true
-        prompt_claude_auth
+        if ! prompt_claude_auth; then
+            # User chose to drop to shell
+            return
+        fi
     fi
 
     if ! is_git_configured; then

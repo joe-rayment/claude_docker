@@ -112,6 +112,6 @@ if [ ! -f "$FIRST_TIME" ] || [ "$NEEDS_SETUP" = true ]; then
     touch "$FIRST_TIME"
 else
     # Returning user — just show a hint, no disappearing menu
-    echo -e "${C_DIM}Type ${C_RESET}${C_BOLD}menu${C_RESET}${C_DIM} for setup options, ${C_RESET}${C_BOLD}cs${C_RESET}${C_DIM} for Claude, ${C_RESET}${C_BOLD}ralph-run${C_RESET}${C_DIM} for Ralph loop${C_RESET}"
+    echo -e "${C_DIM}Commands: ${C_RESET}${C_BOLD}menu${C_RESET}${C_DIM} (setup)  ${C_RESET}${C_BOLD}cs${C_RESET}${C_DIM} (claude)  ${C_RESET}${C_BOLD}ralph-run${C_RESET}${C_DIM} (ralph loop)${C_RESET}"
     echo ""
 fi
