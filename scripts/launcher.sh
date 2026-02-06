@@ -128,6 +128,7 @@ cmd_update() {
     echo -e "${C_GREEN}✓${C_RESET} Launcher updated"
 
     echo ""
+    echo -e "\033[2mNote: Auth, git config, and history are preserved in the volume.\033[0m"
     echo -e "${C_GREEN}Update complete.${C_RESET} Run ${C_BOLD}./claude-dev${C_RESET} to start."
 }
 
@@ -143,6 +144,7 @@ cmd_rebuild() {
     build_image "--no-cache"
 
     echo ""
+    echo -e "\033[2mNote: Auth, git config, and history are preserved in the volume.\033[0m"
     echo -e "${C_GREEN}Rebuild complete.${C_RESET} Run ${C_BOLD}./claude-dev${C_RESET} to start."
 }
 
@@ -159,7 +161,8 @@ cmd_stop() {
 cmd_status() {
     echo -e "${C_BOLD}Container:${C_RESET} $CONTAINER_NAME"
     if is_running; then
-        echo -e "${C_BOLD}Status:${C_RESET}    ${C_GREEN}running${C_RESET}"
+        HEALTH=$(docker inspect --format='{{.State.Health.Status}}' "$CONTAINER_NAME" 2>/dev/null || echo "no healthcheck")
+        echo -e "${C_BOLD}Status:${C_RESET}    ${C_GREEN}running${C_RESET} (health: $HEALTH)"
         echo ""
         docker ps --filter "name=$CONTAINER_NAME" --format "table {{.ID}}\t{{.Status}}\t{{.Ports}}"
     elif container_exists; then

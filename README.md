@@ -282,18 +282,21 @@ cd /path/to/your/project
 git clone https://github.com/joe-rayment/claude_docker.git .claude-dev
 cd .claude-dev
 
-# 2. Create docker-compose.yml with your project name
+# 2. Create .env file with your project path (if not using parent directory)
+echo "PROJECT_PATH=/path/to/your/project" > .env
+
+# 3. Create docker-compose.yml with your project name
 # (copy from docker-compose.yml.example and update container/volume names)
 
-# 3. Build and start
+# 4. Build and start
 docker compose build
 docker compose up -d
 
-# 4. Copy the launcher to project root
+# 5. Copy the launcher to project root
 cp scripts/launcher.sh ../claude-dev
 chmod +x ../claude-dev
 
-# 5. Enter the container
+# 6. Enter the container
 cd ..
 ./claude-dev
 ```

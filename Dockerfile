@@ -91,6 +91,17 @@ COPY --chown=agent:agent config/helix-config.toml /home/agent/.config/helix/conf
 COPY --chown=agent:agent config/intellishell-config.toml /home/agent/.config/intelli-shell/config.toml
 COPY --chown=agent:agent config/intellishell-defaults.txt /home/agent/.config/intelli-shell/defaults.txt
 COPY --chown=agent:agent config/claude-settings.json /home/agent/.config/claude-settings-template.json
+
+# Stage configs for version-sync (outside volume mount path)
+USER root
+RUN mkdir -p /etc/claude-dev/configs
+COPY CONFIG_VERSION /etc/claude-dev/CONFIG_VERSION
+COPY config/.zshrc /etc/claude-dev/configs/.zshrc
+COPY config/helix-config.toml /etc/claude-dev/configs/helix-config.toml
+COPY config/intellishell-config.toml /etc/claude-dev/configs/intellishell-config.toml
+COPY config/intellishell-defaults.txt /etc/claude-dev/configs/intellishell-defaults.txt
+USER agent
+
 COPY --chown=agent:agent scripts/entrypoint.sh /usr/local/bin/entrypoint.sh
 
 # Copy helper scripts
