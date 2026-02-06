@@ -41,6 +41,17 @@ if [ ! -f /home/agent/.claude/settings.json ]; then
     cp /home/agent/.config/claude-settings-template.json /home/agent/.claude/settings.json 2>/dev/null || true
 fi
 
+# Patch Ralph to use --dangerously-skip-permissions (container is sandboxed by Docker)
+RALPH_LOOP="/home/agent/.ralph/ralph_loop.sh"
+if [ -f "$RALPH_LOOP" ]; then
+    if ! grep -q 'dangerously-skip-permissions' "$RALPH_LOOP"; then
+        sed -i 's|CLAUDE_CODE_CMD="env NODE_TLS_REJECT_UNAUTHORIZED=0 claude"|CLAUDE_CODE_CMD="env NODE_TLS_REJECT_UNAUTHORIZED=0 claude --dangerously-skip-permissions"|' "$RALPH_LOOP"
+        if ! grep -q 'dangerously-skip-permissions' "$RALPH_LOOP"; then
+            echo -e "\033[33m⚠  WARNING: Failed to patch Ralph permissions — Claude may prompt for tool approval.\033[0m" >&2
+        fi
+    fi
+fi
+
 # Change to workspace directory
 cd /workspace
 

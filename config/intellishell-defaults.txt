@@ -14,4 +14,4 @@ ralph-run
 cat ~/.claude/debug/latest
 
 # Export session log to workspace #claude #logs
-cp ~/.claude/debug/latest /workspace/logs/session-$(date +%Y%m%d-%H%M%S).log
+mkdir -p ~/.claude/exported-logs && cp ~/.claude/debug/latest ~/.claude/exported-logs/session-$(date +%Y%m%d-%H%M%S).log

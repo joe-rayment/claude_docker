@@ -8,7 +8,7 @@
       "Bash(ralph-*)",
       "Bash(view-logs)",
       "Read(~/.claude/debug/**)",
-      "Write(/workspace/logs/**)"
+      "Write(/home/agent/.claude/exported-logs/**)"
     ]
   },
   "hooks": {
@@ -18,7 +18,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "mkdir -p /workspace/logs && cp ~/.claude/debug/latest /workspace/logs/last-session.log 2>/dev/null || true"
+            "command": "mkdir -p /home/agent/.claude/exported-logs && cp ~/.claude/debug/latest /home/agent/.claude/exported-logs/last-session.log 2>/dev/null || true"
           }
         ]
       }

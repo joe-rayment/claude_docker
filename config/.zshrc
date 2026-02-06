@@ -49,14 +49,13 @@ alias menu='/usr/local/bin/guided-setup.sh'  # Setup menu (auth, git, deps, Ralp
 # Log viewing shortcuts
 alias clogs='view-logs'  # View Claude logs
 alias clog-latest='cat ~/.claude/debug/latest'  # Quick peek at latest log
-alias clog-export='cp ~/.claude/debug/latest /workspace/logs/session-$(date +%Y%m%d-%H%M%S).log && echo "Log exported to workspace/logs/"'
+alias clog-export='mkdir -p /home/agent/.claude/exported-logs && cp ~/.claude/debug/latest /home/agent/.claude/exported-logs/session-$(date +%Y%m%d-%H%M%S).log && echo "Log exported to ~/.claude/exported-logs/"'
 
 # Ralph shortcuts (frankbria/ralph-claude-code)
-alias ralph-init='ralph-enable'                    # Initialize Ralph for a project (alias for ralph-enable)
+alias ralph-init='ralph-enable'                    # Initialize Ralph for a project
 alias ralph-spec='hx .ralph/PROMPT.md'             # Edit project spec
 alias ralph-plan='hx .ralph/fix_plan.md'           # Edit task list
-alias ralph-run='/usr/local/bin/ralph-wrapper.sh'  # Run Ralph with git automation
-alias ralph-monitor='ralph-tmux'                     # Run Ralph with full tmux monitoring
+alias ralph-run='/usr/local/bin/ralph-wrapper.sh'  # Run Ralph (branch + commit + push)
 alias ralph-watch='ralph-watchdog'                   # Monitor Claude Code execution health
 
 # History configuration

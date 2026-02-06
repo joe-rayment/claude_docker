@@ -108,20 +108,18 @@ ralph-enable        # Interactive setup wizard
 ralph-spec          # Edit your project spec (.ralph/PROMPT.md)
 cs                  # Plan interactively with Claude
 ralph-plan          # Edit your task list (.ralph/fix_plan.md)
-ralph-run           # Run with automatic git commits
+ralph-run           # Run Ralph (creates branch, auto-commits, pushes)
 ```
 
 ### Commands
 
 | Command | Description |
 |---------|-------------|
-| `ralph` | Run the autonomous loop |
-| `ralph --resume` | Resume previous session |
-| `ralph --monitor` | Run with tmux dashboard |
-| `ralph-run` | Run with git automation (auto-commits) |
+| `ralph-run` | Run Ralph loop (branch + auto-commit + push to GitHub) |
 | `ralph-enable` | Interactive setup wizard |
 | `ralph-spec` | Edit .ralph/PROMPT.md |
 | `ralph-plan` | Edit .ralph/fix_plan.md |
+| `ralph-watch` | Monitor Claude Code execution health |
 
 ---
 

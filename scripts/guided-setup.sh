@@ -29,7 +29,34 @@ is_ralph_ready() {
 }
 
 get_dependency_count() {
-    /usr/local/bin/detect-dependencies.sh --count 2>/dev/null || echo "0"
+    # Use cached count from container-welcome.sh if available
+    if [ -f "/tmp/.dep-count-cache" ]; then
+        cat /tmp/.dep-count-cache
+    else
+        /usr/local/bin/detect-dependencies.sh --count 2>/dev/null || echo "0"
+    fi
+}
+
+# Require Claude authentication before running Claude-dependent commands
+# Offers to authenticate if not already done; returns 1 on failure/skip
+require_claude_auth() {
+    if is_claude_authenticated; then
+        return 0
+    fi
+    echo ""
+    echo -e "${C_YELLOW}⚠${C_RESET} Claude is not authenticated. This action requires authentication."
+    read -p "Authenticate now? (y/n): " choice
+    if [ "$choice" = "y" ] || [ "$choice" = "Y" ]; then
+        claude auth login
+        if is_claude_authenticated; then
+            echo -e "${C_GREEN}✓${C_RESET} Claude authenticated successfully"
+            return 0
+        else
+            echo -e "${C_RED}✗${C_RESET} Authentication failed."
+            return 1
+        fi
+    fi
+    return 1
 }
 
 # Prompt for Claude authentication
@@ -127,114 +154,115 @@ prompt_install_deps() {
 
 # Show main menu
 show_main_menu() {
-    echo ""
-    echo -e "${C_BOLD}${C_BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${C_RESET}"
-    echo -e "${C_BOLD}  What would you like to do?${C_RESET}"
-    echo -e "${C_BOLD}${C_BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${C_RESET}"
-    echo ""
-    echo -e "  ${C_BOLD}[1]${C_RESET} Start Claude (interactive)"
-    echo -e "  ${C_BOLD}[2]${C_RESET} Initialize Ralph (ralph-enable)"
-    echo -e "  ${C_BOLD}[3]${C_RESET} Edit project spec (.ralph/PROMPT.md)"
-    echo -e "  ${C_BOLD}[4]${C_RESET} Edit task list (.ralph/fix_plan.md)"
-    echo -e "  ${C_BOLD}[5]${C_RESET} Run Ralph loop (with auto-commit)"
-    echo -e "  ${C_BOLD}[6]${C_RESET} Run Ralph with monitor (tmux)"
-    echo -e "  ${C_BOLD}[7]${C_RESET} View logs"
-    echo -e "  ${C_BOLD}[s]${C_RESET} Skip to shell"
-    echo ""
-    read -p "Choice: " choice
+    while true; do
+        echo ""
+        echo -e "${C_BOLD}${C_BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${C_RESET}"
+        echo -e "${C_BOLD}  What would you like to do?${C_RESET}"
+        echo -e "${C_BOLD}${C_BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${C_RESET}"
+        echo ""
+        echo -e "  ${C_BOLD}[1]${C_RESET} Start Claude (interactive)"
+        echo -e "  ${C_BOLD}[2]${C_RESET} Initialize Ralph (ralph-enable)"
+        echo -e "  ${C_BOLD}[3]${C_RESET} Edit project spec (.ralph/PROMPT.md)"
+        echo -e "  ${C_BOLD}[4]${C_RESET} Edit task list (.ralph/fix_plan.md)"
+        echo -e "  ${C_BOLD}[5]${C_RESET} Run Ralph (branch + auto-commit + push)"
+        echo -e "  ${C_BOLD}[6]${C_RESET} View logs"
+        echo -e "  ${C_BOLD}[s]${C_RESET} Skip to shell"
+        echo ""
+        read -p "Choice: " choice
 
-    case "$choice" in
-        1)
-            echo ""
-            exec cs
-            ;;
-        2)
-            echo ""
-            ralph-enable
-            show_main_menu
-            ;;
-        3)
-            echo ""
-            if [ -f "/workspace/.ralph/PROMPT.md" ]; then
-                hx /workspace/.ralph/PROMPT.md
-            else
-                echo -e "${C_YELLOW}⚠${C_RESET} .ralph/PROMPT.md not found. Run 'ralph-enable' first."
-            fi
-            show_main_menu
-            ;;
-        4)
-            echo ""
-            if [ -f "/workspace/.ralph/fix_plan.md" ]; then
-                hx /workspace/.ralph/fix_plan.md
-            else
-                echo -e "${C_YELLOW}⚠${C_RESET} .ralph/fix_plan.md not found. Run 'ralph-enable' first."
-            fi
-            show_main_menu
-            ;;
-        5)
-            echo ""
-            exec /usr/local/bin/ralph-wrapper.sh
-            ;;
-        6)
-            echo ""
-            if command -v tmux &>/dev/null; then
-                exec ralph-tmux
-            else
-                echo -e "${C_RED}tmux not available${C_RESET}"
-                show_main_menu
-            fi
-            ;;
-        7)
-            echo ""
-            view-logs
-            show_main_menu
-            ;;
-        s|S|"")
-            echo ""
-            return
-            ;;
-        *)
-            echo -e "${C_RED}Invalid choice${C_RESET}"
-            show_main_menu
-            ;;
-    esac
+        case "$choice" in
+            1)
+                echo ""
+                require_claude_auth && cs
+                ;;
+            2)
+                echo ""
+                ralph-enable
+                ;;
+            3)
+                echo ""
+                if [ -f "/workspace/.ralph/PROMPT.md" ]; then
+                    hx /workspace/.ralph/PROMPT.md
+                else
+                    echo -e "${C_YELLOW}⚠${C_RESET} .ralph/PROMPT.md not found. Run 'ralph-enable' first."
+                fi
+                ;;
+            4)
+                echo ""
+                if [ -f "/workspace/.ralph/fix_plan.md" ]; then
+                    hx /workspace/.ralph/fix_plan.md
+                else
+                    echo -e "${C_YELLOW}⚠${C_RESET} .ralph/fix_plan.md not found. Run 'ralph-enable' first."
+                fi
+                ;;
+            5)
+                echo ""
+                if require_claude_auth; then
+                    if command -v tmux &>/dev/null; then
+                        ralph-tmux
+                    else
+                        /usr/local/bin/ralph-wrapper.sh
+                    fi
+                fi
+                ;;
+            6)
+                echo ""
+                view-logs
+                ;;
+            s|S|"")
+                echo ""
+                return
+                ;;
+            *)
+                echo -e "${C_RED}Invalid choice${C_RESET}"
+                ;;
+        esac
+    done
 }
 
 # Show quick menu for returning users (with timeout)
 show_quick_menu() {
-    echo ""
-    echo -e "${C_BOLD}Quick Start${C_RESET} ${C_DIM}(auto-skip in 3s, press 's' to skip now)${C_RESET}"
-    echo ""
-    echo -e "  ${C_BOLD}[1]${C_RESET} cs - Start Claude"
-    echo -e "  ${C_BOLD}[2]${C_RESET} ralph-run - Run loop with git"
-    echo -e "  ${C_BOLD}[m]${C_RESET} Full menu"
-    echo -e "  ${C_BOLD}[s]${C_RESET} Shell"
-    echo ""
+    while true; do
+        echo ""
+        echo -e "${C_BOLD}Quick Start${C_RESET} ${C_DIM}(auto-skip in 3s, press 's' to skip now)${C_RESET}"
+        echo ""
+        echo -e "  ${C_BOLD}[1]${C_RESET} Start Claude (interactive)"
+        echo -e "  ${C_BOLD}[2]${C_RESET} Run Ralph (branch + auto-commit + push)"
+        echo -e "  ${C_BOLD}[m]${C_RESET} Full menu"
+        echo -e "  ${C_BOLD}[s]${C_RESET} Shell"
+        echo ""
 
-    # Read with timeout
-    read -t 3 -p "Choice: " choice || choice="timeout"
+        # Read with timeout
+        read -t 3 -p "Choice: " choice || choice="timeout"
 
-    case "$choice" in
-        1)
-            echo ""
-            exec cs
-            ;;
-        2)
-            echo ""
-            exec /usr/local/bin/ralph-wrapper.sh
-            ;;
-        m|M)
-            show_main_menu
-            ;;
-        s|S|""|timeout)
-            echo ""
-            return
-            ;;
-        *)
-            echo -e "${C_RED}Invalid choice${C_RESET}"
-            show_quick_menu
-            ;;
-    esac
+        case "$choice" in
+            1)
+                echo ""
+                require_claude_auth && cs
+                ;;
+            2)
+                echo ""
+                if require_claude_auth; then
+                    if command -v tmux &>/dev/null; then
+                        ralph-tmux
+                    else
+                        /usr/local/bin/ralph-wrapper.sh
+                    fi
+                fi
+                ;;
+            m|M)
+                show_main_menu
+                return
+                ;;
+            s|S|""|timeout)
+                echo ""
+                return
+                ;;
+            *)
+                echo -e "${C_RED}Invalid choice${C_RESET}"
+                ;;
+        esac
+    done
 }
 
 # Main function - orchestrates the guided setup flow

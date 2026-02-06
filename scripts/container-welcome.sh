@@ -82,8 +82,9 @@ else
     RALPH_OK=false
 fi
 
-# Dependency detection
+# Dependency detection (cache result to /tmp for guided-setup.sh to reuse)
 DEP_COUNT=$(/usr/local/bin/detect-dependencies.sh --count 2>/dev/null || echo "0")
+echo "$DEP_COUNT" > /tmp/.dep-count-cache
 if [ "$DEP_COUNT" -gt 0 ]; then
     # Check if node_modules or other install indicators exist
     if [ -d "/workspace/node_modules" ] || [ -d "/workspace/venv" ] || [ -d "/workspace/.venv" ] || [ -d "/workspace/vendor" ]; then
@@ -111,6 +112,6 @@ if [ ! -f "$FIRST_TIME" ] || [ "$NEEDS_SETUP" = true ]; then
     touch "$FIRST_TIME"
 else
     # Returning user — just show a hint, no disappearing menu
-    echo -e "${C_DIM}Type ${C_RESET}${C_BOLD}menu${C_RESET}${C_DIM} for setup options, ${C_RESET}${C_BOLD}cs${C_RESET}${C_DIM} for Claude, ${C_RESET}${C_BOLD}ralph-monitor${C_RESET}${C_DIM} for Ralph with tmux${C_RESET}"
+    echo -e "${C_DIM}Type ${C_RESET}${C_BOLD}menu${C_RESET}${C_DIM} for setup options, ${C_RESET}${C_BOLD}cs${C_RESET}${C_DIM} for Claude, ${C_RESET}${C_BOLD}ralph-run${C_RESET}${C_DIM} for Ralph loop${C_RESET}"
     echo ""
 fi

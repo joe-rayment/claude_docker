@@ -50,8 +50,10 @@ RUN HELIX_VERSION=25.07.1 && \
     mv helix-*/hx /usr/local/bin/ && \
     mkdir -p /usr/local/lib/helix && \
     mv helix-*/runtime /usr/local/lib/helix/runtime && \
-    rm -rf helix-* helix.tar.xz && \
-    ln -s /usr/local/lib/helix/runtime /usr/local/bin/runtime
+    rm -rf helix-* helix.tar.xz
+
+# Tell Helix where to find its runtime files
+ENV HELIX_RUNTIME=/usr/local/lib/helix/runtime
 
 # Install Python packages (using --break-system-packages for container environment)
 RUN pip3 install --no-cache-dir --break-system-packages \
