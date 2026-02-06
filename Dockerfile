@@ -123,6 +123,7 @@ COPY --chown=agent:agent scripts/guided-setup.sh /usr/local/bin/guided-setup.sh
 COPY --chown=agent:agent scripts/ralph-watchdog.sh /usr/local/bin/ralph-watchdog
 COPY --chown=agent:agent scripts/ralph-tail-logs.sh /usr/local/bin/ralph-tail-logs
 COPY --chown=agent:agent scripts/ralph-tmux.sh /usr/local/bin/ralph-tmux
+COPY --chown=agent:agent scripts/ralph-refresh-tasks.sh /usr/local/bin/ralph-refresh
 
 # Make scripts executable
 USER root
@@ -134,6 +135,7 @@ RUN chmod +x /usr/local/bin/entrypoint.sh \
              /usr/local/bin/guided-setup.sh \
              /usr/local/bin/ralph-watchdog \
              /usr/local/bin/ralph-tail-logs \
+             /usr/local/bin/ralph-refresh \
              /usr/local/bin/ralph-tmux
 USER agent
 

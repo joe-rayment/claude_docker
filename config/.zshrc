@@ -57,6 +57,7 @@ alias ralph-spec='hx .ralph/PROMPT.md'             # Edit project spec
 alias ralph-plan='hx .ralph/fix_plan.md'           # Edit task list
 alias ralph-run='/usr/local/bin/ralph-wrapper.sh'  # Run Ralph (branch + commit + push)
 alias ralph-watch='ralph-watchdog'                   # Monitor Claude Code execution health
+alias ralph-refresh='/usr/local/bin/ralph-refresh'  # Refresh task list from spec
 
 # History configuration
 HISTFILE=~/.zsh_history

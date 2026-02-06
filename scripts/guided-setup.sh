@@ -173,6 +173,7 @@ show_main_menu() {
         echo -e "  ${C_BOLD}[4]${C_RESET} Edit task list (.ralph/fix_plan.md)"
         echo -e "  ${C_BOLD}[5]${C_RESET} Run Ralph (branch + auto-commit + push)"
         echo -e "  ${C_BOLD}[6]${C_RESET} View logs"
+        echo -e "  ${C_BOLD}[7]${C_RESET} Refresh task list from spec"
         echo -e "  ${C_BOLD}[s]${C_RESET} Skip to shell"
         echo ""
         read -p "Choice: " choice
@@ -223,6 +224,12 @@ show_main_menu() {
             6)
                 echo ""
                 view-logs
+                ;;
+            7)
+                echo ""
+                if require_claude_auth; then
+                    /usr/local/bin/ralph-refresh
+                fi
                 ;;
             s|S|"")
                 echo ""
