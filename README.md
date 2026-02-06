@@ -1,67 +1,83 @@
 # Claude Code Docker Development Environment
 
-A portable, pre-configured development environment for Claude Code. Run one command from any project directory and start building.
+A portable, pre-configured development environment for Claude Code. Apply it to any project directory and start building.
 
 ---
 
-## Quickstart
+## Setup
 
-### Prerequisites
+**Prerequisite:** [Docker Desktop](https://www.docker.com/products/docker-desktop/) installed and running.
 
-**Docker Desktop** installed and running
-```bash
-# macOS
-brew install --cask docker
-open -a Docker   # Wait for it to fully start
-```
-
-### One-Line Setup
-
-From your project directory:
+### Apply to a project
 
 ```bash
+cd /path/to/your/project
 curl -fsSL https://raw.githubusercontent.com/joe-rayment/claude_docker/main/bootstrap.sh | bash
 ```
 
-Or specify a project path:
+Or pass the path directly:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/joe-rayment/claude_docker/main/bootstrap.sh | bash -s -- /path/to/project
 ```
 
-This will:
-- Clone the environment into `.claude-dev/`
-- Build the container (first time only)
-- Create a uniquely-named container for your project
-- Install a `./claude-dev` launcher in your project root
-- Start everything up
+This clones the environment into `.claude-dev/`, builds the image, and installs a `./claude-dev` launcher in your project root. Both are auto-added to `.gitignore`.
 
-Then enter your container:
+### Enter the container
 
 ```bash
 ./claude-dev
 ```
 
-### First Time Inside Container
+That's it. Builds if needed, starts if stopped, execs in. First time inside, the container walks you through Claude auth, git config, and dependency detection.
 
-The container will guide you through:
-- Claude authentication (opens browser)
-- Git configuration
-- GitHub authentication (for pushing, PRs, issues)
-- Dependency installation (auto-detected)
-- Getting started menu
+---
 
-### Daily Use
+## Daily Commands
+
+All commands run from your project root:
 
 ```bash
-# From your project directory — builds, starts, and execs in one step:
-./claude-dev
+./claude-dev              # Build → start → enter (one step)
+./claude-dev --stop       # Stop the container
+./claude-dev --status     # Show container and health status
+./claude-dev --update     # Pull latest environment, rebuild, update launcher
+./claude-dev --rebuild    # Force rebuild (no cache)
+```
 
-# Other commands:
-./claude-dev --stop      # Stop the container
-./claude-dev --status    # Show container status
-./claude-dev --update    # Pull latest environment, rebuild, update launcher
-./claude-dev --rebuild   # Force rebuild (no cache)
+Auth, git config, and shell history persist across stops and rebuilds — they live in a named Docker volume. Only `docker compose down -v` removes them.
+
+---
+
+## Inside the Container
+
+### Claude
+
+| Command | Description |
+|---------|-------------|
+| `cs` | Start Claude (skip permissions) |
+| `csd` | Start Claude with debug logging |
+| `claude` | Start Claude (normal) |
+
+### Editor & Tools
+
+| Command | Description |
+|---------|-------------|
+| `hx file.txt` | Open file in Helix editor |
+| `vim file.txt` | Alias for Helix |
+| `view-logs` | Interactive log viewer |
+| `clog-latest` | View latest Claude log |
+| `Ctrl+Space` | IntelliShell: search saved commands |
+| `Ctrl+B` | IntelliShell: bookmark a command |
+
+### Multiple Terminals
+
+Each `./claude-dev` call execs into the same running container:
+
+```bash
+# Tab 1: Claude        # Tab 2: Editor         # Tab 3: Tests
+./claude-dev            ./claude-dev             ./claude-dev
+cs                      hx src/main.py           npm test
 ```
 
 ---
@@ -75,84 +91,22 @@ The container will guide you through:
 - **Ralph**: Autonomous development loop ([frankbria/ralph-claude-code](https://github.com/frankbria/ralph-claude-code))
 - **Persistent**: Auth, history, and configs saved between sessions
 - **Auto-detection**: Recognizes package.json, requirements.txt, go.mod, Cargo.toml, Gemfile
-
----
-
-## Project Structure
-
-After setup, your project looks like this:
-
-```
-your-project/
-├── claude-dev            # Launcher (run ./claude-dev to enter container)
-├── .claude-dev/          # Claude Docker environment
-│   ├── docker-compose.yml  # Generated with unique names
-│   ├── Dockerfile
-│   └── ...
-├── src/                  # Your actual project files
-├── package.json
-└── ...
-```
-
-Both `claude-dev` and `.claude-dev/` are automatically added to your `.gitignore`.
-
-Your project files appear at `/workspace` inside the container.
-
-Container naming convention:
-| Project Folder | Container Name | Volume Name |
-|----------------|----------------|-------------|
-| MyProject | myproject-claude-dev | myproject-agent-home |
-| my-web-app | my-web-app-claude-dev | my-web-app-agent-home |
+- **Health check**: Docker monitors Claude auth status automatically
 
 ---
 
 ## Ralph - Autonomous Development
 
-Ralph ([frankbria/ralph-claude-code](https://github.com/frankbria/ralph-claude-code)) provides intelligent autonomous development with built-in safety features.
+Ralph ([frankbria/ralph-claude-code](https://github.com/frankbria/ralph-claude-code)) provides intelligent autonomous development with built-in safety features: rate limiting, circuit breaker (3x no progress = exit), session continuity, and git automation.
 
-### Features
-
-- **Intelligent exit detection** - Dual-condition completion (indicators + EXIT_SIGNAL)
-- **Rate limiting** - Configurable calls/hour (default 100)
-- **Circuit breaker** - Detects stuck loops (3x no progress = exit)
-- **Session continuity** - 24-hour sessions with `--resume`
-- **Git automation** - Auto-commits before and after loop runs
-
-### Project Structure
-
-Ralph uses a `.ralph/` folder to organize project files:
-
-```
-your-project/
-├── .ralph/
-│   ├── PROMPT.md       # Project specification
-│   ├── fix_plan.md     # Task list
-│   ├── AGENT.md        # Agent instructions
-│   └── ...
-├── .ralphrc            # Configuration
-└── ...
-```
-
-### Workflow
+### Quick Start
 
 ```bash
-# 1. Initialize Ralph (interactive wizard)
-ralph-enable
-
-# 2. Edit your spec
-ralph-spec
-
-# 3. Plan with Claude interactively
-cs
-
-# 4. Edit your task list
-ralph-plan
-
-# 5. Run with git automation (auto-commits!)
-ralph-run
-
-# 6. Review
-git log --oneline -5
+ralph-enable        # Interactive setup wizard
+ralph-spec          # Edit your project spec (.ralph/PROMPT.md)
+cs                  # Plan interactively with Claude
+ralph-plan          # Edit your task list (.ralph/fix_plan.md)
+ralph-run           # Run with automatic git commits
 ```
 
 ### Commands
@@ -164,120 +118,53 @@ git log --oneline -5
 | `ralph --monitor` | Run with tmux dashboard |
 | `ralph-run` | Run with git automation (auto-commits) |
 | `ralph-enable` | Interactive setup wizard |
-| `ralph-init` | Alias for ralph-enable |
 | `ralph-spec` | Edit .ralph/PROMPT.md |
 | `ralph-plan` | Edit .ralph/fix_plan.md |
 
-### Git Automation
-
-The `ralph-run` command wraps ralph with automatic git commits:
-
-1. **Before loop**: Creates a checkpoint commit if there are uncommitted changes
-2. **After loop**: Generates an AI commit message and commits automatically
-
-This ensures you always have a safety checkpoint and clean commits for each Ralph session.
-
 ---
 
-## Commands Reference
+## Project Structure
 
-### Claude
-| Command | Description |
-|---------|-------------|
-| `cs` | Start Claude (skip permissions) |
-| `csd` | Start Claude with debug logging |
-| `claude` | Start Claude (normal) |
-
-### Logs
-| Command | Description |
-|---------|-------------|
-| `view-logs` | Interactive log viewer |
-| `clog-latest` | View latest log |
-| `clog-export` | Export log to workspace |
-
-### Editor
-| Command | Description |
-|---------|-------------|
-| `hx file.txt` | Open file in Helix |
-| `vim file.txt` | Alias for Helix |
-
-### IntelliShell
-| Shortcut | Description |
-|----------|-------------|
-| `Ctrl+Space` | Search saved commands |
-| `Ctrl+B` | Bookmark command |
-
----
-
-## Multiple Terminal Sessions
-
-Open multiple tabs connected to the same container. Use `./claude-dev --status` to see the container name, then:
-
-```bash
-# Tab 1: Claude
-./claude-dev
-cs
-
-# Tab 2: Editor (new terminal tab)
-./claude-dev
-hx src/main.py
-
-# Tab 3: Tests (new terminal tab)
-./claude-dev
-npm test
 ```
+your-project/
+├── claude-dev            # Launcher script
+├── .claude-dev/          # Environment (this repo, cloned)
+│   ├── docker-compose.yml
+│   ├── Dockerfile
+│   └── ...
+├── src/                  # Your project files
+└── ...
+```
+
+Your project mounts at `/workspace` inside the container. Each project gets a unique container and volume based on the directory name:
+
+| Project Folder | Container Name | Volume Name |
+|----------------|----------------|-------------|
+| MyProject | myproject-claude-dev | myproject-agent-home |
+| my-web-app | my-web-app-claude-dev | my-web-app-agent-home |
 
 ---
 
 ## Troubleshooting
 
-### "docker: command not found"
-Docker Desktop isn't installed or not in PATH. Install it and restart your terminal.
-
-### "Cannot connect to Docker daemon"
-Docker Desktop isn't running. Open Docker Desktop and wait for it to start.
-
-### "container name already in use"
-```bash
-./claude-dev --stop
-./claude-dev
-```
-
-### "./claude-dev: Permission denied"
-```bash
-chmod +x ./claude-dev
-```
-
-### Claude authentication issues
-```bash
-claude auth logout
-claude auth login
-```
-
-### Configs not updating after rebuild
-The home directory is persisted in a volume. To reset:
-```bash
-cd .claude-dev
-docker compose down -v   # Warning: removes auth, history
-cd ..
-./claude-dev             # Rebuilds and re-enters
-# Re-authenticate after this
-```
-
-### Permission issues with project files
-```bash
-# On your host machine
-chmod -R 755 /path/to/your/project
-```
+| Problem | Fix |
+|---------|-----|
+| `docker: command not found` | Install Docker Desktop and restart your terminal |
+| `Cannot connect to Docker daemon` | Open Docker Desktop and wait for it to start |
+| `container name already in use` | `./claude-dev --stop && ./claude-dev` |
+| `Permission denied` on `./claude-dev` | `chmod +x ./claude-dev` |
+| Claude auth issues | `claude auth logout && claude auth login` |
+| Configs not updating after rebuild | Configs auto-sync now. To fully reset: `cd .claude-dev && docker compose down -v` (removes auth/history) |
+| Permission issues with project files | `chmod -R 755 /path/to/your/project` on host |
 
 ---
 
-## Manual Setup (Alternative)
+## Manual Setup
 
 If you prefer not to use the bootstrap script:
 
 ```bash
-# 1. Clone this repo INTO your project directory
+# 1. Clone into your project directory
 cd /path/to/your/project
 git clone https://github.com/joe-rayment/claude_docker.git .claude-dev
 cd .claude-dev
@@ -285,18 +172,19 @@ cd .claude-dev
 # 2. Create .env file with your project path (if not using parent directory)
 echo "PROJECT_PATH=/path/to/your/project" > .env
 
-# 3. Create docker-compose.yml with your project name
-# (copy from docker-compose.yml.example and update container/volume names)
+# 3. Copy and edit docker-compose.yml
+cp docker-compose.yml.example docker-compose.yml
+# Update container_name and volume name for your project
 
 # 4. Build and start
 docker compose build
 docker compose up -d
 
-# 5. Copy the launcher to project root
+# 5. Install launcher
 cp scripts/launcher.sh ../claude-dev
 chmod +x ../claude-dev
 
-# 6. Enter the container
+# 6. Enter
 cd ..
 ./claude-dev
 ```
@@ -305,20 +193,16 @@ cd ..
 
 ## Configuration
 
-### Using a Different Project Path
-
-The bootstrap script automatically configures the parent directory. For manual setup, the docker-compose.yml mounts `../` as `/workspace`.
-
 ### Adding Python Packages
 
-Edit `Dockerfile`, then rebuild:
+Edit `.claude-dev/Dockerfile`, then rebuild:
+
 ```dockerfile
 RUN pip3 install --no-cache-dir your-package
 ```
 
 ```bash
-docker compose build
-docker compose down && docker compose up -d
+./claude-dev --rebuild
 ```
 
 ---
