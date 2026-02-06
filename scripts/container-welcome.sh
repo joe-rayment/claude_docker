@@ -32,15 +32,8 @@ if [ -f "$SESSION_MARKER" ]; then
     # If Claude isn't authenticated, trigger auth — nothing else works without it
     if [ ! -f "/home/agent/.claude/credentials" ]; then
         echo ""
-        echo -e "${C_YELLOW}⚠${C_RESET}  Claude is not authenticated — starting login..."
-        echo ""
-        claude auth login
-        echo ""
-        if [ -f "/home/agent/.claude/credentials" ]; then
-            echo -e "${C_GREEN}✓${C_RESET} Claude authenticated"
-        else
-            echo -e "${C_YELLOW}⚠${C_RESET}  Not authenticated. Run ${C_BOLD}claude auth login${C_RESET} to connect."
-        fi
+        echo -e "${C_YELLOW}⚠${C_RESET}  Claude is not authenticated."
+        echo -e "  Run ${C_BOLD}claude${C_RESET} and then type ${C_BOLD}/login${C_RESET} to connect."
     fi
     # Returning session — show compact command hint
     echo ""
