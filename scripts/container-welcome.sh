@@ -105,34 +105,31 @@ if [ ! -f "$FIRST_TIME" ] || [ "$NEEDS_SETUP" = true ]; then
     touch "$FIRST_TIME"
 else
     # Returning user with everything configured - show quick menu
-    echo -e "${C_BOLD}Quick Start${C_RESET} ${C_DIM}(auto-skip in 3s, press 's' to skip now)${C_RESET}"
+    echo -e "${C_BOLD}Quick Start${C_RESET} ${C_DIM}(auto-shell in 5s)${C_RESET}"
     echo ""
     echo -e "  ${C_BOLD}[1]${C_RESET} cs - Start Claude"
     echo -e "  ${C_BOLD}[2]${C_RESET} ralph-run - Run loop with git"
-    echo -e "  ${C_BOLD}[m]${C_RESET} Full menu"
-    echo -e "  ${C_BOLD}[s]${C_RESET} Shell"
+    echo -e "  ${C_BOLD}[3]${C_RESET} Full menu"
+    echo -e "  ${C_BOLD}[Enter]${C_RESET} Shell"
     echo ""
 
-    # Read with timeout
-    read -t 3 -p "Choice: " choice || choice="timeout"
+    # Read single keypress with timeout
+    read -t 5 -n 1 -p "Choice: " choice || choice="timeout"
+    echo ""
 
     case "$choice" in
         1)
-            echo ""
             exec cs
             ;;
         2)
-            echo ""
             exec /usr/local/bin/ralph-wrapper.sh
             ;;
-        m|M)
+        3)
             /usr/local/bin/guided-setup.sh
             ;;
-        s|S|""|timeout)
-            echo ""
+        ""|timeout)
             ;;
         *)
-            echo ""
             ;;
     esac
 fi
