@@ -10,10 +10,10 @@ declare -a DETECTED_FILES
 declare -a DETECTED_MANAGERS
 declare -a INSTALL_COMMANDS
 
-# Check for dependency files
+# Check for dependency files (skip if already installed)
 check_deps() {
     # Node.js
-    if [ -f "$WORKSPACE/package.json" ]; then
+    if [ -f "$WORKSPACE/package.json" ] && [ ! -d "$WORKSPACE/node_modules" ]; then
         DETECTED_FILES+=("package.json")
         if [ -f "$WORKSPACE/pnpm-lock.yaml" ]; then
             DETECTED_MANAGERS+=("pnpm")
@@ -29,41 +29,58 @@ check_deps() {
 
     # Python
     if [ -f "$WORKSPACE/requirements.txt" ]; then
-        DETECTED_FILES+=("requirements.txt")
-        DETECTED_MANAGERS+=("pip")
-        INSTALL_COMMANDS+=("pip install --break-system-packages -r requirements.txt")
+        # Check if first non-comment package from requirements.txt is installed
+        local first_pkg
+        first_pkg=$(grep -m1 -v '^\s*#\|^\s*$' "$WORKSPACE/requirements.txt" 2>/dev/null | sed 's/[>=<!\[].*//' | tr -d '[:space:]')
+        if [ -z "$first_pkg" ] || ! pip show "$first_pkg" &>/dev/null; then
+            DETECTED_FILES+=("requirements.txt")
+            DETECTED_MANAGERS+=("pip")
+            INSTALL_COMMANDS+=("pip install --break-system-packages -r requirements.txt")
+        fi
     fi
 
     if [ -f "$WORKSPACE/pyproject.toml" ]; then
-        DETECTED_FILES+=("pyproject.toml")
         if grep -q "poetry" "$WORKSPACE/pyproject.toml" 2>/dev/null; then
-            DETECTED_MANAGERS+=("poetry")
-            INSTALL_COMMANDS+=("poetry install")
+            if [ ! -d "$WORKSPACE/.venv" ]; then
+                DETECTED_FILES+=("pyproject.toml")
+                DETECTED_MANAGERS+=("poetry")
+                INSTALL_COMMANDS+=("poetry install")
+            fi
         elif grep -q "uv" "$WORKSPACE/pyproject.toml" 2>/dev/null || [ -f "$WORKSPACE/uv.lock" ]; then
-            DETECTED_MANAGERS+=("uv")
-            INSTALL_COMMANDS+=("uv sync")
+            if [ ! -d "$WORKSPACE/.venv" ]; then
+                DETECTED_FILES+=("pyproject.toml")
+                DETECTED_MANAGERS+=("uv")
+                INSTALL_COMMANDS+=("uv sync")
+            fi
         else
-            DETECTED_MANAGERS+=("pip")
-            INSTALL_COMMANDS+=("pip install --break-system-packages -e .")
+            # pip -e . : check for .egg-info directory
+            local has_egg_info=false
+            ls "$WORKSPACE"/*.egg-info &>/dev/null && has_egg_info=true
+            ls "$WORKSPACE"/src/*/*.egg-info &>/dev/null && has_egg_info=true
+            if [ "$has_egg_info" = false ]; then
+                DETECTED_FILES+=("pyproject.toml")
+                DETECTED_MANAGERS+=("pip")
+                INSTALL_COMMANDS+=("pip install --break-system-packages -e .")
+            fi
         fi
     fi
 
     # Go
-    if [ -f "$WORKSPACE/go.mod" ]; then
+    if [ -f "$WORKSPACE/go.mod" ] && [ ! -f "$WORKSPACE/go.sum" ]; then
         DETECTED_FILES+=("go.mod")
         DETECTED_MANAGERS+=("go")
         INSTALL_COMMANDS+=("go mod download")
     fi
 
     # Rust
-    if [ -f "$WORKSPACE/Cargo.toml" ]; then
+    if [ -f "$WORKSPACE/Cargo.toml" ] && [ ! -d "$WORKSPACE/target" ]; then
         DETECTED_FILES+=("Cargo.toml")
         DETECTED_MANAGERS+=("cargo")
         INSTALL_COMMANDS+=("cargo build")
     fi
 
     # Ruby
-    if [ -f "$WORKSPACE/Gemfile" ]; then
+    if [ -f "$WORKSPACE/Gemfile" ] && [ ! -d "$WORKSPACE/vendor/bundle" ]; then
         DETECTED_FILES+=("Gemfile")
         DETECTED_MANAGERS+=("bundler")
         INSTALL_COMMANDS+=("bundle install")

@@ -21,7 +21,7 @@ is_git_configured() {
 }
 
 is_github_authenticated() {
-    gh auth status &>/dev/null
+    [ -f "/home/agent/.config/gh/hosts.yml" ] || gh auth status &>/dev/null
 }
 
 is_ralph_ready() {
