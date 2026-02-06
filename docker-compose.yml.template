@@ -3,8 +3,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: claude-code-dev:latest
-    container_name: claude-dev-environment
+    image: ${IMAGE_TAG}
+    container_name: ${CONTAINER_NAME}
 
     # Interactive terminal
     stdin_open: true
@@ -12,10 +12,10 @@ services:
 
     # Volume mounts
     volumes:
-      # Mount your project as workspace (set PROJECT_PATH in .env)
-      - ${PROJECT_PATH:-.}/:/workspace
+      # Mount your project as workspace
+      - ../:/workspace
       # Persistent home directory (includes .claude, .gitconfig, .zsh_history, etc.)
-      - agent-home:/home/agent
+      - ${VOLUME_NAME}:/home/agent
 
     # Network configuration
     network_mode: bridge
@@ -35,5 +35,5 @@ services:
     command: /bin/zsh
 
 volumes:
-  agent-home:
+  ${VOLUME_NAME}:
     driver: local

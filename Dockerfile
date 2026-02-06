@@ -1,6 +1,7 @@
 # Claude Code Development Environment
 # Based on official Docker Claude Code sandbox
-FROM docker/sandbox-templates:claude-code
+# Pin base image digest for reproducible builds (update periodically)
+FROM docker/sandbox-templates:claude-code@sha256:be00c5a012768c207e1b445e30c1d1a2b58d408ed65c6b39620d615c7e7e56ba
 
 # Set environment variables
 ENV DEBIAN_FRONTEND=noninteractive
@@ -77,12 +78,13 @@ RUN pip3 install --no-cache-dir --break-system-packages poetry uv \
 # Switch back to agent user (default user in Claude sandbox)
 USER agent
 
-# Install IntelliShell for the agent user
-RUN curl -sSf https://raw.githubusercontent.com/lasantosr/intelli-shell/main/install.sh | sh
+# Install IntelliShell for the agent user (pinned to v3.4.0)
+RUN curl -sSf https://raw.githubusercontent.com/lasantosr/intelli-shell/v3.4.0/install.sh | sh
 
-# Install frankbria/ralph-claude-code
+# Install frankbria/ralph-claude-code (pinned to known-good commit)
 RUN git clone https://github.com/frankbria/ralph-claude-code.git /tmp/ralph-claude-code \
     && cd /tmp/ralph-claude-code \
+    && git checkout abcfa8b695ec388a33c03c1bcba9af7c89b25ff6 \
     && chmod +x install.sh \
     && ./install.sh \
     && rm -rf /tmp/ralph-claude-code

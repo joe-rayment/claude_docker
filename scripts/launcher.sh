@@ -38,13 +38,16 @@ if [ ! -f "$COMPOSE_FILE" ]; then
     exit 1
 fi
 
-# Read container name from docker-compose.yml
+# Read container name and image tag from docker-compose.yml
 CONTAINER_NAME=$(grep 'container_name:' "$COMPOSE_FILE" | head -1 | sed 's/.*container_name: *//' | sed 's/[[:space:]]*#.*//' | tr -d '[:space:]')
+IMAGE_TAG=$(grep '^\s*image:' "$COMPOSE_FILE" | head -1 | sed 's/.*image: *//' | sed 's/[[:space:]]*#.*//' | tr -d '[:space:]')
 
 if [ -z "$CONTAINER_NAME" ]; then
     echo -e "${C_RED}Error: Could not read container_name from $COMPOSE_FILE${C_RESET}"
     exit 1
 fi
+
+IMAGE_TAG="${IMAGE_TAG:-claude-code-dev:latest}"
 
 # Helper: run docker compose with the correct file
 dc() {
@@ -63,7 +66,7 @@ container_exists() {
 
 # Helper: check if image exists
 image_exists() {
-    docker image inspect claude-code-dev:latest &>/dev/null
+    docker image inspect "$IMAGE_TAG" &>/dev/null
 }
 
 # Helper: record the current git SHA after a successful build
@@ -146,12 +149,28 @@ cmd_default() {
         build_image
         record_build_sha
     elif repo_has_changed; then
-        echo -e "${C_YELLOW}→${C_RESET} Environment updated — rebuilding image..."
-        if is_running || container_exists; then
-            dc down 2>/dev/null || true
+        # Check for active sessions before tearing down the container
+        if is_running; then
+            local active_sessions
+            active_sessions=$(docker exec "$CONTAINER_NAME" sh -c 'ps aux | grep -c "[c]laude"' 2>/dev/null || echo "0")
+            if [ "$active_sessions" -gt 0 ]; then
+                echo -e "${C_YELLOW}⚠${C_RESET}  Environment updated, but ${C_BOLD}${active_sessions} active Claude session(s)${C_RESET} detected."
+                echo -e "  Run ${C_BOLD}./claude-dev --rebuild${C_RESET} when sessions are done to pick up changes."
+                # Skip rebuild, just exec into the running container
+            else
+                echo -e "${C_YELLOW}→${C_RESET} Environment updated — rebuilding image..."
+                dc down 2>/dev/null || true
+                build_image
+                record_build_sha
+            fi
+        else
+            echo -e "${C_YELLOW}→${C_RESET} Environment updated — rebuilding image..."
+            if container_exists; then
+                dc down 2>/dev/null || true
+            fi
+            build_image
+            record_build_sha
         fi
-        build_image
-        record_build_sha
     fi
 
     # Start if not running

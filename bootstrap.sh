@@ -90,8 +90,6 @@ echo ""
 if [ -d "$CLONE_DIR" ]; then
     echo -e "${C_YELLOW}→${C_RESET} Updating existing .claude-dev..."
     cd "$CLONE_DIR"
-    # Reset generated files before pulling to avoid conflicts
-    git checkout -- docker-compose.yml 2>/dev/null || true
     git pull --quiet
     cd ..
 else
@@ -101,55 +99,20 @@ fi
 
 echo -e "${C_GREEN}✓${C_RESET} Repository ready"
 
-# Generate docker-compose.yml with dynamic names
+# Generate docker-compose.yml from template with project-specific names
 cd "$CLONE_DIR"
+IMAGE_TAG="claude-code-dev:${PROJECT_NAME}"
 
-cat > docker-compose.yml <<EOF
-services:
-  claude-dev:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: claude-code-dev:latest
-    container_name: ${CONTAINER_NAME}
-
-    # Interactive terminal
-    stdin_open: true
-    tty: true
-
-    # Volume mounts
-    volumes:
-      # Mount your project as workspace
-      - ../:/workspace
-      # Persistent home directory (includes .claude, .gitconfig, .zsh_history, etc.)
-      - ${VOLUME_NAME}:/home/agent
-
-    # Network configuration
-    network_mode: bridge
-
-    # Working directory
-    working_dir: /workspace
-
-    # Health check
-    healthcheck:
-      test: ["CMD-SHELL", "claude auth status 2>/dev/null || exit 1"]
-      interval: 60s
-      timeout: 10s
-      retries: 2
-      start_period: 30s
-
-    # Keep container running
-    command: /bin/zsh
-
-volumes:
-  ${VOLUME_NAME}:
-    driver: local
-EOF
+export CONTAINER_NAME VOLUME_NAME IMAGE_TAG
+sed -e "s|\${CONTAINER_NAME}|${CONTAINER_NAME}|g" \
+    -e "s|\${VOLUME_NAME}|${VOLUME_NAME}|g" \
+    -e "s|\${IMAGE_TAG}|${IMAGE_TAG}|g" \
+    docker-compose.yml.template > docker-compose.yml
 
 echo -e "${C_GREEN}✓${C_RESET} Generated docker-compose.yml"
 
 # Check if image exists
-if ! docker image inspect claude-code-dev:latest &> /dev/null; then
+if ! docker image inspect "$IMAGE_TAG" &> /dev/null; then
     echo ""
     echo -e "${C_YELLOW}→${C_RESET} Building container (first time, this may take a few minutes)..."
     docker compose build --quiet

@@ -25,6 +25,14 @@ if [ -n "$TMUX" ]; then
     return 2>/dev/null || exit 0
 fi
 
+# Only show welcome once per container start (not every docker exec / new tab)
+# The session marker is in /tmp which is cleared on container restart
+SESSION_MARKER="/tmp/.claude-dev-welcome-shown"
+if [ -f "$SESSION_MARKER" ]; then
+    return 2>/dev/null || exit 0
+fi
+touch "$SESSION_MARKER"
+
 # Header
 if command -v figlet &> /dev/null; then
     echo -e "${C_BLUE}$(figlet -f slant 'Claude Dev' 2>/dev/null || echo 'Claude Development Container')${C_RESET}"
