@@ -83,14 +83,6 @@ USER agent
 # Install IntelliShell for the agent user (pinned to v3.4.0)
 RUN curl -sSf https://raw.githubusercontent.com/lasantosr/intelli-shell/v3.4.0/install.sh | sh
 
-# Install frankbria/ralph-claude-code (pinned to known-good commit)
-RUN git clone https://github.com/frankbria/ralph-claude-code.git /tmp/ralph-claude-code \
-    && cd /tmp/ralph-claude-code \
-    && git checkout abcfa8b695ec388a33c03c1bcba9af7c89b25ff6 \
-    && chmod +x install.sh \
-    && ./install.sh \
-    && rm -rf /tmp/ralph-claude-code
-
 # Create config directories
 RUN mkdir -p /home/agent/.config/helix /home/agent/.config/intelli-shell
 
@@ -116,29 +108,17 @@ COPY --chown=agent:agent scripts/entrypoint.sh /usr/local/bin/entrypoint.sh
 
 # Copy helper scripts
 COPY --chown=agent:agent scripts/container-welcome.sh /usr/local/bin/container-welcome
-COPY --chown=agent:agent scripts/ralph-wrapper.sh /usr/local/bin/ralph-wrapper.sh
 COPY --chown=agent:agent scripts/view-logs.sh /usr/local/bin/view-logs
 COPY --chown=agent:agent scripts/detect-dependencies.sh /usr/local/bin/detect-dependencies.sh
 COPY --chown=agent:agent scripts/guided-setup.sh /usr/local/bin/guided-setup.sh
-COPY --chown=agent:agent scripts/ralph-watchdog.sh /usr/local/bin/ralph-watchdog
-COPY --chown=agent:agent scripts/ralph-tail-logs.sh /usr/local/bin/ralph-tail-logs
-COPY --chown=agent:agent scripts/ralph-tmux.sh /usr/local/bin/ralph-tmux
-COPY --chown=agent:agent scripts/ralph-refresh-tasks.sh /usr/local/bin/ralph-refresh
-COPY --chown=agent:agent scripts/claude-wrapper.sh /usr/local/bin/claude-wrapper
 
 # Make scripts executable
 USER root
 RUN chmod +x /usr/local/bin/entrypoint.sh \
              /usr/local/bin/container-welcome \
-             /usr/local/bin/ralph-wrapper.sh \
              /usr/local/bin/view-logs \
              /usr/local/bin/detect-dependencies.sh \
-             /usr/local/bin/guided-setup.sh \
-             /usr/local/bin/ralph-watchdog \
-             /usr/local/bin/ralph-tail-logs \
-             /usr/local/bin/ralph-refresh \
-             /usr/local/bin/ralph-tmux \
-             /usr/local/bin/claude-wrapper
+             /usr/local/bin/guided-setup.sh
 USER agent
 
 # Set default shell to zsh

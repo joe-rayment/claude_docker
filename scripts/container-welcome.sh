@@ -20,7 +20,7 @@ if [ ! -t 0 ]; then
     return 2>/dev/null || exit 0
 fi
 
-# Skip welcome in tmux panes (e.g., ralph --monitor)
+# Skip welcome in tmux panes
 if [ -n "$TMUX" ]; then
     return 2>/dev/null || exit 0
 fi
@@ -37,7 +37,7 @@ if [ -f "$SESSION_MARKER" ]; then
     fi
     # Returning session — show compact command hint
     echo ""
-    echo -e "${C_DIM}Commands: ${C_RESET}${C_BOLD}menu${C_RESET}${C_DIM} (setup)  ${C_RESET}${C_BOLD}cs${C_RESET}${C_DIM} (claude)  ${C_RESET}${C_BOLD}ralph-run${C_RESET}${C_DIM} (ralph loop)${C_RESET}"
+    echo -e "${C_DIM}Commands: ${C_RESET}${C_BOLD}menu${C_RESET}${C_DIM} (setup)  ${C_RESET}${C_BOLD}cs${C_RESET}${C_DIM} (claude)${C_RESET}"
     echo ""
     return 2>/dev/null || exit 0
 fi
@@ -83,15 +83,6 @@ else
     GITHUB_OK=false
 fi
 
-# Ralph status (check for .ralph/PROMPT.md)
-if [ -f "/workspace/.ralph/PROMPT.md" ]; then
-    echo -e "  ${C_GREEN}[✓]${C_RESET} Ralph: Initialized"
-    RALPH_OK=true
-else
-    echo -e "  ${C_DIM}[ ]${C_RESET} Ralph: Not initialized ${C_DIM}(optional)${C_RESET}"
-    RALPH_OK=false
-fi
-
 # Dependency detection (cache result to /tmp for guided-setup.sh to reuse)
 DEP_COUNT=$(/usr/local/bin/detect-dependencies.sh --count 2>/dev/null || echo "0")
 echo "$DEP_COUNT" > /tmp/.dep-count-cache
@@ -122,6 +113,6 @@ if [ ! -f "$FIRST_TIME" ] || [ "$NEEDS_SETUP" = true ]; then
     touch "$FIRST_TIME"
 else
     # Returning user — just show a hint, no disappearing menu
-    echo -e "${C_DIM}Commands: ${C_RESET}${C_BOLD}menu${C_RESET}${C_DIM} (setup)  ${C_RESET}${C_BOLD}cs${C_RESET}${C_DIM} (claude)  ${C_RESET}${C_BOLD}ralph-run${C_RESET}${C_DIM} (ralph loop)${C_RESET}"
+    echo -e "${C_DIM}Commands: ${C_RESET}${C_BOLD}menu${C_RESET}${C_DIM} (setup)  ${C_RESET}${C_BOLD}cs${C_RESET}${C_DIM} (claude)${C_RESET}"
     echo ""
 fi

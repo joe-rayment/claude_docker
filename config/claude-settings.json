@@ -2,8 +2,6 @@
   "permissions": {
     "allow": [
       "Bash(*)",
-      "Bash(ralph)",
-      "Bash(ralph-*)",
       "Bash(view-logs)",
       "Read(~/.claude/debug/**)",
       "Write(/home/agent/.claude/exported-logs/**)"

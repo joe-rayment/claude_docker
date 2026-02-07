@@ -41,20 +41,6 @@ if [ ! -f /home/agent/.claude/settings.json ]; then
     cp /home/agent/.config/claude-settings-template.json /home/agent/.claude/settings.json 2>/dev/null || true
 fi
 
-# Patch Ralph for sandboxed Docker execution:
-# 1. Point CLAUDE_CODE_CMD at our wrapper script (single executable —
-#    newer Ralph quotes "$CLAUDE_CODE_CMD" so multi-word values break timeout)
-# 2. Clear CLAUDE_ALLOWED_TOOLS so --allowedTools flag is not passed
-#    (--allowedTools overrides --dangerously-skip-permissions)
-RALPH_LOOP="/home/agent/.ralph/ralph_loop.sh"
-if [ -f "$RALPH_LOOP" ]; then
-    sed -i 's|^CLAUDE_CODE_CMD=.*|CLAUDE_CODE_CMD="/usr/local/bin/claude-wrapper"|' "$RALPH_LOOP"
-    sed -i 's|^CLAUDE_ALLOWED_TOOLS=.*|CLAUDE_ALLOWED_TOOLS=""|' "$RALPH_LOOP"
-    if ! grep -q 'claude-wrapper' "$RALPH_LOOP"; then
-        echo -e "\033[33m⚠  WARNING: Failed to patch Ralph — Claude may prompt for tool approval.\033[0m" >&2
-    fi
-fi
-
 # Change to workspace directory
 cd /workspace
 

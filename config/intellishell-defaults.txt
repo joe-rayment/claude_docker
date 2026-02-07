@@ -7,9 +7,6 @@ claude --dangerously-skip-permissions --debug
 # Start Claude Code normally #claude
 claude
 
-# Run Ralph autonomous loop with git automation #ralph #claude
-ralph-run
-
 # View latest debug log #claude #logs
 cat ~/.claude/debug/latest
 

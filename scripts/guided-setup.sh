@@ -24,10 +24,6 @@ is_github_authenticated() {
     [ -f "/home/agent/.config/gh/hosts.yml" ] || gh auth status &>/dev/null
 }
 
-is_ralph_ready() {
-    [ -f "/workspace/.ralph/PROMPT.md" ]
-}
-
 get_dependency_count() {
     # Use cached count from container-welcome.sh if available
     if [ -f "/tmp/.dep-count-cache" ]; then
@@ -168,12 +164,7 @@ show_main_menu() {
         echo -e "${C_BOLD}${C_BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${C_RESET}"
         echo ""
         echo -e "  ${C_BOLD}[1]${C_RESET} Start Claude (interactive)"
-        echo -e "  ${C_BOLD}[2]${C_RESET} Initialize Ralph (ralph-enable)"
-        echo -e "  ${C_BOLD}[3]${C_RESET} Edit project spec (.ralph/PROMPT.md)"
-        echo -e "  ${C_BOLD}[4]${C_RESET} Edit task list (.ralph/fix_plan.md)"
-        echo -e "  ${C_BOLD}[5]${C_RESET} Run Ralph (branch + auto-commit + push)"
-        echo -e "  ${C_BOLD}[6]${C_RESET} View logs"
-        echo -e "  ${C_BOLD}[7]${C_RESET} Refresh task list from spec"
+        echo -e "  ${C_BOLD}[2]${C_RESET} View logs"
         echo -e "  ${C_BOLD}[s]${C_RESET} Skip to shell"
         echo ""
         read -p "Choice: " choice
@@ -190,46 +181,7 @@ show_main_menu() {
                 ;;
             2)
                 echo ""
-                ralph-enable
-                ;;
-            3)
-                echo ""
-                if [ -f "/workspace/.ralph/PROMPT.md" ]; then
-                    hx /workspace/.ralph/PROMPT.md
-                else
-                    echo -e "${C_YELLOW}⚠${C_RESET} .ralph/PROMPT.md not found. Run 'ralph-enable' first."
-                fi
-                ;;
-            4)
-                echo ""
-                if [ -f "/workspace/.ralph/fix_plan.md" ]; then
-                    hx /workspace/.ralph/fix_plan.md
-                else
-                    echo -e "${C_YELLOW}⚠${C_RESET} .ralph/fix_plan.md not found. Run 'ralph-enable' first."
-                fi
-                ;;
-            5)
-                echo ""
-                if require_claude_auth; then
-                    if command -v tmux &>/dev/null; then
-                        ralph-tmux
-                    else
-                        /usr/local/bin/ralph-wrapper.sh
-                    fi
-                    echo ""
-                    echo -e "${C_DIM}Type ${C_RESET}${C_BOLD}menu${C_RESET}${C_DIM} for options${C_RESET}"
-                    return
-                fi
-                ;;
-            6)
-                echo ""
                 view-logs
-                ;;
-            7)
-                echo ""
-                if require_claude_auth; then
-                    /usr/local/bin/ralph-refresh
-                fi
                 ;;
             s|S|"")
                 echo ""
@@ -249,7 +201,6 @@ show_quick_menu() {
         echo -e "${C_BOLD}Quick Start${C_RESET} ${C_DIM}(auto-skip in 3s, press 's' to skip now)${C_RESET}"
         echo ""
         echo -e "  ${C_BOLD}[1]${C_RESET} Start Claude (interactive)"
-        echo -e "  ${C_BOLD}[2]${C_RESET} Run Ralph (branch + auto-commit + push)"
         echo -e "  ${C_BOLD}[m]${C_RESET} Full menu"
         echo -e "  ${C_BOLD}[s]${C_RESET} Shell"
         echo ""
@@ -262,19 +213,6 @@ show_quick_menu() {
                 echo ""
                 if require_claude_auth; then
                     claude --dangerously-skip-permissions
-                    echo ""
-                    echo -e "${C_DIM}Type ${C_RESET}${C_BOLD}menu${C_RESET}${C_DIM} for options${C_RESET}"
-                    return
-                fi
-                ;;
-            2)
-                echo ""
-                if require_claude_auth; then
-                    if command -v tmux &>/dev/null; then
-                        ralph-tmux
-                    else
-                        /usr/local/bin/ralph-wrapper.sh
-                    fi
                     echo ""
                     echo -e "${C_DIM}Type ${C_RESET}${C_BOLD}menu${C_RESET}${C_DIM} for options${C_RESET}"
                     return
