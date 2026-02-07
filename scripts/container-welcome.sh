@@ -99,6 +99,11 @@ else
     DEPS_INSTALLED=true  # Nothing to install
 fi
 
+# Voicetree MCP status (only show if .mcp.json exists with voicetree config)
+if [ -f "/workspace/.mcp.json" ] && grep -q "voicetree" /workspace/.mcp.json 2>/dev/null; then
+    echo -e "  ${C_GREEN}[✓]${C_RESET} Voicetree: MCP configured"
+fi
+
 echo ""
 
 # Determine if we need guided setup or quick menu
@@ -112,7 +117,7 @@ if [ ! -f "$FIRST_TIME" ] || [ "$NEEDS_SETUP" = true ]; then
     /usr/local/bin/guided-setup.sh
     touch "$FIRST_TIME"
 else
-    # Returning user — just show a hint, no disappearing menu
-    echo -e "${C_DIM}Commands: ${C_RESET}${C_BOLD}menu${C_RESET}${C_DIM} (setup)  ${C_RESET}${C_BOLD}cs${C_RESET}${C_DIM} (claude)${C_RESET}"
+    # Returning user: skip auth steps, go straight to menu
+    /usr/local/bin/guided-setup.sh --menu-only
     echo ""
 fi

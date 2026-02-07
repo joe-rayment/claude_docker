@@ -13,7 +13,7 @@ C_RESET="\e[0m"
 
 # State detection functions
 is_claude_authenticated() {
-    [ -f "/home/agent/.claude/credentials" ] || claude auth status &>/dev/null
+    [ -f "/home/agent/.claude/credentials" ]
 }
 
 is_git_configured() {
@@ -21,7 +21,7 @@ is_git_configured() {
 }
 
 is_github_authenticated() {
-    [ -f "/home/agent/.config/gh/hosts.yml" ] || gh auth status &>/dev/null
+    [ -f "/home/agent/.config/gh/hosts.yml" ]
 }
 
 get_dependency_count() {
@@ -31,6 +31,11 @@ get_dependency_count() {
     else
         /usr/local/bin/detect-dependencies.sh --count 2>/dev/null || echo "0"
     fi
+}
+
+# Check if voicetree setup script exists (always true in current image)
+has_voicetree_support() {
+    [ -f "/usr/local/bin/voicetree-setup.sh" ]
 }
 
 # Require Claude authentication before running Claude-dependent commands
@@ -86,22 +91,27 @@ prompt_git_config() {
     echo ""
     echo -e "${C_BOLD}Git Configuration${C_RESET}"
     echo ""
-    read -p "Configure Git? (y/n): " choice
+    read -p "Configure Git? (y/n/a=skip all): " choice
 
-    if [ "$choice" = "y" ] || [ "$choice" = "Y" ]; then
-        read -p "  Name: " git_name
-        read -p "  Email: " git_email
+    case "$choice" in
+        y|Y)
+            read -p "  Name: " git_name
+            read -p "  Email: " git_email
 
-        if [ -n "$git_name" ]; then
-            git config --global user.name "$git_name"
-        fi
-        if [ -n "$git_email" ]; then
-            git config --global user.email "$git_email"
-        fi
+            if [ -n "$git_name" ]; then
+                git config --global user.name "$git_name"
+            fi
+            if [ -n "$git_email" ]; then
+                git config --global user.email "$git_email"
+            fi
 
-        echo ""
-        echo -e "${C_GREEN}✓${C_RESET} Git configured"
-    fi
+            echo ""
+            echo -e "${C_GREEN}✓${C_RESET} Git configured"
+            ;;
+        a|A)
+            skip_remaining=true
+            ;;
+    esac
 }
 
 # Prompt for GitHub authentication
@@ -109,11 +119,22 @@ prompt_github_auth() {
     echo ""
     echo -e "${C_BOLD}GitHub Authentication${C_RESET}"
     echo -e "${C_DIM}This enables pushing, PRs, and issue imports.${C_RESET}"
+    echo -e "${C_DIM}(This step opens a browser — it may take a moment. Press Ctrl+C to skip.)${C_RESET}"
     echo ""
-    read -p "Authenticate with GitHub? (y/n): " choice
+    read -p "Authenticate with GitHub? (y/n/a=skip all): " choice
 
+    if [ "$choice" = "a" ] || [ "$choice" = "A" ]; then
+        skip_remaining=true
+        return
+    fi
     if [ "$choice" = "y" ] || [ "$choice" = "Y" ]; then
+        echo ""
+        echo -e "${C_YELLOW}→${C_RESET} Starting GitHub login. Follow the prompts below."
+        echo -e "${C_DIM}  If this hangs, press Ctrl+C to skip and run 'gh auth login' later.${C_RESET}"
+        echo ""
+        trap 'echo ""; echo -e "${C_YELLOW}⚠${C_RESET} Skipped. Run ${C_BOLD}gh auth login${C_RESET} later."; trap - INT; return' INT
         gh auth login
+        trap - INT
         echo ""
         if is_github_authenticated; then
             echo -e "${C_GREEN}✓${C_RESET} GitHub authenticated successfully"
@@ -135,11 +156,10 @@ prompt_install_deps() {
     echo -e "${C_BOLD}Dependencies Detected${C_RESET}"
     /usr/local/bin/detect-dependencies.sh
     echo ""
-    read -p "Install dependencies now? (y/n/s to skip): " choice
+    read -p "Install dependencies now? (y/n): " choice
 
     if [ "$choice" = "y" ] || [ "$choice" = "Y" ]; then
         while IFS= read -r cmd; do
-            # Extract the package manager (first word of the command)
             local mgr="${cmd%% *}"
             if ! command -v "$mgr" &>/dev/null; then
                 echo ""
@@ -165,6 +185,9 @@ show_main_menu() {
         echo ""
         echo -e "  ${C_BOLD}[1]${C_RESET} Start Claude (interactive)"
         echo -e "  ${C_BOLD}[2]${C_RESET} View logs"
+        if has_voicetree_support; then
+            echo -e "  ${C_BOLD}[3]${C_RESET} Configure Voicetree MCP"
+        fi
         echo -e "  ${C_BOLD}[s]${C_RESET} Skip to shell"
         echo ""
         read -p "Choice: " choice
@@ -182,6 +205,14 @@ show_main_menu() {
             2)
                 echo ""
                 view-logs
+                ;;
+            3)
+                if has_voicetree_support; then
+                    echo ""
+                    /usr/local/bin/voicetree-setup.sh
+                else
+                    echo -e "${C_RED}Invalid choice${C_RESET}"
+                fi
                 ;;
             s|S|"")
                 echo ""
@@ -246,20 +277,23 @@ main() {
         fi
     fi
 
+    # Remaining setup steps — user can skip individual steps or all at once
+    local skip_remaining=false
+
     if ! is_git_configured; then
         needs_setup=true
-        prompt_git_config
+        if [ "$skip_remaining" = false ]; then
+            prompt_git_config
+        fi
     fi
 
-    # GitHub authentication (after git config)
-    if ! is_github_authenticated; then
+    if ! is_github_authenticated && [ "$skip_remaining" = false ]; then
         needs_setup=true
         prompt_github_auth
     fi
 
-    # Always offer dependency installation if detected
     local dep_count=$(get_dependency_count)
-    if [ "$dep_count" -gt 0 ]; then
+    if [ "$dep_count" -gt 0 ] && [ "$skip_remaining" = false ]; then
         needs_setup=true
         prompt_install_deps
     fi
@@ -274,5 +308,9 @@ main() {
 
 # Run if executed directly (not sourced)
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-    main "$@"
+    if [ "$1" = "--menu-only" ]; then
+        show_quick_menu
+    else
+        main "$@"
+    fi
 fi

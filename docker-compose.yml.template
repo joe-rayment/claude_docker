@@ -17,8 +17,9 @@ services:
       # Persistent home directory (includes .claude, .gitconfig, .zsh_history, etc.)
       - ${VOLUME_NAME}:/home/agent
 
-    # Network configuration
-    network_mode: bridge
+    # Allow container to reach host services (Voicetree MCP, etc.)
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
     # Working directory
     working_dir: /workspace
@@ -34,6 +35,43 @@ services:
     # Keep container running
     command: /bin/zsh
 
+  voicetree-backend:
+    profiles:
+      - voicetree
+    build:
+      context: .
+      dockerfile: Dockerfile.voicetree
+    image: voicetree-backend:${PROJECT_NAME}
+    container_name: ${PROJECT_NAME}-voicetree
+
+    volumes:
+      # Same workspace as claude-dev
+      - ../:/workspace
+      # Persistent voicetree data (ChromaDB, embeddings, graph state)
+      - ${PROJECT_NAME}-voicetree-data:/home/voicetree/data
+
+    # Expose backend API
+    ports:
+      - "8001:8001"
+
+    # Allow reaching host services
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+    environment:
+      - VOICETREE_PORT=8001
+
+    working_dir: /workspace
+
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8001/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
 volumes:
   ${VOLUME_NAME}:
+    driver: local
+  ${PROJECT_NAME}-voicetree-data:
     driver: local

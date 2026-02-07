@@ -1,0 +1,54 @@
+# Voicetree Python Backend
+# Optional service - only built when using the voicetree profile
+# Runs the FastAPI backend (server.py) for text-to-graph processing
+
+FROM python:3.13-slim
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    git \
+    curl \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install uv for fast Python dependency management
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+ENV PATH="/root/.local/bin:$PATH"
+
+# Create voicetree user (non-root)
+RUN useradd -m -s /bin/bash voicetree
+USER voicetree
+WORKDIR /home/voicetree
+
+# Install uv for the voicetree user
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+ENV PATH="/home/voicetree/.local/bin:$PATH"
+
+# Pin voicetree version - update this to track releases
+ENV VOICETREE_VERSION="v2.4.13"
+
+# Clone voicetree source and install backend dependencies
+RUN git clone --depth 1 --branch "${VOICETREE_VERSION}" \
+    https://github.com/voicetreelab/voicetree.git /home/voicetree/voicetree
+
+WORKDIR /home/voicetree/voicetree
+
+# Create venv and install server dependencies (minimal - no audio/heavy ML)
+RUN uv venv .venv --python 3.13 \
+    && uv pip install --python .venv -r requirements-server.txt
+
+# Create data directory for ChromaDB and graph state
+RUN mkdir -p /home/voicetree/data
+
+EXPOSE 8001
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 --start-period=10s \
+    CMD curl -f http://localhost:8001/health || exit 1
+
+# Start the FastAPI server
+CMD ["/home/voicetree/voicetree/.venv/bin/python", "server.py"]

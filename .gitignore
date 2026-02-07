@@ -25,3 +25,5 @@ docker-compose.yml
 # Build tracking
 .last-build-sha
 .last-update-check
+.claude-dev/
+claude-dev

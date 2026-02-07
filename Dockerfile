@@ -111,6 +111,7 @@ COPY --chown=agent:agent scripts/container-welcome.sh /usr/local/bin/container-w
 COPY --chown=agent:agent scripts/view-logs.sh /usr/local/bin/view-logs
 COPY --chown=agent:agent scripts/detect-dependencies.sh /usr/local/bin/detect-dependencies.sh
 COPY --chown=agent:agent scripts/guided-setup.sh /usr/local/bin/guided-setup.sh
+COPY --chown=agent:agent scripts/voicetree-setup.sh /usr/local/bin/voicetree-setup.sh
 
 # Make scripts executable
 USER root
@@ -118,7 +119,8 @@ RUN chmod +x /usr/local/bin/entrypoint.sh \
              /usr/local/bin/container-welcome \
              /usr/local/bin/view-logs \
              /usr/local/bin/detect-dependencies.sh \
-             /usr/local/bin/guided-setup.sh
+             /usr/local/bin/guided-setup.sh \
+             /usr/local/bin/voicetree-setup.sh
 USER agent
 
 # Set default shell to zsh

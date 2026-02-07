@@ -14,6 +14,7 @@ C_GREEN="\033[32m"
 C_YELLOW="\033[33m"
 C_BLUE="\033[34m"
 C_BOLD="\033[1m"
+C_DIM="\033[2m"
 C_RESET="\033[0m"
 
 echo -e "${C_BOLD}${C_BLUE}"
@@ -22,19 +23,28 @@ echo "  Claude Docker Bootstrap"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo -e "${C_RESET}"
 
-# Accept optional project path argument, default to $PWD
-if [ -n "$1" ]; then
-    if [ ! -d "$1" ]; then
-        echo -e "${C_RED}Error: Directory does not exist: $1${C_RESET}"
-        exit 1
-    fi
-    PROJECT_DIR="$(cd "$1" && pwd)" || {
-        echo -e "${C_RED}Error: Cannot access directory: $1${C_RESET}"
-        exit 1
-    }
-else
-    PROJECT_DIR="$PWD"
-fi
+# Parse arguments
+ENABLE_VOICETREE=false
+PROJECT_DIR="$PWD"
+
+for arg in "$@"; do
+    case "$arg" in
+        --voicetree)
+            ENABLE_VOICETREE=true
+            ;;
+        *)
+            if [ -d "$arg" ]; then
+                PROJECT_DIR="$(cd "$arg" && pwd)" || {
+                    echo -e "${C_RED}Error: Cannot access directory: $arg${C_RESET}"
+                    exit 1
+                }
+            else
+                echo -e "${C_RED}Error: Directory does not exist: $arg${C_RESET}"
+                exit 1
+            fi
+            ;;
+    esac
+done
 cd "$PROJECT_DIR"
 
 # Check Docker is installed
@@ -103,10 +113,11 @@ echo -e "${C_GREEN}✓${C_RESET} Repository ready"
 cd "$CLONE_DIR"
 IMAGE_TAG="claude-code-dev:${PROJECT_NAME}"
 
-export CONTAINER_NAME VOLUME_NAME IMAGE_TAG
+export CONTAINER_NAME VOLUME_NAME IMAGE_TAG PROJECT_NAME
 sed -e "s|\${CONTAINER_NAME}|${CONTAINER_NAME}|g" \
     -e "s|\${VOLUME_NAME}|${VOLUME_NAME}|g" \
     -e "s|\${IMAGE_TAG}|${IMAGE_TAG}|g" \
+    -e "s|\${PROJECT_NAME}|${PROJECT_NAME}|g" \
     docker-compose.yml.template > docker-compose.yml
 
 echo -e "${C_GREEN}✓${C_RESET} Generated docker-compose.yml"
@@ -117,17 +128,29 @@ echo -e "${C_YELLOW}→${C_RESET} Building container..."
 docker compose build --quiet
 echo -e "${C_GREEN}✓${C_RESET} Container built"
 
+# Build voicetree backend if requested
+if [ "$ENABLE_VOICETREE" = true ]; then
+    echo ""
+    echo -e "${C_YELLOW}→${C_RESET} Building Voicetree backend (this may take a few minutes)..."
+    docker compose --profile voicetree build --quiet
+    echo -e "${C_GREEN}✓${C_RESET} Voicetree backend built"
+fi
+
 # Record build SHA for auto-rebuild detection
 git rev-parse HEAD > .last-build-sha 2>/dev/null || true
 
-# Stop existing container if running (don't fail if it doesn't exist)
-docker compose down 2>/dev/null || true
+# Stop existing containers if running (don't fail if they don't exist)
+docker compose --profile voicetree down 2>/dev/null || true
 
-# Start container
+# Start container(s)
 echo -e "${C_YELLOW}→${C_RESET} Starting container..."
-docker compose up -d
-
-echo -e "${C_GREEN}✓${C_RESET} Container started"
+if [ "$ENABLE_VOICETREE" = true ]; then
+    docker compose --profile voicetree up -d
+    echo -e "${C_GREEN}✓${C_RESET} Containers started (Claude + Voicetree backend)"
+else
+    docker compose up -d
+    echo -e "${C_GREEN}✓${C_RESET} Container started"
+fi
 
 # Install launcher to project root
 cd "$PROJECT_DIR"
@@ -144,6 +167,9 @@ fi
 if ! grep -qxF 'claude-dev' "$GITIGNORE"; then
     echo 'claude-dev' >> "$GITIGNORE"
 fi
+if ! grep -qxF '.mcp.json' "$GITIGNORE"; then
+    echo '.mcp.json' >> "$GITIGNORE"
+fi
 echo -e "${C_GREEN}✓${C_RESET} Updated .gitignore"
 
 echo ""
@@ -154,4 +180,9 @@ echo ""
 echo -e "Enter your container with:"
 echo ""
 echo -e "  ${C_BOLD}./claude-dev${C_RESET}"
+if [ "$ENABLE_VOICETREE" = true ]; then
+    echo ""
+    echo -e "${C_DIM}Voicetree backend is running. Configure MCP inside the container:${C_RESET}"
+    echo -e "  ${C_BOLD}menu${C_RESET} → Configure Voicetree MCP"
+fi
 echo ""

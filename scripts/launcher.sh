@@ -3,11 +3,12 @@
 # Claude Docker Launcher
 # Copied to project root as ./claude-dev by bootstrap.sh
 # Usage:
-#   ./claude-dev            Build if needed, start if needed, exec into container
-#   ./claude-dev --update   Pull latest .claude-dev/, rebuild image, re-copy launcher
-#   ./claude-dev --rebuild  Force rebuild (no cache)
-#   ./claude-dev --stop     Stop the container
-#   ./claude-dev --status   Show container status
+#   ./claude-dev              Build if needed, start if needed, exec into container
+#   ./claude-dev --voicetree  Start with Voicetree backend
+#   ./claude-dev --update     Pull latest .claude-dev/, rebuild image, re-copy launcher
+#   ./claude-dev --rebuild    Force rebuild (no cache)
+#   ./claude-dev --stop       Stop the container
+#   ./claude-dev --status     Show container status
 
 set -e
 
@@ -127,9 +128,17 @@ build_image() {
 
 # Helper: start container
 start_container() {
+    local profile_args=""
+    if [ "${VOICETREE_MODE:-false}" = true ]; then
+        profile_args="--profile voicetree"
+    fi
     echo -e "${C_YELLOW}→${C_RESET} Starting container..."
-    dc up -d
-    echo -e "${C_GREEN}✓${C_RESET} Container ${C_BOLD}${CONTAINER_NAME}${C_RESET} started"
+    dc $profile_args up -d
+    if [ "${VOICETREE_MODE:-false}" = true ]; then
+        echo -e "${C_GREEN}✓${C_RESET} Containers ${C_BOLD}${CONTAINER_NAME}${C_RESET} + voicetree-backend started"
+    else
+        echo -e "${C_GREEN}✓${C_RESET} Container ${C_BOLD}${CONTAINER_NAME}${C_RESET} started"
+    fi
 }
 
 # Helper: exec into container
@@ -139,6 +148,24 @@ exec_into() {
 }
 
 # --- Commands ---
+
+# Voicetree mode flag (set by --voicetree command)
+VOICETREE_MODE=false
+
+cmd_voicetree() {
+    VOICETREE_MODE=true
+
+    # Build voicetree image if not present
+    local vt_image="voicetree-backend:$(echo "$CONTAINER_NAME" | sed 's/-claude-dev$//')"
+    if ! docker image inspect "$vt_image" &>/dev/null; then
+        echo -e "${C_YELLOW}→${C_RESET} Building Voicetree backend (first time — may take a few minutes)..."
+        dc --profile voicetree build --quiet
+        echo -e "${C_GREEN}✓${C_RESET} Voicetree backend built"
+    fi
+
+    # Run the normal default flow (build/start/exec) with voicetree profile active
+    cmd_default
+}
 
 cmd_default() {
     check_for_updates
@@ -239,9 +266,9 @@ cmd_rebuild() {
 
 cmd_stop() {
     if is_running || container_exists; then
-        echo -e "${C_YELLOW}→${C_RESET} Stopping container..."
-        dc down
-        echo -e "${C_GREEN}✓${C_RESET} Container stopped"
+        echo -e "${C_YELLOW}→${C_RESET} Stopping containers..."
+        dc --profile voicetree down
+        echo -e "${C_GREEN}✓${C_RESET} Containers stopped"
     else
         echo -e "${C_YELLOW}Container is not running${C_RESET}"
     fi
@@ -267,23 +294,25 @@ cmd_help() {
     echo "Usage: ./claude-dev [COMMAND]"
     echo ""
     echo "Commands:"
-    echo "  (none)      Build if needed, start if needed, exec into container"
-    echo "  --update    Pull latest .claude-dev/, rebuild image, update launcher"
-    echo "  --rebuild   Force rebuild image (no cache)"
-    echo "  --stop      Stop the container"
-    echo "  --status    Show container status"
-    echo "  --help      Show this help"
+    echo "  (none)       Build if needed, start if needed, exec into container"
+    echo "  --voicetree  Start with Voicetree backend (spatial IDE integration)"
+    echo "  --update     Pull latest .claude-dev/, rebuild image, update launcher"
+    echo "  --rebuild    Force rebuild image (no cache)"
+    echo "  --stop       Stop the container"
+    echo "  --status     Show container status"
+    echo "  --help       Show this help"
 }
 
 # --- Main ---
 
 case "${1:-}" in
-    --update)   cmd_update ;;
-    --rebuild)  cmd_rebuild ;;
-    --stop)     cmd_stop ;;
-    --status)   cmd_status ;;
-    --help|-h)  cmd_help ;;
-    "")         cmd_default ;;
+    --voicetree)  cmd_voicetree ;;
+    --update)     cmd_update ;;
+    --rebuild)    cmd_rebuild ;;
+    --stop)       cmd_stop ;;
+    --status)     cmd_status ;;
+    --help|-h)    cmd_help ;;
+    "")           cmd_default ;;
     *)
         echo -e "${C_RED}Unknown option: $1${C_RESET}"
         cmd_help
