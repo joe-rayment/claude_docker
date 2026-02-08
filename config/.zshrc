@@ -47,6 +47,12 @@ alias cn='claude'  # Normal start
 alias menu='/usr/local/bin/guided-setup.sh'  # Setup menu
 alias voicetree-setup='/usr/local/bin/voicetree-setup.sh'  # Voicetree MCP setup
 
+# Voicetree backend shortcuts
+alias voicetree-start='voicetree-server start'
+alias voicetree-stop='voicetree-server stop'
+alias voicetree-status='voicetree-server status'
+alias voicetree-logs='voicetree-server logs'
+
 # Log viewing shortcuts
 alias clogs='view-logs'  # View Claude logs
 alias clog-latest='cat ~/.claude/debug/latest'  # Quick peek at latest log

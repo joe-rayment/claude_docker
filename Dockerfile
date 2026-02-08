@@ -77,6 +77,20 @@ RUN pip3 install --no-cache-dir --break-system-packages poetry uv \
     && npm install -g pnpm yarn \
     && gem install bundler 2>/dev/null || true
 
+# --- Voicetree backend (baked in, started on demand via voicetree-server) ---
+ENV VOICETREE_VERSION="v2.4.13"
+RUN mkdir -p /opt/voicetree && chown agent:agent /opt/voicetree
+USER agent
+WORKDIR /opt/voicetree
+RUN git clone --depth 1 --branch "${VOICETREE_VERSION}" \
+    https://github.com/voicetreelab/voicetree.git /opt/voicetree/voicetree
+WORKDIR /opt/voicetree/voicetree
+RUN uv venv .venv --python 3.13 \
+    && uv pip install --python .venv -r requirements-server.txt
+RUN mkdir -p /opt/voicetree/data
+USER root
+WORKDIR /home/agent
+
 # Switch back to agent user (default user in Claude sandbox)
 USER agent
 
@@ -112,6 +126,7 @@ COPY --chown=agent:agent scripts/view-logs.sh /usr/local/bin/view-logs
 COPY --chown=agent:agent scripts/detect-dependencies.sh /usr/local/bin/detect-dependencies.sh
 COPY --chown=agent:agent scripts/guided-setup.sh /usr/local/bin/guided-setup.sh
 COPY --chown=agent:agent scripts/voicetree-setup.sh /usr/local/bin/voicetree-setup.sh
+COPY --chown=agent:agent scripts/voicetree-server.sh /usr/local/bin/voicetree-server
 
 # Make scripts executable
 USER root
@@ -120,7 +135,8 @@ RUN chmod +x /usr/local/bin/entrypoint.sh \
              /usr/local/bin/view-logs \
              /usr/local/bin/detect-dependencies.sh \
              /usr/local/bin/guided-setup.sh \
-             /usr/local/bin/voicetree-setup.sh
+             /usr/local/bin/voicetree-setup.sh \
+             /usr/local/bin/voicetree-server
 USER agent
 
 # Set default shell to zsh

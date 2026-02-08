@@ -118,29 +118,22 @@ Your project mounts at `/workspace` inside the container. Each project gets a un
 
 ---
 
-## Voicetree Integration (Optional)
+## Voicetree Integration (Built-in)
 
-[Voicetree](https://github.com/voicetreelab/voicetree) is a spatial IDE for recursive multi-agent orchestration — "Obsidian meets Claude Code". It runs as a desktop app on your host and connects to Claude Code in Docker via MCP.
+[Voicetree](https://github.com/voicetreelab/voicetree) is a spatial IDE for recursive multi-agent orchestration — "Obsidian meets Claude Code". The backend is baked into the container image; start it on demand from the menu.
 
 ### Quick Start
 
 ```bash
-# 1. Bootstrap with Voicetree backend
-gh api repos/joe-rayment/claude_docker/contents/bootstrap.sh -H "Accept: application/vnd.github.raw" | bash -s -- --voicetree
-
-# 2. Enter container and configure MCP
+# 1. Enter the container
 ./claude-dev
-menu    # Choose option 3: Configure Voicetree MCP
+
+# 2. Start the backend and configure MCP
+menu    # Choose option 3: Voicetree → Start backend + Configure MCP
 
 # 3. Install & open Voicetree on your host
 # macOS: brew install --cask voicetreelab/tap/voicetree
 # Linux: see https://github.com/voicetreelab/voicetree/releases
-```
-
-Or add Voicetree to an existing setup:
-
-```bash
-./claude-dev --voicetree    # Builds + starts backend, then enters container
 ```
 
 ### Architecture
@@ -150,31 +143,28 @@ HOST                              DOCKER
 ┌─────────────────────┐          ┌──────────────────────┐
 │ Voicetree Desktop   │   MCP   │ claude-dev container  │
 │ Graph UI + Agents   │◄───────►│ Claude Code           │
-│ localhost:3001/mcp  │         │ reads .mcp.json       │
-└─────────────────────┘          ├──────────────────────┤
-                                 │ voicetree-backend    │
-                                 │ FastAPI :8001        │
-                                 │ (optional profile)   │
-                                 └──────────────────────┘
+│ localhost:3001/mcp  │         │ voicetree-server :8001│
+└─────────────────────┘          └──────────────────────┘
 ```
 
 - **Voicetree Desktop** runs on your host (Electron app with graph visualization)
-- **Voicetree Backend** runs in Docker as an optional service (text-to-graph, embeddings)
+- **Voicetree Backend** runs inside the same container (start/stop via `voicetree-server`)
 - **Claude Code** connects to Voicetree via MCP for agent orchestration
-- **Default experience is unchanged** — Voicetree is fully opt-in
 
 ### Commands
 
-| Where | Command | Description |
-|-------|---------|-------------|
-| Host | `./claude-dev --voicetree` | Start with Voicetree backend |
-| Container | `voicetree-setup` | Configure MCP connection + API keys |
-| Container | `menu` → option 3 | Same as above, from the setup menu |
+| Command | Description |
+|---------|-------------|
+| `voicetree-start` | Start the backend server |
+| `voicetree-stop` | Stop the backend server |
+| `voicetree-status` | Check if backend is running |
+| `voicetree-logs` | Tail backend logs |
+| `voicetree-setup` | Configure MCP connection + API keys |
+| `menu` → option 3 | Voicetree submenu (all of the above) |
 
-### Important Notes
+### Notes
 
 - Voicetree agents spawned from the desktop app run on your **host**, not inside Docker
-- The Voicetree backend (text-to-graph processing) runs in Docker with a separate container
 - Voicetree uses [BSL 1.1](https://github.com/voicetreelab/voicetree/blob/main/LICENSE) — installed from official sources, not bundled
 - API keys (Google, OpenAI) are stored in `/workspace/.env` if you use the backend
 

@@ -24,26 +24,18 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 echo -e "${C_RESET}"
 
 # Parse arguments
-ENABLE_VOICETREE=false
 PROJECT_DIR="$PWD"
 
 for arg in "$@"; do
-    case "$arg" in
-        --voicetree)
-            ENABLE_VOICETREE=true
-            ;;
-        *)
-            if [ -d "$arg" ]; then
-                PROJECT_DIR="$(cd "$arg" && pwd)" || {
-                    echo -e "${C_RED}Error: Cannot access directory: $arg${C_RESET}"
-                    exit 1
-                }
-            else
-                echo -e "${C_RED}Error: Directory does not exist: $arg${C_RESET}"
-                exit 1
-            fi
-            ;;
-    esac
+    if [ -d "$arg" ]; then
+        PROJECT_DIR="$(cd "$arg" && pwd)" || {
+            echo -e "${C_RED}Error: Cannot access directory: $arg${C_RESET}"
+            exit 1
+        }
+    else
+        echo -e "${C_RED}Error: Directory does not exist: $arg${C_RESET}"
+        exit 1
+    fi
 done
 cd "$PROJECT_DIR"
 
@@ -128,29 +120,16 @@ echo -e "${C_YELLOW}→${C_RESET} Building container..."
 docker compose build --quiet
 echo -e "${C_GREEN}✓${C_RESET} Container built"
 
-# Build voicetree backend if requested
-if [ "$ENABLE_VOICETREE" = true ]; then
-    echo ""
-    echo -e "${C_YELLOW}→${C_RESET} Building Voicetree backend (this may take a few minutes)..."
-    docker compose --profile voicetree build --quiet
-    echo -e "${C_GREEN}✓${C_RESET} Voicetree backend built"
-fi
-
 # Record build SHA for auto-rebuild detection
 git rev-parse HEAD > .last-build-sha 2>/dev/null || true
 
 # Stop existing containers if running (don't fail if they don't exist)
-docker compose --profile voicetree down 2>/dev/null || true
+docker compose down 2>/dev/null || true
 
-# Start container(s)
+# Start container
 echo -e "${C_YELLOW}→${C_RESET} Starting container..."
-if [ "$ENABLE_VOICETREE" = true ]; then
-    docker compose --profile voicetree up -d
-    echo -e "${C_GREEN}✓${C_RESET} Containers started (Claude + Voicetree backend)"
-else
-    docker compose up -d
-    echo -e "${C_GREEN}✓${C_RESET} Container started"
-fi
+docker compose up -d
+echo -e "${C_GREEN}✓${C_RESET} Container started"
 
 # Install launcher to project root
 cd "$PROJECT_DIR"
@@ -180,9 +159,4 @@ echo ""
 echo -e "Enter your container with:"
 echo ""
 echo -e "  ${C_BOLD}./claude-dev${C_RESET}"
-if [ "$ENABLE_VOICETREE" = true ]; then
-    echo ""
-    echo -e "${C_DIM}Voicetree backend is running. Configure MCP inside the container:${C_RESET}"
-    echo -e "  ${C_BOLD}menu${C_RESET} → Configure Voicetree MCP"
-fi
 echo ""

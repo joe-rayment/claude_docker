@@ -62,11 +62,9 @@ echo -e "  ${C_GREEN}✓${C_RESET} MCP configured: ${MCP_URL}"
 echo ""
 
 # --- Step 2: Voicetree backend API keys (optional) ---
-# Check if voicetree-backend container is reachable
+# Check if backend is running locally (same container)
 VT_BACKEND_RUNNING=false
 if curl -sf http://localhost:8001/health &>/dev/null 2>&1; then
-    VT_BACKEND_RUNNING=true
-elif curl -sf "http://${HOST_IP}:8001/health" &>/dev/null 2>&1; then
     VT_BACKEND_RUNNING=true
 fi
 
@@ -107,8 +105,8 @@ if [ "$VT_BACKEND_RUNNING" = true ]; then
     fi
     echo ""
 else
-    echo -e "${C_DIM}2. Backend not detected — skipping API key setup.${C_RESET}"
-    echo -e "${C_DIM}   Start it with: ./claude-dev --voicetree${C_RESET}"
+    echo -e "${C_DIM}2. Backend not running — skipping API key setup.${C_RESET}"
+    echo -e "${C_DIM}   Start it with: ${C_RESET}${C_BOLD}voicetree-server start${C_RESET}${C_DIM} or ${C_RESET}${C_BOLD}menu${C_RESET}${C_DIM} → Voicetree${C_RESET}"
     echo ""
 fi
 

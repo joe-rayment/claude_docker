@@ -37,4 +37,4 @@ Helix binary selection handles this, but not tested on all architectures.
 - [x] ~~Automatic `.env` creation from `.env.example` if missing~~ — Documented in README Manual Setup
 - [x] ~~Support for multiple concurrent projects (unique container/volume names)~~ — Done via bootstrap naming
 - [ ] Pre-built image on Docker Hub to skip build step
-- [x] ~~Voicetree spatial IDE integration~~ — Optional compose profile with MCP bridge
+- [x] ~~Voicetree spatial IDE integration~~ — Backend baked into main container, on-demand start/stop via menu

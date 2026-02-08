@@ -33,9 +33,14 @@ get_dependency_count() {
     fi
 }
 
-# Check if voicetree setup script exists (always true in current image)
+# Check if voicetree is installed in the image
 has_voicetree_support() {
-    [ -f "/usr/local/bin/voicetree-setup.sh" ]
+    [ -f "/opt/voicetree/voicetree/server.py" ]
+}
+
+# Check if voicetree backend is running
+is_voicetree_running() {
+    [ -f "/tmp/voicetree-server.pid" ] && kill -0 "$(cat /tmp/voicetree-server.pid)" 2>/dev/null
 }
 
 # Require Claude authentication before running Claude-dependent commands
@@ -179,6 +184,52 @@ prompt_install_deps() {
     fi
 }
 
+# Show voicetree submenu
+show_voicetree_menu() {
+    while true; do
+        echo ""
+        echo -e "${C_BOLD}${C_BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${C_RESET}"
+        echo -e "${C_BOLD}  Voicetree${C_RESET}"
+        echo -e "${C_BOLD}${C_BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${C_RESET}"
+        echo ""
+        if is_voicetree_running; then
+            echo -e "  Backend: ${C_GREEN}running${C_RESET}"
+        else
+            echo -e "  Backend: ${C_DIM}stopped${C_RESET}"
+        fi
+        echo ""
+        echo -e "  ${C_BOLD}[a]${C_RESET} Start backend server"
+        echo -e "  ${C_BOLD}[b]${C_RESET} Stop backend server"
+        echo -e "  ${C_BOLD}[c]${C_RESET} Configure MCP connection"
+        echo -e "  ${C_BOLD}[d]${C_RESET} View server logs"
+        echo -e "  ${C_BOLD}[q]${C_RESET} Back"
+        echo ""
+        read -p "Choice: " vt_choice
+
+        case "$vt_choice" in
+            a|A)
+                voicetree-server start
+                ;;
+            b|B)
+                voicetree-server stop
+                ;;
+            c|C)
+                /usr/local/bin/voicetree-setup.sh
+                ;;
+            d|D)
+                echo -e "${C_DIM}Press Ctrl+C to stop viewing logs${C_RESET}"
+                voicetree-server logs
+                ;;
+            q|Q|"")
+                return
+                ;;
+            *)
+                echo -e "${C_RED}Invalid choice${C_RESET}"
+                ;;
+        esac
+    done
+}
+
 # Show main menu
 show_main_menu() {
     while true; do
@@ -190,7 +241,11 @@ show_main_menu() {
         echo -e "  ${C_BOLD}[1]${C_RESET} Start Claude (interactive)"
         echo -e "  ${C_BOLD}[2]${C_RESET} View logs"
         if has_voicetree_support; then
-            echo -e "  ${C_BOLD}[3]${C_RESET} Configure Voicetree MCP"
+            local vt_label="Voicetree"
+            if is_voicetree_running; then
+                vt_label="Voicetree ${C_GREEN}(running)${C_RESET}"
+            fi
+            echo -e "  ${C_BOLD}[3]${C_RESET} $vt_label"
         fi
         echo -e "  ${C_BOLD}[s]${C_RESET} Skip to shell"
         echo ""
@@ -212,8 +267,7 @@ show_main_menu() {
                 ;;
             3)
                 if has_voicetree_support; then
-                    echo ""
-                    /usr/local/bin/voicetree-setup.sh
+                    show_voicetree_menu
                 else
                     echo -e "${C_RED}Invalid choice${C_RESET}"
                 fi

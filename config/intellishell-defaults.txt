@@ -15,3 +15,15 @@ mkdir -p ~/.claude/exported-logs && cp ~/.claude/debug/latest ~/.claude/exported
 
 # Configure Voicetree MCP connection #voicetree #mcp #setup
 voicetree-setup
+
+# Start Voicetree backend server #voicetree #server
+voicetree-server start
+
+# Stop Voicetree backend server #voicetree #server
+voicetree-server stop
+
+# Check Voicetree backend status #voicetree #server
+voicetree-server status
+
+# View Voicetree backend logs #voicetree #server #logs
+voicetree-server logs
