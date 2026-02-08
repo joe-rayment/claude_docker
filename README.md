@@ -149,10 +149,15 @@ Claude Code stays sandboxed in Docker. The desktop app connects to it over MCP v
 #### 1. Install the desktop app on your host
 
 ```bash
-# macOS
-brew install --cask voicetreelab/tap/voicetree
+# macOS (Homebrew)
+brew tap voicetreelab/voicetree && brew install voicetree
 
-# Linux — see https://github.com/voicetreelab/voicetree/releases
+# macOS (direct download)
+# Apple Silicon: https://github.com/voicetreelab/voicetree/releases/latest/download/voicetree-arm64.dmg
+# Intel:         https://github.com/voicetreelab/voicetree/releases/latest/download/voicetree-x64.dmg
+
+# Linux
+curl -fsSL https://raw.githubusercontent.com/voicetreelab/voicetree/main/install.sh | sh
 ```
 
 Open Voicetree and enable MCP in its settings.
