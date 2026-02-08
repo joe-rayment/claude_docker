@@ -283,19 +283,18 @@ show_main_menu() {
     done
 }
 
-# Show quick menu for returning users (with timeout)
+# Show quick menu for returning users
 show_quick_menu() {
     while true; do
         echo ""
-        echo -e "${C_BOLD}Quick Start${C_RESET} ${C_DIM}(auto-skip in 3s, press 's' to skip now)${C_RESET}"
+        echo -e "${C_BOLD}Quick Start${C_RESET}"
         echo ""
         echo -e "  ${C_BOLD}[1]${C_RESET} Start Claude (interactive)"
         echo -e "  ${C_BOLD}[m]${C_RESET} Full menu"
         echo -e "  ${C_BOLD}[s]${C_RESET} Shell"
         echo ""
 
-        # Read with timeout
-        read -t 3 -p "Choice: " choice || choice="timeout"
+        read -p "Choice: " choice
 
         case "$choice" in
             1)
@@ -311,7 +310,7 @@ show_quick_menu() {
                 show_main_menu
                 return
                 ;;
-            s|S|""|timeout)
+            s|S|"")
                 echo ""
                 return
                 ;;
