@@ -26,7 +26,7 @@ services:
 
     # Health check
     healthcheck:
-      test: ["CMD-SHELL", "claude auth status 2>/dev/null || exit 1"]
+      test: ["CMD-SHELL", "test -f /home/agent/.claude/.credentials.json"]
       interval: 60s
       timeout: 10s
       retries: 2

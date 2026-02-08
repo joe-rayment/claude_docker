@@ -27,3 +27,4 @@ docker-compose.yml
 .last-update-check
 .claude-dev/
 claude-dev
+.mcp.json

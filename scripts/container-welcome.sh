@@ -30,7 +30,7 @@ fi
 SESSION_MARKER="/tmp/.claude-dev-welcome-shown"
 if [ -f "$SESSION_MARKER" ]; then
     # If Claude isn't authenticated, trigger auth — nothing else works without it
-    if [ ! -f "/home/agent/.claude/credentials" ]; then
+    if [ ! -f "/home/agent/.claude/.credentials.json" ]; then
         echo ""
         echo -e "${C_YELLOW}⚠${C_RESET}  Claude is not authenticated."
         echo -e "  Run ${C_BOLD}claude${C_RESET} and then type ${C_BOLD}/login${C_RESET} to connect."
@@ -57,7 +57,7 @@ echo ""
 echo -e "${C_BOLD}Status:${C_RESET}"
 
 # Claude authentication (file check only — no network call)
-if [ -f "/home/agent/.claude/credentials" ]; then
+if [ -f "/home/agent/.claude/.credentials.json" ]; then
     echo -e "  ${C_GREEN}[✓]${C_RESET} Claude: Authenticated"
     CLAUDE_OK=true
 else

@@ -13,7 +13,7 @@ C_RESET="\e[0m"
 
 # State detection functions
 is_claude_authenticated() {
-    [ -f "/home/agent/.claude/credentials" ]
+    [ -f "/home/agent/.claude/.credentials.json" ]
 }
 
 is_git_configured() {
