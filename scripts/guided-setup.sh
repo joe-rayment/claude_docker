@@ -46,9 +46,10 @@ require_claude_auth() {
     fi
     echo ""
     echo -e "${C_YELLOW}⚠${C_RESET} Claude is not authenticated. This action requires authentication."
-    read -p "Authenticate now? (y/n): " choice
+    echo -e "  Run ${C_BOLD}claude${C_RESET}, type ${C_BOLD}/login${C_RESET}, then ${C_BOLD}/exit${C_RESET} to return."
+    read -p "Launch Claude now? (y/n): " choice
     if [ "$choice" = "y" ] || [ "$choice" = "Y" ]; then
-        claude auth login
+        claude
         if is_claude_authenticated; then
             echo -e "${C_GREEN}✓${C_RESET} Claude authenticated successfully"
             return 0
@@ -65,22 +66,25 @@ prompt_claude_auth() {
     echo ""
     echo -e "${C_BOLD}Claude Authentication${C_RESET}"
     echo -e "${C_DIM}Claude authentication is required to use this environment.${C_RESET}"
-    echo -e "${C_DIM}This will open a browser window to authenticate.${C_RESET}"
+    echo ""
+    echo -e "  Run ${C_BOLD}claude${C_RESET} and then type ${C_BOLD}/login${C_RESET} to authenticate."
+    echo -e "  After authenticating, type ${C_BOLD}/exit${C_RESET} to return here."
+    echo ""
 
     while true; do
-        echo ""
-        read -p "Press ENTER to authenticate with Claude: " _
-        claude auth login
+        read -p "Press ENTER to launch Claude (then type /login): " _
+        claude
         echo ""
         if is_claude_authenticated; then
             echo -e "${C_GREEN}✓${C_RESET} Claude authenticated successfully"
             return 0
         fi
-        echo -e "${C_RED}✗${C_RESET} Authentication failed. Please try again."
-        echo -e "${C_DIM}(You can also run 'claude auth login' manually from the shell later)${C_RESET}"
-        read -p "Retry? (y/n): " retry
+        echo -e "${C_YELLOW}⚠${C_RESET} Claude credentials not found."
+        echo -e "  Launch ${C_BOLD}claude${C_RESET}, type ${C_BOLD}/login${C_RESET}, then ${C_BOLD}/exit${C_RESET} to return."
+        echo ""
+        read -p "Try again? (y/n): " retry
         if [ "$retry" = "n" ] || [ "$retry" = "N" ]; then
-            echo -e "${C_YELLOW}⚠${C_RESET} Dropping to shell. Run ${C_BOLD}claude auth login${C_RESET} when ready."
+            echo -e "${C_YELLOW}⚠${C_RESET} Dropping to shell. Run ${C_BOLD}claude${C_RESET} and type ${C_BOLD}/login${C_RESET} when ready."
             return 1
         fi
     done
