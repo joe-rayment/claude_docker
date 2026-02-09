@@ -106,7 +106,8 @@ echo ""
 if [ -d "$CLONE_DIR" ]; then
     echo -e "${C_YELLOW}→${C_RESET} Updating existing .claude-dev..."
     cd "$CLONE_DIR"
-    git pull --quiet
+    git fetch --quiet origin main
+    git reset --hard origin/main --quiet
     cd ..
 else
     echo -e "${C_YELLOW}→${C_RESET} Cloning Claude Docker environment..."

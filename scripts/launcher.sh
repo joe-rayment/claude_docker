@@ -216,11 +216,10 @@ cmd_update() {
         return 0
     fi
 
-    # Pull latest from git
+    # Pull latest from git (reset to match upstream; .claude-dev/ is a managed clone)
     echo -e "${C_YELLOW}→${C_RESET} Pulling latest changes..."
-    cd "$CLAUDE_DEV_DIR"
-    git pull
-    cd "$SCRIPT_DIR"
+    git -C "$CLAUDE_DEV_DIR" fetch --quiet origin main
+    git -C "$CLAUDE_DEV_DIR" reset --hard --quiet origin/main
 
     # Rebuild image
     build_image
