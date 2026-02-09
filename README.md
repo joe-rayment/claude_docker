@@ -59,6 +59,7 @@ Auth, git config, and shell history persist across stops and rebuilds — they l
 |---------|-------------|
 | `cs` | Start Claude (skip permissions) |
 | `csd` | Start Claude with debug logging |
+| `cn` | Start Claude (normal mode) |
 | `claude` | Start Claude (normal) |
 
 ### Editor & Tools
@@ -68,9 +69,12 @@ Auth, git config, and shell history persist across stops and rebuilds — they l
 | `hx file.txt` | Open file in Helix editor |
 | `vim file.txt` | Alias for Helix |
 | `view-logs` | Interactive log viewer |
-| `clog-latest` | View latest Claude log |
+| `clog-latest` | View latest Claude debug log |
+| `clog-export` | Export latest log to workspace |
 | `Ctrl+Space` | IntelliShell: search saved commands |
 | `Ctrl+B` | IntelliShell: bookmark a command |
+| `Ctrl+R` | IntelliShell: history search |
+| `Ctrl+X` | IntelliShell: AI fix |
 
 ### Multiple Terminals
 
@@ -173,7 +177,7 @@ cd .claude-dev
 echo "PROJECT_PATH=/path/to/your/project" > .env
 
 # 3. Copy and edit docker-compose.yml
-cp docker-compose.yml.example docker-compose.yml
+cp docker-compose.yml.template docker-compose.yml
 # Update container_name and volume name for your project
 
 # 4. Build and start

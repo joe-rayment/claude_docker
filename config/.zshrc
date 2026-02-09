@@ -69,4 +69,7 @@ bindkey '^[[A' history-substring-search-up
 bindkey '^[[B' history-substring-search-down
 
 # Welcome message
-container-welcome
+command -v container-welcome >/dev/null 2>&1 && container-welcome || true
+
+# User customizations — this file survives config version updates
+[[ -f ~/.zshrc.local ]] && source ~/.zshrc.local

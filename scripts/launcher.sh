@@ -101,10 +101,15 @@ check_for_updates() {
 
     # Fetch silently with 5s timeout — skip on slow/offline networks
     local fetch_ok=false
-    ( git -C "$CLAUDE_DEV_DIR" fetch --quiet 2>/dev/null & GIT_PID=$!
-      ( sleep 5 && kill $GIT_PID 2>/dev/null ) &
-      wait $GIT_PID 2>/dev/null
-    ) && fetch_ok=true
+    if command -v timeout >/dev/null 2>&1; then
+        timeout 5 git -C "$CLAUDE_DEV_DIR" fetch --quiet 2>/dev/null && fetch_ok=true
+    else
+        # Fallback: background fetch with manual kill
+        ( git -C "$CLAUDE_DEV_DIR" fetch --quiet 2>/dev/null & GIT_PID=$!
+          ( sleep 5 && kill "$GIT_PID" 2>/dev/null ) &
+          wait "$GIT_PID" 2>/dev/null
+        ) && fetch_ok=true
+    fi
     if ! $fetch_ok; then
         return 0
     fi
@@ -142,11 +147,14 @@ warn_active_sessions() {
 
 # Helper: build image
 build_image() {
-    local extra_args="$1"
+    local extra_args=()
+    if [ -n "$1" ]; then
+        extra_args+=("$1")
+    fi
     local build_sha
     build_sha=$(git -C "$CLAUDE_DEV_DIR" rev-parse --short HEAD 2>/dev/null || echo "unknown")
     echo -e "${C_YELLOW}→${C_RESET} Building image..."
-    dc build --quiet --build-arg BUILD_SHA="$build_sha" $extra_args
+    dc build --quiet --build-arg BUILD_SHA="$build_sha" "${extra_args[@]}"
     echo -e "${C_GREEN}✓${C_RESET} Image built"
 }
 
@@ -279,7 +287,7 @@ cmd_status() {
         HEALTH=$(docker inspect --format='{{.State.Health.Status}}' "$CONTAINER_NAME" 2>/dev/null || echo "no healthcheck")
         echo -e "${C_BOLD}Status:${C_RESET}    ${C_GREEN}running${C_RESET} (health: $HEALTH)"
         echo ""
-        docker ps --filter "name=$CONTAINER_NAME" --format "table {{.ID}}\t{{.Status}}\t{{.Ports}}"
+        docker ps --filter "name=${CONTAINER_NAME}" --format "table {{.ID}}\t{{.Status}}\t{{.Ports}}"
     elif container_exists; then
         echo -e "${C_BOLD}Status:${C_RESET}    ${C_YELLOW}stopped${C_RESET}"
     else

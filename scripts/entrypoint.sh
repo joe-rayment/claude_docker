@@ -1,6 +1,9 @@
 #!/bin/bash
 set -e
 
+cleanup() { kill -- -$$ 2>/dev/null; }
+trap cleanup SIGTERM SIGINT
+
 # Import IntelliShell defaults on first run
 MARKER_FILE="/home/agent/.config/intelli-shell/.defaults_imported"
 DEFAULTS_FILE="/home/agent/.config/intelli-shell/defaults.txt"
@@ -15,6 +18,7 @@ fi
 IMAGE_VERSION=$(cat /etc/claude-dev/CONFIG_VERSION 2>/dev/null || echo "0")
 VOLUME_VERSION=$(cat /home/agent/.config-version 2>/dev/null || echo "0")
 if [ "$IMAGE_VERSION" != "$VOLUME_VERSION" ]; then
+    # User customizations should go in ~/.zshrc.local (sourced at end of .zshrc)
     cp /etc/claude-dev/configs/.zshrc /home/agent/.zshrc 2>/dev/null || true
     mkdir -p /home/agent/.config/helix
     cp /etc/claude-dev/configs/helix-config.toml /home/agent/.config/helix/config.toml 2>/dev/null || true
@@ -31,7 +35,7 @@ if [ "$IMAGE_VERSION" != "$VOLUME_VERSION" ]; then
         echo "   Claude Code may not start correctly. Check the file for syntax errors."
         echo ""
     fi
-    echo "$IMAGE_VERSION" > /home/agent/.config-version
+    echo "${IMAGE_VERSION}" > /home/agent/.config-version
 fi
 
 # Workspace validation

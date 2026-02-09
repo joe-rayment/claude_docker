@@ -3,13 +3,13 @@
 # Guided Setup - Interactive menu for Claude Docker environment
 
 # Colors
-C_RED="\e[31m"
-C_GREEN="\e[32m"
-C_YELLOW="\e[33m"
-C_BLUE="\e[34m"
-C_BOLD="\e[1m"
-C_DIM="\e[2m"
-C_RESET="\e[0m"
+C_RED="\033[31m"
+C_GREEN="\033[32m"
+C_YELLOW="\033[33m"
+C_BLUE="\033[34m"
+C_BOLD="\033[1m"
+C_DIM="\033[2m"
+C_RESET="\033[0m"
 
 # State detection functions
 is_claude_authenticated() {
@@ -108,7 +108,7 @@ prompt_git_config() {
             echo -e "${C_GREEN}✓${C_RESET} Git configured"
             ;;
         a|A)
-            skip_remaining=true
+            skip_remaining=true  # Intentionally global — signals main() to skip remaining steps
             ;;
     esac
 }
@@ -123,7 +123,7 @@ prompt_github_auth() {
     read -p "Authenticate with GitHub? (y/n/a=skip all): " choice
 
     if [ "$choice" = "a" ] || [ "$choice" = "A" ]; then
-        skip_remaining=true
+        skip_remaining=true  # Intentionally global — signals main() to skip remaining steps
         return
     fi
     if [ "$choice" = "y" ] || [ "$choice" = "Y" ]; then
@@ -145,7 +145,8 @@ prompt_github_auth() {
 
 # Prompt for dependency installation
 prompt_install_deps() {
-    local dep_count=$(get_dependency_count)
+    local dep_count
+    dep_count="$(get_dependency_count)"
 
     if [ "$dep_count" -eq 0 ]; then
         return
@@ -162,11 +163,11 @@ prompt_install_deps() {
             local mgr="${cmd%% *}"
             if ! command -v "$mgr" &>/dev/null; then
                 echo ""
-                echo -e "${C_RED}✗${C_RESET} Skipping: $cmd (${mgr} not found)"
+                echo -e "${C_RED}✗${C_RESET} Skipping: ${cmd} (${mgr} not found)"
                 continue
             fi
             echo ""
-            echo -e "${C_YELLOW}→${C_RESET} Running: $cmd"
+            echo -e "${C_YELLOW}→${C_RESET} Running: ${cmd}"
             (cd /workspace && $cmd)
         done < <(/usr/local/bin/detect-dependencies.sh --commands)
         echo ""
@@ -265,7 +266,8 @@ main() {
     fi
 
     # Remaining setup steps — user can skip individual steps or all at once
-    local skip_remaining=false
+    # skip_remaining is intentionally NOT local — set by prompt functions for cross-function communication
+    skip_remaining=false
 
     if ! is_git_configured; then
         needs_setup=true
@@ -279,7 +281,8 @@ main() {
         prompt_github_auth
     fi
 
-    local dep_count=$(get_dependency_count)
+    local dep_count
+    dep_count="$(get_dependency_count)"
     if [ "$dep_count" -gt 0 ] && [ "$skip_remaining" = false ]; then
         needs_setup=true
         prompt_install_deps

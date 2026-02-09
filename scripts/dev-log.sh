@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 
 # dev-log — Structured development logger
 # Writes to /workspace/.claude/logs/ with four category files:
@@ -45,8 +46,13 @@ EOF
 }
 
 cmd_run() {
-    local cmd="$1" result="$2" reason="$3" detail="$4"
+    local cmd="${1:-}" result="${2:-}" reason="${3:-}" detail="${4:-}"
     if [ -z "$cmd" ] || [ -z "$result" ] || [ -z "$reason" ]; then
+        echo "Usage: dev-log run <cmd> <pass|fail> <reason> [detail]" >&2
+        return 1
+    fi
+    if [ "$result" != "pass" ] && [ "$result" != "fail" ]; then
+        echo "Error: result must be 'pass' or 'fail', got '$result'" >&2
         echo "Usage: dev-log run <cmd> <pass|fail> <reason> [detail]" >&2
         return 1
     fi
@@ -62,7 +68,7 @@ detail: $detail"
 }
 
 cmd_decision() {
-    local desc="$1"
+    local desc="${1:-}"
     if [ -z "$desc" ]; then
         echo "Usage: dev-log decision <description>" >&2
         return 1
@@ -73,7 +79,7 @@ $desc
 }
 
 cmd_error() {
-    local what="$1" detail="$2"
+    local what="${1:-}" detail="${2:-}"
     if [ -z "$what" ]; then
         echo "Usage: dev-log error <what> [detail]" >&2
         return 1
@@ -88,7 +94,7 @@ detail: $detail"
 }
 
 cmd_change() {
-    local what="$1" why="$2"
+    local what="${1:-}" why="${2:-}"
     if [ -z "$what" ] || [ -z "$why" ]; then
         echo "Usage: dev-log change <what> <why>" >&2
         return 1
@@ -100,7 +106,7 @@ why: $why
 }
 
 cmd_show() {
-    local category="$1" count="${2:-20}"
+    local category="${1:-}" count="${2:-20}"
     ensure_dir
 
     if [ -z "$category" ]; then

@@ -67,9 +67,60 @@
 }
 
 @test "dev-log creates log directory and writes entries" {
-    local test_dir="/tmp/test-logs-$$"
-    LOG_DIR="$test_dir" dev-log run "echo test" pass "smoke test"
-    [ -f "$test_dir/runs.log" ]
-    grep -q "smoke test" "$test_dir/runs.log"
-    rm -rf "$test_dir"
+    local marker="smoketest-run-$$-$RANDOM"
+    dev-log run "echo test" pass "$marker"
+    [ -f /workspace/.claude/logs/runs.log ]
+    grep -q "$marker" /workspace/.claude/logs/runs.log
+}
+
+@test "dev-log decision subcommand works" {
+    local marker="smoketest-decision-$$-$RANDOM"
+    dev-log decision "$marker"
+    run dev-log show decisions 5
+    [[ "$output" == *"$marker"* ]]
+}
+
+@test "dev-log error subcommand works" {
+    local marker="smoketest-error-$$-$RANDOM"
+    dev-log error "$marker" "test detail"
+    run dev-log show errors 5
+    [[ "$output" == *"$marker"* ]]
+}
+
+@test "dev-log change subcommand works" {
+    local marker="smoketest-change-$$-$RANDOM"
+    dev-log change "$marker" "test reason"
+    run dev-log show changes 5
+    [[ "$output" == *"$marker"* ]]
+}
+
+@test "detect-dependencies runs without error" {
+    run detect-dependencies.sh
+    [ "$status" -eq 0 ]
+}
+
+@test "detect-dependencies --json produces valid JSON" {
+    run detect-dependencies.sh --json
+    [ "$status" -eq 0 ]
+    echo "$output" | jq . >/dev/null 2>&1
+}
+
+@test "detect-dependencies --count returns a number" {
+    run detect-dependencies.sh --count
+    [ "$status" -eq 0 ]
+    [[ "$output" =~ ^[0-9]+$ ]]
+}
+
+@test "run-tests.sh accepts smoke argument" {
+    run bash -c "run-tests.sh smoke 2>&1 | head -1"
+    [ "$status" -eq 0 ] || [ "$status" -eq 1 ]
+    # Should not show "Unknown test suite" error
+    [[ "$output" != *"Unknown"* ]]
+}
+
+@test "no voicetree references in mcp config" {
+    if [ -f /workspace/.mcp.json ]; then
+        run grep -i voicetree /workspace/.mcp.json
+        [ "$status" -ne 0 ]
+    fi
 }

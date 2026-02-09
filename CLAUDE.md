@@ -97,5 +97,8 @@ run-tests.sh experience  # Experience tests only
 | `menu` | Setup/options menu |
 | `dlog` | `dev-log` |
 | `gs` | `git status` |
+| `cn` | `claude` (normal mode) |
 | `hx` / `vim` | Helix editor |
 | `view-logs` | Interactive Claude log viewer |
+| `clog-latest` | View latest Claude debug log |
+| `clog-export` | Export latest log to workspace |

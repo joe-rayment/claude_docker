@@ -28,3 +28,19 @@ docker-compose.yml
 .claude-dev/
 claude-dev
 .mcp.json
+.claude/logs/
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+
+# Editors
+*.swp
+*.swo
+
+# OS
+Thumbs.db
+
+# Working trees
+.worktrees/

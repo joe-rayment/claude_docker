@@ -31,6 +31,8 @@ teardown() {
     output=$(capture_pane)
     # Should show either authenticated or not — both are valid
     [[ "$output" == *"Claude:"* ]]
+    # Check for status indicator bracket pattern
+    [[ "$output" == *"["* ]]
 }
 
 @test "welcome shows Git config status" {
@@ -39,6 +41,8 @@ teardown() {
     local output
     output=$(capture_pane)
     [[ "$output" == *"Git:"* ]]
+    # Check for status indicator bracket pattern
+    [[ "$output" == *"["* ]]
 }
 
 @test "session marker prevents duplicate welcome" {
@@ -83,4 +87,6 @@ teardown() {
     # Menu should have exited (no more "Choice:" at the bottom)
     # The pane should show a shell prompt
     [[ "$output" != *"Invalid"* ]]
+    # Verify the menu displayed expected elements before exiting
+    [[ "$output" == *"Shell"* ]] || [[ "$output" == *"$"* ]] || [[ "$output" == *"%"* ]]
 }

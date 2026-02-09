@@ -1,0 +1,14 @@
+.git
+.worktrees
+.claude
+*.log
+.DS_Store
+.vscode
+.idea
+*.tmp
+*.swp
+docker-compose.yml
+.last-build-sha
+.last-update-check
+.env
+voicetree-8-2

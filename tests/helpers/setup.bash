@@ -46,5 +46,5 @@ wait_for_text() {
 
 # Run a script in the tmux session (unsets TMUX to avoid skip guards)
 run_in_pane() {
-    send_keys "unset TMUX && $*" Enter
+    send_keys "unset TMUX && $@" Enter
 }

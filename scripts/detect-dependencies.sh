@@ -1,9 +1,18 @@
 #!/bin/bash
+set -eo pipefail
 
 # Detect project dependencies in /workspace
 # Returns detected package managers and install commands
 
 WORKSPACE="/workspace"
+
+# Sanitize a string for safe JSON embedding
+json_escape() {
+    local s="$1"
+    s="${s//\\/\\\\}"
+    s="${s//\"/\\\"}"
+    printf '%s' "$s"
+}
 
 # Arrays for detected items
 declare -a DETECTED_FILES
@@ -40,13 +49,13 @@ check_deps() {
     fi
 
     if [ -f "$WORKSPACE/pyproject.toml" ]; then
-        if grep -q "poetry" "$WORKSPACE/pyproject.toml" 2>/dev/null; then
+        if grep -q '\[tool\.poetry\]' "$WORKSPACE/pyproject.toml" 2>/dev/null; then
             if [ ! -d "$WORKSPACE/.venv" ]; then
                 DETECTED_FILES+=("pyproject.toml")
                 DETECTED_MANAGERS+=("poetry")
                 INSTALL_COMMANDS+=("poetry install")
             fi
-        elif grep -q "uv" "$WORKSPACE/pyproject.toml" 2>/dev/null || [ -f "$WORKSPACE/uv.lock" ]; then
+        elif grep -q '\[tool\.uv\]' "$WORKSPACE/pyproject.toml" 2>/dev/null || [ -f "$WORKSPACE/uv.lock" ]; then
             if [ ! -d "$WORKSPACE/.venv" ]; then
                 DETECTED_FILES+=("pyproject.toml")
                 DETECTED_MANAGERS+=("uv")
@@ -66,7 +75,7 @@ check_deps() {
     fi
 
     # Go
-    if [ -f "$WORKSPACE/go.mod" ] && [ ! -f "$WORKSPACE/go.sum" ]; then
+    if [ -f "$WORKSPACE/go.mod" ] && [ ! -d "$(go env GOPATH 2>/dev/null)/pkg/mod/cache/download" ]; then
         DETECTED_FILES+=("go.mod")
         DETECTED_MANAGERS+=("go")
         INSTALL_COMMANDS+=("go mod download")
@@ -97,22 +106,22 @@ case "${1:-}" in
         echo "{"
         echo "  \"files\": ["
         for i in "${!DETECTED_FILES[@]}"; do
-            [ $i -gt 0 ] && echo ","
-            echo -n "    \"${DETECTED_FILES[$i]}\""
+            [ "$i" -gt 0 ] && echo ","
+            echo -n "    \"$(json_escape "${DETECTED_FILES[$i]}")\""
         done
         echo ""
         echo "  ],"
         echo "  \"managers\": ["
         for i in "${!DETECTED_MANAGERS[@]}"; do
-            [ $i -gt 0 ] && echo ","
-            echo -n "    \"${DETECTED_MANAGERS[$i]}\""
+            [ "$i" -gt 0 ] && echo ","
+            echo -n "    \"$(json_escape "${DETECTED_MANAGERS[$i]}")\""
         done
         echo ""
         echo "  ],"
         echo "  \"commands\": ["
         for i in "${!INSTALL_COMMANDS[@]}"; do
-            [ $i -gt 0 ] && echo ","
-            echo -n "    \"${INSTALL_COMMANDS[$i]}\""
+            [ "$i" -gt 0 ] && echo ","
+            echo -n "    \"$(json_escape "${INSTALL_COMMANDS[$i]}")\""
         done
         echo ""
         echo "  ]"

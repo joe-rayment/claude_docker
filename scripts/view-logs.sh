@@ -1,9 +1,11 @@
 #!/bin/bash
+set -e
 
 # Colors
-C_BLUE="\e[34m"
-C_BOLD="\e[1m"
-C_RESET="\e[0m"
+C_BLUE='\033[0;34m'
+C_BOLD='\033[1m'
+C_YELLOW='\033[1;33m'
+C_RESET='\033[0m'
 
 echo -e "${C_BOLD}${C_BLUE}Claude Code Logs${C_RESET}"
 echo ""
@@ -13,7 +15,11 @@ PS3="Select action: "
 select choice in "View latest debug log" "Export latest to workspace" "List all sessions" "View session transcript" "Exit"; do
     case $choice in
         "View latest debug log")
-            less ~/.claude/debug/latest
+            if [ -f ~/.claude/debug/latest ]; then
+                less ~/.claude/debug/latest
+            else
+                echo -e "${C_YELLOW}No debug logs found yet${C_RESET}"
+            fi
             ;;
         "Export latest to workspace")
             mkdir -p /home/agent/.claude/exported-logs
@@ -25,10 +31,17 @@ select choice in "View latest debug log" "Export latest to workspace" "List all 
             ;;
         "View session transcript")
             echo "Available transcripts:"
-            find ~/.claude/projects -name "*.jsonl" -type f | tail -10
-            read -p "Enter path: " transcript_path
-            if [ -f "$transcript_path" ]; then
-                less "$transcript_path"
+            local_transcripts=$(find ~/.claude/projects -name "*.jsonl" -type f 2>/dev/null | tail -10)
+            if [ -z "$local_transcripts" ]; then
+                echo "No session transcripts found"
+            else
+                echo "$local_transcripts"
+                read -p "Enter path: " transcript_path
+                if [ -f "$transcript_path" ]; then
+                    less "$transcript_path"
+                else
+                    echo "File not found: $transcript_path"
+                fi
             fi
             ;;
         "Exit")
