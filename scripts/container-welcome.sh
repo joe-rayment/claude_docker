@@ -99,16 +99,6 @@ else
     DEPS_INSTALLED=true  # Nothing to install
 fi
 
-# Voicetree backend status
-if [ -f "/tmp/voicetree-server.pid" ] && kill -0 "$(cat /tmp/voicetree-server.pid)" 2>/dev/null; then
-    echo -e "  ${C_GREEN}[✓]${C_RESET} Voicetree: Backend running (port 8001)"
-fi
-
-# Voicetree MCP status (only show if .mcp.json exists with voicetree config)
-if [ -f "/workspace/.mcp.json" ] && grep -q "voicetree" /workspace/.mcp.json 2>/dev/null; then
-    echo -e "  ${C_GREEN}[✓]${C_RESET} Voicetree: MCP configured"
-fi
-
 echo ""
 
 # Determine if we need guided setup or quick menu

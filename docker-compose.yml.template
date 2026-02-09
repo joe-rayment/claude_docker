@@ -17,7 +17,7 @@ services:
       # Persistent home directory (includes .claude, .gitconfig, .zsh_history, etc.)
       - ${VOLUME_NAME}:/home/agent
 
-    # Allow container to reach host services (Voicetree MCP, etc.)
+    # Allow container to reach host services
     extra_hosts:
       - "host.docker.internal:host-gateway"
 

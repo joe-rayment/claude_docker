@@ -93,6 +93,9 @@ cs                      hx src/main.py           npm test
 - **Persistent**: Auth, history, and configs saved between sessions
 - **Auto-detection**: Recognizes package.json, requirements.txt, go.mod, Cargo.toml, Gemfile
 - **Health check**: Docker monitors Claude auth status automatically
+- **Agent Teams**: Multi-agent coordination via tmux (experimental)
+- **Dev Logging**: Structured session logging with `dev-log`
+- **Experience Tests**: bats-core tests to verify container UX
 
 ---
 
@@ -118,98 +121,27 @@ Your project mounts at `/workspace` inside the container. Each project gets a un
 
 ---
 
-## Voicetree Integration (Built-in)
+## Agent Teams
 
-[Voicetree](https://github.com/voicetreelab/voicetree) is a spatial IDE for recursive multi-agent orchestration — "Obsidian meets Claude Code". It gives you an interactive graph interface where nodes are markdown files, agents can be spawned visually, and context flows through the graph structure.
+Claude Code Agent Teams are enabled by default in this environment. Teams let Claude spawn multiple agents in tmux panes to work on tasks in parallel.
 
-The setup has two parts:
+- **Automatic tmux management** — Claude Code handles tmux pane creation and coordination. No manual tmux config needed.
+- **Delegate mode** — Press `Shift+Tab` to keep the team lead focused on coordination while teammates do implementation work.
+- **Sandboxed** — All agents run inside the Docker container with `--dangerously-skip-permissions`.
 
-- **Desktop app** — The Electron-based graph UI. Runs natively on your Mac/Linux host. This is what you interact with: the visual graph, node editor, agent spawning, etc.
-- **Backend server** — A headless Python service for text-to-graph processing, embeddings, and semantic search via ChromaDB. Baked into the container image, started on demand. Has no UI of its own.
+### Development Logging
 
-You need the desktop app for the graph interface. The backend enhances it with LLM-powered features but is optional.
-
-### Architecture
-
-```
-YOUR MAC                          DOCKER CONTAINER
-┌─────────────────────┐          ┌──────────────────────┐
-│ Voicetree Desktop   │          │ Claude Code           │
-│ Graph UI + Agents   │◄── MCP ─►│ (sandboxed)           │
-│ Node editor         │          │                      │
-│ Agent spawning      │          │ Voicetree Backend    │
-│ localhost:3001/mcp  │          │ FastAPI :8001         │
-└─────────────────────┘          └──────────────────────┘
-```
-
-Claude Code stays sandboxed in Docker. The desktop app connects to it over MCP via `host.docker.internal` (configured automatically in the compose file).
-
-### Setup
-
-#### 1. Install the desktop app on your host
-
-```bash
-# macOS (Homebrew)
-brew tap voicetreelab/voicetree && brew install voicetree
-
-# macOS (direct download)
-# Apple Silicon: https://github.com/voicetreelab/voicetree/releases/latest/download/voicetree-arm64.dmg
-# Intel:         https://github.com/voicetreelab/voicetree/releases/latest/download/voicetree-x64.dmg
-
-# Linux
-curl -fsSL https://raw.githubusercontent.com/voicetreelab/voicetree/main/install.sh | sh
-```
-
-Open Voicetree and enable MCP in its settings.
-
-#### 2. Start the backend and configure MCP (inside the container)
-
-```bash
-./claude-dev
-menu           # Choose option 3: Voicetree
-               #   [a] Start backend server
-               #   [c] Configure MCP connection
-```
-
-The MCP setup will ask for the port (default `3001`) and write the connection to `/workspace/.mcp.json`. It auto-detects the Docker host IP.
-
-#### 3. Restart Claude to pick up MCP config
-
-```bash
-cs             # or: claude --dangerously-skip-permissions
-```
-
-Claude will now have access to Voicetree's MCP tools. You can verify by checking for voicetree in Claude's `/mcp` output.
-
-#### 4. (Optional) Configure API keys for the backend
-
-If you want the backend's LLM-powered features (text-to-graph, semantic search), it needs API keys:
-
-```bash
-menu           # Option 3 → [c] Configure MCP connection
-               # Follow the prompts for Google/OpenAI API keys
-```
-
-Keys are stored in `/workspace/.env` (already in `.gitignore`).
-
-### Commands
+Agents log their work to `/workspace/.claude/logs/` using the `dev-log` command:
 
 | Command | Description |
 |---------|-------------|
-| `voicetree-start` | Start the backend server |
-| `voicetree-stop` | Stop the backend server |
-| `voicetree-status` | Check if backend is running |
-| `voicetree-logs` | Tail backend logs |
-| `voicetree-setup` | Configure MCP connection + API keys |
-| `menu` → option 3 | Voicetree submenu (all of the above) |
+| `dev-log run "cmd" pass\|fail "reason"` | Log a command execution |
+| `dev-log decision "description"` | Log a design decision |
+| `dev-log error "what" "detail"` | Log a failure |
+| `dev-log change "what" "why"` | Log a code change |
+| `dev-log show [category] [N]` | View recent entries |
 
-### Notes
-
-- The desktop app runs on your **host**, not in Docker — it's an Electron app that needs a display
-- Claude Code remains fully sandboxed in Docker; MCP bridges the connection
-- Voicetree agents spawned from the desktop app also run on your host
-- Voicetree uses [BSL 1.1](https://github.com/voicetreelab/voicetree/blob/main/LICENSE) — installed from official sources, not bundled
-- API keys (Google, OpenAI) are stored in `/workspace/.env` if you use the backend
+See `CLAUDE.md` for full agent instructions.
 
 ---
 

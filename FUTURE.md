@@ -37,4 +37,7 @@ Helix binary selection handles this, but not tested on all architectures.
 - [x] ~~Automatic `.env` creation from `.env.example` if missing~~ — Documented in README Manual Setup
 - [x] ~~Support for multiple concurrent projects (unique container/volume names)~~ — Done via bootstrap naming
 - [ ] Pre-built image on Docker Hub to skip build step
-- [x] ~~Voicetree spatial IDE integration~~ — Backend baked into main container, on-demand start/stop via menu
+- [x] ~~Voicetree spatial IDE integration~~ — Removed; added agent teams + dev-log instead
+- [x] ~~Agent teams support~~ — Enabled via `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` + tmux mode
+- [x] ~~Structured development logging~~ — `dev-log` with four category files
+- [x] ~~Experience testing~~ — bats-core smoke + experience tests

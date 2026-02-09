@@ -13,17 +13,17 @@ cat ~/.claude/debug/latest
 # Export session log to workspace #claude #logs
 mkdir -p ~/.claude/exported-logs && cp ~/.claude/debug/latest ~/.claude/exported-logs/session-$(date +%Y%m%d-%H%M%S).log
 
-# Configure Voicetree MCP connection #voicetree #mcp #setup
-voicetree-setup
+# Log a run result #dev-log #logging
+dev-log run "command" pass "description"
 
-# Start Voicetree backend server #voicetree #server
-voicetree-server start
+# Log a decision #dev-log #logging
+dev-log decision "description of what was decided and why"
 
-# Stop Voicetree backend server #voicetree #server
-voicetree-server stop
+# Log an error #dev-log #logging
+dev-log error "what failed" "root cause or detail"
 
-# Check Voicetree backend status #voicetree #server
-voicetree-server status
+# Log a change #dev-log #logging
+dev-log change "what changed" "why it changed"
 
-# View Voicetree backend logs #voicetree #server #logs
-voicetree-server logs
+# View recent log entries #dev-log #logging
+dev-log show

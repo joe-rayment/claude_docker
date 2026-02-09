@@ -45,13 +45,7 @@ alias cs='claude --dangerously-skip-permissions'  # Quick start
 alias csd='claude --dangerously-skip-permissions --debug'  # With debug logging
 alias cn='claude'  # Normal start
 alias menu='/usr/local/bin/guided-setup.sh'  # Setup menu
-alias voicetree-setup='/usr/local/bin/voicetree-setup.sh'  # Voicetree MCP setup
-
-# Voicetree backend shortcuts
-alias voicetree-start='voicetree-server start'
-alias voicetree-stop='voicetree-server stop'
-alias voicetree-status='voicetree-server status'
-alias voicetree-logs='voicetree-server logs'
+alias dlog='dev-log'  # Development logger
 
 # Log viewing shortcuts
 alias clogs='view-logs'  # View Claude logs

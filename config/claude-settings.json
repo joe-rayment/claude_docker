@@ -1,10 +1,17 @@
 {
+  "env": {
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
+  },
+  "teammateMode": "tmux",
   "permissions": {
     "allow": [
       "Bash(*)",
       "Bash(view-logs)",
+      "Bash(dev-log:*)",
       "Read(~/.claude/debug/**)",
-      "Write(/home/agent/.claude/exported-logs/**)"
+      "Read(/workspace/.claude/logs/**)",
+      "Write(/home/agent/.claude/exported-logs/**)",
+      "Write(/workspace/.claude/logs/**)"
     ]
   },
   "hooks": {
