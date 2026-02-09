@@ -36,22 +36,27 @@ if [ -f "$SESSION_MARKER" ]; then
         echo -e "${C_YELLOW}⚠${C_RESET}  Claude is not authenticated."
         echo -e "  Run ${C_BOLD}claude${C_RESET} and then type ${C_BOLD}/login${C_RESET} to connect."
     fi
-    # Returning session — show compact command hint
+    # Returning session — show compact command hint with project name
     echo ""
-    echo -e "${C_DIM}Commands: ${C_RESET}${C_BOLD}menu${C_RESET}${C_DIM} (setup)  ${C_RESET}${C_BOLD}cs${C_RESET}${C_DIM} (claude)${C_RESET}"
+    if [ -n "$CLAUDE_PROJECT_NAME" ]; then
+        echo -e "${C_BOLD}${C_BLUE}[${CLAUDE_PROJECT_NAME}]${C_RESET} ${C_DIM}Commands: ${C_RESET}${C_BOLD}menu${C_RESET}${C_DIM} (setup)  ${C_RESET}${C_BOLD}cs${C_RESET}${C_DIM} (claude)${C_RESET}"
+    else
+        echo -e "${C_DIM}Commands: ${C_RESET}${C_BOLD}menu${C_RESET}${C_DIM} (setup)  ${C_RESET}${C_BOLD}cs${C_RESET}${C_DIM} (claude)${C_RESET}"
+    fi
     echo ""
     return 2>/dev/null || exit 0
 fi
 touch "$SESSION_MARKER"
 
-# Header
-if command -v figlet &> /dev/null; then
-    echo -e "${C_BLUE}$(figlet -f slant 'Claude Dev' 2>/dev/null || echo 'Claude Development Container')${C_RESET}"
-else
-    echo -e "${C_BOLD}${C_BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${C_RESET}"
-    echo -e "${C_BOLD}  Claude Code Development Container${C_RESET}"
-    echo -e "${C_BOLD}${C_BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${C_RESET}"
+# Header — show project name if available
+HEADER_TITLE="Claude Dev"
+if [ -n "$CLAUDE_PROJECT_NAME" ]; then
+    HEADER_TITLE="${CLAUDE_PROJECT_NAME} — Claude Dev"
 fi
+
+echo -e "${C_BOLD}${C_BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${C_RESET}"
+echo -e "${C_BOLD}  ${HEADER_TITLE}${C_RESET}"
+echo -e "${C_BOLD}${C_BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${C_RESET}"
 echo ""
 
 # Status section

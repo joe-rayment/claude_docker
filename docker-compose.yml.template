@@ -21,6 +21,10 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
+    # Project identity (used by welcome screen, prompt, and dev-log)
+    environment:
+      - CLAUDE_PROJECT_NAME=${PROJECT_NAME}
+
     # Working directory
     working_dir: /workspace
 

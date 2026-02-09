@@ -68,6 +68,12 @@ compinit
 bindkey '^[[A' history-substring-search-up
 bindkey '^[[B' history-substring-search-down
 
+# Project identity — terminal title and prompt tag for multi-project use
+if [ -n "$CLAUDE_PROJECT_NAME" ]; then
+    print -Pn "\e]0;${CLAUDE_PROJECT_NAME} — Claude Dev\a"
+    export RPROMPT="%F{blue}[${CLAUDE_PROJECT_NAME}]%f"
+fi
+
 # Welcome message
 command -v container-welcome >/dev/null 2>&1 && container-welcome || true
 

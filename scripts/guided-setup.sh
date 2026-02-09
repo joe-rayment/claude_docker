@@ -175,17 +175,17 @@ prompt_install_deps() {
     fi
 }
 
-# Show main menu
-show_main_menu() {
+# Show menu
+show_menu() {
     while true; do
         echo ""
         echo -e "${C_BOLD}${C_BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${C_RESET}"
         echo -e "${C_BOLD}  What would you like to do?${C_RESET}"
         echo -e "${C_BOLD}${C_BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${C_RESET}"
         echo ""
-        echo -e "  ${C_BOLD}[1]${C_RESET} Start Claude (interactive)"
+        echo -e "  ${C_BOLD}[1]${C_RESET} Start Claude"
         echo -e "  ${C_BOLD}[2]${C_RESET} View logs"
-        echo -e "  ${C_BOLD}[s]${C_RESET} Skip to shell"
+        echo -e "  ${C_BOLD}[q]${C_RESET} Quit to shell"
         echo ""
         read -p "Choice: " choice
 
@@ -194,54 +194,13 @@ show_main_menu() {
                 echo ""
                 if require_claude_auth; then
                     claude --dangerously-skip-permissions
-                    echo ""
-                    echo -e "${C_DIM}Type ${C_RESET}${C_BOLD}menu${C_RESET}${C_DIM} for options${C_RESET}"
-                    return
                 fi
                 ;;
             2)
                 echo ""
                 view-logs
                 ;;
-            s|S|"")
-                echo ""
-                return
-                ;;
-            *)
-                echo -e "${C_RED}Invalid choice${C_RESET}"
-                ;;
-        esac
-    done
-}
-
-# Show quick menu for returning users
-show_quick_menu() {
-    while true; do
-        echo ""
-        echo -e "${C_BOLD}Quick Start${C_RESET}"
-        echo ""
-        echo -e "  ${C_BOLD}[1]${C_RESET} Start Claude (interactive)"
-        echo -e "  ${C_BOLD}[m]${C_RESET} Full menu"
-        echo -e "  ${C_BOLD}[s]${C_RESET} Shell"
-        echo ""
-
-        read -p "Choice: " choice
-
-        case "$choice" in
-            1)
-                echo ""
-                if require_claude_auth; then
-                    claude --dangerously-skip-permissions
-                    echo ""
-                    echo -e "${C_DIM}Type ${C_RESET}${C_BOLD}menu${C_RESET}${C_DIM} for options${C_RESET}"
-                    return
-                fi
-                ;;
-            m|M)
-                show_main_menu
-                return
-                ;;
-            s|S|"")
+            q|Q|s|S|"")
                 echo ""
                 return
                 ;;
@@ -288,18 +247,13 @@ main() {
         prompt_install_deps
     fi
 
-    # Show appropriate menu
-    if [ "$needs_setup" = true ] || [ ! -f "/home/agent/.first-login" ]; then
-        show_main_menu
-    else
-        show_quick_menu
-    fi
+    show_menu
 }
 
 # Run if executed directly (not sourced)
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     if [ "$1" = "--menu-only" ]; then
-        show_quick_menu
+        show_menu
     else
         main "$@"
     fi

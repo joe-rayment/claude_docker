@@ -57,13 +57,33 @@ teardown() {
     [[ "$output" != *"Status:"* ]]
 }
 
+@test "welcome screen shows project name when CLAUDE_PROJECT_NAME is set" {
+    run_in_pane "CLAUDE_PROJECT_NAME=testproject container-welcome"
+    wait_for_text "testproject"
+    local output
+    output=$(capture_pane)
+    [[ "$output" == *"testproject"* ]]
+    [[ "$output" == *"Claude Dev"* ]]
+}
+
+@test "returning session shows project name in compact hint" {
+    touch /tmp/.claude-dev-welcome-shown
+    run_in_pane "CLAUDE_PROJECT_NAME=testproject container-welcome"
+    wait_for_text "Commands:" 5
+    local output
+    output=$(capture_pane)
+    [[ "$output" == *"testproject"* ]]
+    [[ "$output" == *"menu"* ]]
+}
+
 @test "guided-setup menu displays options" {
     run_in_pane "/usr/local/bin/guided-setup.sh --menu-only"
     wait_for_text "Start Claude"
     local output
     output=$(capture_pane)
     [[ "$output" == *"Start Claude"* ]]
-    [[ "$output" == *"Shell"* ]]
+    [[ "$output" == *"View logs"* ]]
+    [[ "$output" == *"Quit to shell"* ]]
 }
 
 @test "guided-setup menu handles invalid input" {
@@ -76,17 +96,22 @@ teardown() {
     [[ "$output" == *"Invalid choice"* ]]
 }
 
-@test "guided-setup skip to shell works" {
+@test "guided-setup quit to shell works with q" {
     run_in_pane "/usr/local/bin/guided-setup.sh --menu-only"
     wait_for_text "Choice:"
-    send_keys "s" Enter
-    # Should return to shell prompt — wait for it
+    send_keys "q" Enter
     sleep 1
     local output
     output=$(capture_pane)
-    # Menu should have exited (no more "Choice:" at the bottom)
-    # The pane should show a shell prompt
     [[ "$output" != *"Invalid"* ]]
-    # Verify the menu displayed expected elements before exiting
-    [[ "$output" == *"Shell"* ]] || [[ "$output" == *"$"* ]] || [[ "$output" == *"%"* ]]
+}
+
+@test "guided-setup quit to shell works with s (backwards compat)" {
+    run_in_pane "/usr/local/bin/guided-setup.sh --menu-only"
+    wait_for_text "Choice:"
+    send_keys "s" Enter
+    sleep 1
+    local output
+    output=$(capture_pane)
+    [[ "$output" != *"Invalid"* ]]
 }

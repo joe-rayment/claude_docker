@@ -9,7 +9,7 @@ set -euo pipefail
 #   changes.log   — what changed and why
 
 LOG_DIR="/workspace/.claude/logs"
-AGENT="${CLAUDE_AGENT_NAME:-$(whoami)}"
+AGENT="${CLAUDE_AGENT_NAME:-${CLAUDE_PROJECT_NAME:-$(whoami)}}"
 
 ts() { date -u +"%Y-%m-%dT%H:%M:%SZ"; }
 

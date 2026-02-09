@@ -82,6 +82,20 @@ VOLUME_NAME="${PROJECT_NAME}-agent-home"
 CLONE_DIR=".claude-dev"
 REPO_URL="https://github.com/joe-rayment/claude_docker.git"
 
+# Check for container name collision with a different project
+EXISTING_WORKSPACE=$(docker inspect --format='{{range .Mounts}}{{if eq .Destination "/workspace"}}{{.Source}}{{end}}{{end}}' "$CONTAINER_NAME" 2>/dev/null || true)
+if [ -n "$EXISTING_WORKSPACE" ] && [ "$EXISTING_WORKSPACE" != "$PROJECT_DIR" ]; then
+    echo ""
+    echo -e "${C_YELLOW}⚠${C_RESET}  Container '${CONTAINER_NAME}' already exists for a different project:"
+    echo "   Existing: $EXISTING_WORKSPACE"
+    echo "   Requested: $PROJECT_DIR"
+    echo ""
+    echo "   Options:"
+    echo "     1. Stop the existing container first: docker stop $CONTAINER_NAME"
+    echo "     2. Rename this project directory to get a unique container name"
+    exit 1
+fi
+
 echo ""
 echo -e "${C_BOLD}Project:${C_RESET}   $RAW_PROJECT_NAME"
 echo -e "${C_BOLD}Container:${C_RESET} $CONTAINER_NAME"

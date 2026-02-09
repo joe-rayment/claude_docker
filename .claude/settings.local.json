@@ -1,0 +1,40 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(claude --version)",
+      "Bash(ls:*)",
+      "WebSearch",
+      "WebFetch(domain:docs.docker.com)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(find:*)",
+      "Bash(cat:*)",
+      "WebFetch(domain:docs.anthropic.com)",
+      "Bash(docker compose build:*)",
+      "Bash(docker compose:*)",
+      "Bash(chmod:*)",
+      "Bash(docker exec:*)",
+      "Bash(docker image inspect:*)",
+      "Bash(git rm:*)",
+      "Bash(git remote set-url:*)",
+      "Bash(gh auth:*)",
+      "Bash(GIT_ASKPASS= GCM_INTERACTIVE=never gh auth setup-git:*)",
+      "Bash(docker pull:*)",
+      "WebFetch(domain:api.github.com)",
+      "Bash(gh api:*)",
+      "Bash(cd:*)",
+      "Bash(xargs:*)",
+      "Bash(sqlite3:*)",
+      "Bash(wc:*)",
+      "Bash(grep:*)",
+      "WebFetch(domain:gist.github.com)",
+      "WebFetch(domain:paddo.dev)",
+      "WebFetch(domain:medium.com)",
+      "WebFetch(domain:dev.to)",
+      "WebFetch(domain:www.anthropic.com)"
+    ]
+  }
+}
