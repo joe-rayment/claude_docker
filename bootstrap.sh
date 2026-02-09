@@ -129,23 +129,71 @@ sed -e "s|\${CONTAINER_NAME}|${CONTAINER_NAME}|g" \
 
 echo -e "${C_GREEN}✓${C_RESET} Generated docker-compose.yml"
 
+# Helper: check if container is running
+is_running() {
+    [ "$(docker inspect -f '{{.State.Running}}' "$CONTAINER_NAME" 2>/dev/null)" = "true" ]
+}
+
+# Helper: check if container exists (running or stopped)
+container_exists() {
+    docker inspect "$CONTAINER_NAME" &>/dev/null
+}
+
+# Helper: warn if active Claude sessions are running; returns 1 if user declines
+warn_active_sessions() {
+    if is_running; then
+        local active_sessions
+        active_sessions=$(docker exec "$CONTAINER_NAME" sh -c 'ps aux | grep -c "[c]laude"' 2>/dev/null || echo "0")
+        if [ "$active_sessions" -gt 0 ]; then
+            echo -e "${C_YELLOW}⚠${C_RESET}  ${C_BOLD}${active_sessions} active Claude session(s)${C_RESET} detected."
+            echo -n "   Restart container anyway? [y/N] "
+            read -r reply
+            if [[ ! "$reply" =~ ^[Yy]$ ]]; then
+                return 1
+            fi
+        fi
+    fi
+    return 0
+}
+
+# Capture current image ID before building (empty if image doesn't exist yet)
+OLD_IMAGE_ID=$(docker image inspect "$IMAGE_TAG" --format='{{.Id}}' 2>/dev/null || echo "")
+
 # Always build — Docker layer caching makes this fast when nothing changed
 echo ""
-echo -e "${C_YELLOW}→${C_RESET} Building container..."
+echo -e "${C_YELLOW}→${C_RESET} Building image..."
 BUILD_SHA=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 docker compose build --quiet --build-arg BUILD_SHA="$BUILD_SHA"
-echo -e "${C_GREEN}✓${C_RESET} Container built"
+echo -e "${C_GREEN}✓${C_RESET} Image built"
 
 # Record build SHA for auto-rebuild detection
 git rev-parse HEAD > .last-build-sha 2>/dev/null || true
 
-# Stop existing containers if running (don't fail if they don't exist)
-docker compose down 2>/dev/null || true
+# Compare image IDs to decide whether to restart
+NEW_IMAGE_ID=$(docker image inspect "$IMAGE_TAG" --format='{{.Id}}' 2>/dev/null || echo "")
 
-# Start container
-echo -e "${C_YELLOW}→${C_RESET} Starting container..."
-docker compose up -d
-echo -e "${C_GREEN}✓${C_RESET} Container started"
+if is_running; then
+    if [ "$OLD_IMAGE_ID" = "$NEW_IMAGE_ID" ]; then
+        echo -e "${C_GREEN}✓${C_RESET} Container already running (image unchanged)"
+    else
+        echo -e "${C_YELLOW}→${C_RESET} Image changed — restart needed"
+        if warn_active_sessions; then
+            docker compose down 2>/dev/null || true
+            docker compose up -d
+            echo -e "${C_GREEN}✓${C_RESET} Container restarted with new image"
+        else
+            echo -e "${C_GREEN}✓${C_RESET} Container still running (restart skipped)"
+        fi
+    fi
+elif container_exists; then
+    echo -e "${C_YELLOW}→${C_RESET} Starting stopped container..."
+    docker compose up -d
+    echo -e "${C_GREEN}✓${C_RESET} Container started"
+else
+    echo -e "${C_YELLOW}→${C_RESET} Starting container..."
+    docker compose up -d
+    echo -e "${C_GREEN}✓${C_RESET} Container started"
+fi
 
 # Install launcher to project root
 cd "$PROJECT_DIR"
