@@ -3,6 +3,10 @@
 # Pin base image digest for reproducible builds (update periodically)
 FROM docker/sandbox-templates:claude-code@sha256:be00c5a012768c207e1b445e30c1d1a2b58d408ed65c6b39620d615c7e7e56ba
 
+# Build traceability
+ARG BUILD_SHA=unknown
+LABEL build.sha=${BUILD_SHA}
+
 # Set environment variables
 ENV DEBIAN_FRONTEND=noninteractive
 ENV SHELL=/bin/zsh

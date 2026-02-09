@@ -25,6 +25,12 @@ if [ "$IMAGE_VERSION" != "$VOLUME_VERSION" ]; then
     # Update Claude settings (fixes breaking changes like hooks format)
     mkdir -p /home/agent/.claude
     cp /etc/claude-dev/configs/claude-settings.json /home/agent/.claude/settings.json 2>/dev/null || true
+    # Validate settings JSON — warn but don't block (corruption is the concern, not absence)
+    if [ -f /home/agent/.claude/settings.json ] && ! jq empty /home/agent/.claude/settings.json 2>/dev/null; then
+        echo -e "\033[33m⚠  WARNING: /home/agent/.claude/settings.json contains invalid JSON.\033[0m"
+        echo "   Claude Code may not start correctly. Check the file for syntax errors."
+        echo ""
+    fi
     echo "$IMAGE_VERSION" > /home/agent/.config-version
 fi
 

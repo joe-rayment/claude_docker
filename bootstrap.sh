@@ -117,7 +117,8 @@ echo -e "${C_GREEN}✓${C_RESET} Generated docker-compose.yml"
 # Always build — Docker layer caching makes this fast when nothing changed
 echo ""
 echo -e "${C_YELLOW}→${C_RESET} Building container..."
-docker compose build --quiet
+BUILD_SHA=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+docker compose build --quiet --build-arg BUILD_SHA="$BUILD_SHA"
 echo -e "${C_GREEN}✓${C_RESET} Container built"
 
 # Record build SHA for auto-rebuild detection
@@ -148,6 +149,9 @@ if ! grep -qxF 'claude-dev' "$GITIGNORE"; then
 fi
 if ! grep -qxF '.mcp.json' "$GITIGNORE"; then
     echo '.mcp.json' >> "$GITIGNORE"
+fi
+if ! grep -qxF '.claude/logs/' "$GITIGNORE"; then
+    echo '.claude/logs/' >> "$GITIGNORE"
 fi
 echo -e "${C_GREEN}✓${C_RESET} Updated .gitignore"
 

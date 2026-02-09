@@ -99,8 +99,13 @@ check_for_updates() {
 
     date +%s > "$check_file" 2>/dev/null || true
 
-    # Fetch silently — skip on any failure
-    if ! git -C "$CLAUDE_DEV_DIR" fetch --quiet 2>/dev/null; then
+    # Fetch silently with 5s timeout — skip on slow/offline networks
+    local fetch_ok=false
+    ( git -C "$CLAUDE_DEV_DIR" fetch --quiet 2>/dev/null & GIT_PID=$!
+      ( sleep 5 && kill $GIT_PID 2>/dev/null ) &
+      wait $GIT_PID 2>/dev/null
+    ) && fetch_ok=true
+    if ! $fetch_ok; then
         return 0
     fi
 
@@ -117,11 +122,31 @@ check_for_updates() {
     fi
 }
 
+# Helper: warn if active Claude sessions are running; returns 1 if user declines teardown
+warn_active_sessions() {
+    if is_running; then
+        local active_sessions
+        active_sessions=$(docker exec "$CONTAINER_NAME" sh -c 'ps aux | grep -c "[c]laude"' 2>/dev/null || echo "0")
+        if [ "$active_sessions" -gt 0 ]; then
+            echo -e "${C_YELLOW}⚠${C_RESET}  ${C_BOLD}${active_sessions} active Claude session(s)${C_RESET} detected in ${CONTAINER_NAME}."
+            echo -n "   Tear down container anyway? [y/N] "
+            read -r reply
+            if [[ ! "$reply" =~ ^[Yy]$ ]]; then
+                echo -e "   ${C_YELLOW}Aborted.${C_RESET}"
+                return 1
+            fi
+        fi
+    fi
+    return 0
+}
+
 # Helper: build image
 build_image() {
     local extra_args="$1"
+    local build_sha
+    build_sha=$(git -C "$CLAUDE_DEV_DIR" rev-parse --short HEAD 2>/dev/null || echo "unknown")
     echo -e "${C_YELLOW}→${C_RESET} Building image..."
-    dc build --quiet $extra_args
+    dc build --quiet --build-arg BUILD_SHA="$build_sha" $extra_args
     echo -e "${C_GREEN}✓${C_RESET} Image built"
 }
 
@@ -150,27 +175,15 @@ cmd_default() {
         record_build_sha
     elif repo_has_changed; then
         # Check for active sessions before tearing down the container
-        if is_running; then
-            local active_sessions
-            active_sessions=$(docker exec "$CONTAINER_NAME" sh -c 'ps aux | grep -c "[c]laude"' 2>/dev/null || echo "0")
-            if [ "$active_sessions" -gt 0 ]; then
-                echo -e "${C_YELLOW}⚠${C_RESET}  Environment updated, but ${C_BOLD}${active_sessions} active Claude session(s)${C_RESET} detected."
-                echo -e "  Run ${C_BOLD}./claude-dev --rebuild${C_RESET} when sessions are done to pick up changes."
-                # Skip rebuild, just exec into the running container
-            else
-                echo -e "${C_YELLOW}→${C_RESET} Environment updated — rebuilding image..."
-                dc down 2>/dev/null || true
-                build_image
-                record_build_sha
-            fi
-        else
+        if warn_active_sessions; then
             echo -e "${C_YELLOW}→${C_RESET} Environment updated — rebuilding image..."
-            if container_exists; then
+            if is_running || container_exists; then
                 dc down 2>/dev/null || true
             fi
             build_image
             record_build_sha
         fi
+        # If warn_active_sessions returned 1 (user declined), skip rebuild and just exec in
     fi
 
     # Start if not running
@@ -189,6 +202,11 @@ cmd_default() {
 
 cmd_update() {
     echo -e "${C_BOLD}${C_BLUE}Updating claude-dev environment...${C_RESET}"
+
+    # Check for active sessions before tearing down
+    if ! warn_active_sessions; then
+        return 0
+    fi
 
     # Pull latest from git
     echo -e "${C_YELLOW}→${C_RESET} Pulling latest changes..."
@@ -223,6 +241,11 @@ cmd_update() {
 cmd_rebuild() {
     echo -e "${C_BOLD}${C_BLUE}Force rebuilding image (no cache)...${C_RESET}"
 
+    # Check for active sessions before tearing down
+    if ! warn_active_sessions; then
+        return 0
+    fi
+
     # Stop if running
     if is_running || container_exists; then
         echo -e "${C_YELLOW}→${C_RESET} Stopping container..."
@@ -249,6 +272,9 @@ cmd_stop() {
 
 cmd_status() {
     echo -e "${C_BOLD}Container:${C_RESET} $CONTAINER_NAME"
+    local build_sha
+    build_sha=$(docker inspect --format='{{index .Config.Labels "build.sha"}}' "$IMAGE_TAG" 2>/dev/null || echo "unknown")
+    echo -e "${C_BOLD}Build SHA:${C_RESET} $build_sha"
     if is_running; then
         HEALTH=$(docker inspect --format='{{.State.Health.Status}}' "$CONTAINER_NAME" 2>/dev/null || echo "no healthcheck")
         echo -e "${C_BOLD}Status:${C_RESET}    ${C_GREEN}running${C_RESET} (health: $HEALTH)"
