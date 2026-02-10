@@ -163,7 +163,7 @@ OLD_IMAGE_ID=$(docker image inspect "$IMAGE_TAG" --format='{{.Id}}' 2>/dev/null 
 echo ""
 echo -e "${C_YELLOW}→${C_RESET} Building image..."
 BUILD_SHA=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
-docker compose build --quiet --build-arg BUILD_SHA="$BUILD_SHA"
+docker compose -f docker-compose.yml -p "$CONTAINER_NAME" build --quiet --build-arg BUILD_SHA="$BUILD_SHA"
 echo -e "${C_GREEN}✓${C_RESET} Image built"
 
 # Record build SHA for auto-rebuild detection
@@ -178,8 +178,8 @@ if is_running; then
     else
         echo -e "${C_YELLOW}→${C_RESET} Image changed — restart needed"
         if warn_active_sessions; then
-            docker compose down 2>/dev/null || true
-            docker compose up -d
+            docker compose -f docker-compose.yml -p "$CONTAINER_NAME" down 2>/dev/null || true
+            docker compose -f docker-compose.yml -p "$CONTAINER_NAME" up -d
             echo -e "${C_GREEN}✓${C_RESET} Container restarted with new image"
         else
             echo -e "${C_GREEN}✓${C_RESET} Container still running (restart skipped)"
@@ -187,11 +187,11 @@ if is_running; then
     fi
 elif container_exists; then
     echo -e "${C_YELLOW}→${C_RESET} Starting stopped container..."
-    docker compose up -d
+    docker compose -f docker-compose.yml -p "$CONTAINER_NAME" up -d
     echo -e "${C_GREEN}✓${C_RESET} Container started"
 else
     echo -e "${C_YELLOW}→${C_RESET} Starting container..."
-    docker compose up -d
+    docker compose -f docker-compose.yml -p "$CONTAINER_NAME" up -d
     echo -e "${C_GREEN}✓${C_RESET} Container started"
 fi
 
