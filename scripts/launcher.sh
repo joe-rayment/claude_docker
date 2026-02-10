@@ -49,9 +49,13 @@ fi
 
 IMAGE_TAG="${IMAGE_TAG:-claude-code-dev:latest}"
 
-# Helper: run docker compose with the correct file
+# Helper: run docker compose with the correct file and project name.
+# The -p flag ensures compose operations are scoped to THIS project only,
+# preventing one project's compose commands from tearing down another's containers.
+# (Without -p, the project name defaults to the directory name "claude-dev",
+# which is the same for every project.)
 dc() {
-    docker compose -f "$COMPOSE_FILE" "$@"
+    docker compose -f "$COMPOSE_FILE" -p "$CONTAINER_NAME" "$@"
 }
 
 # Helper: check if container is running
@@ -220,6 +224,21 @@ cmd_update() {
     echo -e "${C_YELLOW}→${C_RESET} Pulling latest changes..."
     git -C "$CLAUDE_DEV_DIR" fetch --quiet origin main
     git -C "$CLAUDE_DEV_DIR" reset --hard --quiet origin/main
+
+    # Regenerate docker-compose.yml from updated template (picks up fixes like project name scoping)
+    if [ -f "$CLAUDE_DEV_DIR/docker-compose.yml.template" ]; then
+        local volume_name
+        volume_name=$(grep -A1 '^volumes:' "$COMPOSE_FILE" 2>/dev/null | tail -1 | sed 's/:.*//' | tr -d '[:space:]')
+        local project_name
+        project_name=$(echo "$CONTAINER_NAME" | sed 's/-claude-dev$//')
+        volume_name="${volume_name:-${project_name}-agent-home}"
+        sed -e "s|\${CONTAINER_NAME}|${CONTAINER_NAME}|g" \
+            -e "s|\${VOLUME_NAME}|${volume_name}|g" \
+            -e "s|\${IMAGE_TAG}|${IMAGE_TAG}|g" \
+            -e "s|\${PROJECT_NAME}|${project_name}|g" \
+            "$CLAUDE_DEV_DIR/docker-compose.yml.template" > "$COMPOSE_FILE"
+        echo -e "${C_GREEN}✓${C_RESET} Regenerated docker-compose.yml"
+    fi
 
     # Rebuild image
     build_image
