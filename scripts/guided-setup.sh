@@ -13,7 +13,8 @@ C_RESET="\033[0m"
 
 # State detection functions
 is_claude_authenticated() {
-    [ -f "/home/agent/.claude/.credentials.json" ]
+    [ -f "/home/agent/.claude/.credentials.json" ] && \
+        jq -e '.claudeAiOauth' /home/agent/.claude/.credentials.json &>/dev/null 2>&1
 }
 
 is_git_configured() {
@@ -21,7 +22,8 @@ is_git_configured() {
 }
 
 is_github_authenticated() {
-    [ -f "/home/agent/.config/gh/hosts.yml" ]
+    [ -f "/home/agent/.config/gh/hosts.yml" ] && \
+        timeout 3 gh auth status &>/dev/null 2>&1
 }
 
 get_dependency_count() {
@@ -135,7 +137,8 @@ prompt_github_auth() {
         gh auth login
         trap - INT
         echo ""
-        if is_github_authenticated; then
+        if [ -f "/home/agent/.config/gh/hosts.yml" ]; then
+            gh auth setup-git 2>/dev/null || true
             echo -e "${C_GREEN}✓${C_RESET} GitHub authenticated successfully"
         else
             echo -e "${C_YELLOW}⚠${C_RESET} Authentication may have failed. Try 'gh auth login' manually."

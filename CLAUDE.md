@@ -43,6 +43,18 @@ Use `dev-log` to record what happens during your session. Logs live at `/workspa
 └── changes.log     # What changed and why
 ```
 
+## Attachments
+
+Drop files (screenshots, images, reference docs) into `/workspace/attachments/` to make them accessible inside the container. This directory is gitignored.
+
+## Cleanup
+
+Periodically clean up ephemeral files that accumulate during development:
+
+- `/workspace/attachments/` — Delete old screenshots and reference files
+- `/workspace/.claude/plans/` — Remove completed or obsolete plan files
+- `/workspace/.claude/logs/` — Logs are gitignored; clear if they grow large
+
 ## Agent Teams
 
 Agent teams are enabled via `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` and `teammateMode: "tmux"` in settings. Claude Code manages tmux panes automatically — you do not need to configure tmux manually.

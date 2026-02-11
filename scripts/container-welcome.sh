@@ -80,10 +80,13 @@ else
     GIT_OK=false
 fi
 
-# GitHub authentication (file check only — no network call)
-if [ -f "/home/agent/.config/gh/hosts.yml" ]; then
+# GitHub authentication (validate token with timeout)
+if timeout 3 gh auth status &>/dev/null 2>&1; then
     echo -e "  ${C_GREEN}[✓]${C_RESET} GitHub: Authenticated"
     GITHUB_OK=true
+elif [ -f "/home/agent/.config/gh/hosts.yml" ]; then
+    echo -e "  ${C_YELLOW}[!]${C_RESET} GitHub: Token expired — run ${C_BOLD}gh auth login${C_RESET}"
+    GITHUB_OK=false
 else
     echo -e "  ${C_YELLOW}[!]${C_RESET} GitHub: Not authenticated"
     GITHUB_OK=false

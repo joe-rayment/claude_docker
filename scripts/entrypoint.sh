@@ -26,9 +26,11 @@ if [ "$IMAGE_VERSION" != "$VOLUME_VERSION" ]; then
     cp /etc/claude-dev/configs/intellishell-config.toml /home/agent/.config/intelli-shell/config.toml 2>/dev/null || true
     cp /etc/claude-dev/configs/intellishell-defaults.txt /home/agent/.config/intelli-shell/defaults.txt 2>/dev/null || true
     rm -f /home/agent/.config/intelli-shell/.defaults_imported
-    # Update Claude settings (fixes breaking changes like hooks format)
+    # Update Claude settings and statusline script
     mkdir -p /home/agent/.claude
     cp /etc/claude-dev/configs/claude-settings.json /home/agent/.claude/settings.json 2>/dev/null || true
+    cp /etc/claude-dev/configs/statusline.sh /home/agent/.claude/statusline.sh 2>/dev/null || true
+    chmod +x /home/agent/.claude/statusline.sh 2>/dev/null || true
     # Validate settings JSON — warn but don't block (corruption is the concern, not absence)
     if [ -f /home/agent/.claude/settings.json ] && ! jq empty /home/agent/.claude/settings.json 2>/dev/null; then
         echo -e "\033[33m⚠  WARNING: /home/agent/.claude/settings.json contains invalid JSON.\033[0m"
@@ -45,10 +47,19 @@ if [ -z "$(ls -A /workspace 2>/dev/null)" ]; then
     echo ""
 fi
 
-# Copy Claude settings template only if not already present (preserve user customizations)
+# Copy Claude settings and statusline only if not already present (preserve user customizations)
 mkdir -p /home/agent/.claude
 if [ ! -f /home/agent/.claude/settings.json ]; then
     cp /home/agent/.config/claude-settings-template.json /home/agent/.claude/settings.json 2>/dev/null || true
+fi
+if [ ! -f /home/agent/.claude/statusline.sh ]; then
+    cp /etc/claude-dev/configs/statusline.sh /home/agent/.claude/statusline.sh 2>/dev/null || true
+    chmod +x /home/agent/.claude/statusline.sh 2>/dev/null || true
+fi
+
+# Wire git credential helper to gh if GitHub is authenticated
+if [ -f "/home/agent/.config/gh/hosts.yml" ]; then
+    gh auth setup-git 2>/dev/null || true
 fi
 
 # Change to workspace directory

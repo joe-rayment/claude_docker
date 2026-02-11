@@ -216,6 +216,13 @@ fi
 if ! grep -qxF '.claude/logs/' "$GITIGNORE"; then
     echo '.claude/logs/' >> "$GITIGNORE"
 fi
+if ! grep -qxF 'attachments/' "$GITIGNORE"; then
+    echo 'attachments/' >> "$GITIGNORE"
+fi
+
+# Create attachments directory for drag-and-drop files
+mkdir -p "$PROJECT_DIR/attachments"
+
 echo -e "${C_GREEN}✓${C_RESET} Updated .gitignore"
 
 echo ""
