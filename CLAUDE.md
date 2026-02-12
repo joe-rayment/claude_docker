@@ -105,6 +105,10 @@ Run `bd ready` to see tasks with no open blockers. If there are existing tasks, 
 - `.beads/issues.jsonl` — Git-tracked. Push to persist, pull to restore.
 - `.beads/beads.db` — Git-ignored local cache. Rebuilt automatically from JSONL.
 
+## Knowledge Base
+
+Curated reference docs for common issues live in `/opt/claude-dev/knowledge-base/`. When you encounter problems with a technology (deployment failures, configuration issues, environment-specific bugs), check this directory for relevant guides before searching the web. These are proven solutions to issues that come up repeatedly.
+
 ## Experience Testing
 
 Run `run-tests.sh` inside the container to verify the environment works correctly. Tests cover:

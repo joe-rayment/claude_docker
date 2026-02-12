@@ -105,6 +105,7 @@ COPY --chown=agent:agent scripts/guided-setup.sh /usr/local/bin/guided-setup.sh
 COPY --chown=agent:agent scripts/dev-log.sh /usr/local/bin/dev-log
 COPY --chown=agent:agent run-tests.sh /usr/local/bin/run-tests.sh
 COPY --chown=agent:agent tests/ /opt/claude-dev/tests/
+COPY --chown=agent:agent knowledge-base/ /opt/claude-dev/knowledge-base/
 
 # Stage configs for version-sync (outside volume mount path)
 RUN mkdir -p /etc/claude-dev/configs
