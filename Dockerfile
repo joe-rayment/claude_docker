@@ -1,7 +1,7 @@
 # Claude Code Development Environment
 # Based on official Docker Claude Code sandbox
 # Pin base image digest for reproducible builds (update periodically)
-FROM docker/sandbox-templates:claude-code@sha256:be00c5a012768c207e1b445e30c1d1a2b58d408ed65c6b39620d615c7e7e56ba
+FROM docker/sandbox-templates:claude-code@sha256:e7ab93ba4a4a10d3cb20d8d1e777ac57604f2f523c3bc2a78fcbcabac0317c81
 
 # Build traceability
 ARG BUILD_SHA=unknown

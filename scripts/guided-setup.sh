@@ -35,6 +35,23 @@ get_dependency_count() {
     fi
 }
 
+# Run claude and handle crashes gracefully
+# If claude crashes or the user Ctrl+C's out, this still returns cleanly
+run_claude_for_auth() {
+    local exit_code=0
+    claude || exit_code=$?
+    if [ "$exit_code" -ne 0 ] && [ "$exit_code" -ne 130 ]; then
+        # Non-zero, non-SIGINT exit — likely a crash
+        echo ""
+        echo -e "${C_YELLOW}⚠${C_RESET} Claude exited unexpectedly (code $exit_code)."
+        if is_claude_authenticated; then
+            echo -e "  Authentication succeeded despite the error."
+        else
+            echo -e "  If you authenticated, credentials may still have been saved."
+        fi
+    fi
+}
+
 # Require Claude authentication before running Claude-dependent commands
 # Offers to authenticate if not already done; returns 1 on failure/skip
 require_claude_auth() {
@@ -46,7 +63,7 @@ require_claude_auth() {
     echo -e "  Run ${C_BOLD}claude${C_RESET}, type ${C_BOLD}/login${C_RESET}, then ${C_BOLD}/exit${C_RESET} to return."
     read -p "Launch Claude now? (y/n): " choice
     if [ "$choice" = "y" ] || [ "$choice" = "Y" ]; then
-        claude
+        run_claude_for_auth
         if is_claude_authenticated; then
             echo -e "${C_GREEN}✓${C_RESET} Claude authenticated successfully"
             return 0
@@ -70,7 +87,7 @@ prompt_claude_auth() {
 
     while true; do
         read -p "Press ENTER to launch Claude (then type /login): " _
-        claude
+        run_claude_for_auth
         echo ""
         if is_claude_authenticated; then
             echo -e "${C_GREEN}✓${C_RESET} Claude authenticated successfully"
