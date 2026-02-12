@@ -100,7 +100,6 @@ COPY --chown=agent:agent scripts/view-logs.sh /usr/local/bin/view-logs
 COPY --chown=agent:agent scripts/detect-dependencies.sh /usr/local/bin/detect-dependencies.sh
 COPY --chown=agent:agent scripts/guided-setup.sh /usr/local/bin/guided-setup.sh
 COPY --chown=agent:agent scripts/dev-log.sh /usr/local/bin/dev-log
-COPY --chown=agent:agent config/claude-usage.sh /usr/local/bin/claude-usage
 COPY --chown=agent:agent run-tests.sh /usr/local/bin/run-tests.sh
 COPY --chown=agent:agent tests/ /opt/claude-dev/tests/
 
@@ -113,7 +112,6 @@ COPY config/intellishell-config.toml /etc/claude-dev/configs/intellishell-config
 COPY config/intellishell-defaults.txt /etc/claude-dev/configs/intellishell-defaults.txt
 COPY config/claude-settings.json /etc/claude-dev/configs/claude-settings.json
 COPY config/statusline.sh /etc/claude-dev/configs/statusline.sh
-COPY config/claude-usage.sh /etc/claude-dev/configs/claude-usage.sh
 
 # Copy configuration files to agent home
 COPY --chown=agent:agent config/.zshrc /home/agent/.zshrc
@@ -129,7 +127,6 @@ RUN chmod +x /usr/local/bin/entrypoint.sh \
              /usr/local/bin/detect-dependencies.sh \
              /usr/local/bin/guided-setup.sh \
              /usr/local/bin/dev-log \
-             /usr/local/bin/claude-usage \
              /usr/local/bin/run-tests.sh
 
 # ── Agent: user-level tool install and final state ────────────────────
