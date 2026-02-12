@@ -47,6 +47,13 @@ alias cn='claude'  # Normal start
 alias menu='/usr/local/bin/guided-setup.sh'  # Setup menu
 alias dlog='dev-log'  # Development logger
 
+# Beads issue tracker shortcuts
+if command -v bd &>/dev/null; then
+    alias br='bd ready'           # Show actionable tasks
+    alias bds='bd show'           # Show issue details
+    alias bdc='bd create'         # Create new issue
+fi
+
 # Log viewing shortcuts
 alias clogs='view-logs'  # View Claude logs
 alias clog-latest='cat ~/.claude/debug/latest'  # Quick peek at latest log

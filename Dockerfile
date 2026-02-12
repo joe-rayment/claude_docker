@@ -93,6 +93,9 @@ RUN git clone --depth 1 --branch v1.11.1 https://github.com/bats-core/bats-core.
     && /tmp/bats-core/install.sh /usr/local \
     && rm -rf /tmp/bats-core
 
+# Install Beads issue tracker for project-scoped AI agent memory
+RUN curl -fsSL https://raw.githubusercontent.com/steveyegge/beads/main/scripts/install.sh | bash
+
 # Copy scripts first (change less often than config — better layer caching)
 COPY --chown=agent:agent scripts/entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY --chown=agent:agent scripts/container-welcome.sh /usr/local/bin/container-welcome

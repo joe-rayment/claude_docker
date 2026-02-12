@@ -24,6 +24,7 @@
     command -v tmux
     command -v jq
     command -v bats
+    command -v bd
 }
 
 @test "config version file exists and is a number" {
@@ -116,6 +117,10 @@
     [ "$status" -eq 0 ] || [ "$status" -eq 1 ]
     # Should not show "Unknown test suite" error
     [[ "$output" != *"Unknown"* ]]
+}
+
+@test "bd binary is installed" {
+    command -v bd
 }
 
 @test "no voicetree references in mcp config" {

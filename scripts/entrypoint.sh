@@ -62,6 +62,20 @@ if [ -f "/home/agent/.config/gh/hosts.yml" ]; then
     gh auth setup-git 2>/dev/null || true
 fi
 
+# Beads auto-initialization: ensure project has agent memory
+if command -v bd &>/dev/null && [ -d "/workspace/.git" ]; then
+    if [ ! -d "/workspace/.beads" ]; then
+        # Fresh project — initialize beads
+        (cd /workspace && bd init --quiet 2>/dev/null) || true
+        if [ -d "/workspace/.beads" ]; then
+            (cd /workspace && bd hooks install 2>/dev/null) || true
+        fi
+    elif [ ! -f "/workspace/.beads/beads.db" ]; then
+        # Cloned from GitHub — rebuild SQLite from JSONL
+        (cd /workspace && bd import 2>/dev/null) || true
+    fi
+fi
+
 # Change to workspace directory
 cd /workspace
 

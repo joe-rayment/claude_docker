@@ -73,6 +73,38 @@ Agent teams are enabled via `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` and `teamma
 - Run tests before reporting completion.
 - If blocked, log the blocker with `dev-log error` and report to the team lead.
 
+## Beads (Agent Memory)
+
+This environment uses [Beads](https://github.com/steveyegge/beads) (`bd`) for persistent task tracking across sessions. Beads data lives in `/workspace/.beads/` and is git-tracked, so task history survives across machines.
+
+### Session Start
+
+Run `bd ready` to see tasks with no open blockers. If there are existing tasks, review them before starting new work.
+
+### Key Commands
+
+| Command | Purpose |
+|---------|---------|
+| `bd ready` | Show tasks with no blockers (start here) |
+| `bd create "Title" -p 0` | Create a task (P0=critical, P3=low) |
+| `bd update <id> --claim` | Claim a task and mark in-progress |
+| `bd show <id>` | View task details and history |
+| `bd close <id>` | Mark a task as done |
+| `bd list` | List all issues |
+| `bd sync` | Export to JSONL and sync with git |
+
+### Workflow Rules
+
+- Use `bd update` with flags to modify issues. Never use `bd edit` (it opens an editor).
+- Run `bd sync` at the end of a session to persist changes.
+- Include issue IDs in commit messages when relevant: `Fix auth bug (bd-a3f2)`.
+- When discovering new work during a task, create a new bead with `bd create`.
+
+### Data
+
+- `.beads/issues.jsonl` — Git-tracked. Push to persist, pull to restore.
+- `.beads/beads.db` — Git-ignored local cache. Rebuilt automatically from JSONL.
+
 ## Experience Testing
 
 Run `run-tests.sh` inside the container to verify the environment works correctly. Tests cover:

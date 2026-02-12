@@ -108,6 +108,20 @@ else
     DEPS_INSTALLED=true  # Nothing to install
 fi
 
+# Beads agent memory status
+if command -v bd &>/dev/null; then
+    if [ -d "/workspace/.beads" ]; then
+        bead_count=$(cd /workspace && bd list --format count 2>/dev/null || echo "")
+        if [ -n "$bead_count" ] && [ "$bead_count" -gt 0 ] 2>/dev/null; then
+            echo -e "  ${C_GREEN}[✓]${C_RESET} Beads: ${bead_count} issues tracked"
+        else
+            echo -e "  ${C_GREEN}[✓]${C_RESET} Beads: Initialized"
+        fi
+    else
+        echo -e "  ${C_DIM}[ ]${C_RESET} Beads: Not initialized"
+    fi
+fi
+
 echo ""
 
 # Determine if we need guided setup or quick menu
