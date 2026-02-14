@@ -10,8 +10,10 @@
 #
 # Agent panes are "hidden" by moving them to a background tmux window
 # named "_agents". Showing joins them back into the main window.
+# Note: hide moves ALL non-active panes, not just Claude agent panes.
 
-set -e
+# No set -e: tmux commands can legitimately fail (dead panes, races),
+# and we handle errors explicitly in each operation.
 
 # Colors
 C_BOLD='\033[1m'
@@ -63,12 +65,10 @@ agents_pane_count() {
     pane_ids=$(tmux list-panes -t "$HIDDEN_WINDOW" -F '#{pane_id}' 2>/dev/null) || { echo "0"; return; }
     for pid in $pane_ids; do
         # Check if the pane's process is still running
-        if tmux display-message -t "$pid" -p '#{pane_pid}' &>/dev/null; then
-            local pane_pid
-            pane_pid=$(tmux display-message -t "$pid" -p '#{pane_pid}')
-            if [ -n "$pane_pid" ] && kill -0 "$pane_pid" 2>/dev/null; then
-                count=$((count + 1))
-            fi
+        local pane_pid
+        pane_pid=$(tmux display-message -t "$pid" -p '#{pane_pid}' 2>/dev/null) || continue
+        if [ -n "$pane_pid" ] && kill -0 "$pane_pid" 2>/dev/null; then
+            count=$((count + 1))
         fi
     done
     echo "$count"
@@ -103,23 +103,29 @@ cmd_hide() {
     fi
 
     # Move each pane to the hidden window.
-    # The first pane uses break-pane (creates the window if needed).
+    # The first pane uses break-pane (creates the window).
     # Subsequent panes use join-pane to add to it.
+    # Track actual moves — individual panes may fail (already dead, etc.)
     local first=true
+    local moved=0
     for pid in "${panes_to_move[@]}"; do
         if $first; then
-            tmux break-pane -d -s "$pid" -n "$HIDDEN_WINDOW"
-            first=false
+            if tmux break-pane -d -s "$pid" -n "$HIDDEN_WINDOW" 2>/dev/null; then
+                first=false
+                moved=$((moved + 1))
+            fi
         else
-            # join-pane requires the target window to exist
-            if agents_window_exists; then
-                tmux join-pane -d -s "$pid" -t "$HIDDEN_WINDOW"
+            if agents_window_exists && tmux join-pane -d -s "$pid" -t "$HIDDEN_WINDOW" 2>/dev/null; then
+                moved=$((moved + 1))
             fi
         fi
     done
 
-    local moved=${#panes_to_move[@]}
-    echo -e "${C_YELLOW}Hidden${C_RESET} ${moved} agent pane(s). ${C_DIM}Ctrl-b a to show.${C_RESET}"
+    if [ "$moved" -gt 0 ]; then
+        echo -e "${C_YELLOW}Hidden${C_RESET} ${moved} agent pane(s). ${C_DIM}Ctrl-b a to show.${C_RESET}"
+    else
+        echo -e "${C_DIM}No panes could be hidden.${C_RESET}"
+    fi
 }
 
 cmd_show() {
@@ -152,25 +158,32 @@ cmd_show() {
         return 0
     fi
 
-    # Join each pane back into the current window
+    # Join each pane back into the current window.
+    # Track actual restores in case individual panes fail.
+    local restored=0
     for pid in "${panes_to_restore[@]}"; do
-        tmux join-pane -d -s "$pid" -t "$current_win"
+        if tmux join-pane -d -s "$pid" -t "$current_win" 2>/dev/null; then
+            restored=$((restored + 1))
+        fi
     done
 
     # Re-tile the layout
-    tmux select-layout -t "$current_win" tiled
+    tmux select-layout -t "$current_win" tiled 2>/dev/null || true
 
     # Kill the _agents window if it's now empty (should auto-close, but be safe)
     if agents_window_exists; then
         local remaining
         remaining=$(tmux list-panes -t "$HIDDEN_WINDOW" 2>/dev/null | wc -l)
-        if [ "$remaining" -eq 0 ]; then
+        if [ "${remaining:-0}" -eq 0 ]; then
             tmux kill-window -t "$HIDDEN_WINDOW" 2>/dev/null || true
         fi
     fi
 
-    local restored=${#panes_to_restore[@]}
-    echo -e "${C_GREEN}Restored${C_RESET} ${restored} agent pane(s). ${C_DIM}Ctrl-b a to hide.${C_RESET}"
+    if [ "$restored" -gt 0 ]; then
+        echo -e "${C_GREEN}Restored${C_RESET} ${restored} agent pane(s). ${C_DIM}Ctrl-b a to hide.${C_RESET}"
+    else
+        echo -e "${C_DIM}No panes could be restored.${C_RESET}"
+    fi
 }
 
 cmd_toggle() {
@@ -220,8 +233,8 @@ cmd_help() {
     echo ""
     echo -e "${C_BOLD}Shell commands:${C_RESET}"
     echo -e "  ${C_BOLD}ap toggle${C_RESET}        Same as Ctrl-b a"
-    echo -e "  ${C_BOLD}ap hide${C_RESET}          Hide agent panes"
-    echo -e "  ${C_BOLD}ap show${C_RESET}          Bring agent panes back"
+    echo -e "  ${C_BOLD}ap hide${C_RESET}          Hide all non-active panes"
+    echo -e "  ${C_BOLD}ap show${C_RESET}          Bring hidden panes back"
     echo -e "  ${C_BOLD}ap list${C_RESET}          Show pane info"
 }
 

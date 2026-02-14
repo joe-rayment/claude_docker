@@ -83,15 +83,21 @@ cd /workspace
 
 # Auto-start tmux for agent teams support.
 # teammateMode: "tmux" requires a tmux session for teammate panes to appear.
-# Skip if: already in tmux, non-interactive, or command is tmux itself.
-if [ -z "${TMUX:-}" ] && [ -t 0 ] && [ "${1:-}" != "tmux" ]; then
-    # Kill stale tmux server from previous container lifecycle (if any)
+# Skip if: already in tmux, non-interactive, command is tmux itself, or opt-out.
+# Set CLAUDE_DEV_NO_TMUX=1 to bypass tmux (useful for debugging or alternate runtimes).
+if [ -z "${TMUX:-}" ] && [ -t 0 ] && [ "${1:-}" != "tmux" ] && [ -z "${CLAUDE_DEV_NO_TMUX:-}" ]; then
+    # Kill stale tmux server from previous container lifecycle (if any).
+    # This also ensures a fresh config load from ~/.tmux.conf (session-scoped
+    # hooks in the config depend on the "main" session being created fresh).
     tmux kill-server 2>/dev/null || true
-    # exec replaces entrypoint as PID 1 so tmux receives signals directly.
-    # -A: attach if session "main" exists, create if not (idempotent).
-    # -u: force UTF-8 support.
-    exec tmux -u new-session -A -s main "$@"
+    # Verify tmux can start before exec'ing into it. If the config is broken
+    # or tmux is unavailable, fall through to raw shell instead of crash-looping.
+    if tmux -u new-session -d -s main 2>/dev/null; then
+        exec tmux -u attach-session -t main
+    fi
+    echo -e "\033[33m⚠  tmux failed to start — falling back to shell.\033[0m" >&2
+    echo "   Check ~/.tmux.conf for errors or set CLAUDE_DEV_NO_TMUX=1." >&2
 fi
 
-# Fallback: already in tmux, non-interactive, or explicit tmux command
+# Fallback: already in tmux, non-interactive, tmux failed, or opt-out
 exec "$@"

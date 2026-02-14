@@ -11,6 +11,10 @@ services:
     image: ${IMAGE_TAG}
     container_name: ${CONTAINER_NAME}
 
+    # Use tini as PID 1 so signals (SIGTERM from docker stop) propagate
+    # correctly to tmux and its child processes.
+    init: true
+
     # Interactive terminal
     stdin_open: true
     tty: true

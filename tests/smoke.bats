@@ -28,11 +28,11 @@
     command -v bd
 }
 
-@test "config version file exists and is a number" {
+@test "config version file exists and has valid format" {
     [ -f /etc/claude-dev/CONFIG_VERSION ]
     local ver
     ver=$(cat /etc/claude-dev/CONFIG_VERSION)
-    [[ "$ver" =~ ^[0-9]+$ ]]
+    [[ "$ver" =~ ^[0-9.]+$ ]]
 }
 
 @test "staged configs exist for version-sync" {

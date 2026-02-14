@@ -172,13 +172,20 @@ start_container() {
 # Helper: exec into container
 # If a tmux session is running (from the entrypoint), attach to it.
 # This puts the user into the same tmux session where agent panes live.
+# Retries briefly in case the container just started and the entrypoint
+# hasn't reached the tmux startup line yet.
 exec_into() {
     echo -e "${C_GREEN}✓${C_RESET} Entering ${C_BOLD}${CONTAINER_NAME}${C_RESET}..."
-    if docker exec "$CONTAINER_NAME" tmux has-session -t main 2>/dev/null; then
-        exec docker exec -it "$CONTAINER_NAME" tmux attach-session -t main
-    else
-        exec docker exec -it "$CONTAINER_NAME" /bin/zsh
-    fi
+    local attempts=0
+    while [ $attempts -lt 10 ]; do
+        if docker exec "$CONTAINER_NAME" tmux has-session -t main 2>/dev/null; then
+            exec docker exec -it "$CONTAINER_NAME" tmux attach-session -t main
+        fi
+        sleep 0.5
+        attempts=$((attempts + 1))
+    done
+    # Fallback after ~5s: tmux not available, use raw shell
+    exec docker exec -it "$CONTAINER_NAME" /bin/zsh
 }
 
 # --- Commands ---
