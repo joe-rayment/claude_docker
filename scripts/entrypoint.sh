@@ -31,6 +31,8 @@ if [ "$IMAGE_VERSION" != "$VOLUME_VERSION" ]; then
     cp /etc/claude-dev/configs/claude-settings.json /home/agent/.claude/settings.json 2>/dev/null || true
     cp /etc/claude-dev/configs/statusline.sh /home/agent/.claude/statusline.sh 2>/dev/null || true
     chmod +x /home/agent/.claude/statusline.sh 2>/dev/null || true
+    # Update tmux config
+    cp /etc/claude-dev/configs/tmux.conf /home/agent/.tmux.conf 2>/dev/null || true
     # Validate settings JSON — warn but don't block (corruption is the concern, not absence)
     if [ -f /home/agent/.claude/settings.json ] && ! jq empty /home/agent/.claude/settings.json 2>/dev/null; then
         echo -e "\033[33m⚠  WARNING: /home/agent/.claude/settings.json contains invalid JSON.\033[0m"
@@ -79,5 +81,17 @@ fi
 # Change to workspace directory
 cd /workspace
 
-# Execute the provided command or start zsh
+# Auto-start tmux for agent teams support.
+# teammateMode: "tmux" requires a tmux session for teammate panes to appear.
+# Skip if: already in tmux, non-interactive, or command is tmux itself.
+if [ -z "${TMUX:-}" ] && [ -t 0 ] && [ "${1:-}" != "tmux" ]; then
+    # Kill stale tmux server from previous container lifecycle (if any)
+    tmux kill-server 2>/dev/null || true
+    # exec replaces entrypoint as PID 1 so tmux receives signals directly.
+    # -A: attach if session "main" exists, create if not (idempotent).
+    # -u: force UTF-8 support.
+    exec tmux -u new-session -A -s main "$@"
+fi
+
+# Fallback: already in tmux, non-interactive, or explicit tmux command
 exec "$@"

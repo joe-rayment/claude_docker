@@ -46,6 +46,7 @@ alias csd='claude --dangerously-skip-permissions --debug'  # With debug logging
 alias cn='claude'  # Normal start
 alias menu='/usr/local/bin/guided-setup.sh'  # Setup menu
 alias dlog='dev-log'  # Development logger
+alias ap='agent-panels'  # Agent panel management
 
 # Beads issue tracker shortcuts
 if command -v bd &>/dev/null; then

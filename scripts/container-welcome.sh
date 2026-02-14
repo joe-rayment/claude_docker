@@ -21,9 +21,16 @@ if [ ! -t 0 ]; then
     return 2>/dev/null || exit 0
 fi
 
-# Skip welcome in tmux panes
+# Skip welcome in tmux teammate panes (but show in the primary pane).
+# The entrypoint auto-starts tmux, so $TMUX is always set.
+# Only show welcome in pane 1 of window 1 (the user's main pane).
 if [ -n "$TMUX" ]; then
-    return 2>/dev/null || exit 0
+    _pane_idx=$(tmux display-message -p '#{pane_index}' 2>/dev/null || echo "1")
+    _win_idx=$(tmux display-message -p '#{window_index}' 2>/dev/null || echo "1")
+    if [ "$_win_idx" != "1" ] || [ "$_pane_idx" != "1" ]; then
+        return 2>/dev/null || exit 0
+    fi
+    unset _pane_idx _win_idx
 fi
 
 # Only show welcome once per container start (not every docker exec / new tab)
