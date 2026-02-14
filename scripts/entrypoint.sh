@@ -78,8 +78,12 @@ if command -v bd &>/dev/null && [ -d "/workspace/.git" ]; then
     fi
 fi
 
-# Change to workspace directory
-cd /workspace
+# Change to workspace directory (with diagnostic on failure to prevent silent restart loop)
+cd /workspace || {
+    echo -e "\033[31mFATAL: /workspace is not accessible. Check your volume mount.\033[0m" >&2
+    echo "   Container will stay alive for debugging. Run: docker exec -it <name> /bin/bash" >&2
+    exec sleep infinity
+}
 
 # Auto-start tmux for agent teams support.
 # teammateMode: "tmux" requires a tmux session for teammate panes to appear.

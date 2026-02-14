@@ -139,8 +139,10 @@ fi
 
 # First time users or users needing setup get the full guided experience
 if [ ! -f "$FIRST_TIME" ] || [ "$NEEDS_SETUP" = true ]; then
-    /usr/local/bin/guided-setup.sh
+    # Create marker BEFORE setup so Ctrl+C doesn't cause the first-time
+    # flow to re-trigger on every subsequent container start.
     touch "$FIRST_TIME"
+    /usr/local/bin/guided-setup.sh || true
 else
     # Returning user: skip auth steps, go straight to menu
     /usr/local/bin/guided-setup.sh --menu-only

@@ -15,14 +15,18 @@
 # No set -e: tmux commands can legitimately fail (dead panes, races),
 # and we handle errors explicitly in each operation.
 
-# Colors
-C_BOLD='\033[1m'
-C_DIM='\033[2m'
-C_BLUE='\033[34m'
-C_GREEN='\033[32m'
-C_YELLOW='\033[33m'
-C_RED='\033[31m'
-C_RESET='\033[0m'
+# Colors — stripped when not on a TTY (e.g., tmux run-shell via keybinding)
+if [ -t 1 ]; then
+    C_BOLD='\033[1m'
+    C_DIM='\033[2m'
+    C_BLUE='\033[34m'
+    C_GREEN='\033[32m'
+    C_YELLOW='\033[33m'
+    C_RED='\033[31m'
+    C_RESET='\033[0m'
+else
+    C_BOLD='' C_DIM='' C_BLUE='' C_GREEN='' C_YELLOW='' C_RED='' C_RESET=''
+fi
 
 HIDDEN_WINDOW="_agents"
 
