@@ -58,26 +58,6 @@ agents_window_exists() {
     tmux list-windows -F '#{window_name}' 2>/dev/null | grep -qx "$HIDDEN_WINDOW"
 }
 
-# Count live panes in the _agents window (filter out dead ones)
-agents_pane_count() {
-    if ! agents_window_exists; then
-        echo "0"
-        return
-    fi
-    local count=0
-    local pane_ids
-    pane_ids=$(tmux list-panes -t "$HIDDEN_WINDOW" -F '#{pane_id}' 2>/dev/null) || { echo "0"; return; }
-    for pid in $pane_ids; do
-        # Check if the pane's process is still running
-        local pane_pid
-        pane_pid=$(tmux display-message -t "$pid" -p '#{pane_pid}' 2>/dev/null) || continue
-        if [ -n "$pane_pid" ] && kill -0 "$pane_pid" 2>/dev/null; then
-            count=$((count + 1))
-        fi
-    done
-    echo "$count"
-}
-
 # ── Commands ───────────────────────────────────────────────────────────
 
 cmd_hide() {
@@ -191,7 +171,9 @@ cmd_show() {
 }
 
 cmd_toggle() {
-    if agents_window_exists && [ "$(agents_pane_count)" -gt 0 ]; then
+    # Use window existence as the toggle heuristic (fast — single tmux call).
+    # cmd_show already handles the edge case where all panes in _agents are dead.
+    if agents_window_exists; then
         cmd_show
     else
         cmd_hide
@@ -212,7 +194,7 @@ cmd_list() {
     if agents_window_exists; then
         echo ""
         local hidden_count
-        hidden_count=$(agents_pane_count)
+        hidden_count=$(tmux list-panes -t "$HIDDEN_WINDOW" 2>/dev/null | wc -l)
         echo -e "${C_BOLD}Hidden panes:${C_RESET} ${hidden_count}"
         tmux list-panes -t "$HIDDEN_WINDOW" -F "  #{pane_index}: #{pane_current_command} (pid #{pane_pid})" 2>/dev/null || true
     else

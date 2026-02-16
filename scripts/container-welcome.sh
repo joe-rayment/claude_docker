@@ -141,8 +141,17 @@ fi
 if [ ! -f "$FIRST_TIME" ] || [ "$NEEDS_SETUP" = true ]; then
     # Create marker BEFORE setup so Ctrl+C doesn't cause the first-time
     # flow to re-trigger on every subsequent container start.
+    # If setup fails for a real reason (not user interrupt), remove the
+    # marker so the user gets another chance on next start.
     touch "$FIRST_TIME"
-    /usr/local/bin/guided-setup.sh || true
+    _setup_rc=0
+    /usr/local/bin/guided-setup.sh || _setup_rc=$?
+    # 130 = SIGINT (Ctrl+C), 0 = success — keep the marker
+    # Anything else = real failure — remove marker to allow retry
+    if [ "$_setup_rc" -ne 0 ] && [ "$_setup_rc" -ne 130 ]; then
+        rm -f "$FIRST_TIME"
+    fi
+    unset _setup_rc
 else
     # Returning user: skip auth steps, go straight to menu
     /usr/local/bin/guided-setup.sh --menu-only

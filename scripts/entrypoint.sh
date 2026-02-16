@@ -90,14 +90,21 @@ cd /workspace || {
 # Skip if: already in tmux, non-interactive, command is tmux itself, or opt-out.
 # Set CLAUDE_DEV_NO_TMUX=1 to bypass tmux (useful for debugging or alternate runtimes).
 if [ -z "${TMUX:-}" ] && [ -t 0 ] && [ "${1:-}" != "tmux" ] && [ -z "${CLAUDE_DEV_NO_TMUX:-}" ]; then
-    # Kill stale tmux server from previous container lifecycle (if any).
-    # This also ensures a fresh config load from ~/.tmux.conf (session-scoped
-    # hooks in the config depend on the "main" session being created fresh).
-    tmux kill-server 2>/dev/null || true
-    # Verify tmux can start before exec'ing into it. If the config is broken
+    # Kill stale "main" session from a previous container lifecycle (if any).
+    # Only targets our session — leaves other tmux sessions intact.
+    if tmux has-session -t main 2>/dev/null; then
+        tmux kill-session -t main 2>/dev/null || true
+    fi
+    # Verify tmux can start before committing to it. If the config is broken
     # or tmux is unavailable, fall through to raw shell instead of crash-looping.
-    if tmux -u new-session -d -s main 2>/dev/null; then
-        exec tmux -u attach-session -t main
+    if tmux -u new-session -d -s _probe 2>/dev/null; then
+        tmux kill-session -t _probe 2>/dev/null || true
+        # Start tmux via exec — replaces the entrypoint with the tmux client.
+        # Signal chain on docker stop: SIGTERM → tini → tmux client exits →
+        # server detects lost client → client-detached hook fires kill-server →
+        # all child processes (shells, agents) terminate cleanly.
+        # See tmux.conf client-detached hook for the server-side cleanup.
+        exec tmux -u new-session -s main
     fi
     echo -e "\033[33m⚠  tmux failed to start — falling back to shell.\033[0m" >&2
     echo "   Check ~/.tmux.conf for errors or set CLAUDE_DEV_NO_TMUX=1." >&2
