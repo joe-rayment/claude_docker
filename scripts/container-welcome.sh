@@ -21,9 +21,16 @@ if [ ! -t 0 ]; then
     return 2>/dev/null || exit 0
 fi
 
-# Skip welcome in tmux panes
+# Skip welcome in tmux teammate panes (but show in the primary pane).
+# The entrypoint auto-starts tmux, so $TMUX is always set.
+# Only show welcome in pane 1 of window 1 (the user's main pane).
 if [ -n "$TMUX" ]; then
-    return 2>/dev/null || exit 0
+    _pane_idx=$(tmux display-message -p '#{pane_index}' 2>/dev/null || echo "1")
+    _win_idx=$(tmux display-message -p '#{window_index}' 2>/dev/null || echo "1")
+    if [ "$_win_idx" != "1" ] || [ "$_pane_idx" != "1" ]; then
+        return 2>/dev/null || exit 0
+    fi
+    unset _pane_idx _win_idx
 fi
 
 # Only show welcome once per container start (not every docker exec / new tab)
@@ -132,8 +139,19 @@ fi
 
 # First time users or users needing setup get the full guided experience
 if [ ! -f "$FIRST_TIME" ] || [ "$NEEDS_SETUP" = true ]; then
-    /usr/local/bin/guided-setup.sh
+    # Create marker BEFORE setup so Ctrl+C doesn't cause the first-time
+    # flow to re-trigger on every subsequent container start.
+    # If setup fails for a real reason (not user interrupt), remove the
+    # marker so the user gets another chance on next start.
     touch "$FIRST_TIME"
+    _setup_rc=0
+    /usr/local/bin/guided-setup.sh || _setup_rc=$?
+    # 130 = SIGINT (Ctrl+C), 0 = success — keep the marker
+    # Anything else = real failure — remove marker to allow retry
+    if [ "$_setup_rc" -ne 0 ] && [ "$_setup_rc" -ne 130 ]; then
+        rm -f "$FIRST_TIME"
+    fi
+    unset _setup_rc
 else
     # Returning user: skip auth steps, go straight to menu
     /usr/local/bin/guided-setup.sh --menu-only

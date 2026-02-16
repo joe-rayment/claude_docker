@@ -103,6 +103,7 @@ COPY --chown=agent:agent scripts/view-logs.sh /usr/local/bin/view-logs
 COPY --chown=agent:agent scripts/detect-dependencies.sh /usr/local/bin/detect-dependencies.sh
 COPY --chown=agent:agent scripts/guided-setup.sh /usr/local/bin/guided-setup.sh
 COPY --chown=agent:agent scripts/dev-log.sh /usr/local/bin/dev-log
+COPY --chown=agent:agent scripts/agent-panels.sh /usr/local/bin/agent-panels
 COPY --chown=agent:agent run-tests.sh /usr/local/bin/run-tests.sh
 COPY --chown=agent:agent tests/ /opt/claude-dev/tests/
 COPY --chown=agent:agent knowledge-base/ /opt/claude-dev/knowledge-base/
@@ -116,6 +117,7 @@ COPY config/intellishell-config.toml /etc/claude-dev/configs/intellishell-config
 COPY config/intellishell-defaults.txt /etc/claude-dev/configs/intellishell-defaults.txt
 COPY config/claude-settings.json /etc/claude-dev/configs/claude-settings.json
 COPY config/statusline.sh /etc/claude-dev/configs/statusline.sh
+COPY config/tmux.conf /etc/claude-dev/configs/tmux.conf
 
 # Copy configuration files to agent home
 COPY --chown=agent:agent config/.zshrc /home/agent/.zshrc
@@ -123,6 +125,7 @@ COPY --chown=agent:agent config/helix-config.toml /home/agent/.config/helix/conf
 COPY --chown=agent:agent config/intellishell-config.toml /home/agent/.config/intelli-shell/config.toml
 COPY --chown=agent:agent config/intellishell-defaults.txt /home/agent/.config/intelli-shell/defaults.txt
 COPY --chown=agent:agent config/claude-settings.json /home/agent/.config/claude-settings-template.json
+COPY --chown=agent:agent config/tmux.conf /home/agent/.tmux.conf
 
 # Make scripts executable
 RUN chmod +x /usr/local/bin/entrypoint.sh \
@@ -131,6 +134,7 @@ RUN chmod +x /usr/local/bin/entrypoint.sh \
              /usr/local/bin/detect-dependencies.sh \
              /usr/local/bin/guided-setup.sh \
              /usr/local/bin/dev-log \
+             /usr/local/bin/agent-panels \
              /usr/local/bin/run-tests.sh
 
 # ── Agent: user-level tool install and final state ────────────────────
