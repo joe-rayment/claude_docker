@@ -104,6 +104,7 @@ COPY --chown=agent:agent scripts/detect-dependencies.sh /usr/local/bin/detect-de
 COPY --chown=agent:agent scripts/guided-setup.sh /usr/local/bin/guided-setup.sh
 COPY --chown=agent:agent scripts/dev-log.sh /usr/local/bin/dev-log
 COPY --chown=agent:agent scripts/agent-panels.sh /usr/local/bin/agent-panels
+COPY --chown=agent:agent scripts/start-professor.sh /usr/local/bin/start-professor.sh
 COPY --chown=agent:agent run-tests.sh /usr/local/bin/run-tests.sh
 COPY --chown=agent:agent tests/ /opt/claude-dev/tests/
 COPY --chown=agent:agent knowledge-base/ /opt/claude-dev/knowledge-base/
@@ -118,6 +119,8 @@ COPY config/intellishell-defaults.txt /etc/claude-dev/configs/intellishell-defau
 COPY config/claude-settings.json /etc/claude-dev/configs/claude-settings.json
 COPY config/statusline.sh /etc/claude-dev/configs/statusline.sh
 COPY config/tmux.conf /etc/claude-dev/configs/tmux.conf
+RUN mkdir -p /etc/claude-dev/configs/agents
+COPY config/agents/professor.md /etc/claude-dev/configs/agents/professor.md
 
 # Copy configuration files to agent home
 COPY --chown=agent:agent config/.zshrc /home/agent/.zshrc
@@ -135,6 +138,7 @@ RUN chmod +x /usr/local/bin/entrypoint.sh \
              /usr/local/bin/guided-setup.sh \
              /usr/local/bin/dev-log \
              /usr/local/bin/agent-panels \
+             /usr/local/bin/start-professor.sh \
              /usr/local/bin/run-tests.sh
 
 # ── Agent: user-level tool install and final state ────────────────────

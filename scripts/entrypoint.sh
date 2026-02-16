@@ -33,6 +33,9 @@ if [ "$IMAGE_VERSION" != "$VOLUME_VERSION" ]; then
     chmod +x /home/agent/.claude/statusline.sh 2>/dev/null || true
     # Update tmux config
     cp /etc/claude-dev/configs/tmux.conf /home/agent/.tmux.conf 2>/dev/null || true
+    # Deploy custom agents
+    mkdir -p /home/agent/.claude/agents
+    cp /etc/claude-dev/configs/agents/*.md /home/agent/.claude/agents/ 2>/dev/null || true
     # Validate settings JSON — warn but don't block (corruption is the concern, not absence)
     if [ -f /home/agent/.claude/settings.json ] && ! jq empty /home/agent/.claude/settings.json 2>/dev/null; then
         echo -e "\033[33m⚠  WARNING: /home/agent/.claude/settings.json contains invalid JSON.\033[0m"
@@ -99,12 +102,23 @@ if [ -z "${TMUX:-}" ] && [ -t 0 ] && [ "${1:-}" != "tmux" ] && [ -z "${CLAUDE_DE
     # or tmux is unavailable, fall through to raw shell instead of crash-looping.
     if tmux -u new-session -d -s _probe 2>/dev/null; then
         tmux kill-session -t _probe 2>/dev/null || true
-        # Start tmux via exec — replaces the entrypoint with the tmux client.
+
+        # Create session detached so we can configure panes before attaching
+        tmux -u new-session -d -s main -c /workspace
+
+        # Auto-start professor agent in a right-side pane
+        if [ -z "${CLAUDE_DEV_NO_PROFESSOR:-}" ] && [ -f /home/agent/.claude/agents/professor.md ]; then
+            tmux split-window -t main -h -d -c /workspace start-professor.sh
+            tmux resize-pane -t main.1 -x '25%'
+            tmux select-pane -t main.0
+        fi
+
+        # Attach via exec — replaces the entrypoint with the tmux client.
         # Signal chain on docker stop: SIGTERM → tini → tmux client exits →
         # server detects lost client → client-detached hook fires kill-server →
         # all child processes (shells, agents) terminate cleanly.
         # See tmux.conf client-detached hook for the server-side cleanup.
-        exec tmux -u new-session -s main
+        exec tmux -u attach-session -t main
     fi
     echo -e "\033[33m⚠  tmux failed to start — falling back to shell.\033[0m" >&2
     echo "   Check ~/.tmux.conf for errors or set CLAUDE_DEV_NO_TMUX=1." >&2
