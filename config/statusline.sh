@@ -49,20 +49,27 @@ if [ -f "$cache" ]; then
     weekly_pct=$(jq -r '.seven_day.utilization // 0' "$cache" | awk '{printf "%d", $1}')
 fi
 
-# Color a percentage by severity
-color_pct() {
-    local pct="$1"
+# Color by severity (configurable thresholds)
+color_by_threshold() {
+    local pct="$1" text="$2" yellow="${3:-40}" red="${4:-75}"
     if [ "$pct" = "?" ]; then
-        printf "\033[90m?\033[0m"
-    elif [ "$pct" -ge 90 ] 2>/dev/null; then
-        printf "\033[31m%d%%\033[0m" "$pct"
-    elif [ "$pct" -ge 70 ] 2>/dev/null; then
-        printf "\033[33m%d%%\033[0m" "$pct"
+        printf "\033[90m%s\033[0m" "$text"
+    elif [ "$pct" -ge "$red" ] 2>/dev/null; then
+        printf "\033[31m%s\033[0m" "$text"
+    elif [ "$pct" -ge "$yellow" ] 2>/dev/null; then
+        printf "\033[33m%s\033[0m" "$text"
     else
-        printf "\033[32m%d%%\033[0m" "$pct"
+        printf "\033[32m%s\033[0m" "$text"
     fi
 }
 
-printf "\033[32m%s\033[0m | \033[33m%s\033[0m %d%% | \033[36m%s\033[0m | session: %s | weekly: %s\n" \
-    "$model" "$bar" "$ctx_pct" "$branch" \
+# Color a usage percentage (70/90 thresholds)
+color_pct() {
+    color_by_threshold "$1" "$([ "$1" = "?" ] && echo "?" || printf "%d%%" "$1")" 70 90
+}
+
+ctx_display=$(color_by_threshold "$ctx_pct" "$bar $ctx_pct%" 40 75)
+
+printf "\033[32m%s\033[0m | %s | \033[36m%s\033[0m | session: %s | weekly: %s\n" \
+    "$model" "$ctx_display" "$branch" \
     "$(color_pct "$session_pct")" "$(color_pct "$weekly_pct")"
