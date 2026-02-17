@@ -109,8 +109,8 @@ if [ -z "${TMUX:-}" ] && [ -t 0 ] && [ "${1:-}" != "tmux" ] && [ -z "${CLAUDE_DE
         # Auto-start professor agent in a right-side pane
         if [ -z "${CLAUDE_DEV_NO_PROFESSOR:-}" ] && [ -f /home/agent/.claude/agents/professor.md ]; then
             tmux split-window -t main -h -d -c /workspace start-professor.sh
-            tmux resize-pane -t main.1 -x '25%'
-            tmux select-pane -t main.0
+            tmux resize-pane -t main.2 -x '25%'
+            tmux select-pane -t main.1
         fi
 
         # Attach via exec — replaces the entrypoint with the tmux client.
