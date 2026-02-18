@@ -17,7 +17,7 @@ ENV LC_ALL=en_US.UTF-8
 USER root
 
 # Install additional dependencies
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     zsh \
     curl \
     wget \
@@ -26,11 +26,11 @@ RUN apt-get update && apt-get install -y \
     python3-pip \
     python3-dev \
     jq \
-    figlet \
     tmux \
     xvfb \
     imagemagick \
     && locale-gen en_US.UTF-8 \
+    && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
 # ── Agent: user-level shell setup ─────────────────────────────────────
@@ -69,23 +69,7 @@ RUN HELIX_VERSION=25.07.1 && \
 # Tell Helix where to find its runtime files
 ENV HELIX_RUNTIME=/usr/local/lib/helix/runtime
 
-# Install Python packages (using --break-system-packages for container environment)
-RUN pip3 install --no-cache-dir --break-system-packages \
-    numpy \
-    pandas \
-    requests \
-    matplotlib \
-    scikit-learn \
-    jupyter \
-    ipython \
-    scipy \
-    seaborn \
-    psutil \
-    attrs \
-    certifi \
-    urllib3
-
-# Install common package managers so dependency detection can actually install
+# Install Python package managers and common JS/Ruby package managers
 RUN pip3 install --no-cache-dir --break-system-packages poetry uv \
     && npm install -g pnpm@9 yarn@1.22 \
     && gem install bundler -v 2.5.6 2>/dev/null || true
@@ -113,16 +97,12 @@ COPY --chown=agent:agent tests/ /opt/claude-dev/tests/
 COPY --chown=agent:agent knowledge-base/ /opt/claude-dev/knowledge-base/
 
 # Stage configs for version-sync (outside volume mount path)
-RUN mkdir -p /etc/claude-dev/configs
-COPY CONFIG_VERSION /etc/claude-dev/CONFIG_VERSION
-COPY config/.zshrc /etc/claude-dev/configs/.zshrc
-COPY config/helix-config.toml /etc/claude-dev/configs/helix-config.toml
-COPY config/intellishell-config.toml /etc/claude-dev/configs/intellishell-config.toml
-COPY config/intellishell-defaults.txt /etc/claude-dev/configs/intellishell-defaults.txt
-COPY config/claude-settings.json /etc/claude-dev/configs/claude-settings.json
-COPY config/statusline.sh /etc/claude-dev/configs/statusline.sh
-COPY config/tmux.conf /etc/claude-dev/configs/tmux.conf
 RUN mkdir -p /etc/claude-dev/configs/agents
+COPY CONFIG_VERSION /etc/claude-dev/CONFIG_VERSION
+COPY config/.zshrc config/helix-config.toml config/intellishell-config.toml \
+     config/intellishell-defaults.txt config/claude-settings.json \
+     config/statusline.sh config/tmux.conf \
+     /etc/claude-dev/configs/
 COPY config/agents/professor.md /etc/claude-dev/configs/agents/professor.md
 
 # Copy configuration files to agent home

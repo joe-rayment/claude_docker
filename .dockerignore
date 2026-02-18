@@ -11,4 +11,3 @@ docker-compose.yml
 .last-build-sha
 .last-update-check
 .env
-voicetree-8-2

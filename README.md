@@ -93,7 +93,7 @@ cs                      hx src/main.py           npm test
 - **Claude Code** with browser authentication
 - **Terminal**: Zsh, Oh-My-Zsh, Pure prompt, IntelliShell
 - **Editor**: Helix
-- **Dev Tools**: Git, GitHub CLI, Python 3 (numpy, pandas, matplotlib, scikit-learn, jupyter), Node.js, Go
+- **Dev Tools**: Git, GitHub CLI, Python 3 (poetry, uv), Node.js (npm, pnpm, yarn), Go
 - **Persistent**: Auth, history, and configs saved between sessions
 - **Auto-detection**: Recognizes package.json, requirements.txt, go.mod, Cargo.toml, Gemfile
 - **Health check**: Docker monitors Claude auth status automatically
