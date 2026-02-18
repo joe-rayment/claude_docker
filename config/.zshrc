@@ -1,6 +1,15 @@
 # Path configuration
 export PATH="$HOME/.local/bin:$HOME/bin:/usr/local/bin:$PATH"
 
+# Ensure TMUX env vars are set when running inside a tmux pane.
+# docker exec ... tmux attach creates a second client that doesn't propagate
+# $TMUX into the existing shell. Claude Code checks $TMUX to decide whether
+# to use tmux panes for agent teammates, so this must be set.
+if [ -z "$TMUX" ] && command -v tmux &>/dev/null && tmux display-message -p '#{session_name}' &>/dev/null; then
+    export TMUX="$(tmux display-message -p '#{socket_path},#{pid},#{session_id}')"
+    export TMUX_PANE="$(tmux display-message -p '#{pane_id}')"
+fi
+
 # Pure prompt and plugins are configured by zsh-in-docker
 # No need to source oh-my-zsh manually
 
