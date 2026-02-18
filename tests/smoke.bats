@@ -143,3 +143,36 @@
     [[ "$output" == *"toggle"* ]]
     [[ "$output" == *"Ctrl-b"* ]]
 }
+
+@test "screenshot tools are installed" {
+    command -v Xvfb
+    command -v import
+    command -v termshot
+}
+
+@test "playwright is installed" {
+    run npx playwright --version
+    [ "$status" -eq 0 ]
+}
+
+@test "take-screenshot script is present and executable" {
+    [ -x /usr/local/bin/take-screenshot ]
+}
+
+@test "take-screenshot shows help with no arguments" {
+    run take-screenshot
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"url"* ]]
+    [[ "$output" == *"display"* ]]
+    [[ "$output" == *"term"* ]]
+}
+
+@test "chromium browser is available for playwright" {
+    run npx playwright install --dry-run chromium
+    [ "$status" -eq 0 ]
+}
+
+@test "zshrc has screenshot aliases" {
+    grep -q 'alias screenshot=' /etc/claude-dev/configs/.zshrc
+    grep -q 'alias ss=' /etc/claude-dev/configs/.zshrc
+}

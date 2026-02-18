@@ -45,6 +45,12 @@ if [ "$IMAGE_VERSION" != "$VOLUME_VERSION" ]; then
     echo "${IMAGE_VERSION}" > /home/agent/.config-version
 fi
 
+# Start virtual framebuffer for screenshot tools (Playwright, import, etc.)
+if command -v Xvfb &>/dev/null; then
+    Xvfb :99 -screen 0 1280x720x24 &>/dev/null &
+    export DISPLAY=:99
+fi
+
 # Workspace validation
 if [ -z "$(ls -A /workspace 2>/dev/null)" ]; then
     echo -e "\033[33m⚠  WARNING: /workspace is empty — project may not be mounted.\033[0m"

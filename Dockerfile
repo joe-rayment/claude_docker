@@ -28,6 +28,8 @@ RUN apt-get update && apt-get install -y \
     jq \
     figlet \
     tmux \
+    xvfb \
+    imagemagick \
     && locale-gen en_US.UTF-8 \
     && rm -rf /var/lib/apt/lists/*
 
@@ -105,6 +107,7 @@ COPY --chown=agent:agent scripts/guided-setup.sh /usr/local/bin/guided-setup.sh
 COPY --chown=agent:agent scripts/dev-log.sh /usr/local/bin/dev-log
 COPY --chown=agent:agent scripts/agent-panels.sh /usr/local/bin/agent-panels
 COPY --chown=agent:agent scripts/start-professor.sh /usr/local/bin/start-professor.sh
+COPY --chown=agent:agent scripts/take-screenshot.sh /usr/local/bin/take-screenshot
 COPY --chown=agent:agent run-tests.sh /usr/local/bin/run-tests.sh
 COPY --chown=agent:agent tests/ /opt/claude-dev/tests/
 COPY --chown=agent:agent knowledge-base/ /opt/claude-dev/knowledge-base/
@@ -139,6 +142,7 @@ RUN chmod +x /usr/local/bin/entrypoint.sh \
              /usr/local/bin/dev-log \
              /usr/local/bin/agent-panels \
              /usr/local/bin/start-professor.sh \
+             /usr/local/bin/take-screenshot \
              /usr/local/bin/run-tests.sh
 
 # ── Agent: user-level tool install and final state ────────────────────
@@ -146,6 +150,12 @@ USER agent
 
 # Install IntelliShell for the agent user (pinned to v3.4.0 via URL)
 RUN curl -sSf https://raw.githubusercontent.com/lasantosr/intelli-shell/v3.4.0/install.sh | sh
+
+# Install Playwright with Chromium (as agent user so browsers cache to ~/.cache/ms-playwright/)
+RUN npx playwright install --with-deps chromium
+
+# Install termshot for terminal screenshots
+RUN go install github.com/homeport/termshot/cmd/termshot@latest
 
 # Create config directories (safety net if COPY didn't create them)
 RUN mkdir -p /home/agent/.config/helix /home/agent/.config/intelli-shell

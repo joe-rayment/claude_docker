@@ -47,6 +47,20 @@ Use `dev-log` to record what happens during your session. Logs live at `/workspa
 
 Drop files (screenshots, images, reference docs) into `/workspace/attachments/` to make them accessible inside the container. This directory is gitignored.
 
+## Screenshots
+
+Capture screenshots from inside the container using `take-screenshot` (aliases: `screenshot`, `ss`). Screenshots save to `/workspace/attachments/` by default. Claude can view saved screenshots using its Read tool.
+
+| Command | What it captures |
+|---------|-----------------|
+| `take-screenshot url <URL>` | Web page via Playwright |
+| `take-screenshot url --full-page <URL>` | Full scrollable page |
+| `take-screenshot url --device "iPhone 11" <URL>` | Mobile emulation |
+| `take-screenshot display` | X11 display (Xvfb) |
+| `take-screenshot term "<command>"` | Terminal command output via termshot |
+
+The Playwright MCP server is also available for deeper browser interaction (navigation, clicking, form filling).
+
 ## Cleanup
 
 Periodically clean up ephemeral files that accumulate during development:
@@ -150,3 +164,4 @@ run-tests.sh experience  # Experience tests only
 | `view-logs` | Interactive Claude log viewer |
 | `clog-latest` | View latest Claude debug log |
 | `clog-export` | Export latest log to workspace |
+| `screenshot` / `ss` | `take-screenshot` |

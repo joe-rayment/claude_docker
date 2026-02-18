@@ -34,7 +34,8 @@
       "WebFetch(domain:paddo.dev)",
       "WebFetch(domain:medium.com)",
       "WebFetch(domain:dev.to)",
-      "WebFetch(domain:www.anthropic.com)"
+      "WebFetch(domain:www.anthropic.com)",
+      "WebFetch(domain:deepwiki.com)"
     ]
   }
 }
