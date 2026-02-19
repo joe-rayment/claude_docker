@@ -37,5 +37,9 @@
       "WebFetch(domain:www.anthropic.com)",
       "WebFetch(domain:deepwiki.com)"
     ]
-  }
+  },
+  "enableAllProjectMcpServers": true,
+  "enabledMcpjsonServers": [
+    "playwright"
+  ]
 }

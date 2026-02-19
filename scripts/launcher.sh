@@ -1,10 +1,11 @@
 #!/bin/bash
 
-# Claude Docker Launcher
-# Copied to project root as ./claude-dev by bootstrap.sh
+# Claude Docker Launcher (self-bootstrapping)
+# Installed to project root as ./claude-dev by bootstrap.sh or curl.
+# If .claude-dev/ is missing, the launcher clones the repo automatically.
 # Usage:
-#   ./claude-dev              Build if needed, start if needed, exec into container
-#   ./claude-dev --update     Pull latest .claude-dev/, rebuild image, re-copy launcher
+#   ./claude-dev              Auto-update, build if needed, start if needed, exec in
+#   ./claude-dev --update     Force pull latest (bypass rate limit)
 #   ./claude-dev --rebuild    Force rebuild (no cache)
 #   ./claude-dev --stop       Stop the container
 #   ./claude-dev --status     Show container status
@@ -24,12 +25,111 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CLAUDE_DEV_DIR="$SCRIPT_DIR/.claude-dev"
 COMPOSE_FILE="$CLAUDE_DEV_DIR/docker-compose.yml"
 
-# Validate .claude-dev/ exists
-if [ ! -d "$CLAUDE_DEV_DIR" ]; then
-    echo -e "${C_RED}Error: .claude-dev/ not found at $CLAUDE_DEV_DIR${C_RESET}"
-    echo "Run the bootstrap script first:"
-    echo "  gh api repos/joe-rayment/claude_docker/contents/bootstrap.sh -H 'Accept: application/vnd.github.raw' | bash"
+# Prereq checks — run early so failures are caught before any work
+if ! command -v docker &> /dev/null; then
+    echo -e "${C_RED}Error: Docker is not installed${C_RESET}"
+    echo "Please install Docker Desktop first:"
+    echo "  macOS: brew install --cask docker"
+    echo "  Linux: https://docs.docker.com/engine/install/"
     exit 1
+fi
+if ! docker info &> /dev/null; then
+    echo -e "${C_RED}Error: Docker is not running${C_RESET}"
+    echo "Please start Docker Desktop and try again"
+    exit 1
+fi
+if ! command -v git &> /dev/null; then
+    echo -e "${C_RED}Error: Git is not installed${C_RESET}"
+    echo "Please install git first"
+    exit 1
+fi
+
+# Helper: first-time bootstrap — clone the repo and generate docker-compose.yml
+bootstrap_repo() {
+    # Derive project names from directory
+    local raw_project_name project_name container_name volume_name image_tag
+    raw_project_name=$(basename "$SCRIPT_DIR")
+    project_name=$(echo "$raw_project_name" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g' | sed 's/--*/-/g' | sed 's/^-//' | sed 's/-$//')
+    if [ -z "$project_name" ]; then
+        project_name="project"
+    fi
+    container_name="${project_name}-claude-dev"
+    volume_name="${project_name}-agent-home"
+    image_tag="claude-code-dev:${project_name}"
+
+    # Check for container name collision with a different project
+    local existing_workspace
+    existing_workspace=$(docker inspect --format='{{range .Mounts}}{{if eq .Destination "/workspace"}}{{.Source}}{{end}}{{end}}' "$container_name" 2>/dev/null || true)
+    if [ -n "$existing_workspace" ] && [ "$existing_workspace" != "$SCRIPT_DIR" ]; then
+        echo ""
+        echo -e "${C_YELLOW}⚠${C_RESET}  Container '${container_name}' already exists for a different project:"
+        echo "   Existing: $existing_workspace"
+        echo "   Requested: $SCRIPT_DIR"
+        echo ""
+        echo "   Options:"
+        echo "     1. Stop the existing container first: docker stop $container_name"
+        echo "     2. Rename this project directory to get a unique container name"
+        exit 1
+    fi
+
+    # Clone the repository
+    local repo_url="https://github.com/joe-rayment/claude_docker.git"
+    echo -e "${C_YELLOW}→${C_RESET} Cloning Claude Docker environment..."
+    if ! git clone --quiet "$repo_url" "$CLAUDE_DEV_DIR"; then
+        echo -e "${C_RED}Error: Failed to clone repository${C_RESET}"
+        exit 1
+    fi
+    echo -e "${C_GREEN}✓${C_RESET} Repository cloned"
+
+    # Generate docker-compose.yml from template
+    if [ -f "$CLAUDE_DEV_DIR/docker-compose.yml.template" ]; then
+        sed -e "s|\${CONTAINER_NAME}|${container_name}|g" \
+            -e "s|\${VOLUME_NAME}|${volume_name}|g" \
+            -e "s|\${IMAGE_TAG}|${image_tag}|g" \
+            -e "s|\${PROJECT_NAME}|${project_name}|g" \
+            "$CLAUDE_DEV_DIR/docker-compose.yml.template" > "$COMPOSE_FILE"
+        echo -e "${C_GREEN}✓${C_RESET} Generated docker-compose.yml"
+    else
+        echo -e "${C_RED}Error: docker-compose.yml.template not found in cloned repo${C_RESET}"
+        exit 1
+    fi
+
+    # Set up .gitignore entries
+    local gitignore="$SCRIPT_DIR/.gitignore"
+    touch "$gitignore"
+    if ! grep -qxF '.claude-dev/' "$gitignore"; then
+        echo '.claude-dev/' >> "$gitignore"
+    fi
+    if ! grep -qxF 'claude-dev' "$gitignore"; then
+        echo 'claude-dev' >> "$gitignore"
+    fi
+    if ! grep -qxF '.mcp.json' "$gitignore"; then
+        echo '.mcp.json' >> "$gitignore"
+    fi
+    if ! grep -qxF '.claude/logs/' "$gitignore"; then
+        echo '.claude/logs/' >> "$gitignore"
+    fi
+    if ! grep -qxF 'attachments/' "$gitignore"; then
+        echo 'attachments/' >> "$gitignore"
+    fi
+    echo -e "${C_GREEN}✓${C_RESET} Updated .gitignore"
+
+    # Create attachments directory
+    mkdir -p "$SCRIPT_DIR/attachments"
+
+    echo ""
+    echo -e "${C_GREEN}✓ Bootstrap complete${C_RESET} — continuing with first launch..."
+    echo ""
+}
+
+# Bootstrap if .claude-dev/ doesn't exist yet
+if [ ! -d "$CLAUDE_DEV_DIR" ]; then
+    echo -e "${C_BOLD}${C_BLUE}"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "  Claude Docker — First-time Setup"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo -e "${C_RESET}"
+    bootstrap_repo
 fi
 
 if [ ! -f "$COMPOSE_FILE" ]; then
@@ -86,10 +186,45 @@ repo_has_changed() {
     [ "$current_sha" != "$last_build_sha" ]
 }
 
-# Helper: check for upstream updates (rate-limited, silent on failure)
-check_for_updates() {
+# Helper: regenerate docker-compose.yml from template
+regenerate_compose() {
+    if [ -f "$CLAUDE_DEV_DIR/docker-compose.yml.template" ]; then
+        local volume_name project_name
+        volume_name=$(grep -A1 '^volumes:' "$COMPOSE_FILE" 2>/dev/null | tail -1 | sed 's/:.*//' | tr -d '[:space:]')
+        project_name=$(echo "$CONTAINER_NAME" | sed 's/-claude-dev$//')
+        volume_name="${volume_name:-${project_name}-agent-home}"
+        sed -e "s|\${CONTAINER_NAME}|${CONTAINER_NAME}|g" \
+            -e "s|\${VOLUME_NAME}|${volume_name}|g" \
+            -e "s|\${IMAGE_TAG}|${IMAGE_TAG}|g" \
+            -e "s|\${PROJECT_NAME}|${project_name}|g" \
+            "$CLAUDE_DEV_DIR/docker-compose.yml.template" > "$COMPOSE_FILE"
+        echo -e "${C_GREEN}✓${C_RESET} Regenerated docker-compose.yml"
+    fi
+}
+
+# Helper: replace launcher on disk and re-exec if it changed
+update_launcher_and_restart() {
+    local new_launcher="$CLAUDE_DEV_DIR/scripts/launcher.sh"
+    local current_launcher="$SCRIPT_DIR/claude-dev"
+
+    if [ -f "$new_launcher" ] && ! cmp -s "$new_launcher" "$current_launcher"; then
+        cp "$new_launcher" "$current_launcher"
+        chmod +x "$current_launcher"
+        echo -e "${C_GREEN}✓${C_RESET} Launcher updated — restarting..."
+        exec env _CLAUDE_DEV_SKIP_UPDATE=1 "$current_launcher" "$@"
+    fi
+}
+
+# Helper: auto-update from upstream (rate-limited, silent on failure)
+# Pass "$@" so re-exec preserves the original arguments.
+auto_update() {
     local check_file="$CLAUDE_DEV_DIR/.last-update-check"
-    local check_interval=14400  # 4 hours
+    local check_interval="${CLAUDE_DEV_UPDATE_INTERVAL:-3600}"  # 1 hour default
+
+    # Disabled by env var
+    if [ "$check_interval" = "0" ]; then
+        return 0
+    fi
 
     # Rate limit
     if [ -f "$check_file" ]; then
@@ -122,13 +257,24 @@ check_for_updates() {
     local_sha=$(git -C "$CLAUDE_DEV_DIR" rev-parse HEAD 2>/dev/null) || return 0
     remote_sha=$(git -C "$CLAUDE_DEV_DIR" rev-parse origin/main 2>/dev/null) || return 0
 
-    if [ "$local_sha" != "$remote_sha" ]; then
-        if git -C "$CLAUDE_DEV_DIR" merge-base --is-ancestor HEAD origin/main 2>/dev/null; then
-            echo ""
-            echo -e "  ${C_YELLOW}Update available${C_RESET} — run ${C_BOLD}./claude-dev --update${C_RESET} to get the latest environment"
-            echo ""
-        fi
+    if [ "$local_sha" = "$remote_sha" ]; then
+        return 0
     fi
+
+    # Only update if local is behind upstream
+    if ! git -C "$CLAUDE_DEV_DIR" merge-base --is-ancestor HEAD origin/main 2>/dev/null; then
+        return 0
+    fi
+
+    echo -e "${C_YELLOW}→${C_RESET} Applying update..."
+    if ! git -C "$CLAUDE_DEV_DIR" reset --hard --quiet origin/main 2>/dev/null; then
+        echo -e "${C_YELLOW}  Warning: git reset failed — continuing with current version${C_RESET}"
+        return 0
+    fi
+
+    regenerate_compose
+    update_launcher_and_restart "$@"
+    # If we get here, the launcher didn't change — continue normally
 }
 
 # Helper: warn if active Claude sessions are running; returns 1 if user declines teardown
@@ -193,7 +339,9 @@ exec_into() {
 # --- Commands ---
 
 cmd_default() {
-    check_for_updates
+    if [ "${_CLAUDE_DEV_SKIP_UPDATE:-}" != "1" ]; then
+        auto_update "$@"
+    fi
 
     # Build if image doesn't exist, or rebuild if repo has changed
     if ! image_exists; then
@@ -235,34 +383,24 @@ cmd_update() {
         return 0
     fi
 
-    # Pull latest from git (reset to match upstream; .claude-dev/ is a managed clone)
+    # Force pull latest (bypasses rate limit)
     echo -e "${C_YELLOW}→${C_RESET} Pulling latest changes..."
     git -C "$CLAUDE_DEV_DIR" fetch --quiet origin main
     git -C "$CLAUDE_DEV_DIR" reset --hard --quiet origin/main
 
-    # Regenerate docker-compose.yml from updated template (picks up fixes like project name scoping)
-    if [ -f "$CLAUDE_DEV_DIR/docker-compose.yml.template" ]; then
-        local volume_name
-        volume_name=$(grep -A1 '^volumes:' "$COMPOSE_FILE" 2>/dev/null | tail -1 | sed 's/:.*//' | tr -d '[:space:]')
-        local project_name
-        project_name=$(echo "$CONTAINER_NAME" | sed 's/-claude-dev$//')
-        volume_name="${volume_name:-${project_name}-agent-home}"
-        sed -e "s|\${CONTAINER_NAME}|${CONTAINER_NAME}|g" \
-            -e "s|\${VOLUME_NAME}|${volume_name}|g" \
-            -e "s|\${IMAGE_TAG}|${IMAGE_TAG}|g" \
-            -e "s|\${PROJECT_NAME}|${project_name}|g" \
-            "$CLAUDE_DEV_DIR/docker-compose.yml.template" > "$COMPOSE_FILE"
-        echo -e "${C_GREEN}✓${C_RESET} Regenerated docker-compose.yml"
-    fi
+    # Reset rate-limit timestamp so auto_update doesn't immediately re-check
+    date +%s > "$CLAUDE_DEV_DIR/.last-update-check" 2>/dev/null || true
 
-    # Rebuild image
-    build_image
-    record_build_sha
+    regenerate_compose
 
     # Re-copy launcher
     cp "$CLAUDE_DEV_DIR/scripts/launcher.sh" "$SCRIPT_DIR/claude-dev"
     chmod +x "$SCRIPT_DIR/claude-dev"
     echo -e "${C_GREEN}✓${C_RESET} Launcher updated"
+
+    # Rebuild image
+    build_image
+    record_build_sha
 
     # Stop old container so next ./claude-dev creates fresh one from new image
     if is_running || container_exists; then
@@ -334,12 +472,15 @@ cmd_help() {
     echo "Usage: ./claude-dev [COMMAND]"
     echo ""
     echo "Commands:"
-    echo "  (none)       Build if needed, start if needed, exec into container"
-    echo "  --update     Pull latest .claude-dev/, rebuild image, update launcher"
+    echo "  (none)       Auto-update, build if needed, start if needed, exec in"
+    echo "  --update     Force pull latest (bypass rate limit), rebuild, update launcher"
     echo "  --rebuild    Force rebuild image (no cache)"
     echo "  --stop       Stop the container"
     echo "  --status     Show container status"
     echo "  --help       Show this help"
+    echo ""
+    echo "Environment:"
+    echo "  CLAUDE_DEV_UPDATE_INTERVAL   Seconds between update checks (default: 3600, 0=disable)"
 }
 
 # --- Main ---
