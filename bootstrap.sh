@@ -68,13 +68,26 @@ if ! command -v git &> /dev/null; then
     exit 1
 fi
 
+# Check gh CLI is installed and authenticated
+if ! command -v gh &> /dev/null; then
+    echo -e "${C_RED}Error: GitHub CLI (gh) is not installed${C_RESET}"
+    echo "Install it with: brew install gh"
+    exit 1
+fi
+if ! gh auth status &> /dev/null; then
+    echo -e "${C_RED}Error: GitHub CLI is not authenticated${C_RESET}"
+    echo "Run: gh auth login"
+    exit 1
+fi
+
 echo -e "${C_GREEN}✓${C_RESET} Git is available"
 
 # Download the launcher
-LAUNCHER_URL="https://raw.githubusercontent.com/joe-rayment/claude_docker/main/scripts/launcher.sh"
 echo -e "${C_YELLOW}→${C_RESET} Downloading launcher..."
-if ! curl -fsSL "$LAUNCHER_URL" -o "$PROJECT_DIR/claude-dev"; then
+if ! gh api repos/joe-rayment/claude_docker/contents/scripts/launcher.sh \
+    -H "Accept: application/vnd.github.raw" > "$PROJECT_DIR/claude-dev" 2>/dev/null; then
     echo -e "${C_RED}Error: Failed to download launcher${C_RESET}"
+    echo "Make sure you're authenticated with gh: gh auth status"
     exit 1
 fi
 chmod +x "$PROJECT_DIR/claude-dev"
