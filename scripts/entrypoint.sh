@@ -112,13 +112,6 @@ if [ -z "${TMUX:-}" ] && [ -t 0 ] && [ "${1:-}" != "tmux" ] && [ -z "${CLAUDE_DE
         # Create session detached so we can configure panes before attaching
         tmux -u new-session -d -s main -c /workspace
 
-        # Auto-start professor agent in a right-side pane
-        if [ -z "${CLAUDE_DEV_NO_PROFESSOR:-}" ] && [ -f /home/agent/.claude/agents/professor.md ]; then
-            tmux split-window -t main -h -d -c /workspace start-professor.sh
-            tmux resize-pane -t main.2 -x '25%'
-            tmux select-pane -t main.1
-        fi
-
         # Attach via exec — replaces the entrypoint with the tmux client.
         # Signal chain on docker stop: SIGTERM → tini → tmux client exits →
         # server detects lost client → client-detached hook fires kill-server →
