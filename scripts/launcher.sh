@@ -281,7 +281,8 @@ auto_update() {
 warn_active_sessions() {
     if is_running; then
         local active_sessions
-        active_sessions=$(docker exec "$CONTAINER_NAME" sh -c 'ps aux | grep -c "[c]laude"' 2>/dev/null || echo "0")
+        active_sessions=$(docker exec "$CONTAINER_NAME" sh -c 'ps aux | grep -c "[c]laude"' 2>/dev/null | tr -dc '0-9')
+        active_sessions="${active_sessions:-0}"
         if [ "$active_sessions" -gt 0 ]; then
             echo -e "${C_YELLOW}⚠${C_RESET}  ${C_BOLD}${active_sessions} active Claude session(s)${C_RESET} detected in ${CONTAINER_NAME}."
             echo -n "   Tear down container anyway? [y/N] "
