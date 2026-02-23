@@ -106,6 +106,15 @@ teardown() {
     [[ "$output" != *"Invalid"* ]]
 }
 
+@test "guided-setup menu shows beads option" {
+    run_in_pane "/usr/local/bin/guided-setup.sh --menu-only"
+    wait_for_text "Choice:"
+    local output
+    output=$(capture_pane)
+    # Should show either "Initialize Beads" or "Beads status"
+    [[ "$output" == *"Beads"* ]]
+}
+
 @test "guided-setup quit to shell works with s (backwards compat)" {
     run_in_pane "/usr/local/bin/guided-setup.sh --menu-only"
     wait_for_text "Choice:"

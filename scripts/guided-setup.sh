@@ -26,6 +26,10 @@ is_github_authenticated() {
         timeout 3 gh auth status &>/dev/null 2>&1
 }
 
+is_beads_initialized() {
+    [ -d "/workspace/.beads" ] && [ -f "/workspace/.beads/beads.db" ]
+}
+
 get_dependency_count() {
     # Use cached count from container-welcome.sh if available
     if [ -f "/tmp/.dep-count-cache" ]; then
@@ -195,6 +199,31 @@ prompt_install_deps() {
     fi
 }
 
+# Prompt for Beads initialization
+prompt_beads_init() {
+    echo ""
+    echo -e "${C_BOLD}Agent Memory (Beads)${C_RESET}"
+    echo -e "${C_DIM}Persistent task tracking across sessions — tracks issues, decisions, and blockers.${C_RESET}"
+    echo ""
+    read -p "Initialize Beads? (y/n/a=skip all): " choice
+
+    case "$choice" in
+        y|Y)
+            echo ""
+            if (cd /workspace && bd init 2>&1); then
+                (cd /workspace && bd hooks install 2>/dev/null) || true
+                echo ""
+                echo -e "${C_GREEN}✓${C_RESET} Beads initialized"
+            else
+                echo -e "${C_RED}✗${C_RESET} Beads initialization failed"
+            fi
+            ;;
+        a|A)
+            skip_remaining=true  # Intentionally global — signals main() to skip remaining steps
+            ;;
+    esac
+}
+
 # Show menu
 show_menu() {
     while true; do
@@ -205,6 +234,11 @@ show_menu() {
         echo ""
         echo -e "  ${C_BOLD}[1]${C_RESET} Start Claude"
         echo -e "  ${C_BOLD}[2]${C_RESET} View logs"
+        if is_beads_initialized; then
+            echo -e "  ${C_BOLD}[3]${C_RESET} Beads status"
+        else
+            echo -e "  ${C_BOLD}[3]${C_RESET} Initialize Beads"
+        fi
         echo -e "  ${C_BOLD}[q]${C_RESET} Quit to shell"
         echo ""
         read -p "Choice: " choice
@@ -219,6 +253,19 @@ show_menu() {
             2)
                 echo ""
                 view-logs
+                ;;
+            3)
+                echo ""
+                if is_beads_initialized; then
+                    (cd /workspace && bd list)
+                else
+                    if (cd /workspace && bd init 2>&1); then
+                        (cd /workspace && bd hooks install 2>/dev/null) || true
+                        echo -e "${C_GREEN}✓${C_RESET} Beads initialized"
+                    else
+                        echo -e "${C_RED}✗${C_RESET} Beads initialization failed"
+                    fi
+                fi
                 ;;
             q|Q|s|S|"")
                 echo ""
@@ -265,6 +312,11 @@ main() {
     if [ "$dep_count" -gt 0 ] && [ "$skip_remaining" = false ]; then
         needs_setup=true
         prompt_install_deps
+    fi
+
+    if ! is_beads_initialized && [ "$skip_remaining" = false ]; then
+        needs_setup=true
+        prompt_beads_init
     fi
 
     show_menu

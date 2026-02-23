@@ -117,23 +117,30 @@ fi
 
 # Beads agent memory status
 if command -v bd &>/dev/null; then
-    if [ -d "/workspace/.beads" ]; then
+    if [ -d "/workspace/.beads" ] && [ -f "/workspace/.beads/beads.db" ]; then
         bead_count=$(cd /workspace && bd list --format count 2>/dev/null || echo "")
         if [ -n "$bead_count" ] && [ "$bead_count" -gt 0 ] 2>/dev/null; then
             echo -e "  ${C_GREEN}[✓]${C_RESET} Beads: ${bead_count} issues tracked"
         else
             echo -e "  ${C_GREEN}[✓]${C_RESET} Beads: Initialized"
         fi
+        BEADS_OK=true
+    elif [ -d "/workspace/.beads" ]; then
+        echo -e "  ${C_YELLOW}[!]${C_RESET} Beads: Database missing — run ${C_BOLD}menu${C_RESET} to repair"
+        BEADS_OK=false
     else
-        echo -e "  ${C_DIM}[ ]${C_RESET} Beads: Not initialized"
+        echo -e "  ${C_YELLOW}[!]${C_RESET} Beads: Not initialized — run ${C_BOLD}menu${C_RESET} to set up"
+        BEADS_OK=false
     fi
+else
+    BEADS_OK=true  # bd not available, nothing to set up
 fi
 
 echo ""
 
 # Determine if we need guided setup or quick menu
 NEEDS_SETUP=false
-if [ "$CLAUDE_OK" = false ] || [ "$GIT_OK" = false ]; then
+if [ "$CLAUDE_OK" = false ] || [ "$GIT_OK" = false ] || [ "$BEADS_OK" = false ]; then
     NEEDS_SETUP=true
 fi
 
