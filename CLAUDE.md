@@ -89,7 +89,11 @@ Agent teams are enabled via `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` and `teamma
 
 ## Beads (Agent Memory)
 
-This environment uses [Beads](https://github.com/steveyegge/beads) (`bd`) for persistent task tracking across sessions. Beads data lives in `/workspace/.beads/` and is git-tracked, so task history survives across machines.
+This environment uses [Beads](https://github.com/steveyegge/beads) (`bd`) for persistent task tracking across sessions. Beads uses a Dolt SQL server for database operations. The server starts automatically via `start-dolt` during container startup.
+
+- **JSONL files** in `/workspace/.beads/` are git-tracked (task history survives across machines).
+- **Dolt server data** lives at `/home/agent/.dolt-data/` (Docker volume, survives rebuilds).
+- If the Dolt server isn't running, use `start-dolt` to start it.
 
 ### Session Start
 
@@ -105,19 +109,13 @@ Run `bd ready` to see tasks with no open blockers. If there are existing tasks, 
 | `bd show <id>` | View task details and history |
 | `bd close <id>` | Mark a task as done |
 | `bd list` | List all issues |
-| `bd sync` | Export to JSONL and sync with git |
+| `start-dolt` | Start the Dolt server (if not running) |
 
 ### Workflow Rules
 
 - Use `bd update` with flags to modify issues. Never use `bd edit` (it opens an editor).
-- Run `bd sync` at the end of a session to persist changes.
 - Include issue IDs in commit messages when relevant: `Fix auth bug (bd-a3f2)`.
 - When discovering new work during a task, create a new bead with `bd create`.
-
-### Data
-
-- `.beads/issues.jsonl` — Git-tracked. Push to persist, pull to restore.
-- `.beads/beads.db` — Git-ignored local cache. Rebuilt automatically from JSONL.
 
 ## Knowledge Base
 

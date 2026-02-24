@@ -85,6 +85,9 @@ RUN git clone --depth 1 --branch v1.11.1 https://github.com/bats-core/bats-core.
 # Install Beads issue tracker for project-scoped AI agent memory
 RUN curl -fsSL https://raw.githubusercontent.com/steveyegge/beads/main/scripts/install.sh | bash
 
+# Install Dolt SQL server (required by Beads v0.56+ for database operations)
+RUN curl -fsSL https://github.com/dolthub/dolt/releases/latest/download/install.sh | bash
+
 # Copy scripts first (change less often than config — better layer caching)
 COPY --chown=agent:agent scripts/entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY --chown=agent:agent scripts/container-welcome.sh /usr/local/bin/container-welcome
@@ -94,6 +97,7 @@ COPY --chown=agent:agent scripts/guided-setup.sh /usr/local/bin/guided-setup.sh
 COPY --chown=agent:agent scripts/dev-log.sh /usr/local/bin/dev-log
 COPY --chown=agent:agent scripts/agent-panels.sh /usr/local/bin/agent-panels
 COPY --chown=agent:agent scripts/start-professor.sh /usr/local/bin/start-professor.sh
+COPY --chown=agent:agent scripts/start-dolt.sh /usr/local/bin/start-dolt
 COPY --chown=agent:agent scripts/take-screenshot.sh /usr/local/bin/take-screenshot
 COPY --chown=agent:agent run-tests.sh /usr/local/bin/run-tests.sh
 COPY --chown=agent:agent tests/ /opt/claude-dev/tests/
@@ -125,6 +129,7 @@ RUN chmod +x /usr/local/bin/entrypoint.sh \
              /usr/local/bin/dev-log \
              /usr/local/bin/agent-panels \
              /usr/local/bin/start-professor.sh \
+             /usr/local/bin/start-dolt \
              /usr/local/bin/take-screenshot \
              /usr/local/bin/run-tests.sh
 

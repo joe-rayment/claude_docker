@@ -116,24 +116,27 @@ else
 fi
 
 # Beads agent memory status
-if command -v bd &>/dev/null; then
-    if [ -d "/workspace/.beads" ] && [ -f "/workspace/.beads/beads.db" ]; then
+if command -v bd &>/dev/null && command -v dolt &>/dev/null; then
+    if [ -d "/workspace/.beads" ]; then
         bead_count=$(cd /workspace && bd list --format count 2>/dev/null || echo "")
-        if [ -n "$bead_count" ] && [ "$bead_count" -gt 0 ] 2>/dev/null; then
-            echo -e "  ${C_GREEN}[✓]${C_RESET} Beads: ${bead_count} issues tracked"
+        if [ -n "$bead_count" ] 2>/dev/null; then
+            if [ "$bead_count" -gt 0 ] 2>/dev/null; then
+                echo -e "  ${C_GREEN}[✓]${C_RESET} Beads: ${bead_count} issues tracked"
+            else
+                echo -e "  ${C_GREEN}[✓]${C_RESET} Beads: Initialized"
+            fi
+            BEADS_OK=true
         else
-            echo -e "  ${C_GREEN}[✓]${C_RESET} Beads: Initialized"
+            # bd failed — likely server not ready yet
+            echo -e "  ${C_YELLOW}[!]${C_RESET} Beads: Server not ready — run ${C_BOLD}start-dolt${C_RESET}"
+            BEADS_OK=false
         fi
-        BEADS_OK=true
-    elif [ -d "/workspace/.beads" ]; then
-        echo -e "  ${C_YELLOW}[!]${C_RESET} Beads: Database missing — run ${C_BOLD}menu${C_RESET} to repair"
-        BEADS_OK=false
     else
-        echo -e "  ${C_YELLOW}[!]${C_RESET} Beads: Not initialized — run ${C_BOLD}menu${C_RESET} to set up"
+        echo -e "  ${C_DIM}[ ]${C_RESET} Beads: Not initialized — run ${C_BOLD}menu${C_RESET} to set up"
         BEADS_OK=false
     fi
 else
-    BEADS_OK=true  # bd not available, nothing to set up
+    BEADS_OK=true  # bd/dolt not available, nothing to set up
 fi
 
 echo ""

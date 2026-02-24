@@ -27,7 +27,7 @@ is_github_authenticated() {
 }
 
 is_beads_initialized() {
-    [ -d "/workspace/.beads" ] && [ -f "/workspace/.beads/beads.db" ]
+    [ -d "/workspace/.beads" ] && (cd /workspace && bd dolt test 2>/dev/null) >/dev/null 2>&1
 }
 
 get_dependency_count() {
@@ -210,12 +210,27 @@ prompt_beads_init() {
     case "$choice" in
         y|Y)
             echo ""
-            if (cd /workspace && bd init 2>&1); then
+            # Ensure Dolt server is running
+            if ! /usr/local/bin/start-dolt 2>/dev/null; then
+                echo -e "${C_RED}✗${C_RESET} Could not start Dolt server"
+                return
+            fi
+            # Auto-detect prefix from git remote
+            local prefix=""
+            local remote_url
+            remote_url=$(git -C /workspace remote get-url origin 2>/dev/null || true)
+            if [ -n "$remote_url" ]; then
+                prefix=$(basename "$remote_url" .git 2>/dev/null || true)
+            fi
+            [ -z "$prefix" ] && prefix="${CLAUDE_PROJECT_NAME:-$(basename /workspace)}"
+            echo -e "  Issue prefix: ${C_BOLD}${prefix}${C_RESET}"
+            read -p "  Change prefix? (enter to keep, or type new): " new_prefix
+            [ -n "$new_prefix" ] && prefix="$new_prefix"
+            echo ""
+            if (cd /workspace && bd init --prefix "$prefix" 2>&1); then
                 (cd /workspace && bd hooks install 2>/dev/null) || true
-                # Clean up empty dolt directory to avoid backend misdetection
-                [ -d "/workspace/.beads/dolt" ] && rmdir /workspace/.beads/dolt 2>/dev/null || true
                 echo ""
-                echo -e "${C_GREEN}✓${C_RESET} Beads initialized"
+                echo -e "${C_GREEN}✓${C_RESET} Beads initialized (prefix: ${prefix})"
             else
                 echo -e "${C_RED}✗${C_RESET} Beads initialization failed"
             fi
@@ -258,24 +273,12 @@ show_menu() {
                 ;;
             3)
                 echo ""
+                # Ensure Dolt server is running before any bd operation
+                /usr/local/bin/start-dolt 2>/dev/null || true
                 if is_beads_initialized; then
-                    if ! (cd /workspace && bd list 2>&1); then
-                        # Likely stale dolt directory — clean up and retry
-                        if [ -d "/workspace/.beads/dolt" ]; then
-                            rm -rf /workspace/.beads/dolt
-                            echo -e "${C_YELLOW}Cleaned up stale Dolt config, retrying...${C_RESET}"
-                            (cd /workspace && bd list) || echo -e "${C_RED}Beads error. Try: bd doctor --fix${C_RESET}"
-                        fi
-                    fi
+                    (cd /workspace && bd list 2>&1) || echo -e "${C_RED}Beads error. Try: bd doctor --fix${C_RESET}"
                 else
-                    if (cd /workspace && bd init 2>&1); then
-                        (cd /workspace && bd hooks install 2>/dev/null) || true
-                        # Clean up empty dolt directory to avoid backend misdetection
-                        [ -d "/workspace/.beads/dolt" ] && rmdir /workspace/.beads/dolt 2>/dev/null || true
-                        echo -e "${C_GREEN}✓${C_RESET} Beads initialized"
-                    else
-                        echo -e "${C_RED}✗${C_RESET} Beads initialization failed"
-                    fi
+                    prompt_beads_init
                 fi
                 ;;
             q|Q|s|S|"")

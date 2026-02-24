@@ -73,23 +73,25 @@ if [ -f "/home/agent/.config/gh/hosts.yml" ]; then
     gh auth setup-git 2>/dev/null || true
 fi
 
+# Start Dolt server (required by Beads for database operations)
+/usr/local/bin/start-dolt 2>/dev/null || true
+
 # Beads auto-initialization: ensure project has agent memory
-if command -v bd &>/dev/null && [ -d "/workspace/.git" ]; then
+if command -v bd &>/dev/null && command -v dolt &>/dev/null && [ -d "/workspace/.git" ]; then
     if [ ! -d "/workspace/.beads" ]; then
-        # Fresh project — initialize beads
-        (cd /workspace && bd init --quiet 2>/dev/null) || true
+        # Fresh project — determine prefix and initialize
+        BEADS_PREFIX=""
+        REMOTE_URL=$(git -C /workspace remote get-url origin 2>/dev/null || true)
+        if [ -n "$REMOTE_URL" ]; then
+            BEADS_PREFIX=$(basename "$REMOTE_URL" .git 2>/dev/null || true)
+        fi
+        [ -z "$BEADS_PREFIX" ] && BEADS_PREFIX="${CLAUDE_PROJECT_NAME:-}"
+        [ -z "$BEADS_PREFIX" ] && BEADS_PREFIX=$(basename "$(git -C /workspace rev-parse --show-toplevel 2>/dev/null || echo /workspace)")
+        (cd /workspace && bd init --prefix "$BEADS_PREFIX" --quiet 2>/dev/null) || true
         if [ -d "/workspace/.beads" ]; then
             (cd /workspace && bd hooks install 2>/dev/null) || true
         fi
-    elif [ ! -f "/workspace/.beads/beads.db" ]; then
-        # Cloned from GitHub — rebuild SQLite from JSONL
-        (cd /workspace && bd import 2>/dev/null) || true
-    fi
-    # Clean up empty dolt directory that bd init may create.
-    # If left behind, bd auto-detects it as the Dolt backend and fails
-    # when no Dolt server is running.
-    if [ -d "/workspace/.beads/dolt" ] && [ -z "$(ls -A /workspace/.beads/dolt 2>/dev/null)" ]; then
-        rmdir /workspace/.beads/dolt 2>/dev/null || true
+        unset BEADS_PREFIX REMOTE_URL
     fi
 fi
 
