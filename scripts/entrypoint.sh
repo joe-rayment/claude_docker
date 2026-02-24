@@ -85,6 +85,12 @@ if command -v bd &>/dev/null && [ -d "/workspace/.git" ]; then
         # Cloned from GitHub — rebuild SQLite from JSONL
         (cd /workspace && bd import 2>/dev/null) || true
     fi
+    # Clean up empty dolt directory that bd init may create.
+    # If left behind, bd auto-detects it as the Dolt backend and fails
+    # when no Dolt server is running.
+    if [ -d "/workspace/.beads/dolt" ] && [ -z "$(ls -A /workspace/.beads/dolt 2>/dev/null)" ]; then
+        rmdir /workspace/.beads/dolt 2>/dev/null || true
+    fi
 fi
 
 # Change to workspace directory (with diagnostic on failure to prevent silent restart loop)

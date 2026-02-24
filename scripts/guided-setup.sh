@@ -212,6 +212,8 @@ prompt_beads_init() {
             echo ""
             if (cd /workspace && bd init 2>&1); then
                 (cd /workspace && bd hooks install 2>/dev/null) || true
+                # Clean up empty dolt directory to avoid backend misdetection
+                [ -d "/workspace/.beads/dolt" ] && rmdir /workspace/.beads/dolt 2>/dev/null || true
                 echo ""
                 echo -e "${C_GREEN}✓${C_RESET} Beads initialized"
             else
@@ -257,10 +259,19 @@ show_menu() {
             3)
                 echo ""
                 if is_beads_initialized; then
-                    (cd /workspace && bd list)
+                    if ! (cd /workspace && bd list 2>&1); then
+                        # Likely stale dolt directory — clean up and retry
+                        if [ -d "/workspace/.beads/dolt" ]; then
+                            rm -rf /workspace/.beads/dolt
+                            echo -e "${C_YELLOW}Cleaned up stale Dolt config, retrying...${C_RESET}"
+                            (cd /workspace && bd list) || echo -e "${C_RED}Beads error. Try: bd doctor --fix${C_RESET}"
+                        fi
+                    fi
                 else
                     if (cd /workspace && bd init 2>&1); then
                         (cd /workspace && bd hooks install 2>/dev/null) || true
+                        # Clean up empty dolt directory to avoid backend misdetection
+                        [ -d "/workspace/.beads/dolt" ] && rmdir /workspace/.beads/dolt 2>/dev/null || true
                         echo -e "${C_GREEN}✓${C_RESET} Beads initialized"
                     else
                         echo -e "${C_RED}✗${C_RESET} Beads initialization failed"
