@@ -74,6 +74,9 @@ RUN pip3 install --no-cache-dir --break-system-packages poetry uv \
     && npm install -g pnpm@9 yarn@1.22 \
     && gem install bundler -v 2.5.6 2>/dev/null || true
 
+# Upgrade Claude Code to latest (base image may lag behind releases)
+RUN npm install -g @anthropic-ai/claude-code@latest
+
 # Install bats-core for experience testing
 RUN git clone --depth 1 --branch v1.11.1 https://github.com/bats-core/bats-core.git /tmp/bats-core \
     && /tmp/bats-core/install.sh /usr/local \
