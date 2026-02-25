@@ -117,9 +117,12 @@ fi
 
 # Beads agent memory status
 if command -v bd &>/dev/null && command -v dolt &>/dev/null; then
-    if [ -d "/workspace/.beads" ]; then
-        # Check server connectivity first, then count issues
-        if (cd /workspace && bd dolt test 2>/dev/null) >/dev/null 2>&1; then
+    if [ -d "/workspace/.beads" ] && [ -f "/workspace/.beads/metadata.json" ]; then
+        # Beads is configured — ensure Dolt server is running, then check status
+        if ! timeout 1 bash -c "echo > /dev/tcp/127.0.0.1/3307" 2>/dev/null; then
+            /usr/local/bin/start-dolt >/dev/null 2>&1 || true
+        fi
+        if timeout 1 bash -c "echo > /dev/tcp/127.0.0.1/3307" 2>/dev/null; then
             bead_count=$(cd /workspace && bd list --format count 2>/dev/null)
             bead_count="${bead_count:-0}"  # empty means 0 issues
             if [ "$bead_count" -gt 0 ] 2>/dev/null; then
@@ -129,7 +132,7 @@ if command -v bd &>/dev/null && command -v dolt &>/dev/null; then
             fi
             BEADS_OK=true
         else
-            echo -e "  ${C_YELLOW}[!]${C_RESET} Beads: Server not ready — run ${C_BOLD}start-dolt${C_RESET}"
+            echo -e "  ${C_YELLOW}[!]${C_RESET} Beads: Dolt server not ready — run ${C_BOLD}start-dolt${C_RESET}"
             if [ -s /tmp/.dolt-server.log ]; then
                 echo -e "        ${C_DIM}$(tail -1 /tmp/.dolt-server.log)${C_RESET}"
             fi

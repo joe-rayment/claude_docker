@@ -26,8 +26,16 @@ is_github_authenticated() {
         timeout 3 gh auth status &>/dev/null 2>&1
 }
 
+is_beads_configured() {
+    [ -d "/workspace/.beads" ] && [ -f "/workspace/.beads/metadata.json" ]
+}
+
+is_dolt_running() {
+    timeout 1 bash -c "echo > /dev/tcp/127.0.0.1/3307" 2>/dev/null
+}
+
 is_beads_initialized() {
-    [ -d "/workspace/.beads" ] && (cd /workspace && bd dolt test 2>/dev/null) >/dev/null 2>&1
+    is_beads_configured && is_dolt_running
 }
 
 get_dependency_count() {
@@ -254,7 +262,7 @@ show_menu() {
         echo ""
         echo -e "  ${C_BOLD}[1]${C_RESET} Start Claude"
         echo -e "  ${C_BOLD}[2]${C_RESET} View logs"
-        if is_beads_initialized; then
+        if is_beads_configured; then
             echo -e "  ${C_BOLD}[3]${C_RESET} Beads status"
         else
             echo -e "  ${C_BOLD}[3]${C_RESET} Initialize Beads"
@@ -277,16 +285,27 @@ show_menu() {
             3)
                 echo ""
                 # Ensure Dolt server is running before any bd operation
-                /usr/local/bin/start-dolt || true
-                if is_beads_initialized; then
-                    (cd /workspace && bd status 2>&1) || echo -e "${C_RED}Beads error. Try: bd doctor --fix${C_RESET}"
-                    echo ""
-                    # Show open issues list if any exist
-                    local open_count
-                    open_count=$(cd /workspace && bd count -s open 2>/dev/null || echo "0")
-                    if [ "$open_count" -gt 0 ] 2>/dev/null; then
-                        echo -e "${C_BOLD}Open Issues:${C_RESET}"
-                        (cd /workspace && bd list 2>&1) || true
+                if ! is_dolt_running; then
+                    /usr/local/bin/start-dolt || true
+                fi
+                if is_beads_configured; then
+                    if is_dolt_running; then
+                        (cd /workspace && bd status 2>&1) || echo -e "${C_RED}Beads error. Try: bd doctor --fix${C_RESET}"
+                        echo ""
+                        # Show open issues list if any exist
+                        local open_count
+                        open_count=$(cd /workspace && bd count -s open 2>/dev/null || echo "0")
+                        if [ "$open_count" -gt 0 ] 2>/dev/null; then
+                            echo -e "${C_BOLD}Open Issues:${C_RESET}"
+                            (cd /workspace && bd list 2>&1) || true
+                            echo ""
+                        fi
+                    else
+                        echo -e "${C_RED}✗${C_RESET} Dolt server is not running"
+                        if [ -s /tmp/.dolt-server.log ]; then
+                            echo -e "  ${C_DIM}$(tail -3 /tmp/.dolt-server.log)${C_RESET}"
+                        fi
+                        echo -e "  Try: ${C_BOLD}start-dolt${C_RESET}"
                         echo ""
                     fi
                     read -p "Press Enter to continue..." _
@@ -341,7 +360,7 @@ main() {
         prompt_install_deps
     fi
 
-    if ! is_beads_initialized && [ "$skip_remaining" = false ]; then
+    if ! is_beads_configured && [ "$skip_remaining" = false ]; then
         needs_setup=true
         prompt_beads_init
     fi
