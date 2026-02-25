@@ -211,8 +211,11 @@ prompt_beads_init() {
         y|Y)
             echo ""
             # Ensure Dolt server is running
-            if ! /usr/local/bin/start-dolt 2>/dev/null; then
+            if ! /usr/local/bin/start-dolt; then
                 echo -e "${C_RED}✗${C_RESET} Could not start Dolt server"
+                if [ -s /tmp/.dolt-server.log ]; then
+                    echo -e "  ${C_DIM}$(tail -1 /tmp/.dolt-server.log)${C_RESET}"
+                fi
                 return
             fi
             # Auto-detect prefix from git remote
@@ -274,9 +277,19 @@ show_menu() {
             3)
                 echo ""
                 # Ensure Dolt server is running before any bd operation
-                /usr/local/bin/start-dolt 2>/dev/null || true
+                /usr/local/bin/start-dolt || true
                 if is_beads_initialized; then
-                    (cd /workspace && bd list 2>&1) || echo -e "${C_RED}Beads error. Try: bd doctor --fix${C_RESET}"
+                    (cd /workspace && bd status 2>&1) || echo -e "${C_RED}Beads error. Try: bd doctor --fix${C_RESET}"
+                    echo ""
+                    # Show open issues list if any exist
+                    local open_count
+                    open_count=$(cd /workspace && bd count -s open 2>/dev/null || echo "0")
+                    if [ "$open_count" -gt 0 ] 2>/dev/null; then
+                        echo -e "${C_BOLD}Open Issues:${C_RESET}"
+                        (cd /workspace && bd list 2>&1) || true
+                        echo ""
+                    fi
+                    read -p "Press Enter to continue..." _
                 else
                     prompt_beads_init
                 fi

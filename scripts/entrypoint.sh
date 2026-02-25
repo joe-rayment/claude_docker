@@ -74,10 +74,15 @@ if [ -f "/home/agent/.config/gh/hosts.yml" ]; then
 fi
 
 # Start Dolt server (required by Beads for database operations)
-/usr/local/bin/start-dolt 2>/dev/null || true
+# Errors logged to /tmp/.dolt-server.log for debugging
+/usr/local/bin/start-dolt || true
 
 # Beads auto-initialization: ensure project has agent memory
 if command -v bd &>/dev/null && command -v dolt &>/dev/null && [ -d "/workspace/.git" ]; then
+    # Clean up stale .beads/dolt directory (empty leftover from failed init)
+    if [ -d "/workspace/.beads/dolt" ] && [ ! -d "/workspace/.beads/dolt/.dolt" ]; then
+        rm -rf "/workspace/.beads/dolt"
+    fi
     if [ ! -d "/workspace/.beads" ]; then
         # Fresh project — determine prefix and initialize
         BEADS_PREFIX=""

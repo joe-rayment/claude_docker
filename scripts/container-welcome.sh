@@ -118,8 +118,10 @@ fi
 # Beads agent memory status
 if command -v bd &>/dev/null && command -v dolt &>/dev/null; then
     if [ -d "/workspace/.beads" ]; then
-        bead_count=$(cd /workspace && bd list --format count 2>/dev/null || echo "")
-        if [ -n "$bead_count" ] 2>/dev/null; then
+        # Check server connectivity first, then count issues
+        if (cd /workspace && bd dolt test 2>/dev/null) >/dev/null 2>&1; then
+            bead_count=$(cd /workspace && bd list --format count 2>/dev/null)
+            bead_count="${bead_count:-0}"  # empty means 0 issues
             if [ "$bead_count" -gt 0 ] 2>/dev/null; then
                 echo -e "  ${C_GREEN}[✓]${C_RESET} Beads: ${bead_count} issues tracked"
             else
@@ -127,8 +129,10 @@ if command -v bd &>/dev/null && command -v dolt &>/dev/null; then
             fi
             BEADS_OK=true
         else
-            # bd failed — likely server not ready yet
             echo -e "  ${C_YELLOW}[!]${C_RESET} Beads: Server not ready — run ${C_BOLD}start-dolt${C_RESET}"
+            if [ -s /tmp/.dolt-server.log ]; then
+                echo -e "        ${C_DIM}$(tail -1 /tmp/.dolt-server.log)${C_RESET}"
+            fi
             BEADS_OK=false
         fi
     else
