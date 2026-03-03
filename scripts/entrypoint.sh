@@ -100,6 +100,31 @@ if command -v bd &>/dev/null && command -v dolt &>/dev/null && [ -d "/workspace/
     fi
 fi
 
+# Beads self-healing: if .beads/ config exists but the Dolt database is missing,
+# repair it. This handles the "new container from template" case where .beads/
+# is git-tracked but the Dolt database was never created in this container's volume.
+if command -v bd &>/dev/null && [ -d "/workspace/.beads" ] && [ -f "/workspace/.beads/metadata.json" ]; then
+    if timeout 1 bash -c "echo > /dev/tcp/127.0.0.1/3307" 2>/dev/null; then
+        if ! (cd /workspace && bd status) &>/dev/null 2>&1; then
+            (cd /workspace && bd doctor --fix --yes) &>/dev/null 2>&1 || true
+            if (cd /workspace && bd status) &>/dev/null 2>&1; then
+                dev-log run "bd doctor --fix --yes" pass "Auto-repaired Beads database on startup" 2>/dev/null || true
+            else
+                dev-log error "Beads auto-repair failed on startup" 2>/dev/null || true
+            fi
+        fi
+    fi
+fi
+
+# Register Claude Code hooks for beads awareness (SessionStart, PreCompact).
+# Idempotent — merges into existing settings.json without overwriting other entries.
+# Runs after config version sync since that may reset settings.json to the template.
+if command -v bd &>/dev/null; then
+    if ! bd setup claude 2>/dev/null; then
+        dev-log error "bd setup claude failed during entrypoint" 2>/dev/null || true
+    fi
+fi
+
 # Change to workspace directory (with diagnostic on failure to prevent silent restart loop)
 cd /workspace || {
     echo -e "\033[31mFATAL: /workspace is not accessible. Check your volume mount.\033[0m" >&2

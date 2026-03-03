@@ -176,3 +176,13 @@
     grep -q 'alias screenshot=' /etc/claude-dev/configs/.zshrc
     grep -q 'alias ss=' /etc/claude-dev/configs/.zshrc
 }
+
+@test "claude-settings.json includes beads SessionStart hook" {
+    local settings="/etc/claude-dev/configs/claude-settings.json"
+    jq -e '.hooks.SessionStart[0].hooks[0].command == "bd prime"' "$settings"
+}
+
+@test "claude-settings.json includes beads PreCompact hook" {
+    local settings="/etc/claude-dev/configs/claude-settings.json"
+    jq -e '.hooks.PreCompact[0].hooks[0].command == "bd prime"' "$settings"
+}

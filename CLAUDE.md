@@ -95,6 +95,16 @@ This environment uses [Beads](https://github.com/steveyegge/beads) (`bd`) for pe
 - **Dolt server data** lives at `/home/agent/.dolt-data/` (Docker volume, survives rebuilds).
 - If the Dolt server isn't running, use `start-dolt` to start it.
 
+### Self-Healing
+
+Beads includes automatic database repair. If the `.beads/` config directory is git-tracked but the Dolt database hasn't been created in this container's volume (common when cloning a project from a template), the system detects the problem via `bd status` and attempts repair using `bd doctor --fix --yes`. This runs at three points:
+
+1. **Container startup** (entrypoint) — silent, logged via `dev-log`
+2. **Welcome screen** — silent, retries status display after repair
+3. **Menu option 3** — user-visible "Repairing..." message with success/failure feedback
+
+To manually repair: `cd /workspace && bd doctor --fix --yes`
+
 ### Session Start
 
 Run `bd ready` to see tasks with no open blockers. If there are existing tasks, review them before starting new work.
@@ -110,6 +120,15 @@ Run `bd ready` to see tasks with no open blockers. If there are existing tasks, 
 | `bd close <id>` | Mark a task as done |
 | `bd list` | List all issues |
 | `start-dolt` | Start the Dolt server (if not running) |
+
+### Claude Code Integration
+
+Beads hooks inject workflow context automatically:
+- **SessionStart** runs `bd prime` to load beads awareness into new sessions
+- **PreCompact** runs `bd prime` to preserve context before compaction
+
+These are managed by `bd setup claude` and configured during container startup.
+Verify with: `bd setup claude --check`
 
 ### Workflow Rules
 

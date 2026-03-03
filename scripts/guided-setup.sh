@@ -240,6 +240,7 @@ prompt_beads_init() {
             echo ""
             if (cd /workspace && bd init --prefix "$prefix" 2>&1); then
                 (cd /workspace && bd hooks install 2>/dev/null) || true
+                (cd /workspace && bd setup claude 2>/dev/null) || true
                 echo ""
                 echo -e "${C_GREEN}✓${C_RESET} Beads initialized (prefix: ${prefix})"
             else
@@ -290,6 +291,22 @@ show_menu() {
                 fi
                 if is_beads_configured; then
                     if is_dolt_running; then
+                        # Health check — auto-repair if database is missing/broken
+                        if ! (cd /workspace && bd status) &>/dev/null 2>&1; then
+                            echo -e "${C_YELLOW}→${C_RESET} Repairing Beads database..."
+                            if (cd /workspace && bd doctor --fix --yes) &>/dev/null 2>&1; then
+                                if (cd /workspace && bd status) &>/dev/null 2>&1; then
+                                    echo -e "${C_GREEN}✓${C_RESET} Beads database repaired"
+                                    echo ""
+                                else
+                                    echo -e "${C_RED}✗${C_RESET} Repair incomplete — try: ${C_BOLD}bd doctor --fix${C_RESET}"
+                                    echo ""
+                                fi
+                            else
+                                echo -e "${C_RED}✗${C_RESET} Repair failed — try: ${C_BOLD}bd doctor --fix${C_RESET}"
+                                echo ""
+                            fi
+                        fi
                         (cd /workspace && bd status 2>&1) || echo -e "${C_RED}Beads error. Try: bd doctor --fix${C_RESET}"
                         echo ""
                         # Show open issues list if any exist

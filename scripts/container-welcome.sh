@@ -125,12 +125,22 @@ if command -v bd &>/dev/null && command -v dolt &>/dev/null; then
         if timeout 1 bash -c "echo > /dev/tcp/127.0.0.1/3307" 2>/dev/null; then
             bead_count=$(cd /workspace && bd list --format count 2>/dev/null)
             bead_count="${bead_count:-0}"  # empty means 0 issues
+            # If bead_count is non-numeric, the database may be missing — try auto-repair
+            if ! [ "$bead_count" -ge 0 ] 2>/dev/null; then
+                (cd /workspace && bd doctor --fix --yes) &>/dev/null 2>&1 || true
+                bead_count=$(cd /workspace && bd list --format count 2>/dev/null)
+                bead_count="${bead_count:-0}"
+            fi
             if [ "$bead_count" -gt 0 ] 2>/dev/null; then
                 echo -e "  ${C_GREEN}[✓]${C_RESET} Beads: ${bead_count} issues tracked"
-            else
+                BEADS_OK=true
+            elif (cd /workspace && bd status) &>/dev/null 2>&1; then
                 echo -e "  ${C_GREEN}[✓]${C_RESET} Beads: Initialized"
+                BEADS_OK=true
+            else
+                echo -e "  ${C_YELLOW}[!]${C_RESET} Beads: Database error — run ${C_BOLD}menu${C_RESET} option 3 to repair"
+                BEADS_OK=false
             fi
-            BEADS_OK=true
         else
             echo -e "  ${C_YELLOW}[!]${C_RESET} Beads: Dolt server not ready — run ${C_BOLD}start-dolt${C_RESET}"
             if [ -s /tmp/.dolt-server.log ]; then
