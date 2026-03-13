@@ -14,6 +14,9 @@ if [ -f "$DEFAULTS_FILE" ] && [ ! -f "$MARKER_FILE" ]; then
     touch "$MARKER_FILE"
 fi
 
+# Clean up orphaned file from old CONFIG_VERSION-based sync
+rm -f /home/agent/.config-version
+
 # Config sync: update volume configs when image configs have changed
 # Uses checksums of staged config files instead of a manual version string
 IMAGE_HASH=$(find /etc/claude-dev/configs -type f -exec sha256sum {} + 2>/dev/null | sort | sha256sum | cut -d' ' -f1)
