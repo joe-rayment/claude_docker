@@ -6,6 +6,18 @@ You are running inside a Docker container. Your workspace is at `/workspace` (bi
 
 Key tools: Git, GitHub CLI (`gh`), Python 3, Node.js, Go, Helix editor (`hx`), tmux.
 
+## Config Customization
+
+Config files are synced from the Docker image on startup (checksum-based). To persist personal customizations across rebuilds, use `.local` override files:
+
+| Config | Override file | Mechanism |
+|--------|--------------|-----------|
+| Shell | `~/.zshrc.local` | Sourced at end of `.zshrc` |
+| tmux | `~/.tmux.local.conf` | Sourced at end of `tmux.conf` |
+| Claude Code | `~/.claude/settings.local.json` | Deep-merged into `settings.json` on startup |
+
+Helix (`~/.config/helix/config.toml`) and IntelliShell (`~/.config/intelli-shell/config.toml`) can be edited directly — they only get overwritten when the image config checksum changes.
+
 ## Core Principle
 
 **Run code, don't guess.** Execute commands, run tests, check output. If you're unsure whether something works, run it.

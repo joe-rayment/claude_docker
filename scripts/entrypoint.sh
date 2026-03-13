@@ -30,6 +30,11 @@ if [ "$IMAGE_HASH" != "$VOLUME_HASH" ]; then
     # Update Claude settings and statusline script
     mkdir -p /home/agent/.claude
     cp /etc/claude-dev/configs/claude-settings.json /home/agent/.claude/settings.json 2>/dev/null || true
+    # Merge user's local overrides into settings (deep merge, local wins)
+    if [ -f /home/agent/.claude/settings.local.json ]; then
+        MERGED=$(jq -s '.[0] * .[1]' /home/agent/.claude/settings.json /home/agent/.claude/settings.local.json 2>/dev/null) && \
+            echo "$MERGED" > /home/agent/.claude/settings.json
+    fi
     cp /etc/claude-dev/configs/statusline.sh /home/agent/.claude/statusline.sh 2>/dev/null || true
     chmod +x /home/agent/.claude/statusline.sh 2>/dev/null || true
     # Update tmux config
