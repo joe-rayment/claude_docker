@@ -106,7 +106,7 @@ cmd_hide() {
     done
 
     if [ "$moved" -gt 0 ]; then
-        echo -e "${C_YELLOW}Hidden${C_RESET} ${moved} agent pane(s). ${C_DIM}Ctrl-b a to show.${C_RESET}"
+        echo -e "${C_YELLOW}Hidden${C_RESET} ${moved} agent pane(s). ${C_DIM}CapsLk+a a to show.${C_RESET}"
     else
         echo -e "${C_DIM}No panes could be hidden.${C_RESET}"
     fi
@@ -164,7 +164,7 @@ cmd_show() {
     fi
 
     if [ "$restored" -gt 0 ]; then
-        echo -e "${C_GREEN}Restored${C_RESET} ${restored} agent pane(s). ${C_DIM}Ctrl-b a to hide.${C_RESET}"
+        echo -e "${C_GREEN}Restored${C_RESET} ${restored} agent pane(s). ${C_DIM}CapsLk+a a to hide.${C_RESET}"
     else
         echo -e "${C_DIM}No panes could be restored.${C_RESET}"
     fi
@@ -206,19 +206,19 @@ cmd_list() {
 cmd_help() {
     echo -e "${C_BOLD}Agent Panel Shortcuts${C_RESET}"
     echo ""
-    echo -e "  ${C_BOLD}Ctrl-b a${C_RESET}         Toggle agent panels (hide/show)"
-    echo -e "  ${C_BOLD}Ctrl-b A${C_RESET}         List agent panes"
-    echo -e "  ${C_BOLD}Ctrl-b Tab${C_RESET}       Next pane"
-    echo -e "  ${C_BOLD}Ctrl-b S-Tab${C_RESET}     Previous pane"
-    echo -e "  ${C_BOLD}Ctrl-b z${C_RESET}         Zoom/unzoom pane (full-screen)"
-    echo -e "  ${C_BOLD}Ctrl-b h/j/k/l${C_RESET}  Vim-style pane navigation"
-    echo -e "  ${C_BOLD}Ctrl-b t${C_RESET}         Re-tile layout"
-    echo -e "  ${C_BOLD}Ctrl-b |${C_RESET}         Split horizontal"
-    echo -e "  ${C_BOLD}Ctrl-b -${C_RESET}         Split vertical"
+    echo -e "  ${C_BOLD}CapsLk+a a${C_RESET}         Toggle agent panels (hide/show)"
+    echo -e "  ${C_BOLD}CapsLk+a A${C_RESET}         List agent panes"
+    echo -e "  ${C_BOLD}CapsLk+a Tab${C_RESET}       Next pane"
+    echo -e "  ${C_BOLD}CapsLk+a S-Tab${C_RESET}     Previous pane"
+    echo -e "  ${C_BOLD}CapsLk+a z${C_RESET}         Zoom/unzoom pane (full-screen)"
+    echo -e "  ${C_BOLD}CapsLk+a h/j/k/l${C_RESET}  Vim-style pane navigation"
+    echo -e "  ${C_BOLD}CapsLk+a t${C_RESET}         Re-tile layout"
+    echo -e "  ${C_BOLD}CapsLk+a |${C_RESET}         Split horizontal"
+    echo -e "  ${C_BOLD}CapsLk+a -${C_RESET}         Split vertical"
     echo -e "  ${C_BOLD}Mouse${C_RESET}            Click to select, drag to resize, scroll to browse"
     echo ""
     echo -e "${C_BOLD}Shell commands:${C_RESET}"
-    echo -e "  ${C_BOLD}ap toggle${C_RESET}        Same as Ctrl-b a"
+    echo -e "  ${C_BOLD}ap toggle${C_RESET}        Same as CapsLk+a a"
     echo -e "  ${C_BOLD}ap hide${C_RESET}          Hide all non-active panes"
     echo -e "  ${C_BOLD}ap show${C_RESET}          Bring hidden panes back"
     echo -e "  ${C_BOLD}ap list${C_RESET}          Show pane info"

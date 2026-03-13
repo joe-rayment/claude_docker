@@ -141,7 +141,7 @@
     run env -u TMUX agent-panels
     [ "$status" -eq 0 ]
     [[ "$output" == *"toggle"* ]]
-    [[ "$output" == *"Ctrl-b"* ]]
+    [[ "$output" == *"CapsLk+a"* ]]
 }
 
 @test "screenshot tools are installed" {
