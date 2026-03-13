@@ -46,6 +46,15 @@ if [ "$IMAGE_HASH" != "$VOLUME_HASH" ]; then
     echo "${IMAGE_HASH}" > /home/agent/.config-hash
 fi
 
+# Workspace tmux.conf overlay: if the git-tracked workspace config is newer
+# than the image-baked copy, use it. This bridges the gap between image rebuilds
+# so features added to /workspace/config/tmux.conf activate immediately.
+if [ -f /workspace/config/tmux.conf ]; then
+    if ! cmp -s /workspace/config/tmux.conf /home/agent/.tmux.conf 2>/dev/null; then
+        cp /workspace/config/tmux.conf /home/agent/.tmux.conf
+    fi
+fi
+
 # Start virtual framebuffer for screenshot tools (Playwright, import, etc.)
 if command -v Xvfb &>/dev/null; then
     Xvfb :99 -screen 0 1280x720x24 &>/dev/null &
