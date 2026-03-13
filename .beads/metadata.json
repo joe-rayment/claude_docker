@@ -1,7 +1,7 @@
 {
   "database": "dolt",
-  "jsonl_export": "interactions.jsonl",
+  "jsonl_export": "issues.jsonl",
   "backend": "dolt",
   "dolt_mode": "server",
-  "dolt_database": "beads_claude-dev"
+  "dolt_database": "beads_claude-docker"
 }

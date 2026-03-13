@@ -28,11 +28,11 @@
     command -v bd
 }
 
-@test "config version file exists and has valid format" {
-    [ -f /etc/claude-dev/CONFIG_VERSION ]
-    local ver
-    ver=$(cat /etc/claude-dev/CONFIG_VERSION)
-    [[ "$ver" =~ ^[0-9.]+$ ]]
+@test "config checksum can be computed from staged configs" {
+    [ -d /etc/claude-dev/configs ]
+    local hash
+    hash=$(find /etc/claude-dev/configs -type f -exec sha256sum {} + 2>/dev/null | sort | sha256sum | cut -d' ' -f1)
+    [ -n "$hash" ]
 }
 
 @test "staged configs exist for version-sync" {

@@ -103,9 +103,8 @@ COPY --chown=agent:agent run-tests.sh /usr/local/bin/run-tests.sh
 COPY --chown=agent:agent tests/ /opt/claude-dev/tests/
 COPY --chown=agent:agent knowledge-base/ /opt/claude-dev/knowledge-base/
 
-# Stage configs for version-sync (outside volume mount path)
+# Stage configs for checksum-based sync (outside volume mount path)
 RUN mkdir -p /etc/claude-dev/configs/agents
-COPY CONFIG_VERSION /etc/claude-dev/CONFIG_VERSION
 COPY config/.zshrc config/helix-config.toml config/intellishell-config.toml \
      config/intellishell-defaults.txt config/claude-settings.json \
      config/statusline.sh config/tmux.conf \

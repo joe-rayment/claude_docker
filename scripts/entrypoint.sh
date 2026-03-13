@@ -14,10 +14,11 @@ if [ -f "$DEFAULTS_FILE" ] && [ ! -f "$MARKER_FILE" ]; then
     touch "$MARKER_FILE"
 fi
 
-# Config version sync: update configs when image is newer than volume
-IMAGE_VERSION=$(cat /etc/claude-dev/CONFIG_VERSION 2>/dev/null || echo "0")
-VOLUME_VERSION=$(cat /home/agent/.config-version 2>/dev/null || echo "0")
-if [ "$IMAGE_VERSION" != "$VOLUME_VERSION" ]; then
+# Config sync: update volume configs when image configs have changed
+# Uses checksums of staged config files instead of a manual version string
+IMAGE_HASH=$(find /etc/claude-dev/configs -type f -exec sha256sum {} + 2>/dev/null | sort | sha256sum | cut -d' ' -f1)
+VOLUME_HASH=$(cat /home/agent/.config-hash 2>/dev/null || echo "none")
+if [ "$IMAGE_HASH" != "$VOLUME_HASH" ]; then
     # User customizations should go in ~/.zshrc.local (sourced at end of .zshrc)
     cp /etc/claude-dev/configs/.zshrc /home/agent/.zshrc 2>/dev/null || true
     mkdir -p /home/agent/.config/helix
@@ -42,7 +43,7 @@ if [ "$IMAGE_VERSION" != "$VOLUME_VERSION" ]; then
         echo "   Claude Code may not start correctly. Check the file for syntax errors."
         echo ""
     fi
-    echo "${IMAGE_VERSION}" > /home/agent/.config-version
+    echo "${IMAGE_HASH}" > /home/agent/.config-hash
 fi
 
 # Start virtual framebuffer for screenshot tools (Playwright, import, etc.)

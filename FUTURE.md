@@ -5,7 +5,7 @@ Notes on barriers and friction points for new users.
 ## Current Friction Points
 
 ### ~~1. Volume Persistence Overwrites Config Updates~~ ✅ RESOLVED
-Entrypoint now compares `CONFIG_VERSION` baked into the image against a version marker in the volume. Configs are updated automatically when the image is newer.
+Entrypoint now checksums all staged config files and compares against a hash stored in the volume. Configs are updated automatically when any config file changes — no manual version bumping needed.
 
 ### ~~2. Container Name Conflict~~ ✅ RESOLVED
 Bootstrap now generates unique container names from the project directory name (e.g. `myproject-claude-dev`).
