@@ -167,6 +167,9 @@ if [ -z "${TMUX:-}" ] && [ -t 0 ] && [ "${1:-}" != "tmux" ] && [ -z "${CLAUDE_DE
 
         # Create session detached so we can configure panes before attaching
         tmux -u new-session -d -s main -c /workspace
+        # Clear scrollback so no shell content leaks into copy mode.
+        # Defense-in-depth for the WheelUpPane alternate_on check.
+        tmux clear-history -t main 2>/dev/null || true
 
         # Attach via exec — replaces the entrypoint with the tmux client.
         # Signal chain on docker stop: SIGTERM → tini → tmux client exits →
