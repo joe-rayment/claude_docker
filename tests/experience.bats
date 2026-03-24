@@ -1,126 +1,78 @@
 #!/usr/bin/env bats
 
-# Experience tests — verify interactive UX using tmux
-# These simulate real user interaction with the container
+# Experience tests — verify interactive UX
+# These test the container's user-facing scripts
+# Uses 'script -qc' to provide a pseudo-TTY (required by scripts that check -t 0)
 
 load helpers/setup
 
 setup() {
-    setup_tmux
     # Clear the session marker so welcome runs fresh
     rm -f /tmp/.claude-dev-welcome-shown
 }
 
-teardown() {
-    teardown_tmux
-}
-
 @test "welcome screen renders on first login" {
-    run_in_pane "container-welcome"
-    wait_for_text "Status:"
-    local output
-    output=$(capture_pane)
+    run run_in_pty container-welcome </dev/null
     [[ "$output" == *"Claude"* ]]
     [[ "$output" == *"Status:"* ]]
 }
 
 @test "welcome shows Claude auth status" {
-    run_in_pane "container-welcome"
-    wait_for_text "Claude:"
-    local output
-    output=$(capture_pane)
-    # Should show either authenticated or not — both are valid
+    run run_in_pty container-welcome </dev/null
     [[ "$output" == *"Claude:"* ]]
-    # Check for status indicator bracket pattern
     [[ "$output" == *"["* ]]
 }
 
 @test "welcome shows Git config status" {
-    run_in_pane "container-welcome"
-    wait_for_text "Git:"
-    local output
-    output=$(capture_pane)
+    run run_in_pty container-welcome </dev/null
     [[ "$output" == *"Git:"* ]]
-    # Check for status indicator bracket pattern
     [[ "$output" == *"["* ]]
 }
 
 @test "session marker prevents duplicate welcome" {
-    # First run creates the marker
     touch /tmp/.claude-dev-welcome-shown
-    run_in_pane "container-welcome"
-    wait_for_text "Commands:" 5
-    local output
-    output=$(capture_pane)
+    run run_in_pty container-welcome </dev/null
     # Should show compact hint, not full status
     [[ "$output" == *"menu"* ]]
     [[ "$output" != *"Status:"* ]]
 }
 
 @test "welcome screen shows project name when CLAUDE_PROJECT_NAME is set" {
-    run_in_pane "CLAUDE_PROJECT_NAME=testproject container-welcome"
-    wait_for_text "testproject"
-    local output
-    output=$(capture_pane)
+    run run_in_pty "CLAUDE_PROJECT_NAME=testproject container-welcome" </dev/null
     [[ "$output" == *"testproject"* ]]
     [[ "$output" == *"Claude Dev"* ]]
 }
 
 @test "returning session shows project name in compact hint" {
     touch /tmp/.claude-dev-welcome-shown
-    run_in_pane "CLAUDE_PROJECT_NAME=testproject container-welcome"
-    wait_for_text "Commands:" 5
-    local output
-    output=$(capture_pane)
+    run run_in_pty "CLAUDE_PROJECT_NAME=testproject container-welcome" </dev/null
     [[ "$output" == *"testproject"* ]]
     [[ "$output" == *"menu"* ]]
 }
 
 @test "guided-setup menu displays options" {
-    run_in_pane "/usr/local/bin/guided-setup.sh --menu-only"
-    wait_for_text "Start Claude"
-    local output
-    output=$(capture_pane)
+    run run_in_pty_with_input "q" "/usr/local/bin/guided-setup.sh --menu-only"
     [[ "$output" == *"Start Claude"* ]]
     [[ "$output" == *"View logs"* ]]
     [[ "$output" == *"Quit to shell"* ]]
 }
 
 @test "guided-setup menu handles invalid input" {
-    run_in_pane "/usr/local/bin/guided-setup.sh --menu-only"
-    wait_for_text "Choice:"
-    send_keys "x" Enter
-    wait_for_text "Invalid choice"
-    local output
-    output=$(capture_pane)
+    run bash -c 'printf "x\nq\n" | script -qc "/usr/local/bin/guided-setup.sh --menu-only" /dev/null 2>&1'
     [[ "$output" == *"Invalid choice"* ]]
 }
 
 @test "guided-setup quit to shell works with q" {
-    run_in_pane "/usr/local/bin/guided-setup.sh --menu-only"
-    wait_for_text "Choice:"
-    send_keys "q" Enter
-    sleep 1
-    local output
-    output=$(capture_pane)
+    run run_in_pty_with_input "q" "/usr/local/bin/guided-setup.sh --menu-only"
     [[ "$output" != *"Invalid"* ]]
 }
 
 @test "guided-setup menu shows beads option" {
-    run_in_pane "/usr/local/bin/guided-setup.sh --menu-only"
-    wait_for_text "Choice:"
-    local output
-    output=$(capture_pane)
-    # Should show either "Initialize Beads" or "Beads status"
+    run run_in_pty_with_input "q" "/usr/local/bin/guided-setup.sh --menu-only"
     [[ "$output" == *"Beads"* ]]
 }
 
 @test "guided-setup quit to shell works with s (backwards compat)" {
-    run_in_pane "/usr/local/bin/guided-setup.sh --menu-only"
-    wait_for_text "Choice:"
-    send_keys "s" Enter
-    sleep 1
-    local output
-    output=$(capture_pane)
+    run run_in_pty_with_input "s" "/usr/local/bin/guided-setup.sh --menu-only"
     [[ "$output" != *"Invalid"* ]]
 }

@@ -1,15 +1,6 @@
 # Path configuration
 export PATH="$HOME/.local/bin:$HOME/bin:/usr/local/bin:$PATH"
 
-# Ensure TMUX env vars are set when running inside a tmux pane.
-# docker exec ... tmux attach creates a second client that doesn't propagate
-# $TMUX into the existing shell. Claude Code checks $TMUX to decide whether
-# to use tmux panes for agent teammates, so this must be set.
-if [ -z "$TMUX" ] && command -v tmux &>/dev/null && tmux display-message -p '#{session_name}' &>/dev/null; then
-    export TMUX="$(tmux display-message -p '#{socket_path},#{pid},#{session_id}')"
-    export TMUX_PANE="$(tmux display-message -p '#{pane_id}')"
-fi
-
 # Pure prompt and plugins are configured by zsh-in-docker
 # No need to source oh-my-zsh manually
 
@@ -49,19 +40,12 @@ alias gl='git log --oneline --graph --decorate'
 alias vim='hx'
 alias vi='hx'
 
-# Claude Code shortcuts (claude-screen wraps with alternate screen for tmux scroll fix)
-alias cs='claude-screen --dangerously-skip-permissions'  # Quick start
-alias csd='claude-screen --dangerously-skip-permissions --debug'  # With debug logging
-alias cn='claude-screen'  # Normal start
-
-# Wrap bare 'claude' command with alternate screen inside tmux.
-# claude-screen is a /bin/sh script, so this zsh function won't recurse.
-if [ -n "$TMUX" ]; then
-    claude() { claude-screen "$@"; }
-fi
+# Claude Code shortcuts
+alias cs='claude --dangerously-skip-permissions'  # Quick start
+alias csd='claude --dangerously-skip-permissions --debug'  # With debug logging
+alias cn='claude'  # Normal start
 alias menu='/usr/local/bin/guided-setup.sh'  # Setup menu
 alias dlog='dev-log'  # Development logger
-alias ap='agent-panels'  # Agent panel management
 alias screenshot='take-screenshot'  # Screenshot tool
 alias ss='take-screenshot'  # Screenshot shortcut
 

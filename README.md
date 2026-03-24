@@ -97,7 +97,6 @@ cs                      hx src/main.py           npm test
 - **Persistent**: Auth, history, and configs saved between sessions
 - **Auto-detection**: Recognizes package.json, requirements.txt, go.mod, Cargo.toml, Gemfile
 - **Health check**: Docker monitors Claude auth status automatically
-- **Agent Teams**: Multi-agent coordination via tmux (experimental)
 - **Dev Logging**: Structured session logging with `dev-log`
 - **Experience Tests**: bats-core tests to verify container UX
 
@@ -124,14 +123,6 @@ Your project mounts at `/workspace` inside the container. Each project gets a un
 | my-web-app | my-web-app-claude-dev | my-web-app-agent-home |
 
 ---
-
-## Agent Teams
-
-Claude Code Agent Teams are enabled by default in this environment. Teams let Claude spawn multiple agents in tmux panes to work on tasks in parallel.
-
-- **Automatic tmux management** — Claude Code handles tmux pane creation and coordination. No manual tmux config needed.
-- **Delegate mode** — Press `Shift+Tab` to keep the team lead focused on coordination while teammates do implementation work.
-- **Sandboxed** — All agents run inside the Docker container with `--dangerously-skip-permissions`.
 
 ### Development Logging
 

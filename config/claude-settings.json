@@ -2,7 +2,6 @@
   "env": {
     "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
   },
-  "teammateMode": "tmux",
   "statusLine": {
     "type": "command",
     "command": "/home/agent/.claude/statusline.sh",

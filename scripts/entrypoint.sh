@@ -40,8 +40,6 @@ if [ "$IMAGE_HASH" != "$VOLUME_HASH" ]; then
     fi
     cp /etc/claude-dev/configs/statusline.sh /home/agent/.claude/statusline.sh 2>/dev/null || true
     chmod +x /home/agent/.claude/statusline.sh 2>/dev/null || true
-    # Update tmux config
-    cp /etc/claude-dev/configs/tmux.conf /home/agent/.tmux.conf 2>/dev/null || true
     # Deploy custom agents
     mkdir -p /home/agent/.claude/agents
     cp /etc/claude-dev/configs/agents/*.md /home/agent/.claude/agents/ 2>/dev/null || true
@@ -52,15 +50,6 @@ if [ "$IMAGE_HASH" != "$VOLUME_HASH" ]; then
         echo ""
     fi
     echo "${IMAGE_HASH}" > /home/agent/.config-hash
-fi
-
-# Workspace tmux.conf overlay: if the git-tracked workspace config is newer
-# than the image-baked copy, use it. This bridges the gap between image rebuilds
-# so features added to /workspace/config/tmux.conf activate immediately.
-if [ -f /workspace/config/tmux.conf ]; then
-    if ! cmp -s /workspace/config/tmux.conf /home/agent/.tmux.conf 2>/dev/null; then
-        cp /workspace/config/tmux.conf /home/agent/.tmux.conf
-    fi
 fi
 
 # Start virtual framebuffer for screenshot tools (Playwright, import, etc.)
@@ -150,37 +139,6 @@ cd /workspace || {
     exec sleep infinity
 }
 
-# Auto-start tmux for agent teams support.
-# teammateMode: "tmux" requires a tmux session for teammate panes to appear.
-# Skip if: already in tmux, non-interactive, command is tmux itself, or opt-out.
-# Set CLAUDE_DEV_NO_TMUX=1 to bypass tmux (useful for debugging or alternate runtimes).
-if [ -z "${TMUX:-}" ] && [ -t 0 ] && [ "${1:-}" != "tmux" ] && [ -z "${CLAUDE_DEV_NO_TMUX:-}" ]; then
-    # Kill stale "main" session from a previous container lifecycle (if any).
-    # Only targets our session — leaves other tmux sessions intact.
-    if tmux has-session -t main 2>/dev/null; then
-        tmux kill-session -t main 2>/dev/null || true
-    fi
-    # Verify tmux can start before committing to it. If the config is broken
-    # or tmux is unavailable, fall through to raw shell instead of crash-looping.
-    if tmux -u new-session -d -s _probe 2>/dev/null; then
-        tmux kill-session -t _probe 2>/dev/null || true
-
-        # Create session detached so we can configure panes before attaching
-        tmux -u new-session -d -s main -c /workspace
-        # Clear scrollback so no shell content leaks into copy mode.
-        # Defense-in-depth for the WheelUpPane alternate_on check.
-        tmux clear-history -t main 2>/dev/null || true
-
-        # Attach via exec — replaces the entrypoint with the tmux client.
-        # Signal chain on docker stop: SIGTERM → tini → tmux client exits →
-        # server detects lost client → client-detached hook fires kill-server →
-        # all child processes (shells, agents) terminate cleanly.
-        # See tmux.conf client-detached hook for the server-side cleanup.
-        exec tmux -u attach-session -t main
-    fi
-    echo -e "\033[33m⚠  tmux failed to start — falling back to shell.\033[0m" >&2
-    echo "   Check ~/.tmux.conf for errors or set CLAUDE_DEV_NO_TMUX=1." >&2
-fi
-
-# Fallback: already in tmux, non-interactive, tmux failed, or opt-out
+# Launch the shell directly. Signal chain on docker stop:
+# SIGTERM → tini → shell exits cleanly.
 exec "$@"

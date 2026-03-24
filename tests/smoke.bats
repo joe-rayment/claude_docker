@@ -10,7 +10,6 @@
     [ -x /usr/local/bin/detect-dependencies.sh ]
     [ -x /usr/local/bin/view-logs ]
     [ -x /usr/local/bin/dev-log ]
-    [ -x /usr/local/bin/agent-panels ]
     [ -x /usr/local/bin/run-tests.sh ]
 }
 
@@ -22,7 +21,6 @@
     command -v python3
     command -v go
     command -v hx
-    command -v tmux
     command -v jq
     command -v bats
     command -v bd
@@ -41,21 +39,18 @@
     [ -f /etc/claude-dev/configs/intellishell-config.toml ]
     [ -f /etc/claude-dev/configs/intellishell-defaults.txt ]
     [ -f /etc/claude-dev/configs/claude-settings.json ]
-    [ -f /etc/claude-dev/configs/tmux.conf ]
 }
 
 @test "claude-settings.json is valid JSON with agent teams config" {
     local settings="/etc/claude-dev/configs/claude-settings.json"
     jq empty "$settings"
     jq -e '.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS == "1"' "$settings"
-    jq -e '.teammateMode == "tmux"' "$settings"
 }
 
 @test "zshrc aliases are defined" {
     grep -q 'alias cs=' /etc/claude-dev/configs/.zshrc
     grep -q 'alias menu=' /etc/claude-dev/configs/.zshrc
     grep -q 'alias dlog=' /etc/claude-dev/configs/.zshrc
-    grep -q 'alias ap=' /etc/claude-dev/configs/.zshrc
 }
 
 @test "no voicetree references in scripts" {
@@ -131,17 +126,6 @@
         run grep -i voicetree /workspace/.mcp.json
         [ "$status" -ne 0 ]
     fi
-}
-
-@test "tmux.conf is installed in agent home" {
-    [ -f /home/agent/.tmux.conf ]
-}
-
-@test "agent-panels shows help with no arguments" {
-    run env -u TMUX agent-panels
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"toggle"* ]]
-    [[ "$output" == *"CapsLk+a"* ]]
 }
 
 @test "screenshot tools are installed" {

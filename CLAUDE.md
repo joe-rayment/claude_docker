@@ -4,7 +4,7 @@
 
 You are running inside a Docker container. Your workspace is at `/workspace` (bind-mounted from the host). Your home directory `/home/agent` is a persistent Docker volume — auth, git config, and shell history survive rebuilds.
 
-Key tools: Git, GitHub CLI (`gh`), Python 3, Node.js, Go, Helix editor (`hx`), tmux.
+Key tools: Git, GitHub CLI (`gh`), Python 3, Node.js, Go, Helix editor (`hx`).
 
 ## Config Customization
 
@@ -13,7 +13,6 @@ Config files are synced from the Docker image on startup (checksum-based). To pe
 | Config | Override file | Mechanism |
 |--------|--------------|-----------|
 | Shell | `~/.zshrc.local` | Sourced at end of `.zshrc` |
-| tmux | `~/.tmux.local.conf` | Sourced at end of `tmux.conf` |
 | Claude Code | `~/.claude/settings.local.json` | Deep-merged into `settings.json` on startup |
 
 Helix (`~/.config/helix/config.toml`) and IntelliShell (`~/.config/intelli-shell/config.toml`) can be edited directly — they only get overwritten when the image config checksum changes.
@@ -80,24 +79,6 @@ Periodically clean up ephemeral files that accumulate during development:
 - `/workspace/attachments/` — Delete old screenshots and reference files
 - `/workspace/.claude/plans/` — Remove completed or obsolete plan files
 - `/workspace/.claude/logs/` — Logs are gitignored; clear if they grow large
-
-## Agent Teams
-
-Agent teams are enabled via `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` and `teammateMode: "tmux"` in settings. Claude Code manages tmux panes automatically — you do not need to configure tmux manually.
-
-### How It Works
-
-- Use **Shift+Tab** to enter delegate mode. This keeps the team lead focused on coordination while teammates do the work.
-- Claude Code spawns teammates in separate tmux panes automatically.
-- Each teammate has its own context and tools.
-- The team lead assigns tasks and reviews results.
-
-### Teammate Guidelines
-
-- Read `dev-log show` at the start to understand prior context.
-- Log your work using `dev-log` as you go.
-- Run tests before reporting completion.
-- If blocked, log the blocker with `dev-log error` and report to the team lead.
 
 ## Beads (Agent Memory)
 
@@ -194,3 +175,51 @@ run-tests.sh experience  # Experience tests only
 | `clog-latest` | View latest Claude debug log |
 | `clog-export` | Export latest log to workspace |
 | `screenshot` / `ss` | `take-screenshot` |
+
+
+<!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:ca08a54f -->
+## Beads Issue Tracker
+
+This project uses **bd (beads)** for issue tracking. Run `bd prime` to see full workflow context and commands.
+
+### Quick Reference
+
+```bash
+bd ready              # Find available work
+bd show <id>          # View issue details
+bd update <id> --claim  # Claim work
+bd close <id>         # Complete work
+```
+
+### Rules
+
+- Use `bd` for ALL task tracking — do NOT use TodoWrite, TaskCreate, or markdown TODO lists
+- Run `bd prime` for detailed command reference and session close protocol
+- Use `bd remember` for persistent knowledge — do NOT use MEMORY.md files
+
+## Session Completion
+
+**When ending a work session**, you MUST complete ALL steps below. Work is NOT complete until `git push` succeeds.
+
+**MANDATORY WORKFLOW:**
+
+1. **File issues for remaining work** - Create issues for anything that needs follow-up
+2. **Run quality gates** (if code changed) - Tests, linters, builds
+3. **Update issue status** - Close finished work, update in-progress items
+4. **PUSH TO REMOTE** - This is MANDATORY:
+   ```bash
+   git pull --rebase
+   bd dolt push
+   git push
+   git status  # MUST show "up to date with origin"
+   ```
+5. **Clean up** - Clear stashes, prune remote branches
+6. **Verify** - All changes committed AND pushed
+7. **Hand off** - Provide context for next session
+
+**CRITICAL RULES:**
+- Work is NOT complete until `git push` succeeds
+- NEVER stop before pushing - that leaves work stranded locally
+- NEVER say "ready to push when you are" - YOU must push
+- If push fails, resolve and retry until it succeeds
+<!-- END BEADS INTEGRATION -->

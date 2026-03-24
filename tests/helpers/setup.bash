@@ -1,50 +1,18 @@
 #!/bin/bash
 
 # Test helpers for bats experience tests
-# Provides tmux-based interaction helpers and polling utilities
+# Uses 'script' to provide a pseudo-TTY for scripts that check [ -t 0 ]
 
-TEST_SESSION="claude-dev-test"
-
-setup_tmux() {
-    tmux kill-session -t "$TEST_SESSION" 2>/dev/null || true
-    tmux new-session -d -s "$TEST_SESSION" -x 120 -y 40
+# Run a command in a pseudo-TTY and capture output
+# Usage: run_in_pty command [args...]
+run_in_pty() {
+    script -qc "$*" /dev/null 2>&1
 }
 
-teardown_tmux() {
-    tmux kill-session -t "$TEST_SESSION" 2>/dev/null || true
-}
-
-# Send keys to the test tmux session
-send_keys() {
-    tmux send-keys -t "$TEST_SESSION" "$@"
-}
-
-# Capture the current tmux pane content
-capture_pane() {
-    tmux capture-pane -t "$TEST_SESSION" -p
-}
-
-# Poll for text in the tmux pane, with timeout
-# Usage: wait_for_text "pattern" [timeout_seconds]
-wait_for_text() {
-    local pattern="$1"
-    local timeout="${2:-10}"
-    local deadline=$((SECONDS + timeout))
-
-    while [ $SECONDS -lt $deadline ]; do
-        if capture_pane | grep -q "$pattern"; then
-            return 0
-        fi
-        sleep 0.3
-    done
-    echo "Timed out waiting for: $pattern" >&2
-    echo "--- Pane content ---" >&2
-    capture_pane >&2
-    echo "--- End pane content ---" >&2
-    return 1
-}
-
-# Run a script in the tmux session (unsets TMUX to avoid skip guards)
-run_in_pane() {
-    send_keys "unset TMUX && $@" Enter
+# Run a command in a pseudo-TTY with piped stdin
+# Usage: run_in_pty_with_input "input_string" command [args...]
+run_in_pty_with_input() {
+    local input="$1"
+    shift
+    printf '%s\n' "$input" | script -qc "$*" /dev/null 2>&1
 }
