@@ -49,10 +49,16 @@ alias gl='git log --oneline --graph --decorate'
 alias vim='hx'
 alias vi='hx'
 
-# Claude Code shortcuts
-alias cs='claude --dangerously-skip-permissions'  # Quick start
-alias csd='claude --dangerously-skip-permissions --debug'  # With debug logging
-alias cn='claude'  # Normal start
+# Claude Code shortcuts (claude-screen wraps with alternate screen for tmux scroll fix)
+alias cs='claude-screen --dangerously-skip-permissions'  # Quick start
+alias csd='claude-screen --dangerously-skip-permissions --debug'  # With debug logging
+alias cn='claude-screen'  # Normal start
+
+# Wrap bare 'claude' command with alternate screen inside tmux.
+# claude-screen is a /bin/sh script, so this zsh function won't recurse.
+if [ -n "$TMUX" ]; then
+    claude() { claude-screen "$@"; }
+fi
 alias menu='/usr/local/bin/guided-setup.sh'  # Setup menu
 alias dlog='dev-log'  # Development logger
 alias ap='agent-panels'  # Agent panel management
