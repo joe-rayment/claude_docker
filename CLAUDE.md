@@ -21,6 +21,29 @@ Helix (`~/.config/helix/config.toml`) and IntelliShell (`~/.config/intelli-shell
 
 **Run code, don't guess.** Execute commands, run tests, check output. If you're unsure whether something works, run it.
 
+## Verification
+
+**Always verify changes by running the actual application.** Do not report work as complete based on code inspection alone.
+
+### Rules
+
+- When a feature is added or changed, **run the app and check it works** — start the server, open the page, hit the endpoint.
+- Use `take-screenshot url <URL>` or the Playwright MCP server to capture visual proof of UI changes.
+- Use `curl`, `httpie`, or similar tools to verify API behavior. Install tools if needed (`apt-get install`, `pip install`, `npm install`).
+- **Code-based tests (unit, integration) are for regression protection**, not for verifying current work. Run them to confirm you haven't broken other things.
+- Before reporting a task as done, ask yourself: "Did I actually see this working?" If not, go verify.
+- For CLI tools, run them and capture output with `take-screenshot term "<command>"`.
+- For web UIs, take before/after screenshots to show the change.
+
+### Verification Checklist
+
+Before marking work complete, confirm at least one:
+
+- [ ] Ran the application and observed correct behavior
+- [ ] Took a screenshot showing the feature works
+- [ ] Executed the endpoint/command and got expected output
+- [ ] Opened it in a browser (Playwright MCP) and verified visually
+
 ## Logging
 
 Use `dev-log` to record what happens during your session. Logs live at `/workspace/.claude/logs/`.
@@ -54,13 +77,29 @@ Use `dev-log` to record what happens during your session. Logs live at `/workspa
 └── changes.log     # What changed and why
 ```
 
-## Attachments
+## Sharing Files with Claude
 
-Drop files (screenshots, images, reference docs) into `/workspace/attachments/` to make them accessible inside the container. This directory is gitignored.
+There are two directories for sharing files between the host and the container:
 
-## Screenshots
+| Directory | Host location | Purpose |
+|-----------|---------------|---------|
+| `/workspace/attachments/` | `<project>/attachments/` | Project-related files (gitignored) |
+| `/drops/` | `~/claude-drops/` | Quick file sharing from anywhere on the host |
 
-Capture screenshots from inside the container using `take-screenshot` (aliases: `screenshot`, `ss`). Screenshots save to `/workspace/attachments/` by default. Claude can view saved screenshots using its Read tool.
+Both directories are gitignored. Use the Read tool to view images (PNG, JPG, WebP, PDF).
+
+### When the user shares a file
+
+- If the user mentions a screenshot, image, or file to review, check `/drops/` and `/workspace/attachments/` for recent files.
+- If the user pastes a path starting with `/Users/` or `C:\`, it's a **host path** — look for the filename in `/drops/` or `/workspace/attachments/` instead.
+- Use `ls -lt /drops/ /workspace/attachments/` to find the most recently added files.
+- The `grab <path>` command translates host paths to container paths.
+
+## Screenshots and Browser Tools
+
+This container has full browser and screenshot capabilities. **Use these as your primary verification tools.**
+
+### Quick Captures
 
 | Command | What it captures |
 |---------|-----------------|
@@ -70,7 +109,32 @@ Capture screenshots from inside the container using `take-screenshot` (aliases: 
 | `take-screenshot display` | X11 display (Xvfb) |
 | `take-screenshot term "<command>"` | Terminal command output via termshot |
 
-The Playwright MCP server is also available for deeper browser interaction (navigation, clicking, form filling).
+Screenshots save to `/workspace/attachments/` by default. View them with the Read tool (supports PNG, JPG, WebP).
+
+### Playwright MCP Server
+
+For interactive browser testing, use the Playwright MCP server:
+
+- Navigate to URLs, click elements, fill forms
+- Take screenshots at any point during interaction
+- Verify multi-step UI workflows end-to-end
+- Test responsive layouts with device emulation
+
+### Verification Examples
+
+```bash
+# Verify a web app change
+take-screenshot url http://localhost:3000
+
+# Verify an API endpoint
+curl -s http://localhost:8080/api/health | jq .
+
+# Verify a CLI tool
+take-screenshot term "my-tool --version"
+
+# Verify with full browser interaction (via Playwright MCP)
+# Navigate → click → fill → screenshot
+```
 
 ## Cleanup
 

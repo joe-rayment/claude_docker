@@ -83,6 +83,48 @@ if [ -n "$CLAUDE_PROJECT_NAME" ]; then
     export RPROMPT="%F{blue}[${CLAUDE_PROJECT_NAME}]%f"
 fi
 
+# grab: translate host paths to container paths or copy files to /drops
+# Usage: grab /Users/you/Downloads/screenshot.png
+#   - If file exists at that path in container, prints the container path
+#   - If not, suggests copying to ~/claude-drops/
+grab() {
+    local host_path="$1"
+    if [ -z "$host_path" ]; then
+        echo "Usage: grab <path>"
+        echo "Translates host file paths to container paths"
+        return 1
+    fi
+
+    # Already a valid container path?
+    if [ -e "$host_path" ]; then
+        echo "$host_path"
+        return 0
+    fi
+
+    # Check if it's in /drops under a different prefix
+    local basename
+    basename=$(basename "$host_path")
+    if [ -e "/drops/$basename" ]; then
+        echo "/drops/$basename"
+        return 0
+    fi
+
+    # Check attachments
+    if [ -e "/workspace/attachments/$basename" ]; then
+        echo "/workspace/attachments/$basename"
+        return 0
+    fi
+
+    # Not found — give instructions
+    echo "File not found in container."
+    echo ""
+    echo "To share this file, copy it on your host machine:"
+    echo "  cp \"$host_path\" ~/claude-drops/"
+    echo ""
+    echo "Then access it here as: /drops/$basename"
+    return 1
+}
+
 # Welcome message
 command -v container-welcome >/dev/null 2>&1 && container-welcome || true
 

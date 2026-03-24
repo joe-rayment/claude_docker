@@ -45,6 +45,7 @@ Thumbs.db
 # Working trees
 .worktrees/
 attachments/
+drops/
 
 # Beads / Dolt files (added by bd init)
 .dolt/

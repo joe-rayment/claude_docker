@@ -111,9 +111,15 @@ fi
 if ! grep -qxF 'attachments/' "$GITIGNORE"; then
     echo 'attachments/' >> "$GITIGNORE"
 fi
+if ! grep -qxF 'drops/' "$GITIGNORE"; then
+    echo 'drops/' >> "$GITIGNORE"
+fi
 
 # Create attachments directory for drag-and-drop files
 mkdir -p "$PROJECT_DIR/attachments"
+
+# Create drops directory on host for file sharing
+mkdir -p "$HOME/claude-drops"
 
 echo -e "${C_GREEN}✓${C_RESET} Updated .gitignore"
 

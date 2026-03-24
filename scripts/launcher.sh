@@ -112,10 +112,16 @@ bootstrap_repo() {
     if ! grep -qxF 'attachments/' "$gitignore"; then
         echo 'attachments/' >> "$gitignore"
     fi
+    if ! grep -qxF 'drops/' "$gitignore"; then
+        echo 'drops/' >> "$gitignore"
+    fi
     echo -e "${C_GREEN}✓${C_RESET} Updated .gitignore"
 
     # Create attachments directory
     mkdir -p "$SCRIPT_DIR/attachments"
+
+    # Create drops directory on host for file sharing
+    mkdir -p "$HOME/claude-drops"
 
     echo ""
     echo -e "${C_GREEN}✓ Bootstrap complete${C_RESET} — continuing with first launch..."

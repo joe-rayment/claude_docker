@@ -65,6 +65,12 @@ if [ -z "$(ls -A /workspace 2>/dev/null)" ]; then
     echo ""
 fi
 
+# Ensure /drops directory exists (even if host dir not mounted)
+mkdir -p /drops 2>/dev/null || true
+
+# Ensure attachments directory exists for file sharing
+mkdir -p /workspace/attachments 2>/dev/null || true
+
 # Copy Claude settings and statusline only if not already present (preserve user customizations)
 mkdir -p /home/agent/.claude
 if [ ! -f /home/agent/.claude/settings.json ]; then

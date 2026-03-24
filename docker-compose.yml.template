@@ -25,6 +25,9 @@ services:
       - ../:/workspace
       # Persistent home directory (includes .claude, .gitconfig, .zsh_history, etc.)
       - ${VOLUME_NAME}:/home/agent
+      # Drop zone: share files from host (~/claude-drops → /drops)
+      # Create ~/claude-drops on your host, then drop files there for Claude to see
+      - ~/claude-drops:/drops
 
     # Allow container to reach host services
     extra_hosts:
