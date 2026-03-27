@@ -28,6 +28,9 @@ services:
       # Drop zone: share files from host (~/claude-drops → /drops)
       # Create ~/claude-drops on your host, then drop files there for Claude to see
       - ~/claude-drops:/drops
+      # Host home directory (read-only) for drag-and-drop file access.
+      # Dragged files paste their host path; this mount makes those paths resolve.
+      - ${HOST_HOME}:${HOST_HOME}:ro
 
     # Allow container to reach host services
     extra_hosts:

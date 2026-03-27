@@ -77,6 +77,16 @@ Use `dev-log` to record what happens during your session. Logs live at `/workspa
 └── changes.log     # What changed and why
 ```
 
+## Drag-and-Drop File Access
+
+The host user's home directory is mounted read-only at its original path inside the container. This means dragging files from the host into the terminal "just works" — the pasted path resolves to the same file inside the container.
+
+- **macOS**: Files under `/Users/<you>/` are accessible (Desktop, Downloads, Documents, etc.)
+- **Linux**: Files under `/home/<you>/` are accessible
+- For files outside your home directory, copy them to `/workspace/attachments/` or `/drops/` instead
+
+The mount is read-only — the container cannot modify host files outside `/workspace`.
+
 ## Sharing Files with Claude
 
 There are two directories for sharing files between the host and the container:
@@ -91,7 +101,7 @@ Both directories are gitignored. Use the Read tool to view images (PNG, JPG, Web
 ### When the user shares a file
 
 - If the user mentions a screenshot, image, or file to review, check `/drops/` and `/workspace/attachments/` for recent files.
-- If the user pastes a path starting with `/Users/` or `C:\`, it's a **host path** — look for the filename in `/drops/` or `/workspace/attachments/` instead.
+- If the user pastes a path starting with `/Users/` or `/home/`, it's a **host path** — the host home mount makes these resolve directly. For paths outside `$HOME`, look in `/drops/` or `/workspace/attachments/`.
 - Use `ls -lt /drops/ /workspace/attachments/` to find the most recently added files.
 - The `grab <path>` command translates host paths to container paths.
 
