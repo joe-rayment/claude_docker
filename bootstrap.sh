@@ -93,36 +93,6 @@ fi
 chmod +x "$PROJECT_DIR/claude-dev"
 echo -e "${C_GREEN}✓${C_RESET} Installed ./claude-dev"
 
-# Add entries to project .gitignore if not already present
-GITIGNORE="$PROJECT_DIR/.gitignore"
-touch "$GITIGNORE"
-if ! grep -qxF '.claude-dev/' "$GITIGNORE"; then
-    echo '.claude-dev/' >> "$GITIGNORE"
-fi
-if ! grep -qxF 'claude-dev' "$GITIGNORE"; then
-    echo 'claude-dev' >> "$GITIGNORE"
-fi
-if ! grep -qxF '.mcp.json' "$GITIGNORE"; then
-    echo '.mcp.json' >> "$GITIGNORE"
-fi
-if ! grep -qxF '.claude/logs/' "$GITIGNORE"; then
-    echo '.claude/logs/' >> "$GITIGNORE"
-fi
-if ! grep -qxF 'attachments/' "$GITIGNORE"; then
-    echo 'attachments/' >> "$GITIGNORE"
-fi
-if ! grep -qxF 'drops/' "$GITIGNORE"; then
-    echo 'drops/' >> "$GITIGNORE"
-fi
-
-# Create attachments directory for drag-and-drop files
-mkdir -p "$PROJECT_DIR/attachments"
-
-# Create drops directory on host for file sharing
-mkdir -p "$HOME/claude-drops"
-
-echo -e "${C_GREEN}✓${C_RESET} Updated .gitignore"
-
 echo ""
 echo -e "${C_BOLD}${C_GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${C_RESET}"
 echo -e "${C_BOLD}  Launcher Installed!${C_RESET}"
@@ -130,4 +100,7 @@ echo -e "${C_BOLD}${C_GREEN}━━━━━━━━━━━━━━━━━�
 echo ""
 echo -e "Starting Claude Docker environment..."
 echo ""
+# Hand off to the launcher — its first-run bootstrap_repo() clones the env,
+# writes .gitignore entries, and creates attachments/ and ~/claude-drops/.
+# Keeping that logic in one place (the launcher) so future edits touch one file.
 exec "$PROJECT_DIR/claude-dev"
