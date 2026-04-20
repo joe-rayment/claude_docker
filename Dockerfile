@@ -73,8 +73,45 @@ RUN pip3 install --no-cache-dir --break-system-packages poetry uv \
     && npm install -g pnpm@9 yarn@1.22 \
     && gem install bundler -v 2.5.6 2>/dev/null || true
 
-# Upgrade Claude Code to latest (base image may lag behind releases)
-RUN npm install -g @anthropic-ai/claude-code@latest
+# Claude Code: install the native binary to a SYSTEM path (/opt/claude) and symlink
+# into /usr/local/bin. This avoids the /home/agent volume mount masking the binary
+# at container start. Base image ships an npm-installed Claude — remove it so there's
+# only one install path. DISABLE_AUTOUPDATER + DISABLE_AUTO_MIGRATE_TO_NATIVE keep
+# Claude from writing a second copy into ~/.local at runtime.
+#
+# CLAUDE_CACHEBUST busts the layer whenever the launcher passes a fresh value (it
+# passes BUILD_SHA, which changes on every upstream commit). Run ./claude-dev --rebuild
+# to force a fresh Claude download outside of a repo update.
+ARG CLAUDE_VERSION=latest
+ARG CLAUDE_CACHEBUST=unknown
+RUN set -eu; \
+    npm uninstall -g @anthropic-ai/claude-code 2>/dev/null || true; \
+    arch=$(uname -m); \
+    case "$arch" in \
+        x86_64|amd64) arch=x64 ;; \
+        arm64|aarch64) arch=arm64 ;; \
+        *) echo "unsupported arch: $arch" >&2; exit 1 ;; \
+    esac; \
+    if ldd /bin/ls 2>&1 | grep -q musl; then platform="linux-${arch}-musl"; else platform="linux-${arch}"; fi; \
+    base="https://downloads.claude.ai/claude-code-releases"; \
+    if [ "$CLAUDE_VERSION" = "latest" ] || [ "$CLAUDE_VERSION" = "stable" ]; then \
+        resolved=$(curl -fsSL "${base}/${CLAUDE_VERSION}"); \
+    else \
+        resolved="$CLAUDE_VERSION"; \
+    fi; \
+    manifest=$(curl -fsSL "${base}/${resolved}/manifest.json"); \
+    checksum=$(echo "$manifest" | jq -r ".platforms[\"${platform}\"].checksum // empty"); \
+    if ! echo "$checksum" | grep -Eq '^[a-f0-9]{64}$'; then \
+        echo "platform ${platform} not found in manifest for ${resolved}" >&2; exit 1; \
+    fi; \
+    mkdir -p /opt/claude; \
+    curl -fsSL -o /opt/claude/claude "${base}/${resolved}/${platform}/claude"; \
+    echo "${checksum}  /opt/claude/claude" | sha256sum -c -; \
+    chmod +x /opt/claude/claude; \
+    ln -sf /opt/claude/claude /usr/local/bin/claude; \
+    echo "${resolved}" > /opt/claude/VERSION
+ENV DISABLE_AUTOUPDATER=1
+ENV DISABLE_AUTO_MIGRATE_TO_NATIVE=1
 
 # Install bats-core for experience testing
 RUN git clone --depth 1 --branch v1.11.1 https://github.com/bats-core/bats-core.git /tmp/bats-core \

@@ -311,7 +311,12 @@ build_image() {
     local build_sha
     build_sha=$(git -C "$CLAUDE_DEV_DIR" rev-parse --short HEAD 2>/dev/null || echo "unknown")
     echo -e "${C_YELLOW}→${C_RESET} Building image..."
-    dc build --quiet --build-arg BUILD_SHA="$build_sha" "${extra_args[@]}"
+    # CLAUDE_CACHEBUST busts the Claude install layer when the repo moves forward,
+    # so ./claude-dev --update picks up newly released Claude versions.
+    dc build --quiet \
+        --build-arg BUILD_SHA="$build_sha" \
+        --build-arg CLAUDE_CACHEBUST="$build_sha" \
+        "${extra_args[@]}"
     echo -e "${C_GREEN}✓${C_RESET} Image built"
 }
 

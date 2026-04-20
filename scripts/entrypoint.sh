@@ -17,6 +17,20 @@ fi
 # Clean up orphaned file from old CONFIG_VERSION-based sync
 rm -f /home/agent/.config-version
 
+# One-time cleanup: remove the old auto-migrated native Claude install from
+# /home/agent/.local (created by Claude's autoupdater on older images). With the
+# system install at /opt/claude, ~/.local/bin/claude would shadow it via PATH.
+# Credentials at /home/agent/.claude are preserved.
+NATIVE_CLEANUP_MARKER="/home/agent/.config/.claude-native-cleanup-v1"
+if [ ! -f "$NATIVE_CLEANUP_MARKER" ]; then
+    {
+        rm -f /home/agent/.local/bin/claude
+        rm -rf /home/agent/.local/share/claude /home/agent/.claude/downloads
+        mkdir -p "$(dirname "$NATIVE_CLEANUP_MARKER")"
+        touch "$NATIVE_CLEANUP_MARKER"
+    } 2>/dev/null || true
+fi
+
 # Config sync: update volume configs when image configs have changed
 # Uses checksums of staged config files instead of a manual version string
 IMAGE_HASH=$(find /etc/claude-dev/configs -type f -exec sha256sum {} + 2>/dev/null | sort | sha256sum | cut -d' ' -f1)
