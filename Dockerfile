@@ -68,10 +68,11 @@ RUN HELIX_VERSION=25.07.1 && \
 # Tell Helix where to find its runtime files
 ENV HELIX_RUNTIME=/usr/local/lib/helix/runtime
 
-# Install Python package managers and common JS/Ruby package managers
+# Install Python and JS package managers (Ruby isn't in the base image, so the
+# former `gem install bundler ... || true` silently failed on every build —
+# dropped. Add ruby-full + a real gem install here if Bundler is ever needed.)
 RUN pip3 install --no-cache-dir --break-system-packages poetry uv \
-    && npm install -g pnpm@9 yarn@1.22 \
-    && gem install bundler -v 2.5.6 2>/dev/null || true
+    && npm install -g pnpm@9 yarn@1.22
 
 # Claude Code: install the native binary to a SYSTEM path (/opt/claude) and symlink
 # into /usr/local/bin. This avoids the /home/agent volume mount masking the binary
