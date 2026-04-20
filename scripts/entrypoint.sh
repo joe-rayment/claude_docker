@@ -97,12 +97,14 @@ fi
 
 # Wire git credential helper to gh if GitHub is authenticated
 if [ -f "/home/agent/.config/gh/hosts.yml" ]; then
-    gh auth setup-git 2>/dev/null || true
+    gh auth setup-git 2>/dev/null \
+        || dev-log error "gh auth setup-git failed during entrypoint" "git credential helper not wired; run 'gh auth setup-git' manually" 2>/dev/null || true
 fi
 
 # Start Dolt server (required by Beads for database operations)
 # Errors logged to /tmp/.dolt-server.log for debugging
-/usr/local/bin/start-dolt || true
+/usr/local/bin/start-dolt \
+    || dev-log error "start-dolt failed during entrypoint" "Beads will be unavailable; see /tmp/.dolt-server.log" 2>/dev/null || true
 
 # Beads agent memory — single entry point covering three scenarios:
 #   (A) fresh project, no .beads/  → bd init + bd hooks install
@@ -135,9 +137,12 @@ ensure_beads() {
         # (A) fresh — initialize
         local prefix
         prefix=$(detect_beads_prefix)
-        (cd /workspace && bd init --prefix "$prefix" --quiet) 2>/dev/null || true
+        if ! (cd /workspace && bd init --prefix "$prefix" --quiet) 2>/dev/null; then
+            dev-log error "bd init failed during entrypoint" "prefix=$prefix; beads unavailable in this project" 2>/dev/null || true
+        fi
         if [ -d "/workspace/.beads" ]; then
-            (cd /workspace && bd hooks install) 2>/dev/null || true
+            (cd /workspace && bd hooks install) 2>/dev/null \
+                || dev-log error "bd hooks install failed during entrypoint" "git hooks not wired; run 'bd hooks install' manually" 2>/dev/null || true
         fi
         return 0
     fi
