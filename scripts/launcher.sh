@@ -301,6 +301,14 @@ auto_update() {
         return 0
     fi
 
+    # Skip auto-update if someone is editing .claude-dev/ — we'd silently
+    # reset --hard their in-progress work otherwise. Explicit ./claude-dev
+    # --update still runs (with a confirmation prompt).
+    if ! git -C "$CLAUDE_DEV_DIR" diff --quiet HEAD 2>/dev/null; then
+        echo -e "\033[2m.claude-dev has local changes — skipping auto-update. Commit or stash to re-enable.\033[0m"
+        return 0
+    fi
+
     echo -e "${C_YELLOW}→${C_RESET} Applying update..."
     if ! git -C "$CLAUDE_DEV_DIR" reset --hard --quiet origin/main 2>/dev/null; then
         echo -e "${C_YELLOW}  Warning: git reset failed — continuing with current version${C_RESET}"
@@ -407,6 +415,17 @@ cmd_update() {
     # Check for active sessions before tearing down
     if ! warn_active_sessions; then
         return 0
+    fi
+
+    # Warn before discarding local edits in .claude-dev/
+    if ! git -C "$CLAUDE_DEV_DIR" diff --quiet HEAD 2>/dev/null; then
+        echo -e "${C_YELLOW}⚠${C_RESET}  ${C_BOLD}.claude-dev has local changes${C_RESET} that will be discarded by --update."
+        echo -n "   Continue and overwrite them? [y/N] "
+        read -r reply
+        if [[ ! "$reply" =~ ^[Yy]$ ]]; then
+            echo -e "   ${C_YELLOW}Aborted.${C_RESET} Commit or stash your changes, then re-run --update."
+            return 0
+        fi
     fi
 
     # Force pull latest (bypasses rate limit)
