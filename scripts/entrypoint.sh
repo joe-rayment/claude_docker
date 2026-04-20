@@ -104,44 +104,60 @@ fi
 # Errors logged to /tmp/.dolt-server.log for debugging
 /usr/local/bin/start-dolt || true
 
-# Beads auto-initialization: ensure project has agent memory
-if command -v bd &>/dev/null && command -v dolt &>/dev/null && [ -d "/workspace/.git" ]; then
-    # Clean up stale .beads/dolt directory (empty leftover from failed init)
+# Beads agent memory — single entry point covering three scenarios:
+#   (A) fresh project, no .beads/  → bd init + bd hooks install
+#   (B) cloned project, .beads/ JSONL present but Dolt DB missing in this volume
+#       → bd doctor --fix --yes
+#   (C) healthy (.beads/ + populated Dolt DB) → no-op, silent
+# Also cleans up the empty .beads/dolt leftover from a failed init.
+detect_beads_prefix() {
+    local prefix remote
+    remote=$(git -C /workspace remote get-url origin 2>/dev/null || true)
+    if [ -n "$remote" ]; then
+        prefix=$(basename "$remote" .git 2>/dev/null || true)
+    fi
+    [ -z "${prefix:-}" ] && prefix="${CLAUDE_PROJECT_NAME:-}"
+    [ -z "${prefix:-}" ] && prefix=$(basename "$(git -C /workspace rev-parse --show-toplevel 2>/dev/null || echo /workspace)")
+    echo "$prefix"
+}
+
+ensure_beads() {
+    command -v bd &>/dev/null || return 0
+    command -v dolt &>/dev/null || return 0
+    [ -d "/workspace/.git" ] || return 0
+
+    # Clear empty .beads/dolt leftover from a failed prior init
     if [ -d "/workspace/.beads/dolt" ] && [ ! -d "/workspace/.beads/dolt/.dolt" ]; then
         rm -rf "/workspace/.beads/dolt"
     fi
-    if [ ! -d "/workspace/.beads" ]; then
-        # Fresh project — determine prefix and initialize
-        BEADS_PREFIX=""
-        REMOTE_URL=$(git -C /workspace remote get-url origin 2>/dev/null || true)
-        if [ -n "$REMOTE_URL" ]; then
-            BEADS_PREFIX=$(basename "$REMOTE_URL" .git 2>/dev/null || true)
-        fi
-        [ -z "$BEADS_PREFIX" ] && BEADS_PREFIX="${CLAUDE_PROJECT_NAME:-}"
-        [ -z "$BEADS_PREFIX" ] && BEADS_PREFIX=$(basename "$(git -C /workspace rev-parse --show-toplevel 2>/dev/null || echo /workspace)")
-        (cd /workspace && bd init --prefix "$BEADS_PREFIX" --quiet 2>/dev/null) || true
-        if [ -d "/workspace/.beads" ]; then
-            (cd /workspace && bd hooks install 2>/dev/null) || true
-        fi
-        unset BEADS_PREFIX REMOTE_URL
-    fi
-fi
 
-# Beads self-healing: if .beads/ config exists but the Dolt database is missing,
-# repair it. This handles the "new container from template" case where .beads/
-# is git-tracked but the Dolt database was never created in this container's volume.
-if command -v bd &>/dev/null && [ -d "/workspace/.beads" ] && [ -f "/workspace/.beads/metadata.json" ]; then
-    if timeout 1 bash -c "echo > /dev/tcp/127.0.0.1/3307" 2>/dev/null; then
-        if ! (cd /workspace && bd status) &>/dev/null 2>&1; then
-            (cd /workspace && bd doctor --fix --yes) &>/dev/null 2>&1 || true
-            if (cd /workspace && bd status) &>/dev/null 2>&1; then
-                dev-log run "bd doctor --fix --yes" pass "Auto-repaired Beads database on startup" 2>/dev/null || true
-            else
-                dev-log error "Beads auto-repair failed on startup" 2>/dev/null || true
-            fi
+    if [ ! -d "/workspace/.beads" ]; then
+        # (A) fresh — initialize
+        local prefix
+        prefix=$(detect_beads_prefix)
+        (cd /workspace && bd init --prefix "$prefix" --quiet) 2>/dev/null || true
+        if [ -d "/workspace/.beads" ]; then
+            (cd /workspace && bd hooks install) 2>/dev/null || true
         fi
+        return 0
     fi
-fi
+
+    # (B) or (C): .beads/ exists — heal only if Dolt is up and bd status is broken.
+    # Without metadata.json we can't know what to heal, so skip.
+    [ -f "/workspace/.beads/metadata.json" ] || return 0
+    timeout 1 bash -c "echo > /dev/tcp/127.0.0.1/3307" 2>/dev/null || return 0
+    (cd /workspace && bd status) &>/dev/null && return 0  # (C) healthy
+
+    # (B) repair
+    (cd /workspace && bd doctor --fix --yes) &>/dev/null || true
+    if (cd /workspace && bd status) &>/dev/null; then
+        dev-log run "bd doctor --fix --yes" pass "Auto-repaired Beads database on startup" 2>/dev/null || true
+    else
+        dev-log error "Beads auto-repair failed on startup" 2>/dev/null || true
+    fi
+}
+
+ensure_beads
 
 # Register Claude Code hooks for beads awareness (SessionStart, PreCompact).
 # Idempotent — merges into existing settings.json without overwriting other entries.
