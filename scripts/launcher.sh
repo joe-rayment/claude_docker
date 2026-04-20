@@ -20,6 +20,22 @@ C_BLUE="\033[34m"
 C_BOLD="\033[1m"
 C_RESET="\033[0m"
 
+# Helper: resolve host home directory for drag-and-drop file access.
+# Returns the host $HOME path, or empty string if it conflicts with the container.
+resolve_host_home() {
+    local home="${HOME:-}"
+    # No HOME set
+    if [ -z "$home" ]; then
+        return 0
+    fi
+    # Conflict: host home is the same as the container agent home
+    if [ "$home" = "/home/agent" ]; then
+        echo -e "${C_YELLOW}⚠${C_RESET}  Skipping host home mount: \$HOME (/home/agent) conflicts with container home" >&2
+        return 0
+    fi
+    echo "$home"
+}
+
 # Self-discover paths
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CLAUDE_DEV_DIR="$SCRIPT_DIR/.claude-dev"
@@ -83,11 +99,18 @@ bootstrap_repo() {
 
     # Generate docker-compose.yml from template
     if [ -f "$CLAUDE_DEV_DIR/docker-compose.yml.template" ]; then
+        local host_home
+        host_home=$(resolve_host_home)
         sed -e "s|\${CONTAINER_NAME}|${container_name}|g" \
             -e "s|\${VOLUME_NAME}|${volume_name}|g" \
             -e "s|\${IMAGE_TAG}|${image_tag}|g" \
             -e "s|\${PROJECT_NAME}|${project_name}|g" \
+            -e "s|\${HOST_HOME}|${host_home}|g" \
             "$CLAUDE_DEV_DIR/docker-compose.yml.template" > "$COMPOSE_FILE"
+        # Remove host home mount line if it was disabled (empty path)
+        if [ -z "$host_home" ]; then
+            grep -v '^ *- :.*:ro' "$COMPOSE_FILE" > "$COMPOSE_FILE.tmp" && mv "$COMPOSE_FILE.tmp" "$COMPOSE_FILE"
+        fi
         echo -e "${C_GREEN}✓${C_RESET} Generated docker-compose.yml"
     else
         echo -e "${C_RED}Error: docker-compose.yml.template not found in cloned repo${C_RESET}"
@@ -195,15 +218,21 @@ repo_has_changed() {
 # Helper: regenerate docker-compose.yml from template
 regenerate_compose() {
     if [ -f "$CLAUDE_DEV_DIR/docker-compose.yml.template" ]; then
-        local volume_name project_name
+        local volume_name project_name host_home
         volume_name=$(grep -A1 '^volumes:' "$COMPOSE_FILE" 2>/dev/null | tail -1 | sed 's/:.*//' | tr -d '[:space:]')
         project_name=$(echo "$CONTAINER_NAME" | sed 's/-claude-dev$//')
         volume_name="${volume_name:-${project_name}-agent-home}"
+        host_home=$(resolve_host_home)
         sed -e "s|\${CONTAINER_NAME}|${CONTAINER_NAME}|g" \
             -e "s|\${VOLUME_NAME}|${volume_name}|g" \
             -e "s|\${IMAGE_TAG}|${IMAGE_TAG}|g" \
             -e "s|\${PROJECT_NAME}|${project_name}|g" \
+            -e "s|\${HOST_HOME}|${host_home}|g" \
             "$CLAUDE_DEV_DIR/docker-compose.yml.template" > "$COMPOSE_FILE"
+        # Remove host home mount line if it was disabled (empty path)
+        if [ -z "$host_home" ]; then
+            grep -v '^ *- :.*:ro' "$COMPOSE_FILE" > "$COMPOSE_FILE.tmp" && mv "$COMPOSE_FILE.tmp" "$COMPOSE_FILE"
+        fi
         echo -e "${C_GREEN}✓${C_RESET} Regenerated docker-compose.yml"
     fi
 }
