@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Test runner for Claude Dev container experience tests
-# Usage: run-tests.sh [smoke|experience|all]
+# Usage: run-tests.sh [smoke|experience|multi-project|all]
 
 set -e
 
@@ -27,12 +27,16 @@ case "$SUITE" in
         echo "Running experience tests..."
         bats "$TEST_DIR/experience.bats"
         ;;
+    multi-project)
+        echo "Running multi-project isolation tests..."
+        bats "$TEST_DIR/multi-project.bats"
+        ;;
     all)
         echo "Running all tests..."
-        bats "$TEST_DIR/smoke.bats" "$TEST_DIR/experience.bats"
+        bats "$TEST_DIR/smoke.bats" "$TEST_DIR/experience.bats" "$TEST_DIR/multi-project.bats"
         ;;
     *)
-        echo "Usage: run-tests.sh [smoke|experience|all]" >&2
+        echo "Usage: run-tests.sh [smoke|experience|multi-project|all]" >&2
         exit 1
         ;;
 esac
