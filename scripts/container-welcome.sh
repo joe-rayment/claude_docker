@@ -34,11 +34,11 @@ if [ -f "$SESSION_MARKER" ]; then
     # Returning session — show compact command hint with project name
     echo ""
     if [ -n "$CLAUDE_PROJECT_NAME" ]; then
-        echo -e "${C_BOLD}${C_BLUE}[${CLAUDE_PROJECT_NAME}]${C_RESET} ${C_DIM}Commands: ${C_RESET}${C_BOLD}menu${C_RESET}${C_DIM} (setup)  ${C_RESET}${C_BOLD}cs${C_RESET}${C_DIM} (claude)  ${C_RESET}${C_BOLD}tmux${C_RESET}${C_DIM} (split-pane)${C_RESET}"
+        echo -e "${C_BOLD}${C_BLUE}[${CLAUDE_PROJECT_NAME}]${C_RESET} ${C_DIM}Commands: ${C_RESET}${C_BOLD}menu${C_RESET}${C_DIM} (setup)  ${C_RESET}${C_BOLD}cs${C_RESET}${C_DIM} (claude in tmux)${C_RESET}"
     else
-        echo -e "${C_DIM}Commands: ${C_RESET}${C_BOLD}menu${C_RESET}${C_DIM} (setup)  ${C_RESET}${C_BOLD}cs${C_RESET}${C_DIM} (claude)  ${C_RESET}${C_BOLD}tmux${C_RESET}${C_DIM} (split-pane)${C_RESET}"
+        echo -e "${C_DIM}Commands: ${C_RESET}${C_BOLD}menu${C_RESET}${C_DIM} (setup)  ${C_RESET}${C_BOLD}cs${C_RESET}${C_DIM} (claude in tmux)${C_RESET}"
     fi
-    echo -e "${C_DIM}  Multitask: ${C_RESET}${C_BOLD}tmux${C_RESET}${C_DIM} → ${C_RESET}${C_BOLD}Ctrl-b %${C_RESET}${C_DIM} split, ${C_RESET}${C_BOLD}Ctrl-b o${C_RESET}${C_DIM} switch, ${C_RESET}${C_BOLD}Ctrl-b d${C_RESET}${C_DIM} detach. Each pane is an independent Claude session.${C_RESET}"
+    echo -e "${C_DIM}  Multitask: ${C_RESET}${C_BOLD}Ctrl-b %${C_RESET}${C_DIM} split  ${C_RESET}${C_BOLD}Ctrl-b o${C_RESET}${C_DIM} switch  ${C_RESET}${C_BOLD}Ctrl-b d${C_RESET}${C_DIM} detach. Run ${C_RESET}${C_BOLD}cs${C_RESET}${C_DIM} in a new pane for a second session.${C_RESET}"
     echo ""
     return 2>/dev/null || exit 0
 fi

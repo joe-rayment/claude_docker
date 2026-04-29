@@ -40,10 +40,18 @@ alias gl='git log --oneline --graph --decorate'
 alias vim='hx'
 alias vi='hx'
 
-# Claude Code shortcuts
-alias cs='claude --dangerously-skip-permissions'  # Quick start
-alias csd='claude --dangerously-skip-permissions --debug'  # With debug logging
-alias cn='claude'  # Normal start
+# Claude Code shortcuts — always launch inside tmux so a second session is
+# always one Ctrl-b % away. If already in tmux, run claude directly.
+_claude_in_tmux() {
+    if [ -n "$TMUX" ]; then
+        "$@"
+    else
+        tmux new-session "${(q)@}"
+    fi
+}
+cs()  { _claude_in_tmux claude --dangerously-skip-permissions "$@" }
+csd() { _claude_in_tmux claude --dangerously-skip-permissions --debug "$@" }
+cn()  { _claude_in_tmux claude "$@" }
 alias menu='/usr/local/bin/guided-setup.sh'  # Setup menu
 alias dlog='dev-log'  # Development logger
 alias screenshot='take-screenshot'  # Screenshot tool
