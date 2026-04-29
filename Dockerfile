@@ -12,6 +12,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV SHELL=/bin/zsh
 ENV LANG=en_US.UTF-8
 ENV LC_ALL=en_US.UTF-8
+ENV COLORTERM=truecolor
 
 # ── Root: system packages ─────────────────────────────────────────────
 USER root

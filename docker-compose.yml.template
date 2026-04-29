@@ -12,7 +12,7 @@ services:
     container_name: ${CONTAINER_NAME}
 
     # Use tini as PID 1 so signals (SIGTERM from docker stop) propagate
-    # correctly to tmux and its child processes.
+    # correctly to the shell and its child processes.
     init: true
 
     # Interactive terminal

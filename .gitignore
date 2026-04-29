@@ -29,6 +29,7 @@ docker-compose.yml
 claude-dev
 .mcp.json
 .claude/logs/
+.claude/settings.local.json
 
 # Python
 __pycache__/

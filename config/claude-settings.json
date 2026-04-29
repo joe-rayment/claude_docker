@@ -15,9 +15,24 @@
       "Read(~/.claude/debug/**)",
       "Read(/workspace/.claude/logs/**)",
       "Write(/home/agent/.claude/exported-logs/**)",
-      "Write(/workspace/.claude/logs/**)"
+      "Write(/workspace/.claude/logs/**)",
+      "WebSearch",
+      "WebFetch(domain:docs.anthropic.com)",
+      "WebFetch(domain:www.anthropic.com)",
+      "WebFetch(domain:docs.docker.com)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:api.github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:gist.github.com)",
+      "WebFetch(domain:deepwiki.com)",
+      "WebFetch(domain:medium.com)",
+      "WebFetch(domain:dev.to)"
     ]
   },
+  "enableAllProjectMcpServers": true,
+  "enabledMcpjsonServers": [
+    "playwright"
+  ],
   "hooks": {
     "SessionStart": [
       {
