@@ -147,7 +147,7 @@ COPY config/.zshrc config/helix-config.toml config/intellishell-config.toml \
      config/intellishell-defaults.txt config/claude-settings.json \
      config/statusline.sh \
      /etc/claude-dev/configs/
-COPY config/agents/professor.md /etc/claude-dev/configs/agents/professor.md
+COPY config/agents/ /etc/claude-dev/configs/agents/
 
 # Copy configuration files to agent home
 COPY --chown=agent:agent config/.zshrc /home/agent/.zshrc
