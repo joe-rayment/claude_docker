@@ -61,6 +61,10 @@
           {
             "type": "command",
             "command": "mkdir -p /home/agent/.claude/exported-logs && cp ~/.claude/debug/latest /home/agent/.claude/exported-logs/last-session.log 2>/dev/null || true"
+          },
+          {
+            "type": "command",
+            "command": "[ -x /usr/local/bin/install-wozcode ] && /usr/local/bin/install-wozcode 2>/dev/null || true"
           }
         ]
       }
