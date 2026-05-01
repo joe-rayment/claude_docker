@@ -137,6 +137,7 @@ COPY --chown=agent:agent scripts/dev-log.sh /usr/local/bin/dev-log
 COPY --chown=agent:agent scripts/start-professor.sh /usr/local/bin/start-professor.sh
 COPY --chown=agent:agent scripts/start-dolt.sh /usr/local/bin/start-dolt
 COPY --chown=agent:agent scripts/take-screenshot.sh /usr/local/bin/take-screenshot
+COPY --chown=agent:agent scripts/install-wozcode.sh /usr/local/bin/install-wozcode
 COPY --chown=agent:agent run-tests.sh /usr/local/bin/run-tests.sh
 COPY --chown=agent:agent tests/ /opt/claude-dev/tests/
 COPY --chown=agent:agent knowledge-base/ /opt/claude-dev/knowledge-base/
@@ -166,6 +167,7 @@ RUN chmod +x /usr/local/bin/entrypoint.sh \
              /usr/local/bin/start-professor.sh \
              /usr/local/bin/start-dolt \
              /usr/local/bin/take-screenshot \
+             /usr/local/bin/install-wozcode \
              /usr/local/bin/run-tests.sh
 
 # ── Agent: user-level tool install and final state ────────────────────

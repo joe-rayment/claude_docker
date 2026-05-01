@@ -174,6 +174,12 @@ if command -v bd &>/dev/null; then
     fi
 fi
 
+# Install the Wozcode Claude Code plugin once Claude is authenticated.
+# Idempotent: marker file in $HOME prevents repeated runs after success.
+# Bails silently if claude isn't installed/authenticated yet — re-runs on each
+# container start until prerequisites are met.
+[ -x /usr/local/bin/install-wozcode ] && /usr/local/bin/install-wozcode || true
+
 # Change to workspace directory (with diagnostic on failure to prevent silent restart loop)
 cd /workspace || {
     echo -e "\033[31mFATAL: /workspace is not accessible. Check your volume mount.\033[0m" >&2
