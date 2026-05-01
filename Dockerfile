@@ -70,6 +70,15 @@ RUN HELIX_VERSION=25.07.1 && \
 # Tell Helix where to find its runtime files
 ENV HELIX_RUNTIME=/usr/local/lib/helix/runtime
 
+# Install Node.js 22 LTS — base image ships Node 20.19; Wozcode (and other tools)
+# require node:sqlite, a built-in added in 22.5+. NodeSource replaces the apt
+# nodejs package with their build, so this also unblocks anything else needing >=22.
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/* \
+    && node --version
+
 # Install Python and JS package managers (Ruby isn't in the base image, so the
 # former `gem install bundler ... || true` silently failed on every build —
 # dropped. Add ruby-full + a real gem install here if Bundler is ever needed.)
