@@ -44,6 +44,7 @@ if [ "$IMAGE_HASH" != "$VOLUME_HASH" ]; then
     cp /etc/claude-dev/configs/intellishell-config.toml /home/agent/.config/intelli-shell/config.toml 2>/dev/null || true
     cp /etc/claude-dev/configs/intellishell-defaults.txt /home/agent/.config/intelli-shell/defaults.txt 2>/dev/null || true
     rm -f /home/agent/.config/intelli-shell/.defaults_imported
+    cp /etc/claude-dev/configs/tmux.conf /home/agent/.tmux.conf 2>/dev/null || true
     # Update Claude settings and statusline script
     mkdir -p /home/agent/.claude
     cp /etc/claude-dev/configs/claude-settings.json /home/agent/.claude/settings.json 2>/dev/null || true

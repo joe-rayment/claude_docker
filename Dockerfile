@@ -145,7 +145,7 @@ COPY --chown=agent:agent knowledge-base/ /opt/claude-dev/knowledge-base/
 RUN mkdir -p /etc/claude-dev/configs/agents
 COPY config/.zshrc config/helix-config.toml config/intellishell-config.toml \
      config/intellishell-defaults.txt config/claude-settings.json \
-     config/statusline.sh \
+     config/statusline.sh config/tmux.conf \
      /etc/claude-dev/configs/
 COPY config/agents/ /etc/claude-dev/configs/agents/
 
@@ -155,6 +155,7 @@ COPY --chown=agent:agent config/helix-config.toml /home/agent/.config/helix/conf
 COPY --chown=agent:agent config/intellishell-config.toml /home/agent/.config/intelli-shell/config.toml
 COPY --chown=agent:agent config/intellishell-defaults.txt /home/agent/.config/intelli-shell/defaults.txt
 COPY --chown=agent:agent config/claude-settings.json /home/agent/.config/claude-settings-template.json
+COPY --chown=agent:agent config/tmux.conf /home/agent/.tmux.conf
 # Make scripts executable
 RUN chmod +x /usr/local/bin/entrypoint.sh \
              /usr/local/bin/container-welcome \
