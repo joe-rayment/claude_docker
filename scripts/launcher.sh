@@ -117,28 +117,20 @@ bootstrap_repo() {
         exit 1
     fi
 
-    # Set up .gitignore entries
-    local gitignore="$SCRIPT_DIR/.gitignore"
-    touch "$gitignore"
-    if ! grep -qxF '.claude-dev/' "$gitignore"; then
-        echo '.claude-dev/' >> "$gitignore"
+    # Set up .gitignore — only if this directory is itself a git repo top.
+    # Skip when inside a parent repo (don't pollute it) or when there's no
+    # git context at all (user isn't using git here).
+    local git_top
+    git_top=$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null || true)
+    if [ "$git_top" = "$SCRIPT_DIR" ]; then
+        local gitignore="$SCRIPT_DIR/.gitignore"
+        touch "$gitignore"
+        local pattern
+        for pattern in '.claude-dev/' '/claude-dev' '.mcp.json' '.claude/logs/' 'attachments/'; do
+            grep -qxF "$pattern" "$gitignore" || echo "$pattern" >> "$gitignore"
+        done
+        echo -e "${C_GREEN}✓${C_RESET} Updated .gitignore"
     fi
-    if ! grep -qxF 'claude-dev' "$gitignore"; then
-        echo 'claude-dev' >> "$gitignore"
-    fi
-    if ! grep -qxF '.mcp.json' "$gitignore"; then
-        echo '.mcp.json' >> "$gitignore"
-    fi
-    if ! grep -qxF '.claude/logs/' "$gitignore"; then
-        echo '.claude/logs/' >> "$gitignore"
-    fi
-    if ! grep -qxF 'attachments/' "$gitignore"; then
-        echo 'attachments/' >> "$gitignore"
-    fi
-    if ! grep -qxF 'drops/' "$gitignore"; then
-        echo 'drops/' >> "$gitignore"
-    fi
-    echo -e "${C_GREEN}✓${C_RESET} Updated .gitignore"
 
     # Create attachments directory
     mkdir -p "$SCRIPT_DIR/attachments"

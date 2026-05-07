@@ -21,34 +21,17 @@ Helix (`~/.config/helix/config.toml`) and IntelliShell (`~/.config/intelli-shell
 
 **Run code, don't guess.** Execute commands, run tests, check output. If you're unsure whether something works, run it.
 
+## Answer Length
+
+**Answer succinctly and with economy.** If the question is direct, don't add every layer of detail unprompted — unrequested detail rarely adds value and tends to hide the answer the user actually asked for. Skip preambles ("Great question…", "I'll now…") and postambles ("Let me know if…").
+
 ## Verification
 
-**Always verify changes by running the actual application.** Do not report work as complete based on code inspection alone.
-
-### Rules
-
-- When a feature is added or changed, **run the app and check it works** — start the server, open the page, hit the endpoint.
-- Use `take-screenshot url <URL>` or the Playwright MCP server to capture visual proof of UI changes.
-- Use `curl`, `httpie`, or similar tools to verify API behavior. Install tools if needed (`apt-get install`, `pip install`, `npm install`).
-- **Code-based tests (unit, integration) are for regression protection**, not for verifying current work. Run them to confirm you haven't broken other things.
-- Before reporting a task as done, ask yourself: "Did I actually see this working?" If not, go verify.
-- For CLI tools, run them and capture output with `take-screenshot term "<command>"`.
-- For web UIs, take before/after screenshots to show the change.
-
-### Verification Checklist
-
-Before marking work complete, confirm at least one:
-
-- [ ] Ran the application and observed correct behavior
-- [ ] Took a screenshot showing the feature works
-- [ ] Executed the endpoint/command and got expected output
-- [ ] Opened it in a browser (Playwright MCP) and verified visually
+**Always verify changes by running the actual application** — code inspection isn't enough. Run the app, hit the endpoint, screenshot the UI. For CLI tools use `take-screenshot term "<command>"`; for web UIs use `take-screenshot url <URL>` or the Playwright MCP server; for APIs use `curl` or similar. Install missing tools as needed (`apt-get install`, `pip install`, `npm install`). Code-based tests (unit, integration) are for regression protection, not for verifying current work — run them to confirm you haven't broken other things. Before reporting a task as done, ask yourself: "Did I actually see this working?"
 
 ## Logging
 
 Use `dev-log` to record what happens during your session. Logs live at `/workspace/.claude/logs/`.
-
-### Categories
 
 | Command | When to use |
 |---------|-------------|
@@ -58,24 +41,7 @@ Use `dev-log` to record what happens during your session. Logs live at `/workspa
 | `dev-log change "what" "why"` | After modifying code or config |
 | `dev-log show [category] [N]` | View recent entries |
 
-### Rules
-
-- Log every test run, build, and deploy — pass or fail.
-- Log decisions that affect architecture, dependencies, or approach.
-- Log errors with enough detail to diagnose later.
-- Log changes that aren't obvious from the diff.
-- Read logs at session start: `dev-log show` — understand what happened before you.
-- Don't log trivial reads or explorations.
-
-### Log Files
-
-```
-/workspace/.claude/logs/
-├── runs.log        # Command executions and outcomes
-├── decisions.log   # Architectural and design decisions
-├── errors.log      # Failures and root causes
-└── changes.log     # What changed and why
-```
+Log every test run, build, and deploy (pass or fail), decisions that affect architecture or approach, errors with enough detail to diagnose later, and non-obvious changes. Don't log trivial reads or explorations. Run `dev-log show` at session start to see what happened before you.
 
 ## Drag-and-Drop File Access
 
@@ -83,26 +49,19 @@ The host user's home directory is mounted read-only at its original path inside 
 
 - **macOS**: Files under `/Users/<you>/` are accessible (Desktop, Downloads, Documents, etc.)
 - **Linux**: Files under `/home/<you>/` are accessible
-- For files outside your home directory, copy them to `/workspace/attachments/` or `/drops/` instead
+- For files outside your home directory, copy them to `/workspace/attachments/` instead
 
 The mount is read-only — the container cannot modify host files outside `/workspace`.
 
 ## Sharing Files with Claude
 
-There are two directories for sharing files between the host and the container:
-
-| Directory | Host location | Purpose |
-|-----------|---------------|---------|
-| `/workspace/attachments/` | `<project>/attachments/` | Project-related files (gitignored) |
-| `/drops/` | `~/claude-drops/` | Quick file sharing from anywhere on the host |
-
-Both directories are gitignored. Use the Read tool to view images (PNG, JPG, WebP, PDF).
+`/workspace/attachments/` is the directory for sharing files between the host and container (host path: `<project>/attachments/`, gitignored). Use the Read tool to view images (PNG, JPG, WebP, PDF).
 
 ### When the user shares a file
 
-- If the user mentions a screenshot, image, or file to review, check `/drops/` and `/workspace/attachments/` for recent files.
-- If the user pastes a path starting with `/Users/` or `/home/`, it's a **host path** — the host home mount makes these resolve directly. For paths outside `$HOME`, look in `/drops/` or `/workspace/attachments/`.
-- Use `ls -lt /drops/ /workspace/attachments/` to find the most recently added files.
+- If the user mentions a screenshot, image, or file to review, check `/workspace/attachments/` for recent files.
+- If the user pastes a path starting with `/Users/` or `/home/`, it's a **host path** — the host home mount makes these resolve directly. For paths outside `$HOME`, look in `/workspace/attachments/`.
+- Use `ls -lt /workspace/attachments/` to find the most recently added files.
 - The `grab <path>` command translates host paths to container paths.
 
 ## Screenshots and Browser Tools
@@ -156,52 +115,11 @@ Periodically clean up ephemeral files that accumulate during development:
 
 ## Beads (Agent Memory)
 
-This environment uses [Beads](https://github.com/steveyegge/beads) (`bd`) for persistent task tracking across sessions. Beads uses a Dolt SQL server for database operations. The server starts automatically via `start-dolt` during container startup.
+This environment uses [Beads](https://github.com/steveyegge/beads) (`bd`) for persistent task tracking across sessions, backed by a Dolt SQL server. The full command reference and session-close protocol are auto-injected each session via the `bd prime` SessionStart hook — refer to that block, not a duplicate copy here.
 
-- **JSONL files** in `/workspace/.beads/` are git-tracked (task history survives across machines).
-- **Dolt server data** lives at `/home/agent/.dolt-data/` (Docker volume, survives rebuilds).
-- If the Dolt server isn't running, use `start-dolt` to start it.
-
-### Self-Healing
-
-Beads includes automatic database repair. If the `.beads/` config directory is git-tracked but the Dolt database hasn't been created in this container's volume (common when cloning a project from a template), the system detects the problem via `bd status` and attempts repair using `bd doctor --fix --yes`. This runs at three points:
-
-1. **Container startup** (entrypoint) — silent, logged via `dev-log`
-2. **Welcome screen** — silent, retries status display after repair
-3. **Menu option 3** — user-visible "Repairing..." message with success/failure feedback
-
-To manually repair: `cd /workspace && bd doctor --fix --yes`
-
-### Session Start
-
-Run `bd ready` to see tasks with no open blockers. If there are existing tasks, review them before starting new work.
-
-### Key Commands
-
-| Command | Purpose |
-|---------|---------|
-| `bd ready` | Show tasks with no blockers (start here) |
-| `bd create "Title" -p 0` | Create a task (P0=critical, P3=low) |
-| `bd update <id> --claim` | Claim a task and mark in-progress |
-| `bd show <id>` | View task details and history |
-| `bd close <id>` | Mark a task as done |
-| `bd list` | List all issues |
-| `start-dolt` | Start the Dolt server (if not running) |
-
-### Claude Code Integration
-
-Beads hooks inject workflow context automatically:
-- **SessionStart** runs `bd prime` to load beads awareness into new sessions
-- **PreCompact** runs `bd prime` to preserve context before compaction
-
-These are managed by `bd setup claude` and configured during container startup.
-Verify with: `bd setup claude --check`
-
-### Workflow Rules
-
-- Use `bd update` with flags to modify issues. Never use `bd edit` (it opens an editor).
-- Include issue IDs in commit messages when relevant: `Fix auth bug (bd-a3f2)`.
-- When discovering new work during a task, create a new bead with `bd create`.
+- JSONL files in `/workspace/.beads/` are git-tracked; Dolt server data lives at `/home/agent/.dolt-data/` (Docker volume).
+- If the Dolt server isn't running: `start-dolt`. To repair a broken database: `cd /workspace && bd doctor --fix --yes` (self-healing also runs at entrypoint, welcome screen, and menu option 3).
+- Use `bd update <id> --flag` to modify issues — never `bd edit` (it opens `$EDITOR` and blocks). Include issue IDs in commit messages when relevant (`Fix auth bug (bd-a3f2)`).
 
 ## Knowledge Base
 
@@ -252,25 +170,6 @@ run-tests.sh experience  # Experience tests only
 
 
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:ca08a54f -->
-## Beads Issue Tracker
-
-This project uses **bd (beads)** for issue tracking. Run `bd prime` to see full workflow context and commands.
-
-### Quick Reference
-
-```bash
-bd ready              # Find available work
-bd show <id>          # View issue details
-bd update <id> --claim  # Claim work
-bd close <id>         # Complete work
-```
-
-### Rules
-
-- Use `bd` for ALL task tracking — do NOT use TodoWrite, TaskCreate, or markdown TODO lists
-- Run `bd prime` for detailed command reference and session close protocol
-- Use `bd remember` for persistent knowledge — do NOT use MEMORY.md files
-
 ## Session Completion
 
 **When ending a work session**, you MUST complete ALL steps below. Work is NOT complete until `git push` succeeds.

@@ -33,6 +33,9 @@
       "WebFetch(domain:dev.to)"
     ]
   },
+  "wozcode": {
+    "spinnerVerbs": false
+  },
   "enableAllProjectMcpServers": true,
   "enabledMcpjsonServers": [
     "playwright"
