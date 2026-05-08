@@ -86,6 +86,23 @@ mkdir -p /drops 2>/dev/null || true
 # Ensure attachments directory exists for file sharing
 mkdir -p /workspace/attachments 2>/dev/null || true
 
+# Ensure project .gitignore covers template files — but only when /workspace
+# is itself a git toplevel. Skips if no git is in use, or if /workspace is a
+# bind-mounted subdir of a host repo (parent .git lives outside the mount and
+# isn't visible here, so git rev-parse returns nothing). Idempotent.
+ensure_workspace_gitignore() {
+    local top
+    top=$(git -C /workspace rev-parse --show-toplevel 2>/dev/null || true)
+    [ "$top" = "/workspace" ] || return 0
+    local gitignore=/workspace/.gitignore
+    touch "$gitignore" 2>/dev/null || return 0
+    local pattern
+    for pattern in '.claude-dev/' '/claude-dev' '.mcp.json' '.claude/logs/' 'attachments/'; do
+        grep -qxF "$pattern" "$gitignore" 2>/dev/null || echo "$pattern" >> "$gitignore"
+    done
+}
+ensure_workspace_gitignore
+
 # Copy Claude settings and statusline only if not already present (preserve user customizations)
 mkdir -p /home/agent/.claude
 if [ ! -f /home/agent/.claude/settings.json ]; then
