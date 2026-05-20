@@ -24,13 +24,13 @@ services:
       # Mount your project as workspace
       - ../:/workspace
       # Persistent home directory (includes .claude, .gitconfig, .zsh_history, etc.)
-      - ${VOLUME_NAME}:/home/agent
+      - agent-home:/home/agent
       # Drop zone: share files from host (~/claude-drops → /drops)
       # Create ~/claude-drops on your host, then drop files there for Claude to see
       - ~/claude-drops:/drops
-      # Host home directory (read-only) for drag-and-drop file access.
-      # Dragged files paste their host path; this mount makes those paths resolve.
-      - ${HOST_HOME}:${HOST_HOME}:ro
+      # Host home directory (read-only) for drag-and-drop file access is added
+      # by docker-compose.override.yml (written by the launcher when HOST_HOME
+      # is resolvable and doesn't conflict with the container's /home/agent).
 
     # Allow container to reach host services
     extra_hosts:
@@ -58,5 +58,8 @@ services:
     command: /bin/zsh
 
 volumes:
-  ${VOLUME_NAME}:
+  # The local key is static (docker compose can't interpolate map keys); the
+  # external volume name is set via `name:` so it's still unique per project.
+  agent-home:
+    name: ${VOLUME_NAME}
     driver: local
