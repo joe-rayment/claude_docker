@@ -138,6 +138,36 @@ bootstrap_repo() {
     # Create drops directory on host for file sharing
     mkdir -p "$HOME/claude-drops"
 
+    # Resume: if a previous teardown left a beads snapshot for this project, offer to restore.
+    # The entrypoint's ensure_beads() will rebuild the Dolt DB from the restored JSONL on
+    # first container start (case B: .beads/ present, Dolt empty → bd doctor --fix --yes).
+    local restore_slug state_root latest_snapshot
+    restore_slug=$(basename "$SCRIPT_DIR" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g' | sed 's/--*/-/g' | sed 's/^-//' | sed 's/-$//')
+    [ -z "$restore_slug" ] && restore_slug="project"
+    state_root="$HOME/.claude-dev-state/$restore_slug"
+    if [ -d "$state_root" ]; then
+        latest_snapshot=$(ls -1 "$state_root" 2>/dev/null | sort -r | head -1)
+        if [ -n "$latest_snapshot" ] && [ -f "$state_root/$latest_snapshot/issues.jsonl" ]; then
+            echo ""
+            echo -e "${C_YELLOW}⚲${C_RESET}  Found previous beads snapshot from ${C_BOLD}$latest_snapshot${C_RESET}"
+            echo -n "   Restore beads state for this project? [Y/n] "
+            read -r _reply
+            if [[ ! "$_reply" =~ ^[Nn]$ ]]; then
+                mkdir -p "$SCRIPT_DIR/.beads"
+                cp "$state_root/$latest_snapshot/issues.jsonl" "$SCRIPT_DIR/.beads/" 2>/dev/null || true
+                [ -f "$state_root/$latest_snapshot/metadata.json" ] && \
+                    cp "$state_root/$latest_snapshot/metadata.json" "$SCRIPT_DIR/.beads/" 2>/dev/null || true
+                # bd init requires a .git/ in the workspace; create one so the entrypoint
+                # can rebuild Dolt from the restored JSONL. This re-creates the nested
+                # .git/ that --teardown removed — same trade-off as the initial dev session.
+                if ! git -C "$SCRIPT_DIR" rev-parse --git-dir >/dev/null 2>&1; then
+                    git -C "$SCRIPT_DIR" init --quiet 2>/dev/null || true
+                fi
+                echo -e "${C_GREEN}✓${C_RESET} Beads snapshot restored — Dolt DB rebuilds on first container start"
+            fi
+        fi
+    fi
+
     echo ""
     echo -e "${C_GREEN}✓ Bootstrap complete${C_RESET} — continuing with first launch..."
     echo ""
@@ -486,6 +516,105 @@ cmd_stop() {
     fi
 }
 
+# Tear down the template artifacts so the project directory can be cleanly pushed
+# back to a parent repo. Backs up beads state outside the project tree so it can
+# be restored by a future bootstrap. Leaves the Docker volume intact unless --full.
+cmd_teardown() {
+    local force=false full=false
+    shift  # consume "--teardown"
+    for _arg in "$@"; do
+        case "$_arg" in
+            --force) force=true ;;
+            --full)  full=true ;;
+        esac
+    done
+
+    echo -e "${C_BOLD}${C_BLUE}Claude Docker Teardown${C_RESET}"
+    echo ""
+    echo "This will:"
+    echo "  • Back up beads JSONL + metadata to ~/.claude-dev-state/<project>/<timestamp>/"
+    echo "  • Stop and remove the container ($CONTAINER_NAME)"
+    if $full; then
+        echo -e "  • ${C_YELLOW}[--full]${C_RESET} Also remove the Docker volume (auth, plugins, shell history)"
+    fi
+    echo "  • Remove from this directory:"
+    echo "      .git/, .gitignore, .beads/, .claude-dev/, claude-dev,"
+    echo "      docker-compose.yml, attachments/, .claude/logs/"
+    echo ""
+
+    if ! $force; then
+        echo -n "Continue? [y/N] "
+        read -r _reply
+        if [[ ! "$_reply" =~ ^[Yy]$ ]]; then
+            echo -e "${C_YELLOW}Aborted.${C_RESET}"
+            return 0
+        fi
+    fi
+
+    local project_slug timestamp backup_dir
+    project_slug=$(basename "$SCRIPT_DIR" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g' | sed 's/--*/-/g' | sed 's/^-//' | sed 's/-$//')
+    [ -z "$project_slug" ] && project_slug="project"
+    timestamp=$(date +%Y%m%d-%H%M%S)
+    backup_dir="$HOME/.claude-dev-state/$project_slug/$timestamp"
+
+    # Flush latest beads state to JSONL while container is still alive
+    if [ -d "$SCRIPT_DIR/.beads" ] && is_running; then
+        echo -e "${C_YELLOW}→${C_RESET} Flushing beads state to JSONL..."
+        docker exec "$CONTAINER_NAME" sh -c 'cd /workspace && bd export 2>/dev/null' || true
+    fi
+
+    # Back up beads JSONL + metadata (Dolt DB lives in the volume and rebuilds from JSONL)
+    if [ -f "$SCRIPT_DIR/.beads/issues.jsonl" ]; then
+        mkdir -p "$backup_dir"
+        echo -e "${C_YELLOW}→${C_RESET} Backing up beads to $backup_dir"
+        cp "$SCRIPT_DIR/.beads/issues.jsonl" "$backup_dir/" 2>/dev/null || true
+        [ -f "$SCRIPT_DIR/.beads/metadata.json" ] && \
+            cp "$SCRIPT_DIR/.beads/metadata.json" "$backup_dir/" 2>/dev/null || true
+        echo -e "${C_GREEN}✓${C_RESET} Beads snapshot saved"
+    fi
+
+    # Stop & remove container
+    if container_exists; then
+        echo -e "${C_YELLOW}→${C_RESET} Stopping container..."
+        dc down 2>/dev/null || true
+    fi
+
+    # Optionally remove the Docker volume (destroys auth, plugins, shell history)
+    if $full; then
+        local volume_name
+        volume_name=$(grep -A1 '^volumes:' "$COMPOSE_FILE" 2>/dev/null | tail -1 | sed 's/:.*//' | tr -d '[:space:]')
+        if [ -n "$volume_name" ]; then
+            echo -e "${C_YELLOW}→${C_RESET} Removing Docker volume $volume_name..."
+            docker volume rm "$volume_name" 2>/dev/null || true
+        fi
+    fi
+
+    # Remove project artifacts. Launcher last so it can finish writing output.
+    echo -e "${C_YELLOW}→${C_RESET} Removing template artifacts from project directory..."
+    rm -rf "$SCRIPT_DIR/.git"
+    rm -f  "$SCRIPT_DIR/.gitignore"
+    rm -rf "$SCRIPT_DIR/.beads"
+    rm -rf "$SCRIPT_DIR/.claude-dev"
+    rm -rf "$SCRIPT_DIR/attachments"
+    rm -rf "$SCRIPT_DIR/.claude/logs"
+    # Only remove .claude/ if it's empty after logs are gone (preserves user settings if any)
+    rmdir "$SCRIPT_DIR/.claude" 2>/dev/null || true
+    rm -f  "$COMPOSE_FILE"
+    rm -f  "$SCRIPT_DIR/claude-dev"
+
+    echo ""
+    echo -e "${C_GREEN}✓ Teardown complete${C_RESET}"
+    if [ -d "$backup_dir" ]; then
+        echo ""
+        echo "Beads state preserved at:"
+        echo "  $backup_dir"
+    fi
+    echo ""
+    echo "To resume later, re-run the bootstrap one-liner from this directory:"
+    echo "  curl -fsSL https://raw.githubusercontent.com/joe-rayment/claude_docker/main/bootstrap.sh | bash"
+    echo ""
+}
+
 cmd_status() {
     echo -e "${C_BOLD}Container:${C_RESET} $CONTAINER_NAME"
     local build_sha
@@ -514,6 +643,8 @@ cmd_help() {
     echo "  --rebuild    Force rebuild image (no cache)"
     echo "  --stop       Stop the container"
     echo "  --status     Show container status"
+    echo "  --teardown   Back up beads, remove template artifacts so the dir is clean to push back"
+    echo "               (--force = skip prompt; --full = also remove the Docker volume)"
     echo "  --help       Show this help"
     echo ""
     echo "Environment:"
@@ -527,6 +658,7 @@ case "${1:-}" in
     --rebuild)    cmd_rebuild ;;
     --stop)       cmd_stop ;;
     --status)     cmd_status ;;
+    --teardown)   cmd_teardown "$@" ;;
     --help|-h)    cmd_help ;;
     "")           cmd_default ;;
     *)

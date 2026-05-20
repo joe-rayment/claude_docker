@@ -17,18 +17,33 @@ fi
 # Clean up orphaned file from old CONFIG_VERSION-based sync
 rm -f /home/agent/.config-version
 
-# One-time cleanup: remove the old auto-migrated native Claude install from
-# /home/agent/.local (created by Claude's autoupdater on older images). With the
-# system install at /opt/claude, ~/.local/bin/claude would shadow it via PATH.
-# Credentials at /home/agent/.claude are preserved.
-NATIVE_CLEANUP_MARKER="/home/agent/.config/.claude-native-cleanup-v1"
+# One-time cleanup: remove stale native-install artifacts from old volumes.
+# Older images let Claude's autoupdater write its own copy under ~/.local; that
+# stale copy must be cleared so it doesn't shadow /opt/claude/claude. The
+# ~/.local/bin/claude symlink itself is (re)created idempotently below.
+NATIVE_CLEANUP_MARKER="/home/agent/.config/.claude-native-cleanup-v2"
 if [ ! -f "$NATIVE_CLEANUP_MARKER" ]; then
     {
-        rm -f /home/agent/.local/bin/claude
+        # Only remove if it's a real file (the stale autoupdated binary).
+        # Leave symlinks alone — they're reconciled below.
+        [ -f /home/agent/.local/bin/claude ] && [ ! -L /home/agent/.local/bin/claude ] && \
+            rm -f /home/agent/.local/bin/claude
         rm -rf /home/agent/.local/share/claude /home/agent/.claude/downloads
         mkdir -p "$(dirname "$NATIVE_CLEANUP_MARKER")"
         touch "$NATIVE_CLEANUP_MARKER"
     } 2>/dev/null || true
+fi
+
+# Idempotent: Claude's native binary self-check expects ~/.local/bin/claude to
+# resolve to a valid Claude executable (installMethod="native" in ~/.claude.json).
+# Point it at the image's /opt/claude/claude so the single source of truth wins.
+# Runs every start so fresh volumes and recovered volumes both get the symlink.
+if [ -x /opt/claude/claude ]; then
+    mkdir -p /home/agent/.local/bin
+    if [ ! -L /home/agent/.local/bin/claude ] || \
+       [ "$(readlink /home/agent/.local/bin/claude)" != "/opt/claude/claude" ]; then
+        ln -sfn /opt/claude/claude /home/agent/.local/bin/claude
+    fi
 fi
 
 # Config sync: update volume configs when image configs have changed

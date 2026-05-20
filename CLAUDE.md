@@ -121,6 +121,10 @@ This environment uses [Beads](https://github.com/steveyegge/beads) (`bd`) for pe
 - If the Dolt server isn't running: `start-dolt`. To repair a broken database: `cd /workspace && bd doctor --fix --yes` (self-healing also runs at entrypoint, welcome screen, and menu option 3).
 - Use `bd update <id> --flag` to modify issues — never `bd edit` (it opens `$EDITOR` and blocks). Include issue IDs in commit messages when relevant (`Fix auth bug (bd-a3f2)`).
 
+## Working Inside a Larger Repo (Teardown / Resume)
+
+When the template is dropped into a subdirectory of a larger git repo, `bd init` creates a nested `.git/` so beads can sync. That nested repo makes the parent treat the subdir as an embedded sub-repo (blocks `git add` from the parent). Use `./claude-dev --teardown` from the host before pushing back: it backs up `.beads/issues.jsonl` to `~/.claude-dev-state/<project>/<timestamp>/` and removes the template artifacts (`.git/`, `.gitignore`, `.beads/`, `.claude-dev/`, `claude-dev`, `docker-compose.yml`, `attachments/`, `.claude/logs/`). Re-bootstrapping in the same directory detects the snapshot and offers to restore beads — the Dolt DB rebuilds from JSONL on first container start.
+
 ## Knowledge Base
 
 Curated reference docs for common issues live in `/opt/claude-dev/knowledge-base/`. When you encounter problems with a technology (deployment failures, configuration issues, environment-specific bugs), check this directory for relevant guides before searching the web. These are proven solutions to issues that come up repeatedly.
