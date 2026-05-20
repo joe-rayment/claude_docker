@@ -585,14 +585,12 @@ cmd_teardown() {
         dc down 2>/dev/null || true
     fi
 
-    # Optionally remove the Docker volume (destroys auth, plugins, shell history)
-    if $full; then
-        local volume_name
-        volume_name=$(grep -A1 '^volumes:' "$COMPOSE_FILE" 2>/dev/null | tail -1 | sed 's/:.*//' | tr -d '[:space:]')
-        if [ -n "$volume_name" ]; then
-            echo -e "${C_YELLOW}→${C_RESET} Removing Docker volume $volume_name..."
-            docker volume rm "$volume_name" 2>/dev/null || true
-        fi
+    # Optionally remove the Docker volume (destroys auth, plugins, shell history).
+    # $VOLUME_NAME is the external volume name set by derive_project_vars; the
+    # local key inside docker-compose.yml is the static "agent-home".
+    if $full && [ -n "$VOLUME_NAME" ]; then
+        echo -e "${C_YELLOW}→${C_RESET} Removing Docker volume $VOLUME_NAME..."
+        docker volume rm "$VOLUME_NAME" 2>/dev/null || true
     fi
 
     # Remove project artifacts. Launcher last so it can finish writing output.
