@@ -1,7 +1,7 @@
 {
   "database": "dolt",
   "backend": "dolt",
-  "dolt_mode": "server",
-  "dolt_database": "beads_claude-docker",
+  "dolt_mode": "embedded",
+  "dolt_database": "beads_claude_docker",
   "project_id": "7960836b-a3d2-4075-a046-efd0673b9668"
 }
