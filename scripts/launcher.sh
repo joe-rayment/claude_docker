@@ -260,6 +260,51 @@ repo_has_changed() {
     [ "$current_sha" != "$last_build_sha" ]
 }
 
+# Resolve the latest published Claude Code version. Result is cached and
+# rate-limited (same cadence as auto_update) so normal launches don't curl
+# every time; pass "force" to bypass the cache (used at build time).
+CLAUDE_RELEASES_LATEST_URL="https://downloads.claude.ai/claude-code-releases/latest"
+latest_claude_version() {
+    local cache_file="$CLAUDE_DEV_DIR/.claude-latest"
+    local stamp_file="$CLAUDE_DEV_DIR/.claude-latest-check"
+    local interval="${CLAUDE_DEV_UPDATE_INTERVAL:-3600}"
+
+    if [ "${1:-}" != "force" ] && [ -f "$cache_file" ] && [ -f "$stamp_file" ]; then
+        local last now
+        last=$(cat "$stamp_file" 2>/dev/null || echo "0")
+        now=$(date +%s)
+        if [ $((now - last)) -lt "$interval" ]; then
+            cat "$cache_file"
+            return 0
+        fi
+    fi
+
+    local v=""
+    if command -v curl >/dev/null 2>&1; then
+        v=$(timeout 5 curl -fsSL "$CLAUDE_RELEASES_LATEST_URL" 2>/dev/null | tr -d '[:space:]')
+    fi
+    if [ -z "$v" ]; then
+        # Offline or fetch failed — fall back to last known value, else unknown.
+        cat "$cache_file" 2>/dev/null || echo "unknown"
+        return 0
+    fi
+    echo "$v" > "$cache_file" 2>/dev/null || true
+    date +%s > "$stamp_file" 2>/dev/null || true
+    echo "$v"
+}
+
+# Check whether a newer Claude version has shipped than the one baked into the
+# current image. Conservative: never reports a change when either side is
+# unknown, so offline launches don't trigger surprise rebuilds.
+claude_version_changed() {
+    local latest recorded
+    latest=$(latest_claude_version)
+    [ -n "$latest" ] && [ "$latest" != "unknown" ] || return 1
+    recorded=$(cat "$CLAUDE_DEV_DIR/.last-claude-version" 2>/dev/null) || return 1
+    [ -n "$recorded" ] && [ "$recorded" != "unknown" ] || return 1
+    [ "$latest" != "$recorded" ]
+}
+
 # Refresh .env and optional override file. Compose file itself ships from the
 # upstream clone with env-var placeholders — no per-project regeneration needed.
 regenerate_compose() {
@@ -375,16 +420,21 @@ build_image() {
     if [ -n "$1" ]; then
         extra_args+=("$1")
     fi
-    local build_sha
+    local build_sha claude_latest
     build_sha=$(git -C "$CLAUDE_DEV_DIR" rev-parse --short HEAD 2>/dev/null || echo "unknown")
+    claude_latest=$(latest_claude_version force)
     echo -e "${C_YELLOW}→${C_RESET} Building image..."
-    # CLAUDE_CACHEBUST busts the Claude install layer when the repo moves forward,
-    # so ./claude-dev --update picks up newly released Claude versions.
+    # CLAUDE_CACHEBUST folds in the resolved Claude version so a new upstream
+    # release busts the Claude install layer even when the repo SHA is unchanged.
+    # Keying on the SHA alone left the layer cached across releases, shipping a
+    # stale binary until --rebuild (--no-cache) or a manual 'claude update'.
     dc build --quiet \
         --build-arg BUILD_SHA="$build_sha" \
-        --build-arg CLAUDE_CACHEBUST="$build_sha" \
+        --build-arg CLAUDE_CACHEBUST="${build_sha}-${claude_latest}" \
         "${extra_args[@]}"
     echo -e "${C_GREEN}✓${C_RESET} Image built"
+    # Record the version we built so cmd_default can detect future releases.
+    echo "$claude_latest" > "$CLAUDE_DEV_DIR/.last-claude-version" 2>/dev/null || true
 }
 
 # Helper: start container
@@ -407,15 +457,20 @@ cmd_default() {
         auto_update "$@"
     fi
 
-    # Build if image doesn't exist, or rebuild if repo has changed
+    # Build if image doesn't exist, rebuild if the repo changed or a newer
+    # Claude version shipped since the image was built.
     if ! image_exists; then
         echo -e "${C_YELLOW}→${C_RESET} First run — building image (this may take a few minutes)..."
         build_image
         record_build_sha
-    elif repo_has_changed; then
+    elif repo_has_changed || claude_version_changed; then
         # Check for active sessions before tearing down the container
         if warn_active_sessions; then
-            echo -e "${C_YELLOW}→${C_RESET} Environment updated — rebuilding image..."
+            if repo_has_changed; then
+                echo -e "${C_YELLOW}→${C_RESET} Environment updated — rebuilding image..."
+            else
+                echo -e "${C_YELLOW}→${C_RESET} New Claude version available — rebuilding image..."
+            fi
             if is_running || container_exists; then
                 dc down 2>/dev/null || true
             fi

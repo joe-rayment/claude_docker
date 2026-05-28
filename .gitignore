@@ -25,6 +25,9 @@ docker-compose.yml
 # Build tracking
 .last-build-sha
 .last-update-check
+.last-claude-version
+.claude-latest
+.claude-latest-check
 .claude-dev/
 claude-dev
 .mcp.json

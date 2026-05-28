@@ -91,9 +91,11 @@ RUN pip3 install --no-cache-dir --break-system-packages poetry uv \
 # only one install path. DISABLE_AUTOUPDATER + DISABLE_AUTO_MIGRATE_TO_NATIVE keep
 # Claude from writing a second copy into ~/.local at runtime.
 #
-# CLAUDE_CACHEBUST busts the layer whenever the launcher passes a fresh value (it
-# passes BUILD_SHA, which changes on every upstream commit). Run ./claude-dev --rebuild
-# to force a fresh Claude download outside of a repo update.
+# CLAUDE_CACHEBUST busts this layer whenever the launcher passes a fresh value.
+# The launcher sets it to "<repo-sha>-<latest-claude-version>", so the layer
+# re-runs (and re-downloads Claude) on either a template change OR a new upstream
+# Claude release — even when the repo SHA is unchanged. Run ./claude-dev --rebuild
+# to force a fresh Claude download outside of those.
 ARG CLAUDE_VERSION=latest
 ARG CLAUDE_CACHEBUST=unknown
 RUN set -eu; \
