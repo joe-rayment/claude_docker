@@ -134,17 +134,15 @@ if [ -f "/home/agent/.config/gh/hosts.yml" ]; then
         || dev-log error "gh auth setup-git failed during entrypoint" "git credential helper not wired; run 'gh auth setup-git' manually" 2>/dev/null || true
 fi
 
-# Start Dolt server (required by Beads for database operations)
-# Errors logged to /tmp/.dolt-server.log for debugging
-/usr/local/bin/start-dolt \
-    || dev-log error "start-dolt failed during entrypoint" "Beads will be unavailable; see /tmp/.dolt-server.log" 2>/dev/null || true
-
+# Beads runs in embedded Dolt mode — there is no SQL server to start. bd
+# operates directly on /workspace/.beads/embeddeddolt, rebuilt from the
+# git-tracked issues.jsonl as needed.
+#
 # Beads agent memory — single entry point covering three scenarios:
 #   (A) fresh project, no .beads/  → bd init + bd hooks install
 #   (B) cloned project, .beads/ JSONL present but Dolt DB missing in this volume
 #       → bd doctor --fix --yes
 #   (C) healthy (.beads/ + populated Dolt DB) → no-op, silent
-# Also cleans up the empty .beads/dolt leftover from a failed init.
 detect_beads_prefix() {
     local prefix remote
     remote=$(git -C /workspace remote get-url origin 2>/dev/null || true)
@@ -161,11 +159,6 @@ ensure_beads() {
     command -v dolt &>/dev/null || return 0
     [ -d "/workspace/.git" ] || return 0
 
-    # Clear empty .beads/dolt leftover from a failed prior init
-    if [ -d "/workspace/.beads/dolt" ] && [ ! -d "/workspace/.beads/dolt/.dolt" ]; then
-        rm -rf "/workspace/.beads/dolt"
-    fi
-
     if [ ! -d "/workspace/.beads" ]; then
         # (A) fresh — initialize
         local prefix
@@ -180,10 +173,10 @@ ensure_beads() {
         return 0
     fi
 
-    # (B) or (C): .beads/ exists — heal only if Dolt is up and bd status is broken.
-    # Without metadata.json we can't know what to heal, so skip.
+    # (B) or (C): .beads/ exists — heal only if bd status is broken. Without
+    # metadata.json we can't know what to heal, so skip. Embedded mode needs no
+    # server, so we probe bd directly rather than a Dolt port.
     [ -f "/workspace/.beads/metadata.json" ] || return 0
-    timeout 1 bash -c "echo > /dev/tcp/127.0.0.1/3307" 2>/dev/null || return 0
     (cd /workspace && bd status) &>/dev/null && return 0  # (C) healthy
 
     # (B) repair

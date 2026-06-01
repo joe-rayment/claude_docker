@@ -132,11 +132,33 @@ RUN git clone --depth 1 --branch v1.11.1 https://github.com/bats-core/bats-core.
     && /tmp/bats-core/install.sh /usr/local \
     && rm -rf /tmp/bats-core
 
-# Install Beads issue tracker for project-scoped AI agent memory
-RUN curl -fsSL https://raw.githubusercontent.com/steveyegge/beads/main/scripts/install.sh | bash
+# Install Beads issue tracker (pinned) for project-scoped AI agent memory.
+# The upstream install.sh resolves 'latest' via the GitHub API, so we bypass it
+# and fetch a tagged release asset directly (matching the pin-everything build
+# intent — cf. Helix/bats/IntelliShell pins). bd runs in embedded Dolt mode, so
+# no SQL server is required. (The upstream repo moved to gastownhall/beads.)
+RUN set -eu; \
+    BD_VERSION=1.0.4; \
+    arch=$(uname -m); \
+    case "$arch" in \
+        x86_64|amd64) bdarch=amd64 ;; \
+        arm64|aarch64) bdarch=arm64 ;; \
+        *) echo "unsupported arch: $arch" >&2; exit 1 ;; \
+    esac; \
+    base="https://github.com/gastownhall/beads/releases/download/v${BD_VERSION}"; \
+    archive="beads_${BD_VERSION}_linux_${bdarch}.tar.gz"; \
+    tmp=$(mktemp -d); \
+    curl -fsSL -o "${tmp}/${archive}" "${base}/${archive}"; \
+    curl -fsSL -o "${tmp}/checksums.txt" "${base}/checksums.txt"; \
+    (cd "$tmp" && grep " ${archive}\$" checksums.txt | sha256sum -c -); \
+    tar -xzf "${tmp}/${archive}" -C "$tmp"; \
+    install -m 0755 "${tmp}/bd" /usr/local/bin/bd; \
+    rm -rf "$tmp"; \
+    bd version
 
-# Install Dolt SQL server (required by Beads v0.56+ for database operations)
-RUN curl -fsSL https://github.com/dolthub/dolt/releases/latest/download/install.sh | bash
+# Install Dolt (pinned). Beads' embedded mode uses Dolt for on-disk storage;
+# the tagged install.sh installs that exact version (no moving 'latest').
+RUN curl -fsSL https://github.com/dolthub/dolt/releases/download/v2.0.5/install.sh | bash
 
 # Copy scripts first (change less often than config — better layer caching)
 COPY --chown=agent:agent scripts/entrypoint.sh /usr/local/bin/entrypoint.sh
@@ -146,7 +168,6 @@ COPY --chown=agent:agent scripts/detect-dependencies.sh /usr/local/bin/detect-de
 COPY --chown=agent:agent scripts/guided-setup.sh /usr/local/bin/guided-setup.sh
 COPY --chown=agent:agent scripts/dev-log.sh /usr/local/bin/dev-log
 COPY --chown=agent:agent scripts/start-professor.sh /usr/local/bin/start-professor.sh
-COPY --chown=agent:agent scripts/start-dolt.sh /usr/local/bin/start-dolt
 COPY --chown=agent:agent scripts/take-screenshot.sh /usr/local/bin/take-screenshot
 COPY --chown=agent:agent scripts/install-wozcode.sh /usr/local/bin/install-wozcode
 COPY --chown=agent:agent run-tests.sh /usr/local/bin/run-tests.sh
@@ -176,7 +197,6 @@ RUN chmod +x /usr/local/bin/entrypoint.sh \
              /usr/local/bin/guided-setup.sh \
              /usr/local/bin/dev-log \
              /usr/local/bin/start-professor.sh \
-             /usr/local/bin/start-dolt \
              /usr/local/bin/take-screenshot \
              /usr/local/bin/install-wozcode \
              /usr/local/bin/run-tests.sh
@@ -190,8 +210,8 @@ RUN curl -sSf https://raw.githubusercontent.com/lasantosr/intelli-shell/v3.4.0/i
 # Install Playwright with Chromium (as agent user so browsers cache to ~/.cache/ms-playwright/)
 RUN npx playwright install --with-deps chromium
 
-# Install termshot for terminal screenshots
-RUN go install github.com/homeport/termshot/cmd/termshot@latest
+# Install termshot for terminal screenshots (pinned)
+RUN go install github.com/homeport/termshot/cmd/termshot@v0.6.1
 
 # Create config directories (safety net if COPY didn't create them)
 RUN mkdir -p /home/agent/.config/helix /home/agent/.config/intelli-shell
