@@ -497,36 +497,52 @@ cmd_default() {
 cmd_update() {
     echo -e "${C_BOLD}${C_BLUE}Updating claude-dev environment...${C_RESET}"
 
-    # Check for active sessions before tearing down
-    if ! warn_active_sessions; then
-        return 0
-    fi
-
-    # Warn before discarding local edits in .claude-dev/
-    if ! git -C "$CLAUDE_DEV_DIR" diff --quiet HEAD 2>/dev/null; then
-        echo -e "${C_YELLOW}⚠${C_RESET}  ${C_BOLD}.claude-dev has local changes${C_RESET} that will be discarded by --update."
-        echo -n "   Continue and overwrite them? [y/N] "
-        read -r reply
-        if [[ ! "$reply" =~ ^[Yy]$ ]]; then
-            echo -e "   ${C_YELLOW}Aborted.${C_RESET} Commit or stash your changes, then re-run --update."
+    # Phase 1 (pull + self-update) runs under the CURRENTLY-RUNNING launcher.
+    # Phase 2 (env regen, build, start) must run under the NEWLY-PULLED launcher,
+    # so we exec into it between the phases. The _CLAUDE_DEV_POST_UPDATE flag
+    # marks the re-exec'd process and gates which phase runs.
+    if [ "${_CLAUDE_DEV_POST_UPDATE:-}" != "1" ]; then
+        # Check for active sessions before tearing down
+        if ! warn_active_sessions; then
             return 0
         fi
+
+        # Warn before discarding local edits in .claude-dev/
+        if ! git -C "$CLAUDE_DEV_DIR" diff --quiet HEAD 2>/dev/null; then
+            echo -e "${C_YELLOW}⚠${C_RESET}  ${C_BOLD}.claude-dev has local changes${C_RESET} that will be discarded by --update."
+            echo -n "   Continue and overwrite them? [y/N] "
+            read -r reply
+            if [[ ! "$reply" =~ ^[Yy]$ ]]; then
+                echo -e "   ${C_YELLOW}Aborted.${C_RESET} Commit or stash your changes, then re-run --update."
+                return 0
+            fi
+        fi
+
+        # Force pull latest (bypasses rate limit)
+        echo -e "${C_YELLOW}→${C_RESET} Pulling latest changes..."
+        git -C "$CLAUDE_DEV_DIR" fetch --quiet origin main
+        git -C "$CLAUDE_DEV_DIR" reset --hard --quiet origin/main
+
+        # Reset rate-limit timestamp so auto_update doesn't immediately re-check
+        date +%s > "$CLAUDE_DEV_DIR/.last-update-check" 2>/dev/null || true
+
+        # Install the freshly-pulled launcher and re-exec it, so the rest of the
+        # update runs the NEW launcher's logic against the NEW files. Without
+        # this, an old launcher builds the new docker-compose.yml before the new
+        # top-level write_env_file has run, so ${CONTAINER_NAME} and friends
+        # interpolate to blank and compose validation fails ("container_name ''
+        # does not match pattern") — the long-standing "fails first, works on an
+        # identical retry" bug. The re-exec'd launcher writes .env at top level
+        # before it reaches phase 2 below. (bd 98b)
+        cp "$CLAUDE_DEV_DIR/scripts/launcher.sh" "$SCRIPT_DIR/claude-dev"
+        chmod +x "$SCRIPT_DIR/claude-dev"
+        echo -e "${C_GREEN}✓${C_RESET} Launcher updated — restarting under new version..."
+        exec env _CLAUDE_DEV_POST_UPDATE=1 "$SCRIPT_DIR/claude-dev" --update
     fi
 
-    # Force pull latest (bypasses rate limit)
-    echo -e "${C_YELLOW}→${C_RESET} Pulling latest changes..."
-    git -C "$CLAUDE_DEV_DIR" fetch --quiet origin main
-    git -C "$CLAUDE_DEV_DIR" reset --hard --quiet origin/main
-
-    # Reset rate-limit timestamp so auto_update doesn't immediately re-check
-    date +%s > "$CLAUDE_DEV_DIR/.last-update-check" 2>/dev/null || true
-
+    # --- Phase 2: running under the new launcher (.env already written by the
+    # top-level write_env_file for this process) ---
     regenerate_compose
-
-    # Re-copy launcher
-    cp "$CLAUDE_DEV_DIR/scripts/launcher.sh" "$SCRIPT_DIR/claude-dev"
-    chmod +x "$SCRIPT_DIR/claude-dev"
-    echo -e "${C_GREEN}✓${C_RESET} Launcher updated"
 
     # Rebuild image
     build_image
