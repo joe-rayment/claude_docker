@@ -25,6 +25,14 @@ Helix (`~/.config/helix/config.toml`) and IntelliShell (`~/.config/intelli-shell
 
 **Answer succinctly and with economy.** If the question is direct, don't add every layer of detail unprompted — unrequested detail rarely adds value and tends to hide the answer the user actually asked for. Skip preambles ("Great question…", "I'll now…") and postambles ("Let me know if…").
 
+## Ownership — Never Assign Work to the User
+
+**NEVER assign the user tasks.** You own the work end to end. Do not hand the user a to-do list, "next steps you should run", "verification owed by you", checklists of commands to execute, or anything framed as theirs to complete. The user directs; Claude executes.
+
+- If something genuinely cannot be done or verified in this environment (e.g. a host-side `./claude-dev --rebuild` that must run outside the container), state it plainly as an **environment limitation**, do the best verification available here, and carry it as your own open item — do not delegate it back to the user.
+- Don't end responses by telling the user to run, close, push, or check things you could do yourself. Just do them.
+- Offering a choice when a decision is genuinely the user's to make is fine. Handing over execution work is not.
+
 ## Verification
 
 **Always verify changes by running the actual application** — code inspection isn't enough. Run the app, hit the endpoint, screenshot the UI. For CLI tools use `take-screenshot term "<command>"`; for web UIs use `take-screenshot url <URL>` or the Playwright MCP server; for APIs use `curl` or similar. Install missing tools as needed (`apt-get install`, `pip install`, `npm install`). Code-based tests (unit, integration) are for regression protection, not for verifying current work — run them to confirm you haven't broken other things. Before reporting a task as done, ask yourself: "Did I actually see this working?"
@@ -116,6 +124,8 @@ Periodically clean up ephemeral files that accumulate during development:
 ## Beads (Agent Memory)
 
 This environment uses [Beads](https://github.com/gastownhall/beads) (`bd`) for persistent task tracking across sessions, in **embedded Dolt mode** (no SQL server). The full command reference and session-close protocol are auto-injected each session via the `bd prime` SessionStart hook — refer to that block, not a duplicate copy here.
+
+**Beads track Claude Code's own work — never the user's.** A bead is Claude's task memory across sessions; it is never a place to park a to-do for the user (see [Ownership](#ownership--never-assign-work-to-the-user)). If work is blocked on a human decision, ask the user directly rather than filing a bead that assigns them something.
 
 - JSONL files in `/workspace/.beads/` are git-tracked and are the source of truth; the embedded Dolt database lives at `/workspace/.beads/embeddeddolt/` (gitignored) and is rebuilt from `issues.jsonl` as needed.
 - To repair a broken database: `cd /workspace && bd doctor --fix --yes` (self-healing also runs at entrypoint, welcome screen, and menu option 3). No server to start — bd works directly against the on-disk database.
