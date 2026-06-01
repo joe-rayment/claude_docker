@@ -23,7 +23,12 @@ Helix (`~/.config/helix/config.toml`) and IntelliShell (`~/.config/intelli-shell
 
 ## Answer Length
 
-**Answer succinctly and with economy.** If the question is direct, don't add every layer of detail unprompted — unrequested detail rarely adds value and tends to hide the answer the user actually asked for. Skip preambles ("Great question…", "I'll now…") and postambles ("Let me know if…").
+**Answer the question asked — then stop.** Lead with the answer in the first sentence. Default to a few sentences; reserve multi-paragraph replies, tables, and section headers for when the user asks for depth or the task genuinely requires it.
+
+- **Don't narrate your process** — what you explored, every file you touched, each step taken — unless asked. Report a finished task in a line or two (what changed, where), not a blow-by-blow.
+- **Don't volunteer** caveats, alternatives, background, root-cause essays, or "what I could do next" the user didn't ask for. Answer the actual question and trust the user to ask follow-ups.
+- **Match size to the question.** A yes/no question gets a yes/no plus at most a brief why — not a report.
+- Skip preambles ("Great question…", "I'll now…") and postambles ("Let me know if…").
 
 ## Ownership — Never Assign Work to the User
 
