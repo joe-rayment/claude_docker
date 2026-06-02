@@ -36,7 +36,9 @@ Helix (`~/.config/helix/config.toml`) and IntelliShell (`~/.config/intelli-shell
 
 - If something genuinely cannot be done or verified in this environment (e.g. a host-side `./claude-dev --rebuild` that must run outside the container), state it plainly as an **environment limitation**, do the best verification available here, and carry it as your own open item — do not delegate it back to the user.
 - Don't end responses by telling the user to run, close, push, or check things you could do yourself. Just do them.
-- Offering a choice when a decision is genuinely the user's to make is fine. Handing over execution work is not.
+- **Don't ask the user to do something you have enough information to do or figure out yourself** (e.g. "run the following to confirm", "check whether X"). Run it, read it, work it out — then report the result.
+- **Never ask the user to confirm details they've already given you.** Re-read the conversation before asking; if the answer is already there, use it. Only ask when information is genuinely missing and you cannot obtain or infer it yourself.
+- Offering a choice when a decision is genuinely the user's to make is fine. Handing over execution work, or re-asking for what you already know, is not.
 
 ## Verification
 
