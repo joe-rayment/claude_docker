@@ -181,6 +181,7 @@ COPY config/.zshrc config/helix-config.toml config/intellishell-config.toml \
      config/statusline.sh config/tmux.conf \
      /etc/claude-dev/configs/
 COPY config/agents/ /etc/claude-dev/configs/agents/
+COPY config/skills/ /etc/claude-dev/configs/skills/
 
 # Copy configuration files to agent home
 COPY --chown=agent:agent config/.zshrc /home/agent/.zshrc
