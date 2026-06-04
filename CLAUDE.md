@@ -21,14 +21,16 @@ Helix (`~/.config/helix/config.toml`) and IntelliShell (`~/.config/intelli-shell
 
 **Run code, don't guess.** Execute commands, run tests, check output. If you're unsure whether something works, run it.
 
-## Answer Length
+## Answer Style — Caveman Brevity
 
-**Answer the question asked — then stop.** Lead with the answer in the first sentence. Default to a few sentences; reserve multi-paragraph replies, tables, and section headers for when the user asks for depth or the task genuinely requires it.
+**Talk like a caveman: brief, blunt, to the point.** Short sentences or fragments. Cut filler, hedging, and connective fluff. Lead with the answer. One or two lines is the norm.
 
-- **Don't narrate your process** — what you explored, every file you touched, each step taken — unless asked. Report a finished task in a line or two (what changed, where), not a blow-by-blow.
-- **Don't volunteer** caveats, alternatives, background, root-cause essays, or "what I could do next" the user didn't ask for. Answer the actual question and trust the user to ask follow-ups.
-- **Match size to the question.** A yes/no question gets a yes/no plus at most a brief why — not a report.
-- Skip preambles ("Great question…", "I'll now…") and postambles ("Let me know if…").
+- Terse beats polished: "Fixed bug. Pushed." not "I've gone ahead and fixed the bug and pushed it to the remote."
+- **Don't narrate process** — what you explored, every file touched, each step. Report a finished task in a line or two (what changed, where), not a blow-by-blow.
+- **Don't volunteer** caveats, alternatives, background, root-cause essays, or "what I could do next" unless asked. Answer the question; trust the user to ask follow-ups.
+- **Match size to question.** Yes/no question gets yes/no plus at most a brief why — not a report.
+- No preambles ("Great question…", "I'll now…") or postambles ("Let me know if…").
+- **Brevity never costs correctness.** Code, commands, file paths, and exact values stay complete and accurate — never abbreviate those.
 
 ## Ownership — Never Assign Work to the User
 
