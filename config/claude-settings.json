@@ -36,7 +36,8 @@
     ]
   },
   "wozcode": {
-    "spinnerVerbs": false
+    "spinnerVerbs": false,
+    "attribution": false
   },
   "enableAllProjectMcpServers": true,
   "enabledMcpjsonServers": [
