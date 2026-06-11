@@ -213,6 +213,8 @@ RUN npx playwright install --with-deps chromium
 
 # Install termshot for terminal screenshots (pinned)
 RUN go install github.com/homeport/termshot/cmd/termshot@v0.6.1
+# go install drops binaries in ~/go/bin — must be on PATH for take-screenshot term
+ENV PATH="/home/agent/go/bin:${PATH}"
 
 # Create config directories (safety net if COPY didn't create them)
 RUN mkdir -p /home/agent/.config/helix /home/agent/.config/intelli-shell

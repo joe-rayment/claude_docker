@@ -45,6 +45,7 @@ All commands run from your project root:
 ./claude-dev --status     # Show container and health status
 ./claude-dev --update     # Pull latest environment, rebuild, update launcher
 ./claude-dev --rebuild    # Force rebuild (no cache)
+./claude-dev --teardown   # Remove template artifacts (back up beads first) — see below
 ```
 
 Auth, git config, and shell history persist across stops and rebuilds — they live in a named Docker volume. Only `docker compose down -v` removes them.
@@ -149,7 +150,7 @@ See `CLAUDE.md` for full agent instructions.
 | `container name already in use` | `./claude-dev --stop && ./claude-dev` |
 | `Permission denied` on `./claude-dev` | `chmod +x ./claude-dev` |
 | Claude auth issues | `claude auth logout && claude auth login` |
-| Configs not updating after rebuild | Configs auto-sync now. To fully reset: `cd .claude-dev && docker compose down -v` (removes auth/history) |
+| Configs not updating after rebuild | Configs auto-sync on checksum change (see [Customizing Configs](#customizing-configs-survives-rebuilds)). To fully reset: `cd .claude-dev && docker compose down -v` (removes auth/history) |
 | Permission issues with project files | `chmod -R 755 /path/to/your/project` on host |
 
 ---
@@ -187,6 +188,23 @@ cd ..
 ---
 
 ## Configuration
+
+### Customizing Configs (survives rebuilds)
+
+Container configs (zshrc, Claude settings, Helix, etc.) sync from the image on startup whenever the image's config checksum changes. Direct edits to synced files get overwritten — put personal customizations in `.local` override files instead:
+
+| Config | Override file | Mechanism |
+|--------|--------------|-----------|
+| Shell | `~/.zshrc.local` (in container) | Sourced at end of `.zshrc` |
+| Claude Code | `~/.claude/settings.local.json` | Deep-merged into `settings.json` on startup; `permissions.allow`/`deny`/`ask` arrays are unioned with the base lists |
+
+### Beads Task Tracking
+
+The container runs [Beads](https://github.com/gastownhall/beads) (`bd`) in embedded Dolt mode (no SQL server) for persistent agent task tracking. The live database is `/workspace/.beads/embeddeddolt/` (gitignored); `.beads/issues.jsonl` is a git-tracked export used to rebuild it. A broken database self-heals at container start, or run `bd doctor --fix --yes`.
+
+### Working Inside a Larger Repo (Teardown / Resume)
+
+If you dropped the template into a subdirectory of a larger git repo, the nested `.git/` created for beads sync blocks `git add` from the parent. Run `./claude-dev --teardown` before pushing back: it backs up `.beads/issues.jsonl` to `~/.claude-dev-state/<project>/<timestamp>/` and removes the template artifacts (`.git/`, `.gitignore`, `.beads/`, `.claude-dev/`, `claude-dev`, `docker-compose.yml`, `attachments/`, `.claude/logs/`). Re-running the bootstrap in the same directory later detects the snapshot and offers to restore beads.
 
 ### Adding Python Packages
 

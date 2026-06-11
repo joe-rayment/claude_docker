@@ -46,6 +46,32 @@ if [ -x /opt/claude/claude ]; then
     fi
 fi
 
+# Merge user's local overrides into settings.json (deep merge, local wins).
+# permissions.allow/deny/ask arrays are unioned rather than replaced so a
+# local allowlist extends the base one instead of wiping it.
+merge_claude_settings_local() {
+    local settings=${1:-/home/agent/.claude/settings.json}
+    local local_settings=${2:-/home/agent/.claude/settings.local.json}
+    [ -f "$local_settings" ] || return 0
+    if ! jq empty "$local_settings" 2>/dev/null; then
+        echo -e "\033[33m⚠  WARNING: $local_settings contains invalid JSON — local overrides NOT applied.\033[0m"
+        echo "   Fix the file and restart the container (or re-run the entrypoint) to apply them."
+        echo ""
+        return 0
+    fi
+    local merged
+    merged=$(jq -s '
+        .[0] as $base | .[1] as $local | ($base * $local)
+        | if ($base.permissions.allow or $local.permissions.allow)
+          then .permissions.allow = ((($base.permissions.allow // []) + ($local.permissions.allow // [])) | unique) else . end
+        | if ($base.permissions.deny or $local.permissions.deny)
+          then .permissions.deny = ((($base.permissions.deny // []) + ($local.permissions.deny // [])) | unique) else . end
+        | if ($base.permissions.ask or $local.permissions.ask)
+          then .permissions.ask = ((($base.permissions.ask // []) + ($local.permissions.ask // [])) | unique) else . end
+    ' "$settings" "$local_settings" 2>/dev/null) \
+        && [ -n "$merged" ] && echo "$merged" > "$settings"
+}
+
 # Config sync: update volume configs when image configs have changed
 # Uses checksums of staged config files instead of a manual version string
 IMAGE_HASH=$(find /etc/claude-dev/configs -type f -exec sha256sum {} + 2>/dev/null | sort | sha256sum | cut -d' ' -f1)
@@ -63,11 +89,7 @@ if [ "$IMAGE_HASH" != "$VOLUME_HASH" ]; then
     # Update Claude settings and statusline script
     mkdir -p /home/agent/.claude
     cp /etc/claude-dev/configs/claude-settings.json /home/agent/.claude/settings.json 2>/dev/null || true
-    # Merge user's local overrides into settings (deep merge, local wins)
-    if [ -f /home/agent/.claude/settings.local.json ]; then
-        MERGED=$(jq -s '.[0] * .[1]' /home/agent/.claude/settings.json /home/agent/.claude/settings.local.json 2>/dev/null) && \
-            echo "$MERGED" > /home/agent/.claude/settings.json
-    fi
+    merge_claude_settings_local
     cp /etc/claude-dev/configs/statusline.sh /home/agent/.claude/statusline.sh 2>/dev/null || true
     chmod +x /home/agent/.claude/statusline.sh 2>/dev/null || true
     # Deploy custom agents
@@ -124,7 +146,8 @@ ensure_workspace_gitignore
 # Copy Claude settings and statusline only if not already present (preserve user customizations)
 mkdir -p /home/agent/.claude
 if [ ! -f /home/agent/.claude/settings.json ]; then
-    cp /home/agent/.config/claude-settings-template.json /home/agent/.claude/settings.json 2>/dev/null || true
+    cp /etc/claude-dev/configs/claude-settings.json /home/agent/.claude/settings.json 2>/dev/null || true
+    merge_claude_settings_local
 fi
 if [ ! -f /home/agent/.claude/statusline.sh ]; then
     cp /etc/claude-dev/configs/statusline.sh /home/agent/.claude/statusline.sh 2>/dev/null || true

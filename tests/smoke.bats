@@ -48,7 +48,8 @@
 }
 
 @test "zshrc aliases are defined" {
-    grep -q 'alias cs=' /etc/claude-dev/configs/.zshrc
+    # cs is a function (tmux wrapper), not an alias
+    grep -qE '^(alias cs=|cs\(\))' /etc/claude-dev/configs/.zshrc
     grep -q 'alias menu=' /etc/claude-dev/configs/.zshrc
     grep -q 'alias dlog=' /etc/claude-dev/configs/.zshrc
 }
@@ -169,4 +170,62 @@
 @test "claude-settings.json includes beads PreCompact hook" {
     local settings="/etc/claude-dev/configs/claude-settings.json"
     jq -e '.hooks.PreCompact[0].hooks[0].command == "bd prime"' "$settings"
+}
+
+@test ".claude-dev runtime clone has no manual edits to tracked files" {
+    # .claude-dev/ updates via git pull; manual edits to tracked files break that flow
+    [ -d /workspace/.claude-dev/.git ] || skip "no runtime clone"
+    local dirty
+    dirty=$(git -C /workspace/.claude-dev status --porcelain | grep -v '^??' || true)
+    [ -z "$dirty" ]
+}
+
+@test "settings.local.json merge unions permission arrays" {
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    echo '{"model":"opus","permissions":{"allow":["Bash(ls)"],"deny":["Bash(rm -rf /)"]}}' > "$tmpdir/settings.json"
+    echo '{"permissions":{"allow":["Bash(npm test)","Bash(ls)"]},"env":{"B":"2"}}' > "$tmpdir/settings.local.json"
+    local src=/workspace/scripts/entrypoint.sh
+    [ -f "$src" ] || src=/usr/local/bin/entrypoint.sh
+    source <(sed -n '/^merge_claude_settings_local()/,/^}/p' "$src")
+    type merge_claude_settings_local >/dev/null 2>&1 || skip "entrypoint predates merge function"
+    merge_claude_settings_local "$tmpdir/settings.json" "$tmpdir/settings.local.json"
+    jq -e '.permissions.allow | length == 2' "$tmpdir/settings.json"
+    jq -e '.permissions.allow | index("Bash(npm test)")' "$tmpdir/settings.json"
+    jq -e '.permissions.allow | index("Bash(ls)")' "$tmpdir/settings.json"
+    jq -e '.permissions.deny == ["Bash(rm -rf /)"]' "$tmpdir/settings.json"
+    jq -e '.env.B == "2"' "$tmpdir/settings.json"
+    jq -e '.model == "opus"' "$tmpdir/settings.json"
+    rm -rf "$tmpdir"
+}
+
+@test "settings.local.json merge skips and warns on invalid JSON" {
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    echo '{"model":"opus"}' > "$tmpdir/settings.json"
+    echo '{bad json' > "$tmpdir/settings.local.json"
+    local src=/workspace/scripts/entrypoint.sh
+    [ -f "$src" ] || src=/usr/local/bin/entrypoint.sh
+    source <(sed -n '/^merge_claude_settings_local()/,/^}/p' "$src")
+    type merge_claude_settings_local >/dev/null 2>&1 || skip "entrypoint predates merge function"
+    run merge_claude_settings_local "$tmpdir/settings.json" "$tmpdir/settings.local.json"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"invalid JSON"* ]]
+    jq -e '.model == "opus"' "$tmpdir/settings.json"
+    rm -rf "$tmpdir"
+}
+
+@test "beads database is healthy (bd doctor)" {
+    [ -d /workspace/.beads ] || skip "no beads workspace"
+    bd doctor >/dev/null 2>&1 || bd doctor --fix --yes
+}
+
+@test "bd init creates a working embedded-dolt workspace" {
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    git -C "$tmpdir" init -q
+    (cd "$tmpdir" && timeout 60 bd init --prefix=tst >/dev/null 2>&1)
+    [ -d "$tmpdir/.beads/embeddeddolt" ]
+    [ -f "$tmpdir/.beads/config.yaml" ]
+    rm -rf "$tmpdir"
 }

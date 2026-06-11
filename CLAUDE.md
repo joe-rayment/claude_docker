@@ -17,6 +17,8 @@ Config files are synced from the Docker image on startup (checksum-based). To pe
 
 Helix (`~/.config/helix/config.toml`) and IntelliShell (`~/.config/intelli-shell/config.toml`) can be edited directly — they only get overwritten when the image config checksum changes.
 
+Merge semantics for `settings.local.json`: objects deep-merge (local wins per key); the `permissions.allow`/`deny`/`ask` arrays are **unioned** with the base lists; any other array is replaced wholesale. If the local file contains invalid JSON, the entrypoint warns and skips the merge rather than corrupting `settings.json`.
+
 ## Core Principle
 
 **Run code, don't guess.** Execute commands, run tests, check output. If you're unsure whether something works, run it.
@@ -134,11 +136,14 @@ Periodically clean up ephemeral files that accumulate during development:
 
 This environment uses [Beads](https://github.com/gastownhall/beads) (`bd`) for persistent task tracking across sessions, in **embedded Dolt mode** (no SQL server). The full command reference and session-close protocol are auto-injected each session via the `bd prime` SessionStart hook — refer to that block, not a duplicate copy here.
 
-**Beads track Claude Code's own work — never the user's.** A bead is Claude's task memory across sessions; it is never a place to park a to-do for the user (see [Ownership](#ownership--never-assign-work-to-the-user)). If work is blocked on a human decision, ask the user directly rather than filing a bead that assigns them something.
+**Beads are ONLY for Claude Code's own work. They CANNOT be assigned to a human.** A bead is Claude's task memory across sessions. Never create a bead that represents work for the user to do — not "review this", not "decide X", not "run Y". If work is blocked on a human decision, ask the user directly in the conversation. Beads that assign humans work violate the [Ownership](#ownership--never-assign-work-to-the-user) rule.
 
-- JSONL files in `/workspace/.beads/` are git-tracked and are the source of truth; the embedded Dolt database lives at `/workspace/.beads/embeddeddolt/` (gitignored) and is rebuilt from `issues.jsonl` as needed.
+Even though `bd` offers them, do NOT use: `bd update <id> --assignee=<human>` (the only valid assignee is Claude itself, via `--claim`) or `bd human <id>` as a way to park a question (it is not a substitute for asking — at most use it to *record* a decision you have already raised in conversation, with the bead still owned by Claude).
+
+- The embedded Dolt database at `/workspace/.beads/embeddeddolt/` (gitignored) is the live source of truth; `.beads/issues.jsonl` is a passive, git-tracked export used to rebuild the database (e.g. after teardown/resume or corruption). Always edit issues via `bd` commands, never by editing the JSONL.
 - To repair a broken database: `cd /workspace && bd doctor --fix --yes` (self-healing also runs at entrypoint, welcome screen, and menu option 3). No server to start — bd works directly against the on-disk database.
 - Use `bd update <id> --flag` to modify issues — never `bd edit` (it opens `$EDITOR` and blocks). Include issue IDs in commit messages when relevant (`Fix auth bug (bd-a3f2)`).
+- **Memory precedence:** project knowledge (decisions, gotchas, environment facts) goes in `bd remember` — it syncs with the repo and is shared across machines. The Claude Code harness's own auto-memory (`MEMORY.md` under `~/.claude/projects/`) is for user-specific context only (who the user is, how they like to work) — never project knowledge. The injected "do NOT use MEMORY.md" rule means: don't create ad-hoc MEMORY.md files for project facts; it does not disable the harness's user-memory feature.
 
 ## Working Inside a Larger Repo (Teardown / Resume)
 
@@ -171,9 +176,9 @@ run-tests.sh experience  # Experience tests only
 3. Understand the current task before writing code.
 
 ### End
-1. Ensure all changes are logged.
-2. Run tests if you made code changes.
-3. Session logs are auto-exported on Claude exit (via hook).
+Follow the **[Session Completion](#session-completion)** workflow below — it is the single session-end protocol (file beads for follow-ups, run quality gates, update issue status, push to remote). In addition:
+1. Ensure all changes are logged via `dev-log`.
+2. Session logs are auto-exported on Claude exit (via hook).
 
 ## Quick Reference
 
@@ -209,6 +214,7 @@ bd close <id>         # Complete work
 ### Rules
 
 - Use `bd` for ALL task tracking — do NOT use TodoWrite, TaskCreate, or markdown TODO lists
+- **Beads are ONLY for Claude Code's own work — NEVER assign a bead to a human.** No "review this", "decide X", or "run Y" beads. Ask the user directly instead.
 - Run `bd prime` for detailed command reference and session close protocol
 - Use `bd remember` for persistent knowledge — do NOT use MEMORY.md files
 

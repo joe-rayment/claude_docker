@@ -9,6 +9,9 @@ set -euo pipefail
 
 OUTPUT_DIR="/workspace/attachments"
 
+# go-installed tools (termshot) live in ~/go/bin, which may not be on PATH
+export PATH="/home/agent/go/bin:$PATH"
+
 ts() { date -u +"%Y%m%d-%H%M%S"; }
 
 ensure_dir() { mkdir -p "$OUTPUT_DIR"; }
@@ -171,7 +174,7 @@ cmd_term() {
         output="${OUTPUT_DIR}/term-$(ts).png"
     fi
 
-    termshot -o "$output" -- $cmd
+    termshot -f "$output" -- $cmd
     echo "$output"
 }
 
