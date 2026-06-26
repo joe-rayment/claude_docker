@@ -14,10 +14,7 @@
       "Bash(*)",
       "Bash(view-logs)",
       "Bash(dev-log:*)",
-      "mcp__plugin_woz_code__Search",
-      "mcp__plugin_woz_code__Edit",
-      "mcp__plugin_woz_code__Sql",
-      "mcp__plugin_woz_code__Recall",
+      "Bash(csearch:*)",
       "Read(~/.claude/debug/**)",
       "Read(/workspace/.claude/logs/**)",
       "Write(/home/agent/.claude/exported-logs/**)",
@@ -35,15 +32,22 @@
       "WebFetch(domain:dev.to)"
     ]
   },
-  "wozcode": {
-    "spinnerVerbs": false,
-    "attribution": false
-  },
   "enableAllProjectMcpServers": true,
   "enabledMcpjsonServers": [
     "playwright"
   ],
   "hooks": {
+    "UserPromptSubmit": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo 'Reminder: answer tersely — just the facts, no filler, no unneeded words or explanation unless the user asks you to expand. Talk like a caveman with modern grammar: short, blunt, lead with the answer.'"
+          }
+        ]
+      }
+    ],
     "SessionStart": [
       {
         "matcher": "",
@@ -67,10 +71,6 @@
           {
             "type": "command",
             "command": "mkdir -p /home/agent/.claude/exported-logs && cp ~/.claude/debug/latest /home/agent/.claude/exported-logs/last-session.log 2>/dev/null || true"
-          },
-          {
-            "type": "command",
-            "command": "[ -x /usr/local/bin/install-wozcode ] && /usr/local/bin/install-wozcode 2>/dev/null || true"
           }
         ]
       }

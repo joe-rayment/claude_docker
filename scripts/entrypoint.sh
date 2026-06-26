@@ -180,6 +180,15 @@ detect_beads_prefix() {
     echo "$prefix"
 }
 
+# Seed starter agent memories on a freshly-initialized beads DB. Called only
+# from the fresh-init path (A), so it runs once per project.
+seed_beads_memories() {
+    (cd /workspace && bd remember "NEVER assign beads to a user -- they are for Claude Code only. Anything that requires a user input should be handled in a question in chat.") 2>/dev/null \
+        || dev-log error "bd remember seed failed during entrypoint" "starter memory not stored" 2>/dev/null || true
+    (cd /workspace && bd remember "Code changes must be tested in realistic settings, including running the actual program and taking screenshots.") 2>/dev/null \
+        || dev-log error "bd remember seed failed during entrypoint" "starter memory not stored" 2>/dev/null || true
+}
+
 ensure_beads() {
     command -v bd &>/dev/null || return 0
     command -v dolt &>/dev/null || return 0
@@ -195,6 +204,7 @@ ensure_beads() {
         if [ -d "/workspace/.beads" ]; then
             (cd /workspace && bd hooks install) 2>/dev/null \
                 || dev-log error "bd hooks install failed during entrypoint" "git hooks not wired; run 'bd hooks install' manually" 2>/dev/null || true
+            seed_beads_memories
         fi
         return 0
     fi
@@ -224,12 +234,6 @@ if command -v bd &>/dev/null; then
         dev-log error "bd setup claude failed during entrypoint" 2>/dev/null || true
     fi
 fi
-
-# Install the Wozcode Claude Code plugin once Claude is authenticated.
-# Idempotent: marker file in $HOME prevents repeated runs after success.
-# Bails silently if claude isn't installed/authenticated yet — re-runs on each
-# container start until prerequisites are met.
-[ -x /usr/local/bin/install-wozcode ] && /usr/local/bin/install-wozcode || true
 
 # Change to workspace directory (with diagnostic on failure to prevent silent restart loop)
 cd /workspace || {

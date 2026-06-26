@@ -52,6 +52,25 @@
     grep -qE '^(alias cs=|cs\(\))' /etc/claude-dev/configs/.zshrc
     grep -q 'alias menu=' /etc/claude-dev/configs/.zshrc
     grep -q 'alias dlog=' /etc/claude-dev/configs/.zshrc
+    grep -q 'alias cse=' /etc/claude-dev/configs/.zshrc
+}
+
+@test "csearch is present and works in all modes" {
+    [ -x /usr/local/bin/csearch ]
+    local dir="/tmp/csearch-test-$$-$RANDOM"
+    mkdir -p "$dir"
+    printf 'def foo(x):\n    return x\nclass Bar:\n    pass\n' > "$dir/sample.py"
+    # find: literal-path content search
+    csearch "return x" "$dir/sample.py" | grep -q 'return x'
+    # files-only mode
+    [ "$(csearch -l "class Bar" "$dir/sample.py")" = "$dir/sample.py" ]
+    # read range
+    csearch read "$dir/sample.py" 1-1 | grep -q 'def foo'
+    # sig mode
+    csearch sig "$dir/sample.py" | grep -q 'def foo'
+    # no match exits 0 (not an error)
+    csearch "zzz_nomatch_zzz" "$dir/sample.py"
+    rm -rf "$dir"
 }
 
 @test "no voicetree references in scripts" {

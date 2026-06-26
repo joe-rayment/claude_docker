@@ -70,9 +70,9 @@ RUN HELIX_VERSION=25.07.1 && \
 # Tell Helix where to find its runtime files
 ENV HELIX_RUNTIME=/usr/local/lib/helix/runtime
 
-# Install Node.js 22 LTS — base image ships Node 20.19; Wozcode (and other tools)
-# require node:sqlite, a built-in added in 22.5+. NodeSource replaces the apt
-# nodejs package with their build, so this also unblocks anything else needing >=22.
+# Install Node.js 22 LTS — base image ships Node 20.19; some tools require
+# node:sqlite, a built-in added in 22.5+. NodeSource replaces the apt nodejs
+# package with their build, so this also unblocks anything else needing >=22.
 RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && apt-get clean \
@@ -169,7 +169,7 @@ COPY --chown=agent:agent scripts/guided-setup.sh /usr/local/bin/guided-setup.sh
 COPY --chown=agent:agent scripts/dev-log.sh /usr/local/bin/dev-log
 COPY --chown=agent:agent scripts/start-professor.sh /usr/local/bin/start-professor.sh
 COPY --chown=agent:agent scripts/take-screenshot.sh /usr/local/bin/take-screenshot
-COPY --chown=agent:agent scripts/install-wozcode.sh /usr/local/bin/install-wozcode
+COPY --chown=agent:agent scripts/csearch.sh /usr/local/bin/csearch
 COPY --chown=agent:agent run-tests.sh /usr/local/bin/run-tests.sh
 COPY --chown=agent:agent tests/ /opt/claude-dev/tests/
 COPY --chown=agent:agent knowledge-base/ /opt/claude-dev/knowledge-base/
@@ -199,7 +199,7 @@ RUN chmod +x /usr/local/bin/entrypoint.sh \
              /usr/local/bin/dev-log \
              /usr/local/bin/start-professor.sh \
              /usr/local/bin/take-screenshot \
-             /usr/local/bin/install-wozcode \
+             /usr/local/bin/csearch \
              /usr/local/bin/run-tests.sh
 
 # ── Agent: user-level tool install and final state ────────────────────

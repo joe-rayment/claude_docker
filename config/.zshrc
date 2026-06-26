@@ -49,19 +49,14 @@ _claude_in_tmux() {
         tmux new-session "${(q)@}"
     fi
 }
-# Try to install Wozcode plugin once Claude is authenticated. The script is
-# idempotent (marker-file gated) and exits in milliseconds when already done
-# or when prerequisites are missing, so it's safe to call on every launch.
-_woz_try_install() {
-    [ -x /usr/local/bin/install-wozcode ] && /usr/local/bin/install-wozcode 2>/dev/null || true
-}
-cs()  { _woz_try_install; _claude_in_tmux claude --dangerously-skip-permissions "$@" }
-csd() { _woz_try_install; _claude_in_tmux claude --dangerously-skip-permissions --debug "$@" }
-cn()  { _woz_try_install; _claude_in_tmux claude "$@" }
+cs()  { _claude_in_tmux claude --dangerously-skip-permissions "$@" }
+csd() { _claude_in_tmux claude --dangerously-skip-permissions --debug "$@" }
+cn()  { _claude_in_tmux claude "$@" }
 alias menu='/usr/local/bin/guided-setup.sh'  # Setup menu
 alias dlog='dev-log'  # Development logger
 alias screenshot='take-screenshot'  # Screenshot tool
 alias ss='take-screenshot'  # Screenshot shortcut
+alias cse='csearch'  # Lean combined code search (glob+grep+read+sig)
 
 # Beads issue tracker shortcuts
 if command -v bd &>/dev/null; then

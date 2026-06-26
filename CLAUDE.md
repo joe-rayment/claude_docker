@@ -23,6 +23,20 @@ Merge semantics for `settings.local.json`: objects deep-merge (local wins per ke
 
 **Run code, don't guess.** Execute commands, run tests, check output. If you're unsure whether something works, run it.
 
+## Searching Code — `csearch`
+
+`csearch` fuses discover + grep + read + signature into one local command (ripgrep under the hood — no network, no login, no telemetry). Prefer it for code search: one call instead of separate glob → grep → read round-trips, and it caps long lines so minified files don't blow up context.
+
+```bash
+csearch "useAuth" 'src/**/*.ts'   # grep, scoped to a glob (or a literal path)
+csearch -l -t py "TODO"           # files-only, restricted to a ripgrep type
+csearch -i -C 2 "def main"        # case-insensitive, 2 lines of context
+csearch read src/app.ts 40-80     # read just lines 40–80, line-numbered
+csearch sig 'src/**/*.go'         # signatures/structure (funcs, classes, types)
+```
+
+Flags for the default search mode: `-i` ignore case, `-C N` context lines, `-l` list files only, `-t TYPE` ripgrep file type, `-m N` max matches per file. Trailing args are literal paths if they exist, otherwise globs. No matches exits 0 (not an error).
+
 ## Answer Style — Caveman Brevity
 
 **Talk like a caveman: brief, blunt, to the point.** Short sentences or fragments. Cut filler, hedging, and connective fluff. Lead with the answer. One or two lines is the norm.
@@ -195,6 +209,7 @@ Follow the **[Session Completion](#session-completion)** workflow below — it i
 | `clog-latest` | View latest Claude debug log |
 | `clog-export` | Export latest log to workspace |
 | `screenshot` / `ss` | `take-screenshot` |
+| `cse` | `csearch` (lean combined code search) |
 
 
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:7510c1e2 -->
