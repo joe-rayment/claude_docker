@@ -108,8 +108,13 @@ if [ "$IMAGE_HASH" != "$VOLUME_HASH" ]; then
 fi
 
 # Start virtual framebuffer for screenshot tools (Playwright, import, etc.)
+# A container restart can leave a stale /tmp/.X99-lock from the killed Xvfb;
+# clear it (only when no Xvfb is running) so the restart gets a live display.
 if command -v Xvfb &>/dev/null; then
-    Xvfb :99 -screen 0 1280x720x24 &>/dev/null &
+    if ! pgrep -x Xvfb >/dev/null 2>&1; then
+        rm -f /tmp/.X99-lock /tmp/.X11-unix/X99 2>/dev/null || true
+        Xvfb :99 -screen 0 1280x720x24 &>/dev/null &
+    fi
     export DISPLAY=:99
 fi
 

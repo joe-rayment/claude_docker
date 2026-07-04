@@ -33,7 +33,7 @@ command -v "$RG" >/dev/null 2>&1 || { echo "csearch: ripgrep (rg) not found" >&2
 
 MAXCOL=${CSEARCH_MAXCOL:-300}   # truncate long lines (minified-file guard)
 
-usage() { sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { awk 'NR==1{next} !/^#/{exit} {sub(/^# ?/,""); print}' "$0"; }
 
 # Classify trailing args into rg path positionals vs -g glob flags.
 # Existing files/dirs are searched directly; everything else is a glob.
