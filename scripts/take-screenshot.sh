@@ -99,7 +99,14 @@ cmd_url() {
     fi
     args+=("$url" "$output")
 
-    npx --yes playwright screenshot "${args[@]}"
+    # Prefer the image's pinned global CLI; `npx --yes` re-resolves 'latest'
+    # at runtime and can drift ahead of the baked browsers. npx fallback
+    # covers images built before playwright was installed globally.
+    if command -v playwright >/dev/null 2>&1; then
+        playwright screenshot "${args[@]}"
+    else
+        npx --yes playwright screenshot "${args[@]}"
+    fi
 
     echo "$output"
 }
@@ -174,7 +181,9 @@ cmd_term() {
         output="${OUTPUT_DIR}/term-$(ts).png"
     fi
 
-    termshot -f "$output" -- $cmd
+    # Run through bash -c so pipes, quotes, and globs in the command behave
+    # like a shell one-liner instead of being word-split into termshot args.
+    termshot -f "$output" -- bash -c "$cmd"
     echo "$output"
 }
 

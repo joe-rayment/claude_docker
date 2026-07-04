@@ -154,8 +154,12 @@
     command -v termshot
 }
 
-@test "playwright is installed" {
-    run npx playwright --version
+@test "playwright CLI works offline (global install or npx cache)" {
+    if command -v playwright >/dev/null 2>&1; then
+        run playwright --version
+    else
+        run npx --no-install playwright --version
+    fi
     [ "$status" -eq 0 ]
 }
 
@@ -172,7 +176,11 @@
 }
 
 @test "chromium browser is available for playwright" {
-    run npx playwright install --dry-run chromium
+    if command -v playwright >/dev/null 2>&1; then
+        run playwright install --dry-run chromium
+    else
+        run npx --no-install playwright install --dry-run chromium
+    fi
     [ "$status" -eq 0 ]
 }
 

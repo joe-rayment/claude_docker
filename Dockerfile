@@ -188,7 +188,6 @@ COPY --chown=agent:agent config/.zshrc /home/agent/.zshrc
 COPY --chown=agent:agent config/helix-config.toml /home/agent/.config/helix/config.toml
 COPY --chown=agent:agent config/intellishell-config.toml /home/agent/.config/intelli-shell/config.toml
 COPY --chown=agent:agent config/intellishell-defaults.txt /home/agent/.config/intelli-shell/defaults.txt
-COPY --chown=agent:agent config/claude-settings.json /home/agent/.config/claude-settings-template.json
 COPY --chown=agent:agent config/tmux.conf /home/agent/.tmux.conf
 # Make scripts executable
 RUN chmod +x /usr/local/bin/entrypoint.sh \
@@ -202,14 +201,21 @@ RUN chmod +x /usr/local/bin/entrypoint.sh \
              /usr/local/bin/csearch \
              /usr/local/bin/run-tests.sh
 
+# Pin the Playwright CLI globally. take-screenshot calls this binary instead
+# of `npx --yes playwright`, which re-resolves 'latest' at runtime and can
+# drift ahead of the browsers baked below ("Executable doesn't exist").
+# Keep this version and the browser install below in lockstep when bumping.
+RUN npm install -g playwright@1.61.1
+
 # ── Agent: user-level tool install and final state ────────────────────
 USER agent
 
 # Install IntelliShell for the agent user (pinned to v3.4.0 via URL)
 RUN curl -sSf https://raw.githubusercontent.com/lasantosr/intelli-shell/v3.4.0/install.sh | sh
 
-# Install Playwright with Chromium (as agent user so browsers cache to ~/.cache/ms-playwright/)
-RUN npx playwright install --with-deps chromium
+# Install Chromium for the pinned Playwright (as agent user so browsers cache
+# to ~/.cache/ms-playwright/, preserved by the home volume)
+RUN playwright install --with-deps chromium
 
 # Install termshot for terminal screenshots (pinned)
 RUN go install github.com/homeport/termshot/cmd/termshot@v0.6.1
