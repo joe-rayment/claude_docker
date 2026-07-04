@@ -38,14 +38,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 USER agent
 WORKDIR /home/agent
 
-# Install Oh-My-Zsh (pinned to v1.2.1 via URL)
+# Install Oh-My-Zsh (pinned to v1.2.1 via URL). This clones pure into
+# ~/.oh-my-zsh/custom/themes/ and the plugins into ~/.oh-my-zsh/custom/plugins/.
+# The .zshrc zsh-in-docker generates is replaced by config/.zshrc, which
+# sources oh-my-zsh and initializes the pure prompt itself — so no -a args.
 RUN sh -c "$(wget -O- https://github.com/deluan/zsh-in-docker/releases/download/v1.2.1/zsh-in-docker.sh)" -- \
     -t https://github.com/sindresorhus/pure \
     -p git \
     -p https://github.com/zsh-users/zsh-syntax-highlighting \
-    -a 'fpath+=("$HOME/.zsh/pure")' \
-    -a 'autoload -U promptinit; promptinit' \
-    -a 'prompt pure'
+    -p https://github.com/zsh-users/zsh-history-substring-search
 
 # ── Root: tools, languages, and file staging ──────────────────────────
 USER root

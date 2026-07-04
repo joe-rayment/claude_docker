@@ -1,8 +1,21 @@
 # Path configuration
 export PATH="$HOME/.local/bin:$HOME/bin:/usr/local/bin:$PATH"
 
-# Pure prompt and plugins are configured by zsh-in-docker
-# No need to source oh-my-zsh manually
+# oh-my-zsh + pure prompt + plugins (installed at image build via zsh-in-docker).
+# This file replaces the zsh-in-docker-generated .zshrc, so it must source
+# oh-my-zsh itself — nothing else does.
+export ZSH="$HOME/.oh-my-zsh"
+if [ -f "$ZSH/oh-my-zsh.sh" ]; then
+    ZSH_THEME=""    # pure loads via promptinit below, not as an omz theme
+    plugins=(git zsh-syntax-highlighting)
+    # Only on images built after the plugin was added (existing home volumes
+    # keep their original ~/.oh-my-zsh) — include when present.
+    [ -d "$ZSH/custom/plugins/zsh-history-substring-search" ] && plugins+=(zsh-history-substring-search)
+    source "$ZSH/oh-my-zsh.sh"
+    fpath+=("$ZSH/custom/themes/pure")
+    autoload -U promptinit && promptinit
+    prompt pure
+fi
 
 # IntelliShell integration
 if [ -f "$HOME/.local/share/intelli-shell/bin/intelli-shell" ]; then
@@ -78,13 +91,20 @@ setopt SHARE_HISTORY
 setopt HIST_IGNORE_DUPS
 setopt HIST_IGNORE_SPACE
 
-# Auto-completion
-autoload -Uz compinit
-compinit
+# Auto-completion (oh-my-zsh runs compinit itself when sourced above)
+if [ ! -f "$ZSH/oh-my-zsh.sh" ]; then
+    autoload -Uz compinit
+    compinit
+fi
 
-# Key bindings
-bindkey '^[[A' history-substring-search-up
-bindkey '^[[B' history-substring-search-down
+# Key bindings — Up/Down substring-search history, only if the plugin loaded
+# (binding a missing widget breaks arrow-key history entirely)
+if (( ${+widgets[history-substring-search-up]} )); then
+    bindkey '^[[A' history-substring-search-up
+    bindkey '^[[B' history-substring-search-down
+    bindkey '^[OA' history-substring-search-up
+    bindkey '^[OB' history-substring-search-down
+fi
 
 # Project identity — terminal title and prompt tag for multi-project use
 if [ -n "$CLAUDE_PROJECT_NAME" ]; then
