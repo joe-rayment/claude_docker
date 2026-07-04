@@ -19,9 +19,6 @@ workspace/
 *.swp
 *~
 
-# Generated docker-compose (bootstrap generates per-project)
-docker-compose.yml
-
 # Build tracking
 .last-build-sha
 .last-update-check
@@ -29,7 +26,7 @@ docker-compose.yml
 .claude-latest
 .claude-latest-check
 .claude-dev/
-claude-dev
+/claude-dev
 .mcp.json
 .claude/logs/
 .claude/settings.local.json
@@ -40,7 +37,6 @@ __pycache__/
 *.egg-info/
 
 # Editors
-*.swp
 *.swo
 
 # OS
@@ -55,4 +51,3 @@ drops/
 .dolt/
 *.db
 .beads-credential-key
-/claude-dev

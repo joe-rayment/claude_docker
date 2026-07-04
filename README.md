@@ -97,7 +97,7 @@ cs                      hx src/main.py           npm test
 - **Dev Tools**: Git, GitHub CLI, Python 3 (poetry, uv), Node.js (npm, pnpm, yarn), Go
 - **Persistent**: Auth, history, and configs saved between sessions
 - **Auto-detection**: Recognizes package.json, requirements.txt, go.mod, Cargo.toml, Gemfile
-- **Health check**: Docker monitors Claude auth status automatically
+- **Health check**: Docker monitors container liveness automatically
 - **Dev Logging**: Structured session logging with `dev-log`
 - **Experience Tests**: bats-core tests to verify container UX
 
@@ -149,7 +149,7 @@ See `CLAUDE.md` for full agent instructions.
 | `Cannot connect to Docker daemon` | Open Docker Desktop and wait for it to start |
 | `container name already in use` | `./claude-dev --stop && ./claude-dev` |
 | `Permission denied` on `./claude-dev` | `chmod +x ./claude-dev` |
-| Claude auth issues | `claude auth logout && claude auth login` |
+| Claude auth issues | Run `claude`, then `/logout` and `/login` |
 | Configs not updating after rebuild | Configs auto-sync on checksum change (see [Customizing Configs](#customizing-configs-survives-rebuilds)). To fully reset: `cd .claude-dev && docker compose down -v` (removes auth/history) |
 | Permission issues with project files | `chmod -R 755 /path/to/your/project` on host |
 
@@ -163,27 +163,18 @@ If you prefer not to use the bootstrap script:
 # 1. Clone into your project directory
 cd /path/to/your/project
 git clone https://github.com/joe-rayment/claude_docker.git .claude-dev
-cd .claude-dev
 
-# 2. Create .env file with your project path (if not using parent directory)
-echo "PROJECT_PATH=/path/to/your/project" > .env
+# 2. Install the launcher
+cp .claude-dev/scripts/launcher.sh ./claude-dev
+chmod +x ./claude-dev
 
-# 3. Copy and edit docker-compose.yml
-cp docker-compose.yml.template docker-compose.yml
-# Update container_name and volume name for your project
-
-# 4. Build and start
-docker compose build
-docker compose up -d
-
-# 5. Install launcher
-cp scripts/launcher.sh ../claude-dev
-chmod +x ../claude-dev
-
-# 6. Enter
-cd ..
+# 3. Build, start, and enter
 ./claude-dev
 ```
+
+The launcher derives per-project names from the directory, writes
+`.claude-dev/.env` for compose interpolation, and builds the image on first
+run — there is no `.env` or compose file to hand-edit.
 
 ---
 
@@ -230,7 +221,7 @@ RUN pip3 install --no-cache-dir your-package
 │  │  ├── claude-dev     ◄── Launcher (./claude-dev)   │  │
 │  │  ├── src/                                         │  │
 │  │  ├── .claude-dev/   ◄── This repo                 │  │
-│  │  │   ├── docker-compose.yml  ◄── Generated        │  │
+│  │  │   ├── docker-compose.yml  ◄── From repo        │  │
 │  │  │   └── ...                                      │  │
 │  │  └── ...                                          │  │
 │  └───────────────────────────────────────────────────┘  │

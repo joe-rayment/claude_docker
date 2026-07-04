@@ -22,9 +22,13 @@ select choice in "View latest debug log" "Export latest to workspace" "List all 
             fi
             ;;
         "Export latest to workspace")
-            mkdir -p /home/agent/.claude/exported-logs
-            cp ~/.claude/debug/latest "/home/agent/.claude/exported-logs/session-$(date +%Y%m%d-%H%M%S).log"
-            echo "Exported to ~/.claude/exported-logs/"
+            if [ -f ~/.claude/debug/latest ]; then
+                mkdir -p /home/agent/.claude/exported-logs
+                cp ~/.claude/debug/latest "/home/agent/.claude/exported-logs/session-$(date +%Y%m%d-%H%M%S).log"
+                echo "Exported to ~/.claude/exported-logs/"
+            else
+                echo -e "${C_YELLOW}No debug logs found yet${C_RESET}"
+            fi
             ;;
         "List all sessions")
             ls -lht ~/.claude/debug/ | head -20

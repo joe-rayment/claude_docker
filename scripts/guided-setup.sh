@@ -266,7 +266,13 @@ show_menu() {
             1)
                 echo ""
                 if require_claude_auth; then
-                    claude --dangerously-skip-permissions
+                    # Match the cs/csd/cn shortcuts: launch inside tmux so a
+                    # second session is one Ctrl-b % away (unless already in one)
+                    if [ -z "$TMUX" ] && command -v tmux &>/dev/null; then
+                        tmux new-session "claude --dangerously-skip-permissions"
+                    else
+                        claude --dangerously-skip-permissions
+                    fi
                 fi
                 ;;
             2)

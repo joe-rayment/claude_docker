@@ -5,7 +5,9 @@
 
 set -e
 
-TEST_DIR="/opt/claude-dev/tests"
+# Default: the image-baked copies. When iterating on the template itself,
+# point at the live sources: CLAUDE_DEV_TESTS=/workspace/tests run-tests.sh
+TEST_DIR="${CLAUDE_DEV_TESTS:-/opt/claude-dev/tests}"
 SUITE="${1:-all}"
 
 if ! command -v bats &>/dev/null; then
