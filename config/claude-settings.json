@@ -1,6 +1,6 @@
 {
-  "model": "claude-sonnet-4-6",
-  "advisorModel": "claude-opus-4-7",
+  "model": "claude-opus-4-8",
+  "advisorModel": "claude-opus-4-8",
   "env": {
     "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
   },
@@ -43,7 +43,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "echo 'Reminder: answer tersely — just the facts, no filler, no unneeded words or explanation unless the user asks you to expand. Talk like a caveman with modern grammar: short, blunt, lead with the answer.'"
+            "command": "echo 'Reminder: lead with the answer; include only what changes the reader'\\''s next action, in plain complete sentences — no process narration, no unasked-for caveats. Explicit user constraints are binding: never substitute your preference, even while debugging. If you noticed a flaw in your work, fix it or state it — never ship it silently.'"
           }
         ]
       }

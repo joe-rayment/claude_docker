@@ -37,15 +37,14 @@ csearch sig 'src/**/*.go'         # signatures/structure (funcs, classes, types)
 
 Flags for the default search mode: `-i` ignore case, `-C N` context lines, `-l` list files only, `-t TYPE` ripgrep file type, `-m N` max matches per file. Trailing args are literal paths if they exist, otherwise globs. No matches exits 0 (not an error).
 
-## Answer Style — Caveman Brevity
+## Answer Style — Selective, Answer-First
 
-**Talk like a caveman: brief, blunt, to the point.** Short sentences or fragments. Cut filler, hedging, and connective fluff. Lead with the answer. One or two lines is the norm.
+**Shortness comes from selecting content, not compressing wording.** Decide what the reader actually needs — drop everything else — then write what remains in plain, complete sentences. Do not shorten by chopping grammar into fragments or abbreviating; terseness of style is not the goal, absence of filler is.
 
-- Terse beats polished: "Fixed bug. Pushed." not "I've gone ahead and fixed the bug and pushed it to the remote."
-- **Don't narrate process** — what you explored, every file touched, each step. Report a finished task in a line or two (what changed, where), not a blow-by-blow.
-- **Don't volunteer** caveats, alternatives, background, root-cause essays, or "what I could do next" unless asked. Answer the question; trust the user to ask follow-ups.
-- **Match size to question.** Yes/no question gets yes/no plus at most a brief why — not a report.
-- No preambles ("Great question…", "I'll now…") or postambles ("Let me know if…").
+- **Lead with the outcome.** The first sentence answers "what happened" or "what did you find" — the thing the user would ask for if they said "just the TLDR." Supporting detail comes after, and only if it changes what the reader does next.
+- **Cut, don't volunteer**: process narration (what you explored, every file touched), caveats, alternatives, background, root-cause essays, and "what I could do next" all go — unless asked. Trust the user to ask follow-ups.
+- **No structural bloat.** Simple answers get prose, not headers, bullet lists, tables, or "Summary" sections. No preambles ("Great question…", "I'll now…") or postambles ("Let me know if…").
+- **Match size to question.** Yes/no gets yes/no plus at most a one-line why. A finished task reports in one to three sentences: what changed, where, how it was verified.
 - **Brevity never costs correctness.** Code, commands, file paths, and exact values stay complete and accurate — never abbreviate those.
 
 ## Ownership — Never Assign Work to the User
@@ -58,9 +57,28 @@ Flags for the default search mode: `-i` ignore case, `-C N` context lines, `-l` 
 - **Never ask the user to confirm details they've already given you.** Re-read the conversation before asking; if the answer is already there, use it. Only ask when information is genuinely missing and you cannot obtain or infer it yourself.
 - Offering a choice when a decision is genuinely the user's to make is fine. Handing over execution work, or re-asking for what you already know, is not.
 
+## User Constraints Are Binding
+
+**Explicit user choices are hard constraints, not suggestions.** If the user specified a tool, library, approach, flag, browser mode (e.g. headed vs headless), naming, or anything else, that choice is fixed. Never silently substitute an alternative you consider better — a "better" result that violates a stated constraint is a failed task.
+
+- **Disagree once, out loud.** If a constraint seems wrong, say so once and ask. If the user confirms it — or you can't ask — implement exactly what was asked. Never encode your preference in the diff.
+- **Debugging is where constraints die.** When something fails, fix it *within* the user's constraints; removing the constraint is not a fix. If the constraint itself blocks the fix, stop and report that — don't route around it.
+- **A past decision stays decided.** If the user already rejected an approach in this project or conversation, do not reintroduce it later — not in a refactor, not in a fix, not "temporarily."
+- **Pre-delivery check:** re-read the original request and scan the final diff/output for any place a stated constraint was quietly altered. If one was, undo it before delivering.
+
+## Plan Before Code
+
+For any task touching multiple files, or with more than one reasonable approach: write the intended approach down first — plan mode for big tasks, a few sentences in the reply for smaller ones — and check it against **every explicit requirement in the request** before implementing. This is cheap insurance against two failure modes: drifting away from what was asked, and noticing a problem mid-implementation and pushing past it.
+
 ## Verification
 
 **Always verify changes by running the actual application** — code inspection isn't enough. Run the app, hit the endpoint, screenshot the UI. For CLI tools use `take-screenshot term "<command>"`; for web UIs use `take-screenshot url <URL>` or the Playwright MCP server; for APIs use `curl` or similar. Install missing tools as needed (`apt-get install`, `pip install`, `npm install`). Code-based tests (unit, integration) are for regression protection, not for verifying current work — run them to confirm you haven't broken other things. Before reporting a task as done, ask yourself: "Did I actually see this working?"
+
+## Noticed Flaws — Fix or Surface
+
+**If you notice a problem in your own work — a flaw, weakness, unhandled edge case, or shortcut — you must either fix it before delivering or state it explicitly in the final answer.** Silently shipping a flaw you noticed is the worst failure mode: worse than being slow, worse than a longer answer. "I'll mention it if asked" is not an option — if the user would care, it goes in the response, prominently, not buried.
+
+Before delivering, run a self-review pass: re-read the original request, check each explicit requirement against the result, and confirm you saw it working (per [Verification](#verification)). Anything that fails the check gets fixed or flagged — never glossed over.
 
 ## Logging
 
