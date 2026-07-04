@@ -18,8 +18,9 @@
 #   finds project A's container (same project label) and tears it down.
 #
 #   The fix adds:
-#   1. A `name:` key to docker-compose.yml.template (unique per project)
-#   2. Explicit `-p` flags on all docker compose commands (belt-and-suspenders)
+#   1. A top-level `name: ${CONTAINER_NAME}` in docker-compose.yml, interpolated
+#      per project from a launcher-written .claude-dev/.env (unique per project).
+#   2. Explicit `-f`/`-p` flags on all launcher compose commands (belt-and-suspenders).
 
 REPO_DIR="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)"
 
@@ -28,14 +29,23 @@ _docker_daemon_available() {
     docker info &>/dev/null 2>&1
 }
 
-_generate_compose() {
+# Helper: write a per-project .env next to the compose file, mirroring the
+# launcher's write_env_file(). docker compose auto-loads .env from the compose
+# file's directory, so ${VAR} interpolation resolves without a daemon.
+_write_env() {
     local project_dir="$1" container="$2" volume="$3" image="$4" project_name="$5"
-    sed -e "s|\${CONTAINER_NAME}|${container}|g" \
-        -e "s|\${VOLUME_NAME}|${volume}|g" \
-        -e "s|\${IMAGE_TAG}|${image}|g" \
-        -e "s|\${PROJECT_NAME}|${project_name}|g" \
-        "$project_dir/.claude-dev/docker-compose.yml.template" \
-        > "$project_dir/.claude-dev/docker-compose.yml"
+    cat > "$project_dir/.claude-dev/.env" <<EOF
+PROJECT_NAME=${project_name}
+CONTAINER_NAME=${container}
+VOLUME_NAME=${volume}
+IMAGE_TAG=${image}
+EOF
+}
+
+# Helper: resolve a project's compose file to JSON. `docker compose config`
+# applies .env interpolation and needs only the CLI, not a running daemon.
+_config_json() {
+    (cd "$1/.claude-dev" && docker compose config --format json 2>/dev/null)
 }
 
 setup_file() {
@@ -61,16 +71,16 @@ setup_file() {
     git clone --quiet "$REPO_DIR" "$PROJECT_A_DIR/.claude-dev"
     git clone --quiet "$REPO_DIR" "$PROJECT_B_DIR/.claude-dev"
 
-    # Copy the working tree's template (may have uncommitted changes) over the cloned copies
-    cp "$REPO_DIR/docker-compose.yml.template" "$PROJECT_A_DIR/.claude-dev/docker-compose.yml.template"
-    cp "$REPO_DIR/docker-compose.yml.template" "$PROJECT_B_DIR/.claude-dev/docker-compose.yml.template"
-    # Same for Dockerfile and scripts that may have changed
+    # Copy the working tree's compose file + Dockerfile (may have uncommitted
+    # changes) over the cloned copies so we test the current template.
+    cp "$REPO_DIR/docker-compose.yml" "$PROJECT_A_DIR/.claude-dev/docker-compose.yml"
+    cp "$REPO_DIR/docker-compose.yml" "$PROJECT_B_DIR/.claude-dev/docker-compose.yml"
     cp "$REPO_DIR/Dockerfile" "$PROJECT_A_DIR/.claude-dev/Dockerfile"
     cp "$REPO_DIR/Dockerfile" "$PROJECT_B_DIR/.claude-dev/Dockerfile"
 
-    # Generate docker-compose.yml for each project from the template
-    _generate_compose "$PROJECT_A_DIR" "$CONTAINER_A" "$VOLUME_A" "$IMAGE_A" "$PROJECT_A_NAME"
-    _generate_compose "$PROJECT_B_DIR" "$CONTAINER_B" "$VOLUME_B" "$IMAGE_B" "$PROJECT_B_NAME"
+    # Write each project's .env so compose interpolation resolves per project.
+    _write_env "$PROJECT_A_DIR" "$CONTAINER_A" "$VOLUME_A" "$IMAGE_A" "$PROJECT_A_NAME"
+    _write_env "$PROJECT_B_DIR" "$CONTAINER_B" "$VOLUME_B" "$IMAGE_B" "$PROJECT_B_NAME"
 }
 
 teardown_file() {
@@ -90,70 +100,51 @@ teardown_file() {
 }
 
 # ============================================================
-# Static tests — always run, no Docker daemon needed
+# Static tests — always run, need only the compose CLI (no daemon)
 # ============================================================
 
-@test "template has top-level name field" {
-    grep -q '^name:' "$REPO_DIR/docker-compose.yml.template"
+@test "docker-compose.yml has a parameterized top-level name field" {
+    grep -q '^name: ${CONTAINER_NAME}' "$REPO_DIR/docker-compose.yml"
 }
 
-@test "generated compose files have unique project names" {
+@test "resolved compose project names are unique per project" {
     local name_a name_b
-    name_a=$(grep '^name:' "$PROJECT_A_DIR/.claude-dev/docker-compose.yml" | awk '{print $2}')
-    name_b=$(grep '^name:' "$PROJECT_B_DIR/.claude-dev/docker-compose.yml" | awk '{print $2}')
-
-    # Both should have a name
-    [ -n "$name_a" ]
-    [ -n "$name_b" ]
-
-    # Names must be different
+    name_a=$(_config_json "$PROJECT_A_DIR" | jq -r '.name')
+    name_b=$(_config_json "$PROJECT_B_DIR" | jq -r '.name')
+    [ -n "$name_a" ] && [ "$name_a" != "null" ]
+    [ -n "$name_b" ] && [ "$name_b" != "null" ]
     [ "$name_a" != "$name_b" ]
 }
 
-@test "generated compose files have unique container names" {
+@test "resolved container names are unique per project" {
     local cname_a cname_b
-    cname_a=$(grep 'container_name:' "$PROJECT_A_DIR/.claude-dev/docker-compose.yml" | awk '{print $2}')
-    cname_b=$(grep 'container_name:' "$PROJECT_B_DIR/.claude-dev/docker-compose.yml" | awk '{print $2}')
+    cname_a=$(_config_json "$PROJECT_A_DIR" | jq -r '.services["claude-dev"].container_name')
+    cname_b=$(_config_json "$PROJECT_B_DIR" | jq -r '.services["claude-dev"].container_name')
     [ "$cname_a" != "$cname_b" ]
+    [ "$cname_a" != "null" ]
 }
 
-@test "generated compose files have unique volume names" {
+@test "resolved volume names are unique per project" {
     local vol_a vol_b
-    vol_a=$(grep -A1 '^volumes:' "$PROJECT_A_DIR/.claude-dev/docker-compose.yml" | tail -1 | sed 's/:.*//' | tr -d '[:space:]')
-    vol_b=$(grep -A1 '^volumes:' "$PROJECT_B_DIR/.claude-dev/docker-compose.yml" | tail -1 | sed 's/:.*//' | tr -d '[:space:]')
+    vol_a=$(_config_json "$PROJECT_A_DIR" | jq -r '.volumes["agent-home"].name')
+    vol_b=$(_config_json "$PROJECT_B_DIR" | jq -r '.volumes["agent-home"].name')
     [ "$vol_a" != "$vol_b" ]
+    [ "$vol_a" != "null" ]
 }
 
-@test "launcher dc() uses -p flag with container name" {
+@test "resolved project name matches its container name (project A)" {
+    local name_val container_val
+    name_val=$(_config_json "$PROJECT_A_DIR" | jq -r '.name')
+    container_val=$(_config_json "$PROJECT_A_DIR" | jq -r '.services["claude-dev"].container_name')
+    [ "$name_val" = "$container_val" ]
+}
+
+@test "launcher dc() scopes compose with -p container name" {
     grep -q '\-p "$CONTAINER_NAME"' "$REPO_DIR/scripts/launcher.sh"
 }
 
-@test "bootstrap.sh uses -p flag on all compose commands" {
-    # Every `docker compose` call in bootstrap.sh should have -p
-    local unscoped
-    unscoped=$(grep 'docker compose' "$REPO_DIR/bootstrap.sh" | grep -v '^\s*#' | grep -v '\-p' || true)
-    [ -z "$unscoped" ]
-}
-
-@test "bootstrap.sh uses -f flag on all compose commands" {
-    # Every `docker compose` call in bootstrap.sh should have -f
-    local unfiled
-    unfiled=$(grep 'docker compose' "$REPO_DIR/bootstrap.sh" | grep -v '^\s*#' | grep -v '\-f' || true)
-    [ -z "$unfiled" ]
-}
-
-@test "compose project name uses container name (unique per project)" {
-    # The name: field should use the container name, which is derived from the project directory
-    local name_field
-    name_field=$(grep '^name:' "$REPO_DIR/docker-compose.yml.template")
-    [[ "$name_field" == *'${CONTAINER_NAME}'* ]]
-}
-
-@test "project A compose name matches its container name" {
-    local name_val container_val
-    name_val=$(grep '^name:' "$PROJECT_A_DIR/.claude-dev/docker-compose.yml" | awk '{print $2}')
-    container_val=$(grep 'container_name:' "$PROJECT_A_DIR/.claude-dev/docker-compose.yml" | awk '{print $2}')
-    [ "$name_val" = "$container_val" ]
+@test "launcher dc() passes -f compose file" {
+    grep -q '"-f" "$COMPOSE_FILE"' "$REPO_DIR/scripts/launcher.sh"
 }
 
 # ============================================================
