@@ -86,7 +86,7 @@ and is there evidence it is?*
 Do not take the close reason's word for anything. Use the verification
 tools the project provides (per `CLAUDE.md`):
 
-- **UI change** → `take-screenshot url <URL>` or Playwright MCP, with
+- **UI change** → `take-screenshot url <URL>`, with
   before/after where possible
 - **API/endpoint** → `curl -s <URL>` and inspect the response
 - **CLI tool** → run it; `take-screenshot term "<command>"` for output

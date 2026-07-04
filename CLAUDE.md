@@ -72,7 +72,7 @@ For any task touching multiple files, or with more than one reasonable approach:
 
 ## Verification
 
-**Always verify changes by running the actual application** — code inspection isn't enough. Run the app, hit the endpoint, screenshot the UI. For CLI tools use `take-screenshot term "<command>"`; for web UIs use `take-screenshot url <URL>` or the Playwright MCP server; for APIs use `curl` or similar. Install missing tools as needed (`apt-get install`, `pip install`, `npm install`). Code-based tests (unit, integration) are for regression protection, not for verifying current work — run them to confirm you haven't broken other things. Before reporting a task as done, ask yourself: "Did I actually see this working?"
+**Always verify changes by running the actual application** — code inspection isn't enough. Run the app, hit the endpoint, screenshot the UI. For CLI tools use `take-screenshot term "<command>"`; for web UIs use `take-screenshot url <URL>`; for APIs use `curl` or similar. Install missing tools as needed (`apt-get install`, `pip install`, `npm install`). Code-based tests (unit, integration) are for regression protection, not for verifying current work — run them to confirm you haven't broken other things. Before reporting a task as done, ask yourself: "Did I actually see this working?"
 
 ## Noticed Flaws — Fix or Surface
 
@@ -131,15 +131,6 @@ This container has full browser and screenshot capabilities. **Use these as your
 
 Screenshots save to `/workspace/attachments/` by default. View them with the Read tool (supports PNG, JPG, WebP).
 
-### Playwright MCP Server
-
-For interactive browser testing, use the Playwright MCP server:
-
-- Navigate to URLs, click elements, fill forms
-- Take screenshots at any point during interaction
-- Verify multi-step UI workflows end-to-end
-- Test responsive layouts with device emulation
-
 ### Verification Examples
 
 ```bash
@@ -151,9 +142,6 @@ curl -s http://localhost:8080/api/health | jq .
 
 # Verify a CLI tool
 take-screenshot term "my-tool --version"
-
-# Verify with full browser interaction (via Playwright MCP)
-# Navigate → click → fill → screenshot
 ```
 
 ## Cleanup

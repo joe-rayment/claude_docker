@@ -33,9 +33,6 @@
     ]
   },
   "enableAllProjectMcpServers": true,
-  "enabledMcpjsonServers": [
-    "playwright"
-  ],
   "hooks": {
     "UserPromptSubmit": [
       {

@@ -14,9 +14,6 @@ take-screenshot url --full-page http://localhost:3000/dashboard
 
 # Mobile view
 take-screenshot url --device "iPhone 11" http://localhost:3000
-
-# Use Playwright MCP for interactive testing
-# (navigate, click buttons, fill forms, verify state changes)
 ```
 
 ## APIs and Endpoints
