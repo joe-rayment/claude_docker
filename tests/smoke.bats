@@ -260,7 +260,7 @@
 @test "staged agents include model-tiered oracle and scout" {
     [ -f /etc/claude-dev/configs/agents/oracle.md ]
     [ -f /etc/claude-dev/configs/agents/scout.md ]
-    grep -q '^model: fable' /etc/claude-dev/configs/agents/oracle.md
+    grep -q '^model: opus' /etc/claude-dev/configs/agents/oracle.md
     grep -q '^model: haiku' /etc/claude-dev/configs/agents/scout.md
 }
 
@@ -268,8 +268,8 @@
     grep -q '^model: sonnet' /etc/claude-dev/configs/agents/professor.md
 }
 
-@test "claude-settings.json pins Fable as advisor model" {
-    jq -e '.advisorModel == "claude-fable-5"' /etc/claude-dev/configs/claude-settings.json
+@test "claude-settings.json pins Opus as advisor model" {
+    jq -e '.advisorModel == "claude-opus-4-8"' /etc/claude-dev/configs/claude-settings.json
 }
 
 @test "knowledge-base index is staged" {
@@ -277,6 +277,6 @@
     grep -q 'BEADS_TROUBLESHOOTING' /opt/claude-dev/knowledge-base/README.md
 }
 
-@test "zshrc defines csf fable-session function" {
-    grep -qE '^(alias csf=|csf\(\))' /etc/claude-dev/configs/.zshrc
+@test "no staged config references the retired Fable model" {
+    ! grep -rqi 'fable' /etc/claude-dev/configs/
 }

@@ -72,21 +72,21 @@ For any task touching multiple files, or with more than one reasonable approach:
 
 ## Model Tiering — Spend Where It Compounds
 
-Three-tier economy. You (Opus 4.8) drive: implementation, debugging, and decisions stay with you.
+Two-tier economy. You (Opus 4.8, the top model in this container) drive: implementation, debugging, and decisions stay with you.
 
 | Tier | Who | Cost vs you | Use for |
 |------|-----|-------------|---------|
 | Haiku 4.5 | `scout` agent | ~1/5x | fan-out recon: find/usages/summaries |
 | Opus 4.8 | you | 1x | everything else |
-| Fable 5 | `oracle` agent | ~3x | user-invoked consults only |
+| Opus 4.8, fresh context | `oracle` agent | ~1x per consult | user-invoked consults only |
 
 **Scout first.** For searches, usage listings, and directory summaries, spawn `scout` (several in parallel for independent questions) instead of burning your own context — prefer it over the built-in Explore agent; scout is pinned to Haiku.
 
-**Oracle is user-invoked only — never spawn it unprompted.** When a genuine choke point is met — (1) a plan for a large or risky implementation (~5+ files, schema/API/auth, hard to reverse), (2) the same bug survived two genuinely different fix attempts, (3) a one-way-door architecture decision, (4) a significant diff about to be pushed — you may note *once* that an oracle consult is available, then proceed with your own best judgment. The user triggers it ("second opinion", "ask the oracle"); `/advisor` is also Fable-backed.
+**Oracle is user-invoked only — never spawn it unprompted.** The oracle runs the same top model you do; its leverage is a clean context, not a bigger one — no sunk assumptions, an explicit refute-first mandate, high reasoning effort, and a verdict-first output cap. When a genuine choke point is met — (1) a plan for a large or risky implementation (~5+ files, schema/API/auth, hard to reverse), (2) the same bug survived two genuinely different fix attempts, (3) a one-way-door architecture decision, (4) a significant diff about to be pushed — you may note *once* that an oracle consult is available, then proceed with your own best judgment. The user triggers it ("second opinion", "ask the oracle"); `/advisor` is backed the same way (`advisorModel`). For one-way doors the user can ask for a **panel**: two oracle consults in parallel with different lenses (correctness-first vs simplicity-first) — where they disagree is where to think hardest.
 
 **Consult protocol (when invoked):** first check `bd` memories and the knowledge-base index — the answer may already be paid for. Then send a distilled brief: goal, constraints, what was tried and what happened, the exact question, file pointers. Never paste large code or diffs; the oracle reads the repo itself. Act on the verdict instead of re-asking.
 
-**Whole-session Fable is the user's call only** — `/model` or the `csf` shell shortcut — never yours.
+**Fable 5 sunset (transitional — delete this paragraph after 2026-07-07).** Fable 5 retires 2026-07-08; nothing in this environment may depend on it. Until then the user can still escalate deliberately: an oracle consult on Fable is `oracle` spawned with the Agent tool's `model: "fable"` override; a whole-session escalation is `claude --dangerously-skip-permissions --model claude-fable-5`. If an oracle/advisor spawn ever fails with model-not-found (a container image built before the Opus repin), respawn with `model: "opus"` and repair the stale pin in `~/.claude/` (agents/oracle.md, settings.json `advisorModel`).
 
 **Never pay twice (capture rule).** When a consult — or your own hard-won debugging — yields a reusable insight (root cause, gotcha, recipe, rule), distill it immediately: `bd remember` for project facts; a `knowledge-base/` doc plus an index row in its `README.md` for step-shaped playbooks. The oracle ends every consult with a `Capture:` line — store it, don't drop it.
 
@@ -230,7 +230,6 @@ Follow the **[Session Completion](#session-completion)** workflow below — it i
 | `dlog` | `dev-log` |
 | `gs` | `git status` |
 | `cn` | `claude` (normal mode) |
-| `csf` | `claude --dangerously-skip-permissions --model claude-fable-5` (whole-session Fable, ~3x cost) |
 | `hx` / `vim` | Helix editor |
 | `view-logs` | Interactive Claude log viewer |
 | `clog-latest` | View latest Claude debug log |
