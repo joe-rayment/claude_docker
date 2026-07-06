@@ -70,6 +70,26 @@ Flags for the default search mode: `-i` ignore case, `-C N` context lines, `-l` 
 
 For any task touching multiple files, or with more than one reasonable approach: write the intended approach down first — plan mode for big tasks, a few sentences in the reply for smaller ones — and check it against **every explicit requirement in the request** before implementing. This is cheap insurance against two failure modes: drifting away from what was asked, and noticing a problem mid-implementation and pushing past it.
 
+## Model Tiering — Spend Where It Compounds
+
+Three-tier economy. You (Opus 4.8) drive: implementation, debugging, and decisions stay with you.
+
+| Tier | Who | Cost vs you | Use for |
+|------|-----|-------------|---------|
+| Haiku 4.5 | `scout` agent | ~1/5x | fan-out recon: find/usages/summaries |
+| Opus 4.8 | you | 1x | everything else |
+| Fable 5 | `oracle` agent | ~3x | user-invoked consults only |
+
+**Scout first.** For searches, usage listings, and directory summaries, spawn `scout` (several in parallel for independent questions) instead of burning your own context — prefer it over the built-in Explore agent; scout is pinned to Haiku.
+
+**Oracle is user-invoked only — never spawn it unprompted.** When a genuine choke point is met — (1) a plan for a large or risky implementation (~5+ files, schema/API/auth, hard to reverse), (2) the same bug survived two genuinely different fix attempts, (3) a one-way-door architecture decision, (4) a significant diff about to be pushed — you may note *once* that an oracle consult is available, then proceed with your own best judgment. The user triggers it ("second opinion", "ask the oracle"); `/advisor` is also Fable-backed.
+
+**Consult protocol (when invoked):** first check `bd` memories and the knowledge-base index — the answer may already be paid for. Then send a distilled brief: goal, constraints, what was tried and what happened, the exact question, file pointers. Never paste large code or diffs; the oracle reads the repo itself. Act on the verdict instead of re-asking.
+
+**Whole-session Fable is the user's call only** — `/model` or the `csf` shell shortcut — never yours.
+
+**Never pay twice (capture rule).** When a consult — or your own hard-won debugging — yields a reusable insight (root cause, gotcha, recipe, rule), distill it immediately: `bd remember` for project facts; a `knowledge-base/` doc plus an index row in its `README.md` for step-shaped playbooks. The oracle ends every consult with a `Capture:` line — store it, don't drop it.
+
 ## Verification
 
 **Always verify changes by running the actual application** — code inspection isn't enough. Run the app, hit the endpoint, screenshot the UI. For CLI tools use `take-screenshot term "<command>"`; for web UIs use `take-screenshot url <URL>`; for APIs use `curl` or similar. Install missing tools as needed (`apt-get install`, `pip install`, `npm install`). Code-based tests (unit, integration) are for regression protection, not for verifying current work — run them to confirm you haven't broken other things. Before reporting a task as done, ask yourself: "Did I actually see this working?"
@@ -171,7 +191,7 @@ When the template is dropped into a subdirectory of a larger git repo, `bd init`
 
 ## Knowledge Base
 
-Curated reference docs for common issues live in `/opt/claude-dev/knowledge-base/`. When you encounter problems with a technology (deployment failures, configuration issues, environment-specific bugs), check this directory for relevant guides before searching the web. These are proven solutions to issues that come up repeatedly.
+Curated playbooks for issues that were expensive to solve once live in `/opt/claude-dev/knowledge-base/` — currently `BEADS_TROUBLESHOOTING.md`, `CONFIG_SYNC.md`, `LIVE_TESTING.md`, `SNOWFLAKE_DEPLOY.md`, `TEARDOWN_RECOVERY.md`. Read `README.md` there first: it is a keyword index. Check it before debugging infrastructure, re-deriving a procedure, or escalating to the oracle — the answer may already be paid for. When you solve something that cost real effort, contribute it back following the convention in that README (see the capture rule in Model Tiering).
 
 ## Experience Testing
 
@@ -210,6 +230,7 @@ Follow the **[Session Completion](#session-completion)** workflow below — it i
 | `dlog` | `dev-log` |
 | `gs` | `git status` |
 | `cn` | `claude` (normal mode) |
+| `csf` | `claude --dangerously-skip-permissions --model claude-fable-5` (whole-session Fable, ~3x cost) |
 | `hx` / `vim` | Helix editor |
 | `view-logs` | Interactive Claude log viewer |
 | `clog-latest` | View latest Claude debug log |

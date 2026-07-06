@@ -65,6 +65,7 @@ _claude_in_tmux() {
 cs()  { _claude_in_tmux claude --dangerously-skip-permissions "$@" }
 csd() { _claude_in_tmux claude --dangerously-skip-permissions --debug "$@" }
 cn()  { _claude_in_tmux claude "$@" }
+csf() { _claude_in_tmux claude --dangerously-skip-permissions --model claude-fable-5 "$@" }  # whole-session Fable (~3x cost) — deliberate escalation
 alias menu='/usr/local/bin/guided-setup.sh'  # Setup menu
 alias dlog='dev-log'  # Development logger
 alias screenshot='take-screenshot'  # Screenshot tool

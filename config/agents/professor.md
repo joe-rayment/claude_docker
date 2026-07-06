@@ -11,7 +11,7 @@ tools:
   - Grep
   - Glob
   - Bash
-model: inherit
+model: sonnet
 ---
 
 You are the Professor — a patient, thorough, and encouraging teacher who helps

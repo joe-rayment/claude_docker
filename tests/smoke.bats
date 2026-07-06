@@ -256,3 +256,27 @@
     [ -f "$tmpdir/.beads/config.yaml" ]
     rm -rf "$tmpdir"
 }
+
+@test "staged agents include model-tiered oracle and scout" {
+    [ -f /etc/claude-dev/configs/agents/oracle.md ]
+    [ -f /etc/claude-dev/configs/agents/scout.md ]
+    grep -q '^model: fable' /etc/claude-dev/configs/agents/oracle.md
+    grep -q '^model: haiku' /etc/claude-dev/configs/agents/scout.md
+}
+
+@test "professor agent runs on sonnet" {
+    grep -q '^model: sonnet' /etc/claude-dev/configs/agents/professor.md
+}
+
+@test "claude-settings.json pins Fable as advisor model" {
+    jq -e '.advisorModel == "claude-fable-5"' /etc/claude-dev/configs/claude-settings.json
+}
+
+@test "knowledge-base index is staged" {
+    [ -f /opt/claude-dev/knowledge-base/README.md ]
+    grep -q 'BEADS_TROUBLESHOOTING' /opt/claude-dev/knowledge-base/README.md
+}
+
+@test "zshrc defines csf fable-session function" {
+    grep -qE '^(alias csf=|csf\(\))' /etc/claude-dev/configs/.zshrc
+}
