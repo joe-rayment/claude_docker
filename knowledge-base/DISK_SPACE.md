@@ -6,6 +6,28 @@ what to clean. Short answer: the container itself is almost never the
 problem — the number you see is the whole Docker Desktop VM disk, and the
 real garbage is host-side.
 
+## First: check for a runaway process (the case that actually happened)
+
+Before blaming the host VM, look for a live process filling the disk from
+inside — `du` scans miss it because the space is churning and gets cleaned
+when the process dies, making the fill look "mysterious":
+
+```
+ps -ef | grep -E 'bats[-]core|run[-]tests'   # this repo's known offender
+ls -d /tmp/bats-run-* | wc -l                # hundreds = recursion in progress
+```
+
+The 2026-07-06 disk-full incident was exactly this: the baked smoke test
+"run-tests.sh accepts smoke argument" ran `run-tests.sh smoke | head -1`,
+which re-runs the full suite containing itself — unbounded recursion, each
+level writing `/tmp/bats-run-*` dirs (measured: ~8G and 401 dirs in minutes)
+until resource exhaustion unwound it and bats cleanup erased the evidence.
+Fixed in repo `tests/smoke.bats` (2026-07-07); the baked copies stay armed
+until the next image rebuild. Do not invoke `run-tests.sh` at all pre-rebuild —
+the installed runner also predates `CLAUDE_DEV_TESTS` and silently ignores it,
+so every invocation reaches the armed baked suite. Run `bats
+/workspace/tests/smoke.bats` directly instead.
+
 ## The trap that wastes 30 minutes
 
 `df -h /` and `du -x /` disagree by ~100x:
@@ -81,7 +103,9 @@ full, that caps everything regardless of pruning.
 
 ## One-line takeaway
 
-Container full + `du -x` shows only a few GB + no `/var/lib/docker` + no
-`docker.sock` = host-side Docker VM garbage. Clear the safe caches inside
+First rule out a live runaway process (`ps` before `du` — a recursing test
+suite filled the disk from inside this very container). Then: container full
++ `du -x` shows only a few GB + no `/var/lib/docker` + no `docker.sock` =
+host-side Docker VM garbage. Clear the safe caches inside
 (marginal), then run `docker builder prune -a` / `docker image prune -a` on
 the host. Nothing inside the container is the cause.

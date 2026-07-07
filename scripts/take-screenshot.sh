@@ -62,10 +62,12 @@ cmd_url() {
                 shift
                 ;;
             --device)
+                [ $# -ge 2 ] || { echo "error: --device requires an argument" >&2; return 1; }
                 device="$2"
                 shift 2
                 ;;
             -o|--output)
+                [ $# -ge 2 ] || { echo "error: $1 requires an argument" >&2; return 1; }
                 output="$2"
                 shift 2
                 ;;
@@ -117,6 +119,7 @@ cmd_display() {
     while [ $# -gt 0 ]; do
         case "$1" in
             -o|--output)
+                [ $# -ge 2 ] || { echo "error: $1 requires an argument" >&2; return 1; }
                 output="$2"
                 shift 2
                 ;;
@@ -157,6 +160,7 @@ cmd_term() {
     while [ $# -gt 0 ]; do
         case "$1" in
             -o|--output)
+                [ $# -ge 2 ] || { echo "error: $1 requires an argument" >&2; return 1; }
                 output="$2"
                 shift 2
                 ;;

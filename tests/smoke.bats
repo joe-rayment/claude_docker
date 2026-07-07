@@ -131,10 +131,25 @@
 }
 
 @test "run-tests.sh accepts smoke argument" {
-    run bash -c "run-tests.sh smoke 2>&1 | head -1"
-    [ "$status" -eq 0 ] || [ "$status" -eq 1 ]
-    # Should not show "Unknown test suite" error
-    [[ "$output" != *"Unknown"* ]]
+    # Point TEST_DIR at a nonexistent path: 'smoke' must be accepted (we reach
+    # the dir check, not usage) WITHOUT spawning a real nested suite — the old
+    # version ran the full baked suite recursively and stalled the run for minutes.
+    # Pre-rebuild images ship a run-tests.sh that IGNORES CLAUDE_DEV_TESTS and
+    # would recurse anyway — skip rather than detonate.
+    grep -q 'CLAUDE_DEV_TESTS' "$(command -v run-tests.sh)" \
+        || skip "installed run-tests.sh predates CLAUDE_DEV_TESTS (stale image)"
+    run env CLAUDE_DEV_TESTS=/nonexistent-claude-dev-tests run-tests.sh smoke
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"not found"* ]]
+    [[ "$output" != *"Usage"* ]]
+}
+
+@test "run-tests.sh rejects unknown suite with usage" {
+    grep -q 'CLAUDE_DEV_TESTS' "$(command -v run-tests.sh)" \
+        || skip "installed run-tests.sh predates CLAUDE_DEV_TESTS (stale image)"
+    run env CLAUDE_DEV_TESTS=/nonexistent-claude-dev-tests run-tests.sh bogus-suite
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"Usage"* ]]
 }
 
 @test "bd binary is installed" {

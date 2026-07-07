@@ -15,6 +15,46 @@ On every container start, the entrypoint hashes the staged configs in `/etc/clau
 
 Direct edits to these files survive restarts but are lost when the image config checksum changes (typically after `./claude-dev --update` or `--rebuild`).
 
+## The four layers (and what updates when)
+
+A config change is not "done" until you know which layers have it:
+
+| # | Layer | Path examples | Updates when |
+|---|-------|---------------|--------------|
+| 1 | Repo (source of truth) | `config/`, `scripts/`, `tests/`, `knowledge-base/` | you edit + commit |
+| 2 | Image-baked | `/etc/claude-dev/configs/`, `/opt/claude-dev/{tests,knowledge-base}/`, `/usr/local/bin/<script>` | **host `./claude-dev --rebuild` only** |
+| 3 | Live volume | `~/.zshrc`, `~/.claude/settings.json`, `~/.claude/agents/*.md` | container start, only if layer-2 checksum changed |
+| 4 | Local overrides | `~/.zshrc.local`, `~/.claude/settings.local.json` | merged over layer 3 every start; **local wins**; survives rebuilds |
+
+When changing a setting "everywhere", check all four — especially layer 4: a stale
+`settings.local.json` key silently re-wins the merge on every start (an old
+`advisorModel` pin survived a template fix exactly this way). For immediate effect
+without a rebuild, live-patch layer 2/3 yourself (`sudo cp scripts/x.sh
+/usr/local/bin/x`, `cp config/agents/a.md ~/.claude/agents/`) — the next rebuild
+converges them anyway.
+
+## Verification trap: run-tests.sh tests the baked image
+
+`run-tests.sh` defaults to `/opt/claude-dev/tests/` (layer 2). After editing repo
+tests or configs, a green default run means nothing — the baked suite may predate
+your tests entirely. Verify repo work with:
+
+```bash
+CLAUDE_DEV_TESTS=/workspace/tests run-tests.sh smoke
+```
+
+Tests asserting layer-2 paths stay red until the host rebuild — staleness, not
+regression; never "fix" them by editing the assertions.
+
+## Gotcha: the live settings.json diverges — and the session writes to it
+
+`~/.claude/settings.json` (layer 3) is only re-copied when the layer-2 checksum
+changes, so a container provisioned from an old image keeps old keys, hooks, and
+plugins indefinitely — the template being clean does not mean the container is.
+Also, a *running* Claude session re-persists some keys (e.g. its active `agent`)
+back into `settings.json` on exit: an edit made mid-session can reappear. Re-check
+after the session ends.
+
 ## Persisting customizations
 
 | Config | Override file | Mechanism |

@@ -208,6 +208,10 @@ run-tests.sh smoke    # Smoke tests only
 run-tests.sh experience  # Experience tests only
 ```
 
+**Until the next image rebuild, do NOT invoke `run-tests.sh` at all** — the installed copy predates the `CLAUDE_DEV_TESTS` override (it silently ignores the variable) and its baked suite contains a test that re-invokes the full suite recursively, filling the disk with `/tmp/bats-run-*` dirs (root cause of the 2026-07-06 disk-full incident; fixed in repo `tests/smoke.bats`, baked copies still armed). Pre-rebuild, run the repo suite directly: `bats /workspace/tests/smoke.bats`. After a rebuild, `CLAUDE_DEV_TESTS=/workspace/tests run-tests.sh` works as documented below.
+
+**`run-tests.sh` tests the baked image, not your working tree.** By default it runs `/opt/claude-dev/tests/` — the copy baked at the last image build — so a green run proves nothing about repo edits. To verify changes to `tests/`, `config/`, or `scripts/` before a rebuild, run `CLAUDE_DEV_TESTS=/workspace/tests run-tests.sh smoke`. Even then, assertions against staged artifacts (`/etc/claude-dev/configs/`, `/opt/claude-dev/`, `/usr/local/bin/`) stay red until the next host `./claude-dev --rebuild` — image staleness, not regression (see `knowledge-base/CONFIG_SYNC.md`).
+
 ## Session Checklist
 
 ### Start
