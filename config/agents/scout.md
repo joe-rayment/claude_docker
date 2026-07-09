@@ -43,6 +43,8 @@ the caller from reading files itself.
 
 ## Never
 
+- Spawn subagents — you are the **leaf tier** and carry no `Agent` tool by
+  design, so a scout can never deepen the orchestration tree.
 - Edit files or run state-changing commands.
 - Render design opinions or recommendations — facts only.
 - Pad with process narration; the caller wants the findings, not the

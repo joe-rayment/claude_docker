@@ -15,6 +15,7 @@ is the source; the `/opt` copy refreshes on image rebuild).
 | LIVE_TESTING.md | verify, screenshot, take-screenshot, playwright, curl, httpie, live test, xvfb | Behavioral verification patterns for web apps, APIs, CLIs, GUIs, and DBs. |
 | SNOWFLAKE_DEPLOY.md | snowflake, snow cli, notebook, --replace, imports, external access, stage | Notebook deploys: --replace clears imports; ALTER NOTEBOOK to restore. |
 | TEARDOWN_RECOVERY.md | teardown, resume, nested git, subdirectory, embedded repo, restore | Remove/restore the template inside a larger repo without breaking git. |
+| TIERED_ORCHESTRATION.md | orchestrator, executor, scout, verifier, tier, roles, model slots, ANTHROPIC_DEFAULT_OPUS_MODEL, nested subagents, delegation, escalation, trust but verify, fallback, rollback | Role-based 3-tier orchestration: set three models per session with `tier`, nest ≤3 levels, verify worker output independently. |
 
 ## Contributing a playbook
 

@@ -65,6 +65,67 @@ _claude_in_tmux() {
 cs()  { _claude_in_tmux claude --dangerously-skip-permissions "$@" }
 csd() { _claude_in_tmux claude --dangerously-skip-permissions --debug "$@" }
 cn()  { _claude_in_tmux claude "$@" }
+
+# ── Tiered orchestration: bind the three model slots for a session ──────────
+# Roles are pinned to alias slots in agent frontmatter (executor→sonnet,
+# verifier & oracle→opus, scout→haiku). `tier` points those slots at concrete
+# models per session — no agent-file edits. The main session (= orchestrator)
+# launches on the reasoning slot. NEVER sets CLAUDE_CODE_SUBAGENT_MODEL, which
+# would collapse all three tiers onto one model.
+#
+#   tier                                # bind defaults, launch
+#   tier <reasoning> <worker> <recon>   # explicit trio (aliases or full ids)
+#   tier-show                           # print what's currently bound
+#   TIER_NO_PROBE=1 tier ...            # skip availability probing (bind blind)
+#
+# Each slot falls through its candidate list to the first available model and
+# prints what it actually bound — so if e.g. Fable is gone, reasoning degrades
+# to Opus and tells you. Probing costs one tiny `claude -p` ping per candidate
+# tried; export TIER_NO_PROBE=1 to skip it on the happy path.
+_TIER_REASON_FLOOR=(claude-opus-4-8 claude-sonnet-5 claude-haiku-4-5-20251001)
+_TIER_WORKER_FLOOR=(claude-sonnet-5 claude-haiku-4-5-20251001)
+_TIER_RECON_FLOOR=(claude-haiku-4-5-20251001 claude-sonnet-5)
+
+_tier_probe() {  # 0 if the model looks usable; best-effort, honors TIER_NO_PROBE
+    [ -n "$TIER_NO_PROBE" ] && return 0
+    command -v claude >/dev/null 2>&1 || return 0   # can't probe → trust the bind
+    timeout 30 claude --model "$1" -p 'reply: ok' >/dev/null 2>&1
+}
+
+_tier_pick() {   # _tier_pick <slot-label> <candidate>...  → echoes first usable
+    local slot=$1; shift
+    local want=$1 seen=" " m
+    for m in "$@"; do
+        case "$seen" in (*" $m "*) continue;; esac
+        seen="$seen$m "
+        if _tier_probe "$m"; then
+            [ "$m" = "$want" ] || print -P "%F{yellow}tier[$slot]%f falling back → $m" >&2
+            echo "$m"; return 0
+        fi
+        print -P "%F{yellow}tier[$slot]%f $m unavailable, trying next…" >&2
+    done
+    print -P "%F{red}tier[$slot]%f no candidate available%f" >&2
+    return 1
+}
+
+tier() {
+    local r w c
+    r=$(_tier_pick reasoning "${1:-claude-opus-4-8}" $_TIER_REASON_FLOOR) || return 1
+    w=$(_tier_pick worker    "${2:-claude-sonnet-5}" $_TIER_WORKER_FLOOR) || return 1
+    c=$(_tier_pick recon     "${3:-claude-haiku-4-5-20251001}" $_TIER_RECON_FLOOR) || return 1
+    export ANTHROPIC_DEFAULT_OPUS_MODEL="$r"
+    export ANTHROPIC_DEFAULT_SONNET_MODEL="$w"
+    export ANTHROPIC_DEFAULT_HAIKU_MODEL="$c"
+    unset CLAUDE_CODE_SUBAGENT_MODEL   # never flatten the tiers
+    print -P "%F{cyan}tier bound%f  reasoning=$r  worker=$w  recon=$c"
+    _claude_in_tmux claude --dangerously-skip-permissions --model opus
+}
+
+tier-show() {
+    print -P "reasoning/orchestrator/verifier = ${ANTHROPIC_DEFAULT_OPUS_MODEL:-<unset → opus default>}"
+    print -P "worker/executor                 = ${ANTHROPIC_DEFAULT_SONNET_MODEL:-<unset → sonnet default>}"
+    print -P "recon/scout                      = ${ANTHROPIC_DEFAULT_HAIKU_MODEL:-<unset → haiku default>}"
+}
 alias menu='/usr/local/bin/guided-setup.sh'  # Setup menu
 alias dlog='dev-log'  # Development logger
 alias screenshot='take-screenshot'  # Screenshot tool

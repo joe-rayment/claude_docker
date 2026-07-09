@@ -70,23 +70,56 @@ Flags for the default search mode: `-i` ignore case, `-C N` context lines, `-l` 
 
 For any task touching multiple files, or with more than one reasonable approach: write the intended approach down first — plan mode for big tasks, a few sentences in the reply for smaller ones — and check it against **every explicit requirement in the request** before implementing. This is cheap insurance against two failure modes: drifting away from what was asked, and noticing a problem mid-implementation and pushing past it.
 
-## Model Tiering — Spend Where It Compounds
+## Model Tiering & Orchestration — Spend Where It Compounds
 
-Two-tier economy. You (Opus 4.8, the top model in this container) drive: implementation, debugging, and decisions stay with you.
+Tiering here is **role-based, never model-based.** Agents name *roles*; the concrete model behind each role is bound per session, so nothing breaks when models rotate. Three tiers, each pinned to an **alias slot** in its frontmatter; the slots point at whatever three models the session chose (see *Per-session model selection* below).
 
-| Tier | Who | Cost vs you | Use for |
-|------|-----|-------------|---------|
-| Haiku 4.5 | `scout` agent | ~1/5x | fan-out recon: find/usages/summaries |
-| Opus 4.8 | you | 1x | everything else |
-| Opus 4.8, fresh context | `oracle` agent | ~1x per consult | user-invoked consults only |
+| Tier / role | Slot | Default model | Can delegate to | Use for |
+|------|------|---------------|-----------------|---------|
+| **orchestrator** = you, the main session | `--model opus` at launch | Opus 4.8 | executor, verifier, scout | decompose, delegate, synthesize, decide |
+| **executor** (`executor` agent) | `sonnet` | Sonnet 5 | `scout` only | one well-scoped implementation slice, end to end |
+| **scout** (`scout` agent) — **leaf** | `haiku` | Haiku 4.5 | — (no `Agent` tool) | fan-out recon: find/usages/summaries |
+| **verifier** (`verifier` agent) — **leaf** | `opus` | Opus 4.8 | — (no `Agent` tool) | independent check of one worker claim |
+| **oracle** (`oracle` agent) — fresh context | `opus` | Opus 4.8 | — | user-invoked consults only |
 
-**Scout first.** For searches, usage listings, and directory summaries, spawn `scout` (several in parallel for independent questions) instead of burning your own context — prefer it over the built-in Explore agent; scout is pinned to Haiku.
+The tree tops out at **orchestrator → executor → scout = 3 role-levels**. The shape is *structurally* enforced, not just by convention: scout and verifier carry no `Agent` tool so they physically cannot spawn children; executor's only grant is `Agent(scout)` so it can spawn nothing deeper than a leaf. (Claude Code's own hard ceiling is depth 5; ours is tighter by design.) Confirm nesting actually happened via the **subagent panel** below the prompt — each row shows a `(+N)` descendant count; a flat call means your "delegation" collapsed.
 
-**Oracle is user-invoked only — never spawn it unprompted.** The oracle runs the same top model you do; its leverage is a clean context, not a bigger one — no sunk assumptions, an explicit refute-first mandate, high reasoning effort, and a verdict-first output cap. When a genuine choke point is met — (1) a plan for a large or risky implementation (~5+ files, schema/API/auth, hard to reverse), (2) the same bug survived two genuinely different fix attempts, (3) a one-way-door architecture decision, (4) a significant diff about to be pushed — you may note *once* that an oracle consult is available, then proceed with your own best judgment. The user triggers it ("second opinion", "ask the oracle"); `/advisor` is backed the same way (`advisorModel`). For one-way doors the user can ask for a **panel**: two oracle consults in parallel with different lenses (correctness-first vs simplicity-first) — where they disagree is where to think hardest.
+**Delegation-down is the default; depth 2 is the default, 3 is the ceiling.** Decompose, hand executors independent slices, synthesize their compressed returns. Add the 3rd level (executor spawning scout, or a verifier fan-out) only when volume or an independent check earns it. **Shallow beats deep:** before a parent delegates, it must expect the child to do real work and return a *compressed* result — if you could produce it in a couple of tool calls, don't delegate. A bad decomposition poisons every worker under it, so keep the strongest model (you) on decomposition and synthesis and push bulk/mechanical work down; the cost leverage is in the worker tier, not in you doing the volume.
+
+**Upward escalation** is the alternative pattern, for debugging and genuinely uncertain work: the leaf attempts the task and calls a stronger tier *only when stuck*, so you pay the higher tier only on real failures. The oracle path already encodes this (scout/you try, escalate to the oracle when a bug survives two fixes). Use escalation when you can't cleanly decompose up front; use delegation-down when you can.
+
+**Scout first.** For searches, usage listings, and directory summaries, spawn `scout` (several in parallel for independent questions) instead of burning your own context — prefer it over the built-in Explore agent.
+
+### Trust, but verify — the orchestrator's standing policy
+
+A worker's summary is an **input to check, not a fact.** Any non-trivial worker output is verified *independently*, by a `verifier` with fresh context and no stake in the answer — never by the worker grading itself (a model asked to recheck its own reasoning rationalizes a plausible-but-wrong result).
+
+- **Verification is mandatory** before you declare a task done, after file-writes + test output exist, and on any worker result you will fold into the final answer. **Unverified worker claims are not accepted as done.**
+- **How:** research claims are cross-checked against **primary sources**; code changes against **tests/build/an independent read**. Spawn **one `verifier` per finding** so the intermediate checks stay out of your context — the verifier returns a verdict, not a transcript.
+- **Proportionate:** skip verification only on trivial/self-evident results (the same threshold as "don't nest this"). Require it wherever a wrong-but-plausible result would propagate. When in doubt, verify — a bad worker output that reaches the final answer is the expensive failure.
+
+The `oracle` (user-invoked, below) is the coarse checkpoint-level version of this for plans and big diffs; the `verifier` is the automatic, per-finding version the orchestrator runs itself.
+
+### Per-session model selection (bind three models, no file edits)
+
+Roles are pinned to the `opus` / `sonnet` / `haiku` alias slots; a session points those slots at concrete models with the `tier` launcher (defined in `.zshrc`). No agent file is ever edited to switch models.
+
+```
+tier                                  # bind defaults (Opus 4.8 / Sonnet 5 / Haiku 4.5), launch
+tier <reasoning> <worker> <recon>     # explicit trio (aliases or full model ids)
+tier-show                             # print the current binding
+```
+
+`tier` exports `ANTHROPIC_DEFAULT_OPUS_MODEL` (reasoning: orchestrator, verifier, oracle), `ANTHROPIC_DEFAULT_SONNET_MODEL` (worker: executor), and `ANTHROPIC_DEFAULT_HAIKU_MODEL` (recon: scout), then launches on `--model opus`.
+
+- **Graceful degradation.** Each slot has a fallback order (reasoning → Opus → Sonnet → Haiku; worker → Sonnet → Haiku; recon → Haiku → Sonnet). If a chosen model is unavailable (gated, out of credits, off-plan, safeguard-rerouted), `tier` falls through to the next candidate **without editing any file** and prints what it actually bound; the SessionStart hook also echoes the live trio. Example: `tier claude-fable-5 …` when Fable is retired binds the reasoning slot to Opus and says so.
+- **Footgun to avoid:** never set `CLAUDE_CODE_SUBAGENT_MODEL` — it overrides *every* subagent's model and would collapse all three tiers onto one. `tier` unsets it. Every role is explicitly slot-pinned, so no tier can silently run at the priciest available model.
+
+**Oracle is user-invoked only — never spawn it unprompted.** The oracle runs on the reasoning slot (same as you); its leverage is a clean context, not a bigger model — no sunk assumptions, an explicit refute-first mandate, high reasoning effort, and a verdict-first output cap. When a genuine choke point is met — (1) a plan for a large or risky implementation (~5+ files, schema/API/auth, hard to reverse), (2) the same bug survived two genuinely different fix attempts, (3) a one-way-door architecture decision, (4) a significant diff about to be pushed — you may note *once* that an oracle consult is available, then proceed with your own best judgment. The user triggers it ("second opinion", "ask the oracle"); `/advisor` is backed the same way (`advisorModel`). For one-way doors the user can ask for a **panel**: two oracle consults in parallel with different lenses (correctness-first vs simplicity-first) — where they disagree is where to think hardest.
 
 **Consult protocol (when invoked):** first check `bd` memories and the knowledge-base index — the answer may already be paid for. Then send a distilled brief: goal, constraints, what was tried and what happened, the exact question, file pointers. Never paste large code or diffs; the oracle reads the repo itself. Act on the verdict instead of re-asking.
 
-**Fable 5 sunset (transitional — delete this paragraph after 2026-07-07).** Fable 5 retires 2026-07-08; nothing in this environment may depend on it. Until then the user can still escalate deliberately: an oracle consult on Fable is `oracle` spawned with the Agent tool's `model: "fable"` override; a whole-session escalation is `claude --dangerously-skip-permissions --model claude-fable-5`. If an oracle/advisor spawn ever fails with model-not-found (a container image built before the Opus repin), respawn with `model: "opus"` and repair the stale pin in `~/.claude/` (agents/oracle.md, settings.json `advisorModel`).
+**Model unavailable / not-found.** Because roles bind to alias slots, a retired or gated model degrades automatically via the `tier` fallback — you don't edit agent files. If an agent spawn ever fails with model-not-found anyway (e.g. a slot bound to a model this account can't use), re-run `tier` with an available model for that slot, or let the floor default win. The full playbook (roles, slots, fallback, verification, rollback) is `knowledge-base/TIERED_ORCHESTRATION.md`.
 
 **Never pay twice (capture rule).** When a consult — or your own hard-won debugging — yields a reusable insight (root cause, gotcha, recipe, rule), distill it immediately: `bd remember` for project facts; a `knowledge-base/` doc plus an index row in its `README.md` for step-shaped playbooks. The oracle ends every consult with a `Capture:` line — store it, don't drop it.
 
