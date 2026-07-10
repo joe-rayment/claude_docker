@@ -109,6 +109,7 @@ if [ ! -f "$SETTINGS" ]; then
     printf '{}\n' > "$SETTINGS"
 fi
 
+orig_mode=$(stat -c %a "$SETTINGS" 2>/dev/null) || orig_mode=644
 tmp=$(mktemp "$SETTINGS.XXXXXX") || exit 1
 if jq --arg r "$R" --arg w "$W" --arg c "$C" '
         .model = $r
@@ -118,6 +119,7 @@ if jq --arg r "$R" --arg w "$W" --arg c "$C" '
                   | .ANTHROPIC_DEFAULT_HAIKU_MODEL  = $c
                   | del(.CLAUDE_CODE_SUBAGENT_MODEL))
     ' "$SETTINGS" > "$tmp" 2>/dev/null && jq -e . "$tmp" >/dev/null 2>&1; then
+    chmod "$orig_mode" "$tmp" 2>/dev/null
     mv "$tmp" "$SETTINGS"
 else
     rm -f "$tmp"

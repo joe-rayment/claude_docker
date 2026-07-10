@@ -82,7 +82,11 @@ cn()  { _claude_in_tmux claude "$@" }
 # has written them — always go through tier-set.
 #
 # Shell sugar for the same engine (works even if you never open a session):
-tier()      { tier-set "$@" && _claude_in_tmux claude --dangerously-skip-permissions }
+tier() {
+    tier-set "$@" || return 1
+    [ "${1:-}" = show ] && return 0   # just printed the binding — don't launch
+    _claude_in_tmux claude --dangerously-skip-permissions
+}
 tier-show() { tier-set show }
 alias menu='/usr/local/bin/guided-setup.sh'  # Setup menu
 alias dlog='dev-log'  # Development logger
