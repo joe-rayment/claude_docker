@@ -66,115 +66,24 @@ cs()  { _claude_in_tmux claude --dangerously-skip-permissions "$@" }
 csd() { _claude_in_tmux claude --dangerously-skip-permissions --debug "$@" }
 cn()  { _claude_in_tmux claude "$@" }
 
-# ── Tiered orchestration: bind the three model slots for a session ──────────
-# Pick the session's model trio in the simplest possible form:
+# ── Tiered orchestration: /tier (slash command) is the primary interface ────
+# The engine is /usr/local/bin/tier-set (repo: scripts/tier-set.sh). It maps
+# aliases (fable/opus/sonnet/haiku) to concrete ids, probes availability with
+# downward degradation, warns if a lower slot outranks the orchestrator, and
+# writes the trio into ~/.claude/settings.json (.model + the three
+# ANTHROPIC_DEFAULT_*_MODEL env slots) — which Claude Code applies to NEW
+# sessions. Verifier & oracle use `model: inherit` and always track the
+# orchestrator. Inside any session:  /tier fable opus haiku   or  /tier show
 #
-#   tier                                # defaults (Opus 4.8 / Sonnet 5 / Haiku 4.5), launch
-#   tier fable opus haiku               # e.g. Fable orchestrator + Opus executors
-#   tier fable                          # partial trio: lower slots keep defaults
-#   tier-bind <trio>                    # bind only (exports, no launch) — testable
-#   tier-show                           # print what's currently bound
-#   TIER_NO_PROBE=1 tier ...            # skip availability probing (bind blind)
+# The slot vars in settings `env` are OWNED by tier-set — don't hand-edit
+# them, and never add CLAUDE_CODE_SUBAGENT_MODEL (tier-set removes it; it
+# would flatten all tiers onto one model). Settings `env` overrides shell
+# exports, so exporting slot vars in the shell does nothing once tier-set
+# has written them — always go through tier-set.
 #
-# Args are aliases (fable/opus/sonnet/haiku) or full model ids; aliases are
-# translated to concrete ids BEFORE export (never export an alias into the
-# env var that defines it). The orchestrator (main session) launches on the
-# reasoning slot; executor rides `sonnet`, scout rides `haiku`; verifier and
-# oracle use `model: inherit`, so they always run the orchestrator's own
-# model. Invariant: the orchestrator is the most capable of the three —
-# `tier-bind` warns if a lower slot outranks it.
-#
-# Each slot falls through its candidate list DOWNWARD to the first available
-# model and prints what it bound — a requested model that's gated or absent
-# (e.g. Fable on a plan without it) degrades to the next tier and tells you.
-# Probing costs one tiny `claude -p` ping per candidate tried.
-#
-# NEVER set CLAUDE_CODE_SUBAGENT_MODEL (collapses all tiers onto one model),
-# and NEVER put ANTHROPIC_DEFAULT_*_MODEL in settings.json `env` — settings
-# env OVERRIDES shell exports, which would freeze the slots and break
-# per-session rebinding.
-_TIER_REASON_FLOOR=(claude-opus-4-8 claude-sonnet-5 claude-haiku-4-5-20251001)
-_TIER_WORKER_FLOOR=(claude-sonnet-5 claude-haiku-4-5-20251001)
-_TIER_RECON_FLOOR=(claude-haiku-4-5-20251001 claude-sonnet-5)
-
-_tier_id() {  # alias → concrete id; unknown strings pass through (full ids)
-    case "$1" in
-        (fable)  echo claude-fable-5;;
-        (opus)   echo claude-opus-4-8;;
-        (sonnet) echo claude-sonnet-5;;
-        (haiku)  echo claude-haiku-4-5-20251001;;
-        (*)      echo "$1";;
-    esac
-}
-
-_tier_rank() {  # capability rank for the orchestrator-is-strongest check
-    case "$1" in
-        (claude-fable-*)  echo 4;;
-        (claude-opus-*)   echo 3;;
-        (claude-sonnet-*) echo 2;;
-        (claude-haiku-*)  echo 1;;
-        (*)               echo 0;;   # unknown → check skipped
-    esac
-}
-
-_tier_probe() {  # 0 if the model looks usable; best-effort, honors TIER_NO_PROBE
-    [ -n "$TIER_NO_PROBE" ] && return 0
-    command -v claude >/dev/null 2>&1 || return 0   # can't probe → trust the bind
-    timeout 30 claude --model "$1" -p 'reply: ok' >/dev/null 2>&1
-}
-
-_tier_pick() {   # _tier_pick <slot-label> <candidate>...  → echoes first usable
-    local slot=$1; shift
-    local want=$1 seen=" " m
-    for m in "$@"; do
-        case "$seen" in (*" $m "*) continue;; esac
-        seen="$seen$m "
-        if _tier_probe "$m"; then
-            [ "$m" = "$want" ] || print -P "%F{yellow}tier[$slot]%f falling back → $m" >&2
-            echo "$m"; return 0
-        fi
-        print -P "%F{yellow}tier[$slot]%f $m unavailable, trying next…" >&2
-    done
-    print -P "%F{red}tier[$slot]%f no candidate available%f" >&2
-    return 1
-}
-
-tier-bind() {   # bind the three slots (exports only; `tier` = bind + launch)
-    local r w c
-    r=$(_tier_pick reasoning "$(_tier_id "${1:-claude-opus-4-8}")" $_TIER_REASON_FLOOR) || return 1
-    w=$(_tier_pick worker    "$(_tier_id "${2:-claude-sonnet-5}")" $_TIER_WORKER_FLOOR) || return 1
-    c=$(_tier_pick recon     "$(_tier_id "${3:-claude-haiku-4-5-20251001}")" $_TIER_RECON_FLOOR) || return 1
-    local rr wr cr
-    rr=$(_tier_rank "$r"); wr=$(_tier_rank "$w"); cr=$(_tier_rank "$c")
-    if [ "$rr" -gt 0 ] && { { [ "$wr" -gt 0 ] && [ "$wr" -gt "$rr" ]; } || \
-                            { [ "$cr" -gt 0 ] && [ "$cr" -gt "$rr" ]; }; }; then
-        print -P "%F{yellow}tier warning:%f a lower slot outranks the reasoning slot — the orchestrator should be the most capable of the three" >&2
-    fi
-    export ANTHROPIC_DEFAULT_OPUS_MODEL="$r"
-    export ANTHROPIC_DEFAULT_SONNET_MODEL="$w"
-    export ANTHROPIC_DEFAULT_HAIKU_MODEL="$c"
-    unset CLAUDE_CODE_SUBAGENT_MODEL   # never flatten the tiers
-    print -P "%F{cyan}tier bound%f  reasoning=$r  worker=$w  recon=$c"
-}
-
-tier() {
-    tier-bind "$@" || return 1
-    _claude_in_tmux claude --dangerously-skip-permissions --model opus
-}
-
-tier-show() {
-    local f m=""
-    for f in "$HOME/.claude/settings.local.json" "$HOME/.claude/settings.json"; do
-        [ -f "$f" ] || continue
-        m=$(jq -r '.model // empty' "$f" 2>/dev/null)
-        [ -n "$m" ] && break
-    done
-    print -P "reasoning slot (tier launches orchestrator here) = ${ANTHROPIC_DEFAULT_OPUS_MODEL:-<unset → opus default>}"
-    print -P "worker slot / executor                           = ${ANTHROPIC_DEFAULT_SONNET_MODEL:-<unset → sonnet default>}"
-    print -P "recon slot / scout                               = ${ANTHROPIC_DEFAULT_HAIKU_MODEL:-<unset → haiku default>}"
-    print -P "plain-launch orchestrator (settings model)       = ${m:-<harness default>}"
-    print    "verifier & oracle inherit the orchestrator's model."
-}
+# Shell sugar for the same engine (works even if you never open a session):
+tier()      { tier-set "$@" && _claude_in_tmux claude --dangerously-skip-permissions }
+tier-show() { tier-set show }
 alias menu='/usr/local/bin/guided-setup.sh'  # Setup menu
 alias dlog='dev-log'  # Development logger
 alias screenshot='take-screenshot'  # Screenshot tool

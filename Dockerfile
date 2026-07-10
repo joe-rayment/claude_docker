@@ -171,6 +171,7 @@ COPY --chown=agent:agent scripts/dev-log.sh /usr/local/bin/dev-log
 COPY --chown=agent:agent scripts/start-professor.sh /usr/local/bin/start-professor.sh
 COPY --chown=agent:agent scripts/take-screenshot.sh /usr/local/bin/take-screenshot
 COPY --chown=agent:agent scripts/csearch.sh /usr/local/bin/csearch
+COPY --chown=agent:agent scripts/tier-set.sh /usr/local/bin/tier-set
 COPY --chown=agent:agent run-tests.sh /usr/local/bin/run-tests.sh
 COPY --chown=agent:agent tests/ /opt/claude-dev/tests/
 COPY --chown=agent:agent knowledge-base/ /opt/claude-dev/knowledge-base/
@@ -183,6 +184,7 @@ COPY config/.zshrc config/helix-config.toml config/intellishell-config.toml \
      /etc/claude-dev/configs/
 COPY config/agents/ /etc/claude-dev/configs/agents/
 COPY config/skills/ /etc/claude-dev/configs/skills/
+COPY config/claude-commands/ /etc/claude-dev/configs/commands/
 
 # Copy configuration files to agent home
 COPY --chown=agent:agent config/.zshrc /home/agent/.zshrc

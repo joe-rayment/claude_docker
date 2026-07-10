@@ -147,7 +147,12 @@
 @test "run-tests.sh rejects unknown suite with usage" {
     grep -q 'CLAUDE_DEV_TESTS' "$(command -v run-tests.sh)" \
         || skip "installed run-tests.sh predates CLAUDE_DEV_TESTS (stale image)"
-    run env CLAUDE_DEV_TESTS=/nonexistent-claude-dev-tests run-tests.sh bogus-suite
+    # The dir must exist (validated before the suite arg) but be empty, so no
+    # suite can possibly run; the bogus suite name must then hit the Usage path.
+    local empty
+    empty=$(mktemp -d)
+    run env CLAUDE_DEV_TESTS="$empty" run-tests.sh bogus-suite
+    rmdir "$empty"
     [ "$status" -eq 1 ]
     [[ "$output" == *"Usage"* ]]
 }
@@ -293,38 +298,50 @@
     grep -q 'BEADS_TROUBLESHOOTING' /opt/claude-dev/knowledge-base/README.md
 }
 
-@test "tier launcher stages the fable alias and inherit checkers" {
-    # Fable 5 is an active model: the launcher must offer it as a candidate
+@test "tier engine and /tier command are staged with inherit checkers" {
+    # Fable 5 is an active model: the engine must offer it as a candidate
     # (alias fable -> claude-fable-5) and the checkers must inherit the
     # orchestrator's model so they are never a tier below it.
-    grep -q 'claude-fable-5' /etc/claude-dev/configs/.zshrc
+    [ -x /usr/local/bin/tier-set ]
+    grep -q 'claude-fable-5' /usr/local/bin/tier-set
+    [ -f /etc/claude-dev/configs/commands/tier.md ]
+    grep -q 'tier-set' /etc/claude-dev/configs/.zshrc
     grep -q '^model: inherit' /etc/claude-dev/configs/agents/verifier.md
     grep -q '^model: inherit' /etc/claude-dev/configs/agents/oracle.md
 }
 
-@test "tier-bind maps aliases, degrades downward, and warns on inverted ranks" {
-    local blk fake
-    blk=$(mktemp)
-    awk '/── Tiered orchestration/{f=1} /^alias menu=/{f=0} f' \
-        /etc/claude-dev/configs/.zshrc > "$blk"
-    grep -q 'tier-bind' "$blk"
+@test "tier-set maps aliases, degrades downward, warns on inverted ranks, writes settings" {
+    local ts fake
+    ts=$(mktemp)
+    printf '{"env":{"CLAUDE_CODE_SUBAGENT_MODEL":"bad"},"permissions":{"allow":["WebSearch"]}}\n' > "$ts"
 
-    # alias trio maps to concrete ids (no probe needed)
-    run zsh -c "source $blk; TIER_NO_PROBE=1 tier-bind fable opus haiku >/dev/null 2>&1; echo \$ANTHROPIC_DEFAULT_OPUS_MODEL \$ANTHROPIC_DEFAULT_SONNET_MODEL \$ANTHROPIC_DEFAULT_HAIKU_MODEL"
+    # alias trio maps to concrete ids and lands in settings (no probe needed)
+    run env TIER_SETTINGS="$ts" TIER_NO_PROBE=1 /usr/local/bin/tier-set fable opus haiku
     [ "$status" -eq 0 ]
-    [[ "$output" == *"claude-fable-5 claude-opus-4-8 claude-haiku-4-5-20251001"* ]]
+    jq -e '.model == "claude-fable-5"
+           and .env.ANTHROPIC_DEFAULT_OPUS_MODEL == "claude-fable-5"
+           and .env.ANTHROPIC_DEFAULT_SONNET_MODEL == "claude-opus-4-8"
+           and .env.ANTHROPIC_DEFAULT_HAIKU_MODEL == "claude-haiku-4-5-20251001"
+           and (.env | has("CLAUDE_CODE_SUBAGENT_MODEL") | not)
+           and .permissions.allow == ["WebSearch"]' "$ts"
 
     # unavailable model degrades downward (probe stubbed, no API calls)
     fake=$(mktemp -d)
     printf '#!/bin/sh\ncase "$*" in *definitely-unavailable*) exit 1;; *) exit 0;; esac\n' > "$fake/claude"
     chmod +x "$fake/claude"
-    run env PATH="$fake:$PATH" zsh -c "source $blk; tier-bind definitely-unavailable-model >/dev/null 2>&1; echo \$ANTHROPIC_DEFAULT_OPUS_MODEL"
+    run env TIER_SETTINGS="$ts" PATH="$fake:$PATH" /usr/local/bin/tier-set definitely-unavailable-model
     [ "$status" -eq 0 ]
-    [[ "$output" == *"claude-opus-4-8"* ]]
+    jq -e '.model == "claude-opus-4-8"' "$ts"
 
     # a lower slot outranking the reasoning slot draws a warning
-    run zsh -c "source $blk; TIER_NO_PROBE=1 tier-bind haiku opus 2>&1 >/dev/null"
+    run env TIER_SETTINGS="$ts" TIER_NO_PROBE=1 /usr/local/bin/tier-set haiku opus
     [[ "$output" == *"outranks"* ]]
 
-    rm -rf "$blk" "$fake"
+    # corrupt settings are left untouched
+    printf 'NOT JSON' > "$ts"
+    run env TIER_SETTINGS="$ts" TIER_NO_PROBE=1 /usr/local/bin/tier-set fable
+    [ "$status" -ne 0 ]
+    [ "$(cat "$ts")" = "NOT JSON" ]
+
+    rm -rf "$ts" "$fake"
 }

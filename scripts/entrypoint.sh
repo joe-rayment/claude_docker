@@ -98,6 +98,9 @@ if [ "$IMAGE_HASH" != "$VOLUME_HASH" ]; then
     # Deploy custom skills (directory-based: ~/.claude/skills/<name>/SKILL.md)
     mkdir -p /home/agent/.claude/skills
     cp -r /etc/claude-dev/configs/skills/. /home/agent/.claude/skills/ 2>/dev/null || true
+    # Deploy custom slash commands (~/.claude/commands/<name>.md)
+    mkdir -p /home/agent/.claude/commands
+    cp /etc/claude-dev/configs/commands/*.md /home/agent/.claude/commands/ 2>/dev/null || true
     # Validate settings JSON — warn but don't block (corruption is the concern, not absence)
     if [ -f /home/agent/.claude/settings.json ] && ! jq empty /home/agent/.claude/settings.json 2>/dev/null; then
         echo -e "\033[33m⚠  WARNING: /home/agent/.claude/settings.json contains invalid JSON.\033[0m"

@@ -60,46 +60,55 @@ the "delegation" collapsed to a single agent.
 
 ## Setting the three models per session (no file edits)
 
-Say the combination you want, in the simplest form. The `tier` launcher (in
-`.zshrc`) translates alias args to concrete IDs, exports the slots, and
-launches:
+Say the combination you want, in the simplest form, from inside any session —
+the **`/tier` slash command** (`~/.claude/commands/tier.md`, staged from
+`config/claude-commands/`):
 
 ```
-tier                                # defaults: Opus 4.8 / Sonnet 5 / Haiku 4.5
-tier fable opus haiku               # Fable orchestrator + Opus executors + Haiku scouts
-tier fable                          # partial trio: lower slots keep defaults
-tier-bind <trio>                    # bind only (exports, no launch) — testable
-tier-show                           # print the current binding
-TIER_NO_PROBE=1 tier ...            # skip availability probing (bind blind)
+/tier fable opus haiku              # Fable orchestrator + Opus executors + Haiku scouts
+/tier fable                         # partial trio: lower slots keep defaults
+/tier show                          # print the current binding
 ```
+
+The engine is **`tier-set`** (`/usr/local/bin/tier-set`, repo
+`scripts/tier-set.sh`) — a standalone POSIX script, no shell functions
+required. Optional shell sugar in `.zshrc` drives the same engine:
+`tier <trio>` (= `tier-set` + launch) and `tier-show` (= `tier-set show`).
+`TIER_NO_PROBE=1` skips availability probing; `TIER_SETTINGS=<path>` retargets
+the settings file (used by the test suite).
 
 Alias map: `fable→claude-fable-5`, `opus→claude-opus-4-8`,
 `sonnet→claude-sonnet-5`, `haiku→claude-haiku-4-5-20251001`; anything else
-passes through as a full model ID. Aliases are translated **before** export —
-never export an alias string into the env var that defines that alias.
-`tier-bind` warns when a lower slot outranks the reasoning slot
-(capability order fable > opus > sonnet > haiku; unknown IDs skip the check).
+passes through as a full model ID. Aliases are mapped **before** writing —
+never an alias string into the env var that defines that alias. `tier-set`
+warns when a lower slot outranks the reasoning slot (capability order
+fable > opus > sonnet > haiku; unknown IDs skip the check).
 
-It exports:
+It writes into `~/.claude/settings.json`:
 
-| Env var | Slot | Roles that ride it |
-|---------|------|--------------------|
-| `ANTHROPIC_DEFAULT_OPUS_MODEL`   | reasoning | orchestrator (via `--model opus` at launch) |
-| `ANTHROPIC_DEFAULT_SONNET_MODEL` | worker    | executor |
-| `ANTHROPIC_DEFAULT_HAIKU_MODEL`  | recon     | scout |
+| Settings key | Slot | Roles that ride it |
+|--------------|------|--------------------|
+| `.model`                               | orchestrator | any plain `claude` launch |
+| `.env.ANTHROPIC_DEFAULT_OPUS_MODEL`    | reasoning    | anything on the `opus` alias |
+| `.env.ANTHROPIC_DEFAULT_SONNET_MODEL`  | worker       | executor |
+| `.env.ANTHROPIC_DEFAULT_HAIKU_MODEL`   | recon        | scout |
 
-then launches `claude --dangerously-skip-permissions --model opus` (the
-main session = orchestrator = reasoning slot). **Verifier and oracle don't
-ride a slot** — their frontmatter is `model: inherit`, so they run the
-orchestrator's own model in every launch style, including plain `claude`
-with a settings-pinned model.
+Claude Code applies settings (model + env) at **session start**, so the trio
+takes effect for **new sessions**; a running session keeps the slots it
+launched with, and only `/model` can move a running orchestrator.
+**Verifier and oracle don't ride a slot** — their frontmatter is
+`model: inherit`, so they run the orchestrator's own model in every launch
+style. **An image rebuild resets `settings.json` to the template** — re-run
+`/tier` afterwards.
 
 **Never set `CLAUDE_CODE_SUBAGENT_MODEL`.** It overrides *every* subagent's
-model and would collapse all three tiers onto one. `tier` unsets it.
+model and would collapse all three tiers onto one. `tier-set` removes it on
+every write.
 
-**Never put `ANTHROPIC_DEFAULT_*_MODEL` in settings.json `env`.** The
-settings `env` block **overrides** shell-exported variables at launch, which
-would freeze the slots and silently break `tier`'s per-session rebinding.
+**The slot vars in settings `env` are owned by `tier-set`.** Don't hand-edit
+them, and don't export them in the shell: settings `env` overrides shell
+exports at launch, so a shell export silently does nothing once `tier-set`
+has written the slots — always go through `/tier` / `tier-set`.
 
 **`/advisor` coupling:** `advisorModel` (settings) must be **≥ the session's
 main model** or `/advisor` is rejected. It is pinned to `fable` — the one
@@ -115,9 +124,9 @@ Each slot falls through a candidate list to the first available model,
 - worker:    `claude-sonnet-5` → `claude-haiku-4-5-20251001`
 - recon:     `claude-haiku-4-5-20251001` → `claude-sonnet-5`
 
-The requested model is tried first, then the floor list — so `tier fable …`
-tries Fable, then degrades downward. Fallback never escalates cost. `tier`
-probes each candidate with a tiny `claude -p` ping (skip with
+The requested model is tried first, then the floor list — so `/tier fable …`
+tries Fable, then degrades downward. Fallback never escalates cost.
+`tier-set` probes each candidate with a tiny `claude -p` ping (skip with
 `TIER_NO_PROBE=1`; the probe is best-effort — a safeguard-rerouted model can
 still probe green). The SessionStart hook also echoes the live binding each
 session, so you always see what you actually got.
@@ -125,10 +134,11 @@ session, so you always see what you actually got.
 **Demo — requested model unavailable (e.g. gated on the current plan):**
 
 ```
-$ tier fable sonnet haiku          # if claude-fable-5 is gated here…
-tier[reasoning] claude-fable-5 unavailable, trying next…
-tier[reasoning] falling back → claude-opus-4-8
-tier bound  reasoning=claude-opus-4-8  worker=claude-sonnet-5  recon=claude-haiku-4-5-20251001
+/tier fable sonnet haiku           # if claude-fable-5 is gated here…
+tier[reasoning] claude-fable-5 unavailable, trying next...
+tier[reasoning] falling back -> claude-opus-4-8
+tier bound  orchestrator=claude-opus-4-8  worker=claude-sonnet-5  recon=claude-haiku-4-5-20251001
+applies to NEW sessions; the current session keeps its binding (/model moves only the running orchestrator)
 ```
 
 (Fable 5 is an active model — do not assume it is unavailable; the probe
@@ -178,3 +188,11 @@ split, alias map, rank warning, tier-show settings-model line),
 (`advisorModel: "fable"`, honest SessionStart echo), `CLAUDE.md`, this file,
 `tests/smoke.bats`. Pre-change live copies:
 `~/.claude/backups/tier-review-20260710/`. Same rollback mechanics as above.
+
+**2026-07-10 revision 2 (/tier slash command):** engine moved out of the
+shell into `scripts/tier-set.sh` (staged to `/usr/local/bin/tier-set`),
+exposed as `/tier` via `config/claude-commands/tier.md` (entrypoint deploys
+`configs/commands/*.md` → `~/.claude/commands/`); binding mechanism changed
+from env exports to a settings.json write (see above); `config/.zshrc` tier
+block reduced to thin wrappers; `Dockerfile` + `scripts/entrypoint.sh` gained
+the staging lines; `tests/smoke.bats` tier tests retargeted to the script.
