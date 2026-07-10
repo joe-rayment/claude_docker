@@ -1,7 +1,8 @@
 ---
 name: scout
 description: >
-  Cheap, fast codebase recon on Haiku (~1/5 the main model's cost). USE
+  Cheap, fast codebase recon on the recon slot (Haiku by default — a
+  fraction of the reasoning tier's cost). USE
   PROACTIVELY for fan-out work the main thread shouldn't burn context on:
   locating where something is implemented, listing usages and callers,
   summarizing a directory or subsystem, finding patterns or config across

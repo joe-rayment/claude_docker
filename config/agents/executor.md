@@ -77,8 +77,10 @@ stake in the answer.
 
 ## Never
 
-- Spawn anything other than `scout`. (You physically can't — your only
-  Agent grant is `Agent(scout)`.)
+- Spawn anything other than `scout`. (Your Agent grant names only `scout`;
+  the harness does not enforce the parenthesized restriction for
+  subagent-spawned agents, so treat this as a hard contract — the harness's
+  depth cap bounds any accident, but the scout-only rule is yours to keep.)
 - Declare the overall task complete.
 - Grade or "double-check" your own output and present that as
   verification.

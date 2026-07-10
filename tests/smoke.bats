@@ -275,7 +275,7 @@
 @test "staged agents include model-tiered oracle and scout" {
     [ -f /etc/claude-dev/configs/agents/oracle.md ]
     [ -f /etc/claude-dev/configs/agents/scout.md ]
-    grep -q '^model: opus' /etc/claude-dev/configs/agents/oracle.md
+    grep -q '^model: inherit' /etc/claude-dev/configs/agents/oracle.md
     grep -q '^model: haiku' /etc/claude-dev/configs/agents/scout.md
 }
 
@@ -283,8 +283,9 @@
     grep -q '^model: sonnet' /etc/claude-dev/configs/agents/professor.md
 }
 
-@test "claude-settings.json pins Opus as advisor model" {
-    jq -e '.advisorModel == "claude-opus-4-8"' /etc/claude-dev/configs/claude-settings.json
+@test "claude-settings.json pins the advisor at or above the top tier" {
+    # advisorModel must be >= the session's main model; fable is the ceiling
+    jq -e '.advisorModel == "fable"' /etc/claude-dev/configs/claude-settings.json
 }
 
 @test "knowledge-base index is staged" {
@@ -292,6 +293,38 @@
     grep -q 'BEADS_TROUBLESHOOTING' /opt/claude-dev/knowledge-base/README.md
 }
 
-@test "no staged config references the retired Fable model" {
-    ! grep -rqi 'fable' /etc/claude-dev/configs/
+@test "tier launcher stages the fable alias and inherit checkers" {
+    # Fable 5 is an active model: the launcher must offer it as a candidate
+    # (alias fable -> claude-fable-5) and the checkers must inherit the
+    # orchestrator's model so they are never a tier below it.
+    grep -q 'claude-fable-5' /etc/claude-dev/configs/.zshrc
+    grep -q '^model: inherit' /etc/claude-dev/configs/agents/verifier.md
+    grep -q '^model: inherit' /etc/claude-dev/configs/agents/oracle.md
+}
+
+@test "tier-bind maps aliases, degrades downward, and warns on inverted ranks" {
+    local blk fake
+    blk=$(mktemp)
+    awk '/── Tiered orchestration/{f=1} /^alias menu=/{f=0} f' \
+        /etc/claude-dev/configs/.zshrc > "$blk"
+    grep -q 'tier-bind' "$blk"
+
+    # alias trio maps to concrete ids (no probe needed)
+    run zsh -c "source $blk; TIER_NO_PROBE=1 tier-bind fable opus haiku >/dev/null 2>&1; echo \$ANTHROPIC_DEFAULT_OPUS_MODEL \$ANTHROPIC_DEFAULT_SONNET_MODEL \$ANTHROPIC_DEFAULT_HAIKU_MODEL"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"claude-fable-5 claude-opus-4-8 claude-haiku-4-5-20251001"* ]]
+
+    # unavailable model degrades downward (probe stubbed, no API calls)
+    fake=$(mktemp -d)
+    printf '#!/bin/sh\ncase "$*" in *definitely-unavailable*) exit 1;; *) exit 0;; esac\n' > "$fake/claude"
+    chmod +x "$fake/claude"
+    run env PATH="$fake:$PATH" zsh -c "source $blk; tier-bind definitely-unavailable-model >/dev/null 2>&1; echo \$ANTHROPIC_DEFAULT_OPUS_MODEL"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"claude-opus-4-8"* ]]
+
+    # a lower slot outranking the reasoning slot draws a warning
+    run zsh -c "source $blk; TIER_NO_PROBE=1 tier-bind haiku opus 2>&1 >/dev/null"
+    [[ "$output" == *"outranks"* ]]
+
+    rm -rf "$blk" "$fake"
 }

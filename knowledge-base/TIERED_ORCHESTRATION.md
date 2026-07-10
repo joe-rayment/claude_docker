@@ -12,22 +12,34 @@ models rotate.
 
 ## The roles (three tiers, ≤3 levels deep)
 
-| Role | Agent file | Slot | Delegates to | Job |
+| Role | Agent file | Model binding | Delegates to | Job |
 |------|-----------|------|--------------|-----|
-| **orchestrator** | (the main session — no agent file) | `--model opus` | executor, verifier, scout | decompose, delegate, synthesize, decide |
-| **executor** | `config/agents/executor.md` | `sonnet` | `scout` only | one implementation slice, end to end |
-| **scout** (leaf) | `config/agents/scout.md` | `haiku` | — | fan-out recon: find/usages/summaries |
-| **verifier** (leaf) | `config/agents/verifier.md` | `opus` | — | independent check of one worker claim |
-| **oracle** | `config/agents/oracle.md` | `opus` | — | user-invoked checkpoint consult |
+| **orchestrator** | (the main session — no agent file) | `--model opus` at `tier` launch; settings `model` otherwise | executor, verifier, scout | decompose, delegate, synthesize, decide |
+| **executor** | `config/agents/executor.md` | `sonnet` slot | `scout` only | one implementation slice, end to end |
+| **scout** (leaf) | `config/agents/scout.md` | `haiku` slot | — | fan-out recon: find/usages/summaries |
+| **verifier** (leaf) | `config/agents/verifier.md` | `inherit` (= orchestrator) | — | independent check of one worker claim |
+| **oracle** | `config/agents/oracle.md` | `inherit` (= orchestrator) | — | user-invoked checkpoint consult |
 
-The tree tops out at **orchestrator → executor → scout**. It's enforced
-structurally, not by convention:
+**Invariant: the orchestrator is the most capable model of the three.** The
+checkers (verifier, oracle) use `model: inherit`, so they always run exactly
+the orchestrator's model — never a tier below the claims they check — no
+matter how the session was launched (`tier`, plain `claude`, or a `/model`
+override).
+
+The tree tops out at **orchestrator → executor → scout**. What's structural
+and what's convention:
 
 - **scout** and **verifier** have no `Agent` tool in their frontmatter →
-  they physically cannot spawn children (they are leaves).
-- **executor**'s only grant is `Agent(scout)` → it can spawn nothing
-  deeper than a leaf.
-- Claude Code's own hard ceiling is depth 5; ours is tighter on purpose.
+  they physically cannot spawn children (structural; they are leaves).
+- **executor**'s grant is written `Agent(scout)`, but Claude Code honors the
+  parenthesized type restriction only for **main-thread** agents — for
+  subagent-spawned agents it grants an unrestricted Agent tool. The
+  scout-only limit is therefore a **prompt contract** in executor.md, backed
+  by Claude Code's hard depth-5 ceiling, not a harness guarantee.
+  (Confirmed empirically 2026-07-10: a live executor's Agent schema had no
+  type restriction and the full agent catalog was visible to it — yet when
+  probed, the executor *declined* the off-contract spawn. The contract
+  holds in practice; just don't call it structural.)
 
 Confirm nesting actually happened via the **subagent panel** below the
 prompt input: each row shows a `(+N)` descendant count. A flat call means
@@ -48,31 +60,51 @@ the "delegation" collapsed to a single agent.
 
 ## Setting the three models per session (no file edits)
 
-Roles are pinned to the `opus`/`sonnet`/`haiku` alias slots. The `tier`
-launcher (in `.zshrc`) points those slots at concrete models and launches:
+Say the combination you want, in the simplest form. The `tier` launcher (in
+`.zshrc`) translates alias args to concrete IDs, exports the slots, and
+launches:
 
 ```
 tier                                # defaults: Opus 4.8 / Sonnet 5 / Haiku 4.5
-tier <reasoning> <worker> <recon>   # explicit trio (aliases or full model ids)
+tier fable opus haiku               # Fable orchestrator + Opus executors + Haiku scouts
+tier fable                          # partial trio: lower slots keep defaults
+tier-bind <trio>                    # bind only (exports, no launch) — testable
 tier-show                           # print the current binding
 TIER_NO_PROBE=1 tier ...            # skip availability probing (bind blind)
 ```
+
+Alias map: `fable→claude-fable-5`, `opus→claude-opus-4-8`,
+`sonnet→claude-sonnet-5`, `haiku→claude-haiku-4-5-20251001`; anything else
+passes through as a full model ID. Aliases are translated **before** export —
+never export an alias string into the env var that defines that alias.
+`tier-bind` warns when a lower slot outranks the reasoning slot
+(capability order fable > opus > sonnet > haiku; unknown IDs skip the check).
 
 It exports:
 
 | Env var | Slot | Roles that ride it |
 |---------|------|--------------------|
-| `ANTHROPIC_DEFAULT_OPUS_MODEL`   | reasoning | orchestrator, verifier, oracle |
+| `ANTHROPIC_DEFAULT_OPUS_MODEL`   | reasoning | orchestrator (via `--model opus` at launch) |
 | `ANTHROPIC_DEFAULT_SONNET_MODEL` | worker    | executor |
 | `ANTHROPIC_DEFAULT_HAIKU_MODEL`  | recon     | scout |
 
 then launches `claude --dangerously-skip-permissions --model opus` (the
-main session = orchestrator = reasoning slot).
+main session = orchestrator = reasoning slot). **Verifier and oracle don't
+ride a slot** — their frontmatter is `model: inherit`, so they run the
+orchestrator's own model in every launch style, including plain `claude`
+with a settings-pinned model.
 
 **Never set `CLAUDE_CODE_SUBAGENT_MODEL`.** It overrides *every* subagent's
-model and would collapse all three tiers onto one. `tier` unsets it. Every
-role is explicitly slot-pinned, so no tier silently runs at the most
-expensive available model.
+model and would collapse all three tiers onto one. `tier` unsets it.
+
+**Never put `ANTHROPIC_DEFAULT_*_MODEL` in settings.json `env`.** The
+settings `env` block **overrides** shell-exported variables at launch, which
+would freeze the slots and silently break `tier`'s per-session rebinding.
+
+**`/advisor` coupling:** `advisorModel` (settings) must be **≥ the session's
+main model** or `/advisor` is rejected. It is pinned to `fable` — the one
+static value valid above every trio this setup uses. If Fable is ever
+unavailable on the plan, `/advisor` fails visibly; swap the value then.
 
 ## Graceful degradation (fallback order)
 
@@ -83,18 +115,26 @@ Each slot falls through a candidate list to the first available model,
 - worker:    `claude-sonnet-5` → `claude-haiku-4-5-20251001`
 - recon:     `claude-haiku-4-5-20251001` → `claude-sonnet-5`
 
-`tier` probes each candidate with a tiny `claude -p` ping (skip with
-`TIER_NO_PROBE=1`). The SessionStart hook also echoes the live trio each
+The requested model is tried first, then the floor list — so `tier fable …`
+tries Fable, then degrades downward. Fallback never escalates cost. `tier`
+probes each candidate with a tiny `claude -p` ping (skip with
+`TIER_NO_PROBE=1`; the probe is best-effort — a safeguard-rerouted model can
+still probe green). The SessionStart hook also echoes the live binding each
 session, so you always see what you actually got.
 
-**Demo — Fable is gone (it retired 2026-07-08):**
+**Demo — requested model unavailable (e.g. gated on the current plan):**
 
 ```
-$ tier claude-fable-5 claude-sonnet-5 claude-haiku-4-5-20251001
+$ tier fable sonnet haiku          # if claude-fable-5 is gated here…
 tier[reasoning] claude-fable-5 unavailable, trying next…
 tier[reasoning] falling back → claude-opus-4-8
 tier bound  reasoning=claude-opus-4-8  worker=claude-sonnet-5  recon=claude-haiku-4-5-20251001
 ```
+
+(Fable 5 is an active model — do not assume it is unavailable; the probe
+decides per session. This section once claimed Fable retired on 2026-07-08;
+that was wrong as of 2026-07-10 and the ban on Fable references was
+removed.)
 
 ## Trust, but verify
 
@@ -130,3 +170,11 @@ additive). A pre-change copy is also saved under
 `~/.claude/backups/tiered-orchestration-<sha>/`. New config reaches a live
 dev container on the next host `./claude-dev --rebuild` (or live-patch
 layer 3: `cp config/agents/*.md ~/.claude/agents/`).
+
+**2026-07-10 revision (Fable-is-back review):** `config/.zshrc` (tier-bind
+split, alias map, rank warning, tier-show settings-model line),
+`config/agents/{verifier,oracle}.md` (`model: inherit`),
+`config/agents/{executor,scout}.md` (prose), `config/claude-settings.json`
+(`advisorModel: "fable"`, honest SessionStart echo), `CLAUDE.md`, this file,
+`tests/smoke.bats`. Pre-change live copies:
+`~/.claude/backups/tier-review-20260710/`. Same rollback mechanics as above.

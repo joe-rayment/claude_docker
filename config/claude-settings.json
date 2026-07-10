@@ -1,6 +1,6 @@
 {
   "model": "opus",
-  "advisorModel": "claude-opus-4-8",
+  "advisorModel": "fable",
   "env": {
     "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
   },
@@ -50,7 +50,7 @@
         "matcher": "",
         "hooks": [
           { "type": "command", "command": "bd prime" },
-          { "type": "command", "command": "echo \"tier slots → orchestrator/verifier=${ANTHROPIC_DEFAULT_OPUS_MODEL:-opus (default)}  executor=${ANTHROPIC_DEFAULT_SONNET_MODEL:-sonnet (default)}  scout=${ANTHROPIC_DEFAULT_HAIKU_MODEL:-haiku (default)}\"" }
+          { "type": "command", "command": "m=$(jq -r '.model // empty' \"$HOME/.claude/settings.local.json\" 2>/dev/null); [ -n \"$m\" ] || m=$(jq -r '.model // empty' \"$HOME/.claude/settings.json\" 2>/dev/null); echo \"tier slots → reasoning=${ANTHROPIC_DEFAULT_OPUS_MODEL:-opus (default)}  executor=${ANTHROPIC_DEFAULT_SONNET_MODEL:-sonnet (default)}  scout=${ANTHROPIC_DEFAULT_HAIKU_MODEL:-haiku (default)} | settings model=${m:-harness default} | verifier+oracle inherit the session model\"" }
         ]
       }
     ],
