@@ -1,8 +1,10 @@
 ---
 description: Bind the session model trio (orchestrator/worker/recon) for new sessions
-argument-hint: "[reasoning [worker [recon]] | show] — aliases: fable, opus, sonnet, haiku"
+argument-hint: "reasoning worker recon — space-separated, e.g. fable opus haiku (aliases: fable opus sonnet haiku, no commas) | show"
 allowed-tools: Bash(tier-set:*)
 ---
+
+Usage: `/tier reasoning worker recon` — three space-separated aliases (`fable`, `opus`, `sonnet`, `haiku`) or full model IDs, no commas. Partial trios keep defaults for the rest (`/tier fable`), and `/tier show` just prints the current binding. Example: `/tier fable opus haiku`.
 
 Binding result:
 
