@@ -67,7 +67,8 @@ the **`/tier` slash command** (`~/.claude/commands/tier.md`, staged from
 ```
 /tier fable opus haiku              # Fable orchestrator + Opus executors + Haiku scouts
 /tier fable                         # partial trio: lower slots keep defaults
-/tier show                          # print the current binding
+/tier                               # no args: print the current binding (writes nothing)
+/tier show                          # same as bare /tier — print the current binding
 ```
 
 The engine is **`tier-set`** (`/usr/local/bin/tier-set`, repo
@@ -93,12 +94,22 @@ It writes into `~/.claude/settings.json`:
 | `.env.ANTHROPIC_DEFAULT_SONNET_MODEL`  | worker       | executor |
 | `.env.ANTHROPIC_DEFAULT_HAIKU_MODEL`   | recon        | scout |
 
-Claude Code applies settings (model + env) at **session start**, so the trio
-takes effect for **new sessions**; a running session keeps the slots it
-launched with, and only `/model` can move a running orchestrator.
-**Verifier and oracle don't ride a slot** — their frontmatter is
-`model: inherit`, so they run the orchestrator's own model in every launch
-style. **An image rebuild resets `settings.json` to the template** — re-run
+The **worker and recon slots take effect in the current session**, not only
+new ones: Claude Code re-reads `settings.json` `env` when it spawns a
+subagent, so an executor (sonnet slot) or scout (haiku slot) spawned *after*
+`/tier` runs uses the new model immediately — no relaunch needed. (Verified
+empirically on Claude Code 2.1.206 by injecting a distinctive id into a slot
+mid-session and reading the spawned subagent's recorded `model`; the public
+docs imply a launch-time snapshot, but the observed behaviour is a per-spawn
+re-read.) What a file write **cannot** move is the **orchestrator** — the
+running session's own model: only `/model <reasoning-id>` moves a running
+orchestrator (it also persists as the new-session default). `tier-set` prints
+the exact `/model …` line so you can switch this session's orchestrator in one
+paste. **Verifier and oracle don't ride a slot** — their frontmatter is
+`model: inherit`, so they track the orchestrator's own model; because the
+orchestrator doesn't move in a running session, neither do they until `/model`
+is used. All three slots apply to any newly launched session.
+**An image rebuild resets `settings.json` to the template** — re-run
 `/tier` afterwards.
 
 **Never set `CLAUDE_CODE_SUBAGENT_MODEL`.** It overrides *every* subagent's
@@ -138,7 +149,11 @@ session, so you always see what you actually got.
 tier[reasoning] claude-fable-5 unavailable, trying next...
 tier[reasoning] falling back -> claude-opus-4-8
 tier bound  orchestrator=claude-opus-4-8  worker=claude-sonnet-5  recon=claude-haiku-4-5-20251001
-applies to NEW sessions; the current session keeps its binding (/model moves only the running orchestrator)
+· LIVE in this session: executor=claude-sonnet-5 and scout=claude-haiku-4-5-20251001 — subagents spawned from now on use them
+  (Claude Code re-reads settings.json env on each subagent spawn).
+· NOT moved in this session: the orchestrator (=claude-opus-4-8) and inherit agents (verifier/oracle) —
+  a running session's own model changes only via /model. To move it now, run:  /model claude-opus-4-8
+· NEW sessions get all three; a plain launch uses orchestrator=claude-opus-4-8.
 ```
 
 (Fable 5 is an active model — do not assume it is unavailable; the probe

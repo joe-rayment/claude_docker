@@ -84,7 +84,8 @@ cn()  { _claude_in_tmux claude "$@" }
 # Shell sugar for the same engine (works even if you never open a session):
 tier() {
     tier-set "$@" || return 1
-    [ "${1:-}" = show ] && return 0   # just printed the binding — don't launch
+    # bare `tier` or `tier show` just prints current state — don't launch.
+    { [ $# -eq 0 ] || [ "${1:-}" = show ]; } && return 0
     _claude_in_tmux claude --dangerously-skip-permissions
 }
 tier-show() { tier-set show }
