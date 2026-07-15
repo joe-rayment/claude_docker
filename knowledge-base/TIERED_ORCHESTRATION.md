@@ -78,6 +78,19 @@ required. Optional shell sugar in `.zshrc` drives the same engine:
 `TIER_NO_PROBE=1` skips availability probing; `TIER_SETTINGS=<path>` retargets
 the settings file (used by the test suite).
 
+**Why the `/tier` command frontmatter pins `model: haiku` + `effort: low`.**
+A custom command/skill is a *prompt*: after `!`tier-set …`` runs, its whole
+body is processed by a model turn. On a high-/max-effort session that turn
+burns a big thinking budget on a trivial passthrough (the "improvising… still
+thinking with max effort" cycle). The frontmatter runs *that turn only* on
+Haiku at low effort (auto-reverting afterward), and the body is a minimal
+"print the tool output verbatim; don't analyze, use tools, spawn subagents, or
+run a workflow" — the last clause matters because an ultracode session injects
+a "use Workflow on every task" directive into that turn too. `tier-set`'s own
+stdout is already the complete, user-facing message, so the command adds no
+prose of its own. Don't "simplify" these keys away — they are the fix for the
+expensive-cycle bug.
+
 Alias map: `fable→claude-fable-5`, `opus→claude-opus-4-8`,
 `sonnet→claude-sonnet-5`, `haiku→claude-haiku-4-5-20251001`; anything else
 passes through as a full model ID. Aliases are mapped **before** writing —
