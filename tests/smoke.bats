@@ -318,15 +318,39 @@ setup() {
     grep -q 'BEADS_TROUBLESHOOTING' /opt/claude-dev/knowledge-base/README.md
 }
 
-@test "tier engine and /tier command are staged with inherit checkers" {
+# --- tier mechanism v2 (frontmatter binding; the env-var remap is RETIRED) ---
+# top -> settings .model · worker -> executor.md `model:` · recon -> scout.md `model:`
+# No tier code writes ANTHROPIC_DEFAULT_* anymore; both tier-set and
+# tier-reconcile actively PURGE those vars plus CLAUDE_CODE_SUBAGENT_MODEL.
+
+tier_agents_fixture() {  # minimal executor.md + scout.md frontmatter fixtures in $1
+    mkdir -p "$1"
+    printf -- '---\nname: executor\nmodel: sonnet\n---\nDo the slice.\n' > "$1/executor.md"
+    printf -- '---\nname: scout\nmodel: sonnet\n---\nGo look.\n' > "$1/scout.md"
+}
+
+fm_model_of() {  # frontmatter `model:` value of an agent file
+    grep -m1 '^model:' "$1" | sed 's/^model:[[:space:]]*//'
+}
+
+@test "tier engine v2 is installed in /usr/local/bin" {
     # Fable 5 is an active model: the engine must offer it as a candidate
-    # (alias fable -> claude-fable-5) and the checkers must inherit the
-    # orchestrator's model so they are never a tier below it.
+    # (alias fable -> claude-fable-5).
     [ -x /usr/local/bin/tier-set ]
     grep -q 'claude-fable-5' /usr/local/bin/tier-set
     # the derive + reconciler engine is installed alongside tier-set
     [ -x /usr/local/bin/tier-derive ]
     [ -x /usr/local/bin/tier-reconcile ]
+    # v2 mechanism markers: frontmatter binding (TIER_AGENTS_DIR) present,
+    # and the reconciler documents that it never writes the retired env vars
+    grep -q 'TIER_AGENTS_DIR' /usr/local/bin/tier-set
+    grep -q 'TIER_AGENTS_DIR' /usr/local/bin/tier-reconcile
+}
+
+@test "staged tier config: /tier command, zshrc wiring, inherit checkers, reconciler hooks" {
+    # Staged-image content — goes green after the next host rebuild.
+    # The checkers must inherit the orchestrator's model so they are never a
+    # tier below it.
     [ -f /etc/claude-dev/configs/commands/tier.md ]
     grep -q 'tier-set' /etc/claude-dev/configs/.zshrc
     grep -q '^model: inherit' /etc/claude-dev/configs/agents/verifier.md
@@ -346,6 +370,10 @@ setup() {
     [ "$("$d" haiku)"  = "claude-haiku-4-5-20251001 claude-haiku-4-5-20251001 claude-haiku-4-5-20251001" ]
     # a full family id (even dated) is kept as-is on top and derives beneath
     [ "$("$d" claude-opus-4-8-20260101)" = "claude-opus-4-8-20260101 claude-sonnet-5 claude-haiku-4-5-20251001" ]
+    # a [variant] suffix ranks by its base family but is preserved VERBATIM on
+    # top (the /model picker persists such values; aliases are native in v2)
+    [ "$("$d" 'claude-fable-5[1m]')" = "claude-fable-5[1m] claude-opus-4-8 claude-sonnet-5" ]
+    [ "$("$d" 'opus[1m]')" = "opus[1m] claude-sonnet-5 claude-haiku-4-5-20251001" ]
     # off-ladder / unknown -> exit 3, no output (callers must not clobber)
     run "$d" best
     [ "$status" -eq 3 ] && [ -z "$output" ]
@@ -358,154 +386,175 @@ setup() {
     run "$d" --name best
     [ "$status" -eq 1 ] && [ -z "$output" ]
 
-    # --rank: numeric rank, 0 for off-ladder
+    # --rank: numeric rank, 0 for off-ladder; a [variant] suffix ranks by family
     [ "$("$d" --rank fable)" = "4" ]
     [ "$("$d" --rank best)"  = "0" ]
+    [ "$("$d" --rank 'opus[1m]')" = "3" ]
+    [ "$("$d" --name 'claude-fable-5[1m]')" = "Fable 5" ]
 }
 
-@test "tier-set derives the whole trio from one top, degrades, writes settings" {
-    local ts fake
+@test "tier-set (1-arg): concrete top in .model, trio in frontmatter, legacy env purged" {
+    local ts ad fake
     ts=$(mktemp)
-    printf '{"env":{"CLAUDE_CODE_SUBAGENT_MODEL":"bad"},"permissions":{"allow":["WebSearch"]}}\n' > "$ts"
+    ad="$BATS_TEST_TMPDIR/agents"
+    tier_agents_fixture "$ad"
+    printf '{"env":{"KEEP":"1","CLAUDE_CODE_SUBAGENT_MODEL":"bad","ANTHROPIC_DEFAULT_OPUS_MODEL":"x","ANTHROPIC_DEFAULT_SONNET_MODEL":"x","ANTHROPIC_DEFAULT_HAIKU_MODEL":"x","ANTHROPIC_DEFAULT_OPUS_MODEL_NAME":"x","ANTHROPIC_DEFAULT_SONNET_MODEL_NAME":"x","ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME":"x"},"permissions":{"allow":["WebSearch"]}}\n' > "$ts"
 
-    # ONE top -> derived trio (fable -> fable/opus/sonnet); subagent-model purged; other keys kept;
-    # honest picker labels (_NAME) written; no explicit pin
-    run env TIER_SETTINGS="$ts" TIER_NO_PROBE=1 /usr/local/bin/tier-set fable
+    # ONE top -> .model gets the CONCRETE top id; the derived worker/recon land
+    # in the agent files' frontmatter (fable -> executor=opus, scout=sonnet);
+    # ALL legacy env vars purged; unrelated env/keys preserved; no explicit pin
+    run env TIER_SETTINGS="$ts" TIER_AGENTS_DIR="$ad" TIER_NO_PROBE=1 /usr/local/bin/tier-set fable
     [ "$status" -eq 0 ]
     jq -e '.model == "claude-fable-5"
-           and .env.ANTHROPIC_DEFAULT_OPUS_MODEL == "claude-fable-5"
-           and .env.ANTHROPIC_DEFAULT_SONNET_MODEL == "claude-opus-4-8"
-           and .env.ANTHROPIC_DEFAULT_HAIKU_MODEL == "claude-sonnet-5"
-           and .env.ANTHROPIC_DEFAULT_OPUS_MODEL_NAME == "Fable 5"
-           and .env.ANTHROPIC_DEFAULT_SONNET_MODEL_NAME == "Opus 4.8"
-           and .env.ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME == "Sonnet 5"
+           and .env.KEEP == "1"
+           and ((.env | keys | map(select(startswith("ANTHROPIC_DEFAULT"))) | length) == 0)
            and (.env | has("CLAUDE_CODE_SUBAGENT_MODEL") | not)
            and (.env | has("TIER_EXPLICIT_PIN") | not)
            and .permissions.allow == ["WebSearch"]' "$ts"
+    [ "$(fm_model_of "$ad/executor.md")" = "claude-opus-4-8" ]
+    [ "$(fm_model_of "$ad/scout.md")" = "claude-sonnet-5" ]
+    # only the model: line moved — the rest of the agent file is intact
+    grep -q '^name: executor$' "$ad/executor.md"
+    grep -q 'Do the slice.' "$ad/executor.md"
 
-    # opus -> opus/sonnet/haiku
-    run env TIER_SETTINGS="$ts" TIER_NO_PROBE=1 /usr/local/bin/tier-set opus
-    jq -e '.env.ANTHROPIC_DEFAULT_OPUS_MODEL == "claude-opus-4-8"
-           and .env.ANTHROPIC_DEFAULT_SONNET_MODEL == "claude-sonnet-5"
-           and .env.ANTHROPIC_DEFAULT_HAIKU_MODEL == "claude-haiku-4-5-20251001"' "$ts"
+    # opus -> executor=sonnet, scout=haiku
+    run env TIER_SETTINGS="$ts" TIER_AGENTS_DIR="$ad" TIER_NO_PROBE=1 /usr/local/bin/tier-set opus
+    [ "$status" -eq 0 ]
+    jq -e '.model == "claude-opus-4-8"' "$ts"
+    [ "$(fm_model_of "$ad/executor.md")" = "claude-sonnet-5" ]
+    [ "$(fm_model_of "$ad/scout.md")" = "claude-haiku-4-5-20251001" ]
 
     # unavailable top degrades downward (probe stubbed); trio derived from what bound
     fake=$(mktemp -d)
     printf '#!/bin/sh\ncase "$*" in *definitely-unavailable*) exit 1;; *) exit 0;; esac\n' > "$fake/claude"
     chmod +x "$fake/claude"
-    run env TIER_SETTINGS="$ts" PATH="$fake:$PATH" /usr/local/bin/tier-set definitely-unavailable-model
+    run env TIER_SETTINGS="$ts" TIER_AGENTS_DIR="$ad" PATH="$fake:$PATH" /usr/local/bin/tier-set definitely-unavailable-model
     [ "$status" -eq 0 ]
-    jq -e '.model == "claude-opus-4-8" and .env.ANTHROPIC_DEFAULT_SONNET_MODEL == "claude-sonnet-5"' "$ts"
+    jq -e '.model == "claude-opus-4-8"' "$ts"
+    [ "$(fm_model_of "$ad/executor.md")" = "claude-sonnet-5" ]
+    [ "$(fm_model_of "$ad/scout.md")" = "claude-haiku-4-5-20251001" ]
 
-    # corrupt settings are left untouched
+    # corrupt settings are left untouched — and the agent bindings stay put too
     printf 'NOT JSON' > "$ts"
-    run env TIER_SETTINGS="$ts" TIER_NO_PROBE=1 /usr/local/bin/tier-set fable
+    run env TIER_SETTINGS="$ts" TIER_AGENTS_DIR="$ad" TIER_NO_PROBE=1 /usr/local/bin/tier-set fable
     [ "$status" -ne 0 ]
     [ "$(cat "$ts")" = "NOT JSON" ]
-
-    rm -rf "$ts" "$fake"
+    [ "$(fm_model_of "$ad/executor.md")" = "claude-sonnet-5" ]
 }
 
-@test "tier-set explicit 2/3-arg forms pin the trio and survive reconcile" {
-    local ts
+@test "tier-set (2/3-arg): pins any combo in frontmatter and survives reconcile" {
+    local ts ad before_s before_e before_c
     ts=$(mktemp)
+    ad="$BATS_TEST_TMPDIR/agents"
+    tier_agents_fixture "$ad"
     printf '{}\n' > "$ts"
 
-    # 2 args -> a 2-level config: recon SHARES the worker slot, and a pin is set
-    run env TIER_SETTINGS="$ts" TIER_NO_PROBE=1 /usr/local/bin/tier-set opus haiku
+    # 2 args -> a 2-level config: recon SHARES the worker model, and a pin is set
+    run env TIER_SETTINGS="$ts" TIER_AGENTS_DIR="$ad" TIER_NO_PROBE=1 /usr/local/bin/tier-set opus haiku
     [ "$status" -eq 0 ]
     [[ "$output" == *"explicit"* ]] && [[ "$output" == *"pinned"* ]]
-    jq -e '.model == "claude-opus-4-8"
-           and .env.ANTHROPIC_DEFAULT_SONNET_MODEL == "claude-haiku-4-5-20251001"
-           and .env.ANTHROPIC_DEFAULT_HAIKU_MODEL == "claude-haiku-4-5-20251001"
-           and .env.ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME == "Haiku 4.5"
-           and .env.TIER_EXPLICIT_PIN == "1"' "$ts"
+    jq -e '.model == "claude-opus-4-8" and .env.TIER_EXPLICIT_PIN == "1"' "$ts"
+    [ "$(fm_model_of "$ad/executor.md")" = "claude-haiku-4-5-20251001" ]
+    [ "$(fm_model_of "$ad/scout.md")" = "claude-haiku-4-5-20251001" ]
 
     # 3 args -> fully independent, non-consecutive combo accepted (fable top, sonnet worker, haiku recon)
-    run env TIER_SETTINGS="$ts" TIER_NO_PROBE=1 /usr/local/bin/tier-set fable sonnet haiku
+    run env TIER_SETTINGS="$ts" TIER_AGENTS_DIR="$ad" TIER_NO_PROBE=1 /usr/local/bin/tier-set fable sonnet haiku
     [ "$status" -eq 0 ]
-    jq -e '.env.ANTHROPIC_DEFAULT_OPUS_MODEL == "claude-fable-5"
-           and .env.ANTHROPIC_DEFAULT_SONNET_MODEL == "claude-sonnet-5"
-           and .env.ANTHROPIC_DEFAULT_HAIKU_MODEL == "claude-haiku-4-5-20251001"
-           and .env.TIER_EXPLICIT_PIN == "1"' "$ts"
+    jq -e '.model == "claude-fable-5" and .env.TIER_EXPLICIT_PIN == "1"' "$ts"
+    [ "$(fm_model_of "$ad/executor.md")" = "claude-sonnet-5" ]
+    [ "$(fm_model_of "$ad/scout.md")" = "claude-haiku-4-5-20251001" ]
 
-    # a pinned trio survives tier-reconcile even when .model drifts underneath it
+    # a pinned binding survives tier-reconcile even when .model drifts underneath
+    # it: settings AND both agent files stay byte-identical
     jq '.model = "sonnet"' "$ts" > "$ts.x" && mv "$ts.x" "$ts"
-    before=$(cat "$ts")
-    run env TIER_SETTINGS="$ts" /usr/local/bin/tier-reconcile
+    before_s=$(cat "$ts"); before_e=$(cat "$ad/executor.md"); before_c=$(cat "$ad/scout.md")
+    run env TIER_SETTINGS="$ts" TIER_AGENTS_DIR="$ad" /usr/local/bin/tier-reconcile
     [ "$status" -eq 0 ] && [ -z "$output" ]
-    [ "$(cat "$ts")" = "$before" ]
+    [ "$(cat "$ts")" = "$before_s" ]
+    [ "$(cat "$ad/executor.md")" = "$before_e" ]
+    [ "$(cat "$ad/scout.md")" = "$before_c" ]
 
-    # a 1-arg /tier clears the pin and reconcile resumes auto-deriving
-    run env TIER_SETTINGS="$ts" TIER_NO_PROBE=1 /usr/local/bin/tier-set haiku
+    # a 1-arg /tier clears the pin and reconcile resumes deriving from .model
+    run env TIER_SETTINGS="$ts" TIER_AGENTS_DIR="$ad" TIER_NO_PROBE=1 /usr/local/bin/tier-set haiku
     [ "$status" -eq 0 ]
     jq -e '(.env | has("TIER_EXPLICIT_PIN") | not)' "$ts"
     jq '.model = "opus"' "$ts" > "$ts.x" && mv "$ts.x" "$ts"
-    env TIER_SETTINGS="$ts" /usr/local/bin/tier-reconcile
-    jq -e '.env.ANTHROPIC_DEFAULT_SONNET_MODEL == "claude-sonnet-5"
-           and .env.ANTHROPIC_DEFAULT_SONNET_MODEL_NAME == "Sonnet 5"' "$ts"
-
-    rm -f "$ts"
+    env TIER_SETTINGS="$ts" TIER_AGENTS_DIR="$ad" /usr/local/bin/tier-reconcile
+    [ "$(fm_model_of "$ad/executor.md")" = "claude-sonnet-5" ]
+    [ "$(fm_model_of "$ad/scout.md")" = "claude-haiku-4-5-20251001" ]
+    jq -e '.model == "opus"' "$ts"   # reconcile never touches .model
 }
 
-@test "tier-reconcile links slots to .model: sets, idempotent, drifts, never clobbers" {
-    local ts m1 m2
+@test "tier-reconcile: derives frontmatter from .model, idempotent, never clobbers" {
+    local ts ad m1 m2 e1 e2 s1 s2
     ts=$(mktemp)
-    # sets slots from .model (opus -> opus/sonnet/haiku), preserving other env keys, silently,
-    # including the honest _NAME labels for the /model picker
+    ad="$BATS_TEST_TMPDIR/agents"
+    tier_agents_fixture "$ad"
+
+    # derives worker/recon from .model (opus -> executor=sonnet, scout=haiku)
+    # into the agent files' frontmatter; preserves unrelated env keys; silent;
+    # writes NO ANTHROPIC_DEFAULT_* var (the v1 remap is retired)
     echo '{"model":"opus","env":{"KEEP":"1"}}' > "$ts"
-    run env TIER_SETTINGS="$ts" /usr/local/bin/tier-reconcile
+    run env TIER_SETTINGS="$ts" TIER_AGENTS_DIR="$ad" /usr/local/bin/tier-reconcile
     [ "$status" -eq 0 ] && [ -z "$output" ]
-    jq -e '.env.KEEP == "1"
-           and .env.ANTHROPIC_DEFAULT_OPUS_MODEL == "claude-opus-4-8"
-           and .env.ANTHROPIC_DEFAULT_SONNET_MODEL == "claude-sonnet-5"
-           and .env.ANTHROPIC_DEFAULT_HAIKU_MODEL == "claude-haiku-4-5-20251001"
-           and .env.ANTHROPIC_DEFAULT_OPUS_MODEL_NAME == "Opus 4.8"
-           and .env.ANTHROPIC_DEFAULT_SONNET_MODEL_NAME == "Sonnet 5"
-           and .env.ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME == "Haiku 4.5"' "$ts"
+    jq -e '.model == "opus" and .env.KEEP == "1"
+           and ((.env | keys | map(select(startswith("ANTHROPIC_DEFAULT"))) | length) == 0)' "$ts"
+    [ "$(fm_model_of "$ad/executor.md")" = "claude-sonnet-5" ]
+    [ "$(fm_model_of "$ad/scout.md")" = "claude-haiku-4-5-20251001" ]
 
-    # idempotent: already in sync -> no rewrite (mtime unchanged)
-    m1=$(stat -c %Y "$ts"); sleep 1
-    env TIER_SETTINGS="$ts" /usr/local/bin/tier-reconcile
-    m2=$(stat -c %Y "$ts")
-    [ "$m1" = "$m2" ]
+    # idempotent: already in sync -> no rewrite (settings AND agent mtimes unchanged)
+    m1=$(stat -c %Y "$ts"); e1=$(stat -c %Y "$ad/executor.md"); s1=$(stat -c %Y "$ad/scout.md")
+    sleep 1
+    env TIER_SETTINGS="$ts" TIER_AGENTS_DIR="$ad" /usr/local/bin/tier-reconcile
+    m2=$(stat -c %Y "$ts"); e2=$(stat -c %Y "$ad/executor.md"); s2=$(stat -c %Y "$ad/scout.md")
+    [ "$m1" = "$m2" ] && [ "$e1" = "$e2" ] && [ "$s1" = "$s2" ]
 
-    # drift: move .model down a rung -> slots follow to sonnet/haiku/haiku
+    # drift: move .model down a rung -> frontmatter follows (sonnet -> haiku/haiku)
     jq '.model = "sonnet"' "$ts" > "$ts.x" && mv "$ts.x" "$ts"
-    env TIER_SETTINGS="$ts" /usr/local/bin/tier-reconcile
-    jq -e '.env.ANTHROPIC_DEFAULT_OPUS_MODEL == "claude-sonnet-5"
-           and .env.ANTHROPIC_DEFAULT_SONNET_MODEL == "claude-haiku-4-5-20251001"
-           and .env.ANTHROPIC_DEFAULT_HAIKU_MODEL == "claude-haiku-4-5-20251001"' "$ts"
+    env TIER_SETTINGS="$ts" TIER_AGENTS_DIR="$ad" /usr/local/bin/tier-reconcile
+    [ "$(fm_model_of "$ad/executor.md")" = "claude-haiku-4-5-20251001" ]
+    [ "$(fm_model_of "$ad/scout.md")" = "claude-haiku-4-5-20251001" ]
+    jq -e '.model == "sonnet"' "$ts"   # .model itself is never modified
 
-    # off-ladder .model -> VALUES no-op, slots left exactly as they were
+    # off-ladder .model (e.g. "best") -> agent files left EXACTLY as they were
     jq '.model = "best"' "$ts" > "$ts.x" && mv "$ts.x" "$ts"
-    env TIER_SETTINGS="$ts" /usr/local/bin/tier-reconcile
-    jq -e '.env.ANTHROPIC_DEFAULT_OPUS_MODEL == "claude-sonnet-5"' "$ts"
-
-    rm -f "$ts"
+    e1=$(cat "$ad/executor.md"); s1=$(cat "$ad/scout.md")
+    env TIER_SETTINGS="$ts" TIER_AGENTS_DIR="$ad" /usr/local/bin/tier-reconcile
+    [ "$(cat "$ad/executor.md")" = "$e1" ]
+    [ "$(cat "$ad/scout.md")" = "$s1" ]
+    jq -e '.model == "best"' "$ts"
 }
 
-@test "tier-reconcile syncs NAME to an existing slot value even when .model is off-ladder" {
-    # Regression: a session whose .model has drifted off-ladder (e.g. a custom
-    # "opus[1m]" typed straight into the picker) must still get honest picker
-    # labels for whatever real, on-ladder ids are already sitting in the
-    # ANTHROPIC_DEFAULT_*_MODEL slots — VALUE re-derivation being skipped must
-    # not also skip the NAME sync for those unchanged values.
-    local ts
+@test "tier-reconcile purges legacy env vars even when pinned or .model off-ladder" {
+    # ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL(_NAME) corrupt the native
+    # /model picker; CLAUDE_CODE_SUBAGENT_MODEL collapses every tier onto one
+    # model. The purge must run even when the pin or an off-ladder .model skips
+    # derivation — and that skip must still hold: agent files untouched,
+    # .model never modified.
+    local ts ad e1 s1
     ts=$(mktemp)
-    printf '{"model":"opus[1m]","env":{"ANTHROPIC_DEFAULT_OPUS_MODEL":"claude-sonnet-5","ANTHROPIC_DEFAULT_SONNET_MODEL":"claude-haiku-4-5-20251001","ANTHROPIC_DEFAULT_HAIKU_MODEL":"claude-haiku-4-5-20251001"}}\n' > "$ts"
+    ad="$BATS_TEST_TMPDIR/agents"
+    tier_agents_fixture "$ad"
+    e1=$(cat "$ad/executor.md"); s1=$(cat "$ad/scout.md")
 
-    run env TIER_SETTINGS="$ts" /usr/local/bin/tier-reconcile
+    # off-ladder .model + legacy vars -> vars purged, agents untouched
+    printf '{"model":"best","env":{"KEEP":"1","ANTHROPIC_DEFAULT_OPUS_MODEL":"claude-sonnet-5","ANTHROPIC_DEFAULT_OPUS_MODEL_NAME":"Sonnet 5","CLAUDE_CODE_SUBAGENT_MODEL":"claude-haiku-4-5-20251001"}}\n' > "$ts"
+    run env TIER_SETTINGS="$ts" TIER_AGENTS_DIR="$ad" /usr/local/bin/tier-reconcile
     [ "$status" -eq 0 ] && [ -z "$output" ]
-    jq -e '.model == "opus[1m]"
-           and .env.ANTHROPIC_DEFAULT_OPUS_MODEL == "claude-sonnet-5"
-           and .env.ANTHROPIC_DEFAULT_SONNET_MODEL == "claude-haiku-4-5-20251001"
-           and .env.ANTHROPIC_DEFAULT_HAIKU_MODEL == "claude-haiku-4-5-20251001"
-           and .env.ANTHROPIC_DEFAULT_OPUS_MODEL_NAME == "Sonnet 5"
-           and .env.ANTHROPIC_DEFAULT_SONNET_MODEL_NAME == "Haiku 4.5"
-           and .env.ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME == "Haiku 4.5"' "$ts"
+    jq -e '.model == "best" and .env.KEEP == "1"
+           and ((.env | keys | map(select(startswith("ANTHROPIC_DEFAULT"))) | length) == 0)
+           and (.env | has("CLAUDE_CODE_SUBAGENT_MODEL") | not)' "$ts"
+    [ "$(cat "$ad/executor.md")" = "$e1" ]
+    [ "$(cat "$ad/scout.md")" = "$s1" ]
 
-    rm -f "$ts"
+    # pinned + legacy vars -> vars purged, pin preserved, agents untouched
+    printf '{"model":"opus","env":{"TIER_EXPLICIT_PIN":"1","ANTHROPIC_DEFAULT_HAIKU_MODEL":"x"}}\n' > "$ts"
+    run env TIER_SETTINGS="$ts" TIER_AGENTS_DIR="$ad" /usr/local/bin/tier-reconcile
+    [ "$status" -eq 0 ] && [ -z "$output" ]
+    jq -e '.model == "opus" and .env.TIER_EXPLICIT_PIN == "1"
+           and ((.env | keys | map(select(startswith("ANTHROPIC_DEFAULT"))) | length) == 0)' "$ts"
+    [ "$(cat "$ad/executor.md")" = "$e1" ]
+    [ "$(cat "$ad/scout.md")" = "$s1" ]
 }
 
 @test "tests do not leak temp dirs when an assertion fails" {

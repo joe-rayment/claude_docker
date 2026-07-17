@@ -3,28 +3,51 @@
 **When to use:** you want a session to decompose a task across model tiers
 (strong model plans + synthesizes, cheaper models do the volume) and have
 worker output *independently verified* before it counts as done — and you
-want to pick which concrete model backs each tier per session without
-editing any agent file.
+want to pick which concrete model backs each tier per session with one
+command (`/tier`), never by hand-editing anything.
 
 The design is **role-based, never model-based**: agents name roles; the
-model behind each role is bound at session start. Nothing breaks when
+model behind each role is bound by the tier scripts. Nothing breaks when
 models rotate.
+
+**Mechanism version: v2 (2026-07-17) — per-agent frontmatter binding.**
+The v1 env-slot remap (`ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL` +
+`_NAME`) is **retired and actively purged**; see the post-mortem below for
+why it must never come back.
+
+## Fast diagnosis (start here when model selection looks wrong)
+
+| Symptom | Cause → fix |
+|---------|-------------|
+| `/model` picker shows odd rows, or picking a row lands on a different model | Legacy `ANTHROPIC_DEFAULT_*` vars survived in settings `env` (v1 residue). `tier-set show` warns if present; any `/tier` bind — or the reconciler on the next prompt — purges them. Never re-add them. |
+| Executor/scout ran the wrong model | (1) Check the binding: `grep '^model:' ~/.claude/agents/{executor,scout}.md`. (2) Remember **agent files are snapshotted at session start** — a mid-session rebind affects the *next* session, not this one. (3) Check for an active pin (`tier-set show`). (4) An off-ladder `.model` stops auto-derivation (never clobbers). |
+| All subagents run the same model | `CLAUDE_CODE_SUBAGENT_MODEL` is set somewhere — it overrides *every* subagent. tier-set/tier-reconcile purge it from settings `env`; also check shell exports. |
+| Agent spawn fails model-not-found | The frontmatter id is gated/retired on this account. Re-run `/tier <top>` — the probe degrades downward and binds what actually works. |
+| Need a different tier for ONE spawn right now | Pass an explicit `model` on that Agent call — the only per-spawn override in a running session. |
+| `/tier` ran but this session's own model didn't change | Expected: a file write cannot move a running orchestrator. Run the `/model …` line tier-set prints. |
+| After an image rebuild the trio looks like the template defaults | Expected: rebuild resets agent files + settings from templates; the SessionStart reconciler re-derives from `.model` on the first session — no manual re-run needed. |
+
+The SessionStart status echo prints the live binding every session
+(`tier → orchestrator(settings model)=… executor=… scout=… | verifier+oracle inherit …`)
+— read it before debugging anything else.
 
 ## The roles (three tiers, ≤3 levels deep)
 
-| Role | Agent file | Model binding | Delegates to | Job |
+| Role | Agent file | Model binding (v2) | Delegates to | Job |
 |------|-----------|------|--------------|-----|
-| **orchestrator** | (the main session — no agent file) | `--model opus` at `tier` launch; settings `model` otherwise | executor, verifier, scout | decompose, delegate, synthesize, decide |
-| **executor** | `config/agents/executor.md` | `sonnet` slot | `scout` only | one implementation slice, end to end |
-| **scout** (leaf) | `config/agents/scout.md` | `haiku` slot | — | fan-out recon: find/usages/summaries |
-| **verifier** (leaf) | `config/agents/verifier.md` | `inherit` (= orchestrator) | — | independent check of one worker claim |
-| **oracle** | `config/agents/oracle.md` | `inherit` (= orchestrator) | — | user-invoked checkpoint consult |
+| **orchestrator** | (the main session — no agent file) | settings `.model` (written by `/tier`; moved live only by `/model`) | executor, verifier, scout | decompose, delegate, synthesize, decide |
+| **executor** | `config/agents/executor.md` | frontmatter `model:` = **concrete id** (worker rung, written by tier-set/tier-reconcile) | `scout` only | one implementation slice, end to end |
+| **scout** (leaf) | `config/agents/scout.md` | frontmatter `model:` = **concrete id** (recon rung, written by tier-set/tier-reconcile) | — | fan-out recon: find/usages/summaries |
+| **verifier** (leaf) | `config/agents/verifier.md` | `model: inherit` (= orchestrator) | — | independent check of one worker claim |
+| **oracle** | `config/agents/oracle.md` | `model: inherit` (= orchestrator) | — | user-invoked checkpoint consult |
 
-**Invariant: the orchestrator is the most capable model of the three.** The
-checkers (verifier, oracle) use `model: inherit`, so they always run exactly
-the orchestrator's model — never a tier below the claims they check — no
-matter how the session was launched (`tier`, plain `claude`, or a `/model`
-override).
+**Invariant: the orchestrator is the most capable model of the three** —
+enforced on the **derived (1-arg) path**, where worker/recon are always
+consecutive rungs below the top. An explicit 2/3-arg pin accepts **any**
+combination by design, including inverted ones (user decision, bead uhs) —
+that is the operator's call, not blocked. The checkers (verifier, oracle)
+use `model: inherit`, so they always run exactly the orchestrator's model —
+never a tier below the claims they check.
 
 The tree tops out at **orchestrator → executor → scout**. What's structural
 and what's convention:
@@ -58,32 +81,93 @@ the "delegation" collapsed to a single agent.
   work and return a *compressed* result. If you could produce it in a
   couple of tool calls, don't delegate.
 
-## Setting the tier per session — one top model, the rest derived (no file edits)
-
-The default model and the trio are a **single linked thing**: you pick ONE top
-model and worker/recon are **derived** as the next two consecutive rungs down
-the ladder (`fable > opus > sonnet > haiku`), clamped at the haiku floor. No
-independent 3-model input — that could drift from the default and is gone.
+## The v2 binding mechanism — where each tier lives
 
 ```
-/model opus                         # PRIMARY in-session lever: moves the orchestrator AND
-                                     #   re-derives the trio (via the reconciler) on your next prompt
-/tier fable                         # explicit set: .model=fable + derived slots (fable/opus/sonnet)
+top    -> settings .model                         (plain-launch orchestrator default)
+worker -> ~/.claude/agents/executor.md  `model:`  (CONCRETE id in frontmatter)
+recon  -> ~/.claude/agents/scout.md     `model:`  (CONCRETE id in frontmatter)
+verifier / oracle -> `model: inherit`             (track the orchestrator; unchanged)
+```
+
+No tier code writes any `ANTHROPIC_DEFAULT_*` var, ever. The `/model`
+picker is **fully native and honest**: a bare alias (`opus`, `sonnet`,
+`haiku`, optionally with a `[1m]` suffix) always means its native family,
+because nothing remaps it. The tier binding lives where only subagent
+definitions read it — the frontmatter — so the picker and the tiers can no
+longer interfere.
+
+**Purge policy (both tier-set and tier-reconcile).** The six
+`ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL(_NAME)` vars and
+`CLAUDE_CODE_SUBAGENT_MODEL` are standing footguns — the first six corrupt
+the picker, the last collapses every subagent onto one model. Both scripts
+actively **delete them from settings `env` wherever found**: tier-set on
+every bind, tier-reconcile as its first step on every run — even when a
+pin, an empty `.model`, or an off-ladder `.model` skips derivation.
+`tier-set show` warns if any are present. Don't hand-restore them for any
+reason.
+
+### Empirically verified facts (2026-07-17, this container, Claude Code 2.1.x)
+
+1. **Frontmatter accepts a full concrete model id** (e.g.
+   `model: claude-opus-4-8`) and it is honored end-to-end — verified by
+   reading `message.model` in the spawned agent's transcript jsonl.
+2. **Agent definitions are SNAPSHOTTED at session start.** A mid-session
+   frontmatter edit does NOT change spawns in the running session; a fresh
+   session honors it — verified by editing scout.md mid-session vs in a
+   fresh session and reading `message.model` in the spawned agents'
+   transcript jsonl files. (This replaces the v1-era observation that
+   settings `env` was re-read per spawn — true for env vars, irrelevant
+   now; frontmatter is snapshot-per-session.)
+3. The `/model` picker's custom-slot rows persist **bare aliases** into
+   `.model`; native rows persist concrete ids (possibly with `[1m]`). With
+   v2 there are no custom rows anymore, so whatever it persists means what
+   it says.
+4. `tier-derive` strips a trailing `[...]` **for ranking only**
+   (`claude-fable-5[1m]` and `opus[1m]` rank by family; the exact original
+   value is preserved in the top slot). Safe because aliases are native
+   again.
+
+### Liveness — when a binding takes effect
+
+- **Worker/recon bindings apply to NEW sessions** (fact 2 above). The
+  **SessionStart tier-reconcile hook** is what guarantees every session's
+  executor/scout are consistent with `.model` from that session's *first*
+  spawn — the files are synced before anything spawns.
+- The **UserPromptSubmit** run of the same hook keeps the files (and the
+  purge) current on disk mid-session after a `/model` change, but because
+  of the snapshot its effect on spawns lands in the next session.
+- **The running orchestrator** (settings `.model` is only its default) and
+  the `model: inherit` agents (verifier/oracle) that track it move **only
+  via `/model`** — a file write cannot move a running session's own model.
+  `/model` also persists as the new-session default, which the reconciler
+  then derives from: `/model` is the primary in-session lever.
+- **One-off override, current session:** pass an explicit `model` on the
+  Agent call for that single spawn.
+
+## Setting the tier — one top model, the rest derived
+
+```
+/model opus                         # PRIMARY in-session lever: moves the orchestrator now AND
+                                     #   (via the reconciler) re-derives worker/recon for new sessions
+/tier fable                         # explicit set: .model=claude-fable-5 + frontmatter opus/sonnet
 /tier claude-opus-4-8               # a full id works (dated/variant kept as-is on top)
-/tier opus sonnet                   # 2-level explicit PIN: worker=sonnet, recon shares the worker slot
-/tier opus sonnet haiku             # 3-level explicit PIN: worker/recon set independently, any combo
-/tier                               # no args: print the current binding + derived trio (writes nothing)
+/tier opus sonnet                   # 2-arg explicit PIN: recon shares the worker model
+/tier opus sonnet haiku             # 3-arg explicit PIN: fully independent, any combo
+/tier                               # no args: print the current binding (writes nothing)
 /tier show                          # same as bare /tier
 ```
 
-A 2- or 3-arg `/tier` is an **explicit pin**, not a shorthand for the derived
-trio: it sets `.env.TIER_EXPLICIT_PIN="1"`, and `tier-reconcile` treats that as
-a standing opt-out — it will not overwrite the pinned worker/recon slots even
-as `.model` drifts underneath them (e.g. via `/model`). Run a plain 1-arg
-`/tier <top>` to clear the pin and resume auto-derivation. `tier-set show`
-reports whether a pin is currently active.
+A 2- or 3-arg `/tier` is an **explicit pin**, not a shorthand for the
+derived trio: it sets `.env.TIER_EXPLICIT_PIN="1"`, and `tier-reconcile`
+treats that as a standing opt-out — it will not rewrite the pinned
+worker/recon bindings even as `.model` drifts underneath them (e.g. via
+`/model`). It still purges legacy vars while pinned. A plain 1-arg
+`/tier <top>` clears the pin and resumes auto-derivation. `tier-set show`
+reports whether a pin is active.
 
-Derivation table (`tier-derive`, the single source of truth):
+Derivation table (`tier-derive`, the single source of truth for the ladder
+`fable > opus > sonnet > haiku`, floored at haiku):
 
 | top | worker (executor) | recon (scout) |
 |-----|-------------------|---------------|
@@ -92,126 +176,77 @@ Derivation table (`tier-derive`, the single source of truth):
 | sonnet | haiku  | haiku  |
 | haiku  | haiku  | haiku  |
 
-Three small POSIX scripts (all in `/usr/local/bin`, repo `scripts/`):
-- **`tier-derive`** — `tier-derive <top>` → `<top> <worker> <recon>` (concrete
-  ids); exit 3 for an off-ladder/custom top (prints nothing, so callers leave
-  slots alone). The ONLY place the ladder lives.
-- **`tier-set`** — the `/tier` engine: probes the top with downward fallback,
-  then derives the trio from the top that bound, and writes settings.
-- **`tier-reconcile`** — the hook that links `/model` → trio (see below).
+Alias map: `fable→claude-fable-5`, `opus→claude-opus-4-8`,
+`sonnet→claude-sonnet-5`, `haiku→claude-haiku-4-5-20251001`. Aliases are
+resolved to **concrete ids before writing**, so a binding never drifts with
+alias defaults. A full family id (incl. dated/variant) maps to its rung and
+keeps its exact value on top; anything else is off-ladder.
 
-Optional shell sugar in `.zshrc` drives the same engine: `tier <top>`
-(= `tier-set` + launch) and `tier-show` (= `tier-set show`). `TIER_NO_PROBE=1`
-skips availability probing; `TIER_SETTINGS=<path>` retargets the settings file
-(used by the test suite).
+**Off-ladder tops.** `tier-derive` prints nothing and exits 3 for a top it
+can't place (`best`, a custom id). The two callers react differently, both
+deliberately: `tier-reconcile` **leaves the agent files untouched** (never
+clobber); a 1-arg `tier-set <custom-id>` can't derive, so it **binds all
+three slots to that same model** and says so — you asked for that top,
+you get it everywhere. `tier-set show` flags an off-ladder top as
+custom/unmanaged.
 
-**The reconciler (`tier-reconcile`) is what keeps `.model` and the trio in
-sync.** Wired as a `SessionStart` + `UserPromptSubmit` hook, it reads `.model`,
-derives the trio, and rewrites the `ANTHROPIC_DEFAULT_*` slots **only if they
-differ** — idempotent, silent on stdout (a UserPromptSubmit hook's stdout would
-be injected into the prompt), fast. An off-ladder `.model` is a no-op (never
-clobber a custom top). Because it runs on the prompt *before* any subagent
-spawns that turn, a `/model` change is reflected in executor/scout on the very
-next turn.
+Three small POSIX scripts (installed in `/usr/local/bin`, repo `scripts/`):
+
+- **`tier-derive`** — `tier-derive <top>` → `<top> <worker> <recon>`
+  (concrete ids); exit 3 off-ladder. Aux modes: `--name <id>` (display
+  name, e.g. "Opus 4.8"), `--rank <id>` (0 = off-ladder). The ONLY place
+  the ladder lives — tier-set and tier-reconcile both call it, so they can
+  never disagree.
+- **`tier-set`** — the `/tier` engine: probes each requested slot with
+  downward fallback, writes `.model` + the two frontmatter `model:` lines
+  atomically (preserving file mode), sets/clears the pin, purges legacy
+  vars. If an agent file is missing or has no `model:` line it says so
+  ("slot NOT bound") and continues with the rest.
+- **`tier-reconcile`** — the SessionStart + UserPromptSubmit hook. Contract:
+  purge legacy vars first (always); then stop if pinned, `.model` empty, or
+  off-ladder; else derive the trio from `.model` and rewrite
+  executor.md/scout.md `model:` lines **only on diff**. Never touches
+  `.model`. Silent on stdout (a UserPromptSubmit hook's stdout would be
+  injected into the prompt). Idempotent and fast.
+
+Shell sugar in `.zshrc` drives the same engine: `tier <top>` (= `tier-set`
++ launch) and `tier-show` (= `tier-set show`).
+
+**Test/override env vars:** `TIER_SETTINGS=<path>` retargets the settings
+file and `TIER_AGENTS_DIR=<dir>` the agents directory (both used by the
+test suite so tests never touch the live binding); `TIER_NO_PROBE=1` skips
+availability probing (bind blind).
 
 **Why the `/tier` command frontmatter pins `model: haiku` + `effort: low`.**
 A custom command/skill is a *prompt*: after `!`tier-set …`` runs, its whole
 body is processed by a model turn. On a high-/max-effort session that turn
-burns a big thinking budget on a trivial passthrough (the "improvising… still
-thinking with max effort" cycle). The frontmatter runs *that turn only* on
-Haiku at low effort (auto-reverting afterward), and the body is a minimal
-"print the tool output verbatim; don't analyze, use tools, spawn subagents, or
-run a workflow" — the last clause matters because an ultracode session injects
-a "use Workflow on every task" directive into that turn too. `tier-set`'s own
-stdout is already the complete, user-facing message, so the command adds no
-prose of its own. Don't "simplify" these keys away — they are the fix for the
-expensive-cycle bug.
+burns a big thinking budget on a trivial passthrough. The frontmatter runs
+*that turn only* on Haiku at low effort (auto-reverting afterward), and the
+body is a minimal "print the tool output verbatim; don't analyze, use
+tools, spawn subagents, or run a workflow" — the last clause matters
+because an ultracode session injects a "use Workflow on every task"
+directive into that turn too. Don't "simplify" these keys away.
 
-Alias map: `fable→claude-fable-5`, `opus→claude-opus-4-8`,
-`sonnet→claude-sonnet-5`, `haiku→claude-haiku-4-5-20251001`; a full family id
-(incl. dated/variant) maps to its rung, anything else is off-ladder. Aliases
-are mapped **before** writing — never an alias string into the env var that
-defines that alias. The orchestrator-is-strongest invariant is now *structural*
-(worker/recon are consecutive rungs below the top), so no rank warning is
-needed — you can't invert the trio.
+**`/advisor` coupling:** `advisorModel` (settings) must be **≥ the
+session's main model** or `/advisor` is rejected. It is pinned to `fable` —
+the one static value valid above every trio this setup uses. If Fable is
+ever unavailable on the plan, `/advisor` fails visibly; swap the value then.
 
-It writes into `~/.claude/settings.json`:
+## Graceful degradation (probe + fallback)
 
-| Settings key | Slot | Roles that ride it |
-|--------------|------|--------------------|
-| `.model`                                    | orchestrator | any plain `claude` launch |
-| `.env.ANTHROPIC_DEFAULT_OPUS_MODEL`(`_NAME`)   | reasoning    | anything on the `opus` alias |
-| `.env.ANTHROPIC_DEFAULT_SONNET_MODEL`(`_NAME`) | worker       | executor |
-| `.env.ANTHROPIC_DEFAULT_HAIKU_MODEL`(`_NAME`)  | recon        | scout |
-| `.env.TIER_EXPLICIT_PIN`               | (marker)     | tells `tier-reconcile` to leave the trio alone |
-
-**The `_NAME` vars fix a real bug (bd nbg): they keep Claude Code's own
-`/model` picker honest.** The picker reads the *same*
-`ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL` vars to build its "Opus" /
-"Sonnet" / "Haiku" menu rows — confirmed by reading the shipped `claude`
-binary's menu-builder directly (it is a de-minified-but-readable JS bundle,
-greppable with `grep -a`): each row is `{value:"opus", label:
-process.env.ANTHROPIC_DEFAULT_OPUS_MODEL_NAME ?? <the raw id>, ...}` (same
-pattern for `sonnet`/`haiku`/`fable`). Before this fix, `tier-set` wrote only
-the bare `_MODEL` var, so a `top=fable` session showed the picker rows
-"Opus"→claude-fable-5, "Sonnet"→claude-opus-4-8, "Haiku"→claude-sonnet-5 —
-each row's chrome (name) lied about which model it actually was, and picking
-a row silently wrote that row's `value` alias (e.g. `"opus"`) into `.model`,
-which `tier-reconcile` would then re-derive a **new** trio from — a confusing
-loop where the picker no longer meant what it said. `tier-set` and
-`tier-reconcile` now also write the companion `_NAME` var with a canonical
-display name (`tier-derive --name <id>`; e.g. "Fable 5", "Opus 4.8") for
-every slot, so each row shows the model it truly is. This is a **labeling
-fix, not an architecture change** — the underlying alias-remapping mechanism
-is unchanged and still the reason worker/recon route through the `sonnet`/
-`haiku` aliases in `executor.md`/`scout.md`'s `model:` frontmatter.
-
-The **worker and recon slots take effect in the current session**, not only
-new ones: Claude Code re-reads `settings.json` `env` when it spawns a
-subagent, so an executor (sonnet slot) or scout (haiku slot) spawned *after*
-`/tier` runs uses the new model immediately — no relaunch needed. (Verified
-empirically on Claude Code 2.1.206 by injecting a distinctive id into a slot
-mid-session and reading the spawned subagent's recorded `model`; the public
-docs imply a launch-time snapshot, but the observed behaviour is a per-spawn
-re-read.) What a file write **cannot** move is the **orchestrator** — the
-running session's own model: only `/model <reasoning-id>` moves a running
-orchestrator (it also persists as the new-session default). `tier-set` prints
-the exact `/model …` line so you can switch this session's orchestrator in one
-paste. **Verifier and oracle don't ride a slot** — their frontmatter is
-`model: inherit`, so they track the orchestrator's own model; because the
-orchestrator doesn't move in a running session, neither do they until `/model`
-is used. All three slots apply to any newly launched session.
-**An image rebuild resets `settings.json` to the template** — re-run
-`/tier` afterwards.
-
-**Never set `CLAUDE_CODE_SUBAGENT_MODEL`.** It overrides *every* subagent's
-model and would collapse all three tiers onto one. `tier-set` removes it on
-every write.
-
-**The slot vars in settings `env` are owned by `tier-set`.** Don't hand-edit
-them, and don't export them in the shell: settings `env` overrides shell
-exports at launch, so a shell export silently does nothing once `tier-set`
-has written the slots — always go through `/tier` / `tier-set`.
-
-**`/advisor` coupling:** `advisorModel` (settings) must be **≥ the session's
-main model** or `/advisor` is rejected. It is pinned to `fable` — the one
-static value valid above every trio this setup uses. If Fable is ever
-unavailable on the plan, `/advisor` fails visibly; swap the value then.
-
-## Graceful degradation (fallback order)
-
-Only the **top** degrades now — worker/recon are derived from whatever top
-actually bound, so they never need their own fallback. The top falls through a
-candidate list to the first available model, **without editing any file**:
+Every requested slot degrades **downward** to the first available model,
+without manual intervention. `tier-set` probes each candidate with a tiny
+`claude -p` ping (skip with `TIER_NO_PROBE=1`; best-effort — a
+safeguard-rerouted model can still probe green):
 
 - top: `<requested>` → `claude-opus-4-8` → `claude-sonnet-5` → `claude-haiku-4-5-20251001`
+- worker (explicit form): `<requested>` → `claude-sonnet-5` → `claude-haiku-4-5-20251001`
+- recon (explicit form): `<requested>` → `claude-haiku-4-5-20251001`
 
-The requested model is tried first, then the floor list — so `/tier fable`
-tries Fable, then degrades downward, and the trio is derived from the rung that
-bound. Fallback never escalates cost. `tier-set` probes each candidate with a
-tiny `claude -p` ping (skip with `TIER_NO_PROBE=1`; the probe is best-effort —
-a safeguard-rerouted model can still probe green). The SessionStart hook also
-echoes the live binding each session, so you always see what you actually got.
+On the 1-arg path the trio is derived from **whichever top actually
+bound**, so worker/recon never need their own fallback there. Fallback
+never escalates cost. The SessionStart hook echoes the live binding each
+session, so you always see what you actually got.
 
 **Demo — requested top unavailable (e.g. gated on the current plan):**
 
@@ -220,17 +255,43 @@ echoes the live binding each session, so you always see what you actually got.
 tier[top] claude-fable-5 unavailable, trying next...
 tier[top] falling back -> claude-opus-4-8
 tier bound  top=claude-opus-4-8  →  worker=claude-sonnet-5  recon=claude-haiku-4-5-20251001  (worker/recon derived from the top)
-· LIVE in this session: executor=claude-sonnet-5 and scout=claude-haiku-4-5-20251001 — subagents spawned from now on use them
-  (Claude Code re-reads settings.json env on each subagent spawn).
-· NOT moved in this session: the orchestrator (=claude-opus-4-8) and inherit agents (verifier/oracle) —
+· /model picker untouched and fully native — every row and alias means exactly what it says.
+· worker/recon are bound in agent frontmatter (executor.md/scout.md) and apply to NEW sessions
+  (agent files are snapshotted at session start; the SessionStart reconciler keeps them linked to .model).
+· NOT moved in this session: the orchestrator and inherit agents (verifier/oracle) —
   a running session's own model changes only via /model. To move it now, run:  /model claude-opus-4-8
-· NEW sessions get all three; a plain launch uses orchestrator=claude-opus-4-8.
+· For a one-off different tier in THIS session, pass an explicit model on the Agent call.
 ```
 
 (Fable 5 is an active model — do not assume it is unavailable; the probe
-decides per session. This section once claimed Fable retired on 2026-07-08;
-that was wrong as of 2026-07-10 and the ban on Fable references was
-removed.)
+decides per session.)
+
+## Post-mortem: why v1 (env-slot remap) was retired — never reintroduce it
+
+v1 bound worker/recon by rewriting
+`ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL` (+ `_NAME` labels) in
+settings `env`, and executor/scout rode the `sonnet`/`haiku` aliases. It
+failed structurally, not cosmetically:
+
+1. **The picker reads the same vars.** Claude Code's native `/model` picker
+   builds its Opus/Sonnet/Haiku rows from those exact env vars, so any
+   remap redefined what the picker's rows *are* (the `_NAME` labels only
+   patched what they *said*).
+2. **Selection persists bare aliases.** Picking a custom-slot row writes
+   the bare alias (`"opus"`, `"sonnet"`, optionally `[1m]`) into `.model` —
+   so with slots remapped, an alias meant one thing at selection time and
+   another after any slot rewrite.
+3. **The reconciler re-derived from the alias name, not the slot content**
+   — deriving a trio from `"opus"` after `opus` had been remapped walked
+   the whole trio down the ladder, one rung per cycle.
+
+Observed live 2026-07-17 (bead dsu): the picker offered only
+Fable/Sonnet-1M/Haiku, `/model opus` landed on Fable, and later sessions
+drifted down to Haiku. v2 removes the collision at the root: aliases and
+the picker are native again, and the tier binding lives in agent
+frontmatter, which nothing else reads. This is why the legacy vars are
+**purged on sight** — any partial resurrection (even "just one slot, just
+temporarily") re-creates the alias ambiguity.
 
 ## Trust, but verify
 
@@ -251,34 +312,37 @@ no stake — never by the worker grading itself.
 
 ## Rollback
 
-All changes are repo files (layer 1), reversible via git. The setup is
-additive — no existing agent was removed. To revert everything:
+All changes are repo files, reversible via git; and the live state is
+self-healing: **an image rebuild resets the agent files and
+`settings.json` from the templates, and the SessionStart reconciler
+re-derives worker/recon from `.model` on the first session** — no manual
+re-run needed. To roll back live state without a rebuild:
+`cp /etc/claude-dev/configs/agents/*.md ~/.claude/agents/` (or from the
+repo: `config/agents/`) and start a fresh session. Note the repo agent
+templates carry alias placeholders (`model: sonnet` / `model: haiku`); the
+reconciler replaces them with concrete ids on first run.
 
-```bash
-# base before this change:
-git revert --no-commit bc5cb028..HEAD   # or: git checkout bc5cb028 -- <file>
-```
+Revision log (each reversible via git on the listed files):
 
-Files introduced/changed: `config/agents/executor.md`,
-`config/agents/verifier.md` (new); `config/agents/scout.md`,
-`config/claude-settings.json`, `config/.zshrc`, `CLAUDE.md` (edited,
-additive). A pre-change copy is also saved under
-`~/.claude/backups/tiered-orchestration-<sha>/`. New config reaches a live
-dev container on the next host `./claude-dev --rebuild` (or live-patch
-layer 3: `cp config/agents/*.md ~/.claude/agents/`).
-
-**2026-07-10 revision (Fable-is-back review):** `config/.zshrc` (tier-bind
-split, alias map, rank warning, tier-show settings-model line),
-`config/agents/{verifier,oracle}.md` (`model: inherit`),
-`config/agents/{executor,scout}.md` (prose), `config/claude-settings.json`
-(`advisorModel: "fable"`, honest SessionStart echo), `CLAUDE.md`, this file,
-`tests/smoke.bats`. Pre-change live copies:
-`~/.claude/backups/tier-review-20260710/`. Same rollback mechanics as above.
-
-**2026-07-10 revision 2 (/tier slash command):** engine moved out of the
-shell into `scripts/tier-set.sh` (staged to `/usr/local/bin/tier-set`),
-exposed as `/tier` via `config/claude-commands/tier.md` (entrypoint deploys
-`configs/commands/*.md` → `~/.claude/commands/`); binding mechanism changed
-from env exports to a settings.json write (see above); `config/.zshrc` tier
-block reduced to thin wrappers; `Dockerfile` + `scripts/entrypoint.sh` gained
-the staging lines; `tests/smoke.bats` tier tests retargeted to the script.
+- **2026-07-17 — mechanism v2 (frontmatter binding; bead dsu):**
+  `scripts/tier-set.sh`, `scripts/tier-reconcile.sh`, `scripts/tier-derive.sh`
+  rewritten (env-slot remap retired, purge policy added, `TIER_AGENTS_DIR`
+  override added); `config/claude-settings.json` SessionStart echo now
+  reads settings `.model` + executor/scout frontmatter; this doc rewritten.
+  The runtime binding now lives in `~/.claude/agents/{executor,scout}.md`
+  frontmatter, maintained by the scripts.
+- **2026-07-10 rev 2 (/tier slash command):** engine moved from the shell
+  into `scripts/tier-set.sh` (installed as `/usr/local/bin/tier-set`),
+  exposed as `/tier` via `config/claude-commands/tier.md`; `config/.zshrc`
+  reduced to thin wrappers; `Dockerfile` + `scripts/entrypoint.sh` staging;
+  `tests/smoke.bats` retargeted.
+- **2026-07-10 rev 1 (Fable-is-back review):** `config/.zshrc`,
+  `config/agents/{verifier,oracle}.md` (`model: inherit`),
+  `config/agents/{executor,scout}.md` (prose),
+  `config/claude-settings.json` (`advisorModel: "fable"`), `CLAUDE.md`,
+  `tests/smoke.bats`. Pre-change copies:
+  `~/.claude/backups/tier-review-20260710/`.
+- **Original introduction:** `config/agents/executor.md`, `verifier.md`
+  (new); `scout.md`, `config/claude-settings.json`, `config/.zshrc`,
+  `CLAUDE.md` (additive edits). Base commit `bc5cb028`; pre-change copy
+  under `~/.claude/backups/tiered-orchestration-<sha>/`.

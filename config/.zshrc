@@ -70,18 +70,22 @@ cn()  { _claude_in_tmux claude "$@" }
 # The engine is /usr/local/bin/tier-set (repo: scripts/tier-set.sh). You pick
 # ONE top model (alias fable/opus/sonnet/haiku or a full id); worker and recon
 # are DERIVED as the next two consecutive rungs down (via tier-derive), so the
-# trio can't drift from the default. tier-set probes the top with downward
-# degradation, then writes .model + the three ANTHROPIC_DEFAULT_*_MODEL env
-# slots into ~/.claude/settings.json. tier-reconcile (a SessionStart +
-# UserPromptSubmit hook) keeps those slots synced to .model whenever /model
-# changes it. Verifier & oracle use `model: inherit` and track the
-# orchestrator. Inside any session:  /tier opus   or  /model opus   or  /tier show
+# trio can't drift from the default (2/3-arg forms pin them explicitly).
+# tier-set probes the top with downward degradation, then writes .model into
+# ~/.claude/settings.json and a CONCRETE model id into the frontmatter of
+# ~/.claude/agents/executor.md (worker) and scout.md (recon). tier-reconcile
+# (a SessionStart + UserPromptSubmit hook) keeps those bindings synced to
+# .model whenever /model changes it; bindings apply to NEW sessions (agent
+# files are snapshotted at session start). Verifier & oracle use `model:
+# inherit` and track the orchestrator. Inside any session:
+#   /tier opus   or  /model opus   or  /tier show
 #
-# The slot vars in settings `env` are OWNED by tier-set — don't hand-edit
-# them, and never add CLAUDE_CODE_SUBAGENT_MODEL (tier-set removes it; it
-# would flatten all tiers onto one model). Settings `env` overrides shell
-# exports, so exporting slot vars in the shell does nothing once tier-set
-# has written them — always go through tier-set.
+# NEVER set ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL(_NAME) or
+# CLAUDE_CODE_SUBAGENT_MODEL anywhere (shell or settings env): the first six
+# corrupt the native /model picker (its rows read those vars and selections
+# persist bare aliases — the 2026-07-17 model-selection trap), the last
+# flattens all tiers onto one model. tier-set and tier-reconcile purge all
+# of them on sight — always go through tier-set.
 #
 # Shell sugar for the same engine (works even if you never open a session):
 tier() {

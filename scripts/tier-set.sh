@@ -1,48 +1,51 @@
 #!/bin/sh
 # tier-set — bind the model tier (top / worker / recon).
 #
-# Default (ONE arg): worker and recon are DERIVED as the next two consecutive
-# rungs down the ladder from the top — see tier-derive, the single source of
-# truth for that derivation. Explicit (TWO or THREE args): you name the
-# worker/recon slot(s) yourself, for a shared 2-level config or a fully
-# independent 3-level one — see "Usage" below.
+# MECHANISM (v2 — per-agent frontmatter binding; the env-var remap is RETIRED):
 #
-# This is the engine behind the /tier slash command (and the optional `tier`
-# shell wrapper). It writes ~/.claude/settings.json:
+#   top    -> settings .model                        (plain-launch orchestrator default)
+#   worker -> $AGENTS/executor.md  `model:` line     (concrete id in frontmatter)
+#   recon  -> $AGENTS/scout.md     `model:` line     (concrete id in frontmatter)
 #
-#   .model                                  = <top id>     (plain-launch orchestrator)
-#   .env.ANTHROPIC_DEFAULT_OPUS_MODEL       = <top id>     (reasoning / anything on the `opus` alias)
-#   .env.ANTHROPIC_DEFAULT_OPUS_MODEL_NAME  = <top name>   (honest label for the above, see below)
-#   .env.ANTHROPIC_DEFAULT_SONNET_MODEL(_NAME) = <worker id/name>  (executor — one rung down)
-#   .env.ANTHROPIC_DEFAULT_HAIKU_MODEL(_NAME)  = <recon id/name>   (scout — two rungs down)
-#   .env.TIER_EXPLICIT_PIN                  = "1" iff an explicit (2/3-arg) bind is active
+# The previous mechanism remapped ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL.
+# That corrupted Claude Code's native /model picker: the picker builds its
+# Opus/Sonnet/Haiku rows from those SAME env vars, and selecting a row persists
+# the BARE ALIAS ("opus"/"sonnet"/"haiku") into .model — so with slots remapped,
+# an alias meant one thing at selection time and another after any slot rewrite,
+# and the reconciler re-deriving a trio from the alias NAME (not the slot's
+# content) walked the whole trio down the ladder. Observed live 2026-07-17:
+# the picker offering only Fable/Sonnet-1M/Haiku, "/model opus" landing on
+# Fable and later on Haiku. Frontmatter binding removes the collision at the
+# root: the picker and every alias stay NATIVE and honest ("opus" always means
+# the Opus family), and the tier binding lives where only subagent definitions
+# read it. tier-set and tier-reconcile now PURGE those env vars — plus
+# CLAUDE_CODE_SUBAGENT_MODEL, which would flatten all tiers onto one model —
+# wherever they find them: all of them are standing footguns now.
 #
-# and removes .env.CLAUDE_CODE_SUBAGENT_MODEL (it would flatten all tiers onto
-# one model). Verifier & oracle use `model: inherit`, so they always track the
-# orchestrator — they are never bound separately.
-#
-# Why the _NAME vars: Claude Code's own /model picker reads the SAME
-# ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL vars to build its "Opus" /
-# "Sonnet" / "Haiku" menu rows, and each row's label defaults to
-# ANTHROPIC_DEFAULT_<ROLE>_MODEL_NAME, falling back to the raw model id when
-# unset (confirmed by reading the shipped `claude` binary's own menu-builder,
-# e.g. `label: process.env.ANTHROPIC_DEFAULT_OPUS_MODEL_NAME ?? e`). Without
-# the _NAME write the menu's "Opus" row silently showed whatever the tier
-# system had bound to that slot — a top=fable session mislabeled its rows
-# "Opus"->Fable 5, "Sonnet"->Opus 4.8, "Haiku"->Sonnet 5. Setting _NAME makes
-# each row display the model it ACTUALLY is, so the picker stays truthful and
-# selecting a row writes a value that matches what was shown.
-#
-# The same slots are kept in sync automatically by tier-reconcile (a
-# SessionStart + UserPromptSubmit hook) whenever .model changes via /model —
-# unless an explicit (2/3-arg) pin is active, in which case the reconciler
-# leaves the pinned slots alone (see tier-reconcile.sh). /model is the primary
-# in-session lever for the derived default; /tier is the explicit set.
+# Semantics (empirically verified 2026-07-17 on Claude Code 2.1.x):
+#   - Agent definitions are SNAPSHOTTED at session start: a mid-session
+#     frontmatter edit does NOT change spawns in the already-running session;
+#     a fresh session honors it, including a full concrete model id. So
+#     worker/recon bindings apply to NEW sessions — the SessionStart
+#     tier-reconcile hook guarantees every session is consistent with .model
+#     from its first spawn. If the CURRENT session needs a different tier for
+#     one spawn, pass an explicit `model` on that Agent call.
+#   - The orchestrator (settings .model) and model:-inherit agents
+#     (verifier/oracle) move only via /model in a running session — a file
+#     write cannot move a running session's own model.
+#   - Aliases are resolved to concrete ids before writing, so a binding never
+#     drifts with alias defaults.
+#   - Each slot degrades DOWNWARD to the first available model (probe = one
+#     tiny `claude -p` ping per candidate tried); the 1-arg form derives the
+#     trio from whichever top actually bound.
+#   - A container rebuild resets the agent files and settings from the
+#     template; the SessionStart reconciler re-derives from .model, so no
+#     manual re-run is needed.
 #
 # Usage:
 #   tier-set                        # NO ARGS -> print the current binding (same as `show`)
 #   tier-set <top>                  # 1 model  -> worker/recon AUTO-DERIVED (consecutive rungs down)
-#   tier-set <top> <worker>         # 2 models -> a 2-level config: recon SHARES the worker slot
+#   tier-set <top> <worker>         # 2 models -> a 2-level config: recon SHARES the worker model
 #   tier-set <top> <worker> <recon> # 3 models -> fully independent 3-level config
 #   tier-set show                   # print the current binding
 #   TIER_NO_PROBE=1 tier-set ...    # skip availability probing (bind blind)
@@ -50,30 +53,17 @@
 # Ladder: fable > opus > sonnet > haiku.  1-arg default -> (top, top-1, top-2), floored:
 #   fable→fable/opus/sonnet · opus→opus/sonnet/haiku · sonnet→sonnet/haiku/haiku · haiku→haiku×3
 # A 2- or 3-arg explicit bind is NOT required to be consecutive rungs — any
-# combination is accepted (each slot is independently probed/degraded).
+# combination is accepted (each slot independently probed/degraded). An
+# explicit bind sets .env.TIER_EXPLICIT_PIN="1" so the reconciler leaves the
+# pinned worker/recon alone; a 1-arg bind clears the pin.
 #
-# Semantics:
-#   - Worker (executor) and recon (scout) slots take effect in the CURRENT
-#     session, not just new ones: Claude Code re-reads settings.json env when
-#     it spawns a subagent, so subagents spawned after this runs use the new
-#     slots. (Verified empirically on Claude Code 2.1.206 — the docs imply a
-#     launch-time snapshot, but observed behaviour is a per-spawn re-read.)
-#   - The orchestrator (settings .model) and model:inherit agents
-#     (verifier/oracle) are NOT moved in a running session — a file write
-#     can't move a running session's own model; only /model does. All three
-#     slots apply to any newly launched session.
-#   - Aliases are mapped to concrete ids BEFORE writing — never write an alias
-#     into the env var that defines that alias.
-#   - Each slot degrades DOWNWARD to the first available model (probe = one
-#     tiny `claude -p` ping per candidate tried); the 1-arg form derives the
-#     trio from whichever top actually bound.
-#   - A container rebuild resets settings.json from the template — re-run
-#     /tier (or tier-set) afterwards.
-#
-# TIER_SETTINGS overrides the settings path (used by the test suite).
+# TIER_SETTINGS and TIER_AGENTS_DIR override the paths (used by the test suite).
 
 set -u
 SETTINGS="${TIER_SETTINGS:-$HOME/.claude/settings.json}"
+AGENTS="${TIER_AGENTS_DIR:-$HOME/.claude/agents}"
+EXEC_MD="$AGENTS/executor.md"
+SCOUT_MD="$AGENTS/scout.md"
 
 alias_id() {  # alias -> concrete id; unknown strings pass through (full ids)
     case "$1" in
@@ -113,35 +103,60 @@ pick() {  # pick <slot-label> <candidate>... -> echoes first usable, degrading d
 # Locate tier-derive whether installed (/usr/local/bin) or run from the repo.
 DERIVE=$(command -v tier-derive 2>/dev/null) || DERIVE="$(dirname "$0")/tier-derive.sh"
 
-name_for() {  # concrete id/alias -> display name, or empty if off-ladder (caller falls back to the raw id)
-    "$DERIVE" --name "$1" 2>/dev/null || true
+fm_model() {  # current frontmatter `model:` value of an agent file ('' if none/missing)
+    grep -m1 '^model:' "$1" 2>/dev/null | sed 's/^model:[[:space:]]*//'
+}
+
+fm_set() {  # fm_set <agent-file> <model-id> — rewrite the frontmatter model: line atomically
+    local f id mode tmp
+    f=$1; id=$2
+    case "$id" in (*[!]a-zA-Z0-9._[-]*|'')   # only safe id chars: sed/YAML injection guard
+        echo "tier-set: refusing unsafe model id '$id' — slot NOT bound" >&2
+        return 1 ;;
+    esac
+    if ! grep -q '^model:' "$f" 2>/dev/null; then
+        echo "tier-set: $f missing or has no 'model:' line — slot NOT bound" >&2
+        return 1
+    fi
+    mode=$(stat -c %a "$f" 2>/dev/null) || mode=644
+    tmp=$(mktemp "$f.XXXXXX") || return 1
+    if sed "0,/^model:/s|^model:.*|model: $id|" "$f" > "$tmp"; then
+        chmod "$mode" "$tmp" 2>/dev/null
+        mv "$tmp" "$f"
+    else
+        rm -f "$tmp"
+        return 1
+    fi
 }
 
 if [ $# -eq 0 ] || [ "${1:-}" = "show" ]; then   # no args or `show` -> just print state
     if [ -f "$SETTINGS" ]; then
         cur_model=$(jq -r '.model // empty' "$SETTINGS" 2>/dev/null)
         pinned=$(jq -r '.env.TIER_EXPLICIT_PIN // empty' "$SETTINGS" 2>/dev/null)
-        jq -r '"orchestrator (settings model)      = " + (.model // "<harness default>"),
-               "reasoning slot (opus alias)        = " + (.env.ANTHROPIC_DEFAULT_OPUS_MODEL // "<unset -> opus default>") + (if .env.ANTHROPIC_DEFAULT_OPUS_MODEL_NAME then "  [\"" + .env.ANTHROPIC_DEFAULT_OPUS_MODEL_NAME + "\" in the /model picker]" else "" end),
-               "worker slot / executor             = " + (.env.ANTHROPIC_DEFAULT_SONNET_MODEL // "<unset -> sonnet default>") + (if .env.ANTHROPIC_DEFAULT_SONNET_MODEL_NAME then "  [\"" + .env.ANTHROPIC_DEFAULT_SONNET_MODEL_NAME + "\" in the /model picker]" else "" end),
-               "recon slot / scout                 = " + (.env.ANTHROPIC_DEFAULT_HAIKU_MODEL // "<unset -> haiku default>") + (if .env.ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME then "  [\"" + .env.ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME + "\" in the /model picker]" else "" end)' \
-            "$SETTINGS" 2>/dev/null || echo "tier-set: cannot read $SETTINGS" >&2
+        w=$(fm_model "$EXEC_MD"); c=$(fm_model "$SCOUT_MD")
+        echo "orchestrator (settings model)      = ${cur_model:-<harness default>}"
+        echo "worker / executor (frontmatter)    = ${w:-<no executor.md>}"
+        echo "recon / scout (frontmatter)        = ${c:-<no scout.md>}"
         if [ "$pinned" = "1" ]; then
             echo "explicit pin: ON — worker/recon were set manually (tier-set <top> <worker> [<recon>]); the reconciler leaves them alone until you run a 1-arg /tier <top> again."
         elif [ -n "$cur_model" ] && [ -x "$DERIVE" ]; then
             if trio=$("$DERIVE" "$cur_model" 2>/dev/null); then
                 echo "derived trio for top=$cur_model  = $trio"
             else
-                echo "note: top '$cur_model' is OFF-LADDER (custom/unmanaged) — slots are left as-is, not auto-derived"
+                echo "note: top '$cur_model' is OFF-LADDER (custom/unmanaged) — worker/recon are left as-is, not auto-derived"
             fi
+        fi
+        # Flag any leftover picker-corrupting env vars (tier-set/tier-reconcile purge these on their next write)
+        if jq -e '(.env // {}) | keys | map(select(test("^ANTHROPIC_DEFAULT_(OPUS|SONNET|HAIKU)_MODEL(_NAME)?$") or . == "CLAUDE_CODE_SUBAGENT_MODEL")) | length > 0' "$SETTINGS" >/dev/null 2>&1; then
+            echo "WARNING: legacy ANTHROPIC_DEFAULT_*/CLAUDE_CODE_SUBAGENT_MODEL vars present — they corrupt the native /model picker; run any /tier bind (or wait for the reconciler) to purge them."
         fi
     else
         echo "no settings file at $SETTINGS"
     fi
     echo "1-arg /tier auto-derives worker/recon as the next two rungs down (fable>opus>sonnet>haiku, floored)."
-    echo "2/3-arg /tier <top> <worker> [<recon>] pins those slots explicitly (see the header of tier-set.sh)."
+    echo "2/3-arg /tier <top> <worker> [<recon>] pins those bindings explicitly (see the header of tier-set.sh)."
     echo "verifier & oracle inherit the orchestrator's model; /model is the primary in-session lever for the derived default."
-    echo "worker/recon slots apply in-session (next subagent spawn); the orchestrator moves only via /model."
+    echo "worker/recon bindings apply to NEW sessions (agent files are snapshotted at session start); the orchestrator moves only via /model."
     exit 0
 fi
 
@@ -149,8 +164,8 @@ explicit=0
 if [ $# -eq 1 ]; then
     R=$(pick top "$(alias_id "$1")" claude-opus-4-8 claude-sonnet-5 claude-haiku-4-5-20251001) || exit 1
     if trio=$("$DERIVE" "$R" 2>/dev/null); then   # derive worker+recon from the bound top
-        # shellcheck disable=SC2086 # trio is three shell-safe ids, intentional split
-        set -- $trio
+        # shellcheck disable=SC2086 # intentional split; set -f so ids like opus[1m] can't glob-expand
+        set -f; set -- $trio; set +f
         R=$1; W=$2; C=$3
     else
         # Off-ladder custom top: not derivable — bind it across all three and say so.
@@ -165,11 +180,9 @@ else
         C=$(pick recon "$(alias_id "$3")" claude-haiku-4-5-20251001) || exit 1
         [ $# -gt 3 ] && shift 3 && echo "tier: extra args ignored (dropped: $*)" >&2
     else
-        C=$W   # 2-arg form: a 2-level config — recon shares the worker slot
+        C=$W   # 2-arg form: a 2-level config — recon shares the worker model
     fi
 fi
-
-NR=$(name_for "$R"); NW=$(name_for "$W"); NC=$(name_for "$C")
 
 if [ ! -f "$SETTINGS" ]; then
     mkdir -p "$(dirname "$SETTINGS")"
@@ -178,19 +191,14 @@ fi
 
 orig_mode=$(stat -c %a "$SETTINGS" 2>/dev/null) || orig_mode=644
 tmp=$(mktemp "$SETTINGS.XXXXXX") || exit 1
-if jq --arg r "$R" --arg w "$W" --arg c "$C" \
-      --arg nr "$NR" --arg nw "$NW" --arg nc "$NC" \
+if jq --arg r "$R" \
       --argjson pin "$([ "$explicit" -eq 1 ] && echo true || echo false)" '
         .model = $r
         | .env = ((.env // {})
-                  | .ANTHROPIC_DEFAULT_OPUS_MODEL   = $r
-                  | .ANTHROPIC_DEFAULT_SONNET_MODEL = $w
-                  | .ANTHROPIC_DEFAULT_HAIKU_MODEL  = $c
-                  | (if $nr != "" then .ANTHROPIC_DEFAULT_OPUS_MODEL_NAME   = $nr else del(.ANTHROPIC_DEFAULT_OPUS_MODEL_NAME)   end)
-                  | (if $nw != "" then .ANTHROPIC_DEFAULT_SONNET_MODEL_NAME = $nw else del(.ANTHROPIC_DEFAULT_SONNET_MODEL_NAME) end)
-                  | (if $nc != "" then .ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME  = $nc else del(.ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME)  end)
                   | (if $pin then .TIER_EXPLICIT_PIN = "1" else del(.TIER_EXPLICIT_PIN) end)
-                  | del(.CLAUDE_CODE_SUBAGENT_MODEL))
+                  | del(.ANTHROPIC_DEFAULT_OPUS_MODEL, .ANTHROPIC_DEFAULT_SONNET_MODEL, .ANTHROPIC_DEFAULT_HAIKU_MODEL,
+                        .ANTHROPIC_DEFAULT_OPUS_MODEL_NAME, .ANTHROPIC_DEFAULT_SONNET_MODEL_NAME, .ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME,
+                        .CLAUDE_CODE_SUBAGENT_MODEL))
     ' "$SETTINGS" > "$tmp" 2>/dev/null && jq -e . "$tmp" >/dev/null 2>&1; then
     chmod "$orig_mode" "$tmp" 2>/dev/null
     mv "$tmp" "$SETTINGS"
@@ -200,17 +208,23 @@ else
     exit 1
 fi
 
+bind_fail=0
+fm_set "$EXEC_MD" "$W" || bind_fail=1
+fm_set "$SCOUT_MD" "$C" || bind_fail=1
+if [ "$bind_fail" -eq 1 ]; then
+    echo "tier: PARTIAL bind — top=$R written to settings, but a worker/recon slot above FAILED (see stderr); fix the agent file and re-run."
+    exit 1
+fi
+
 if [ "$explicit" -eq 1 ]; then
     echo "tier bound (explicit)  top=$R  worker=$W  recon=$C"
     echo "· pinned — the reconciler will NOT auto-derive over this until you run a 1-arg /tier <top>."
 else
     echo "tier bound  top=$R  →  worker=$W  recon=$C  (worker/recon derived from the top)"
 fi
-echo "· /model picker rows now read: Opus=\"${NR:-$R}\"  Sonnet=\"${NW:-$W}\"  Haiku=\"${NC:-$C}\" (honest labels, not the hardcoded Opus/Sonnet/Haiku names)."
-echo "· LIVE in this session: executor=$W and scout=$C — subagents spawned from now on use them"
-echo "  (Claude Code re-reads settings.json env on each subagent spawn)."
-echo "· NOT moved in this session: the orchestrator (=$R) and inherit agents (verifier/oracle) —"
+echo "· /model picker untouched and fully native — every row and alias means exactly what it says."
+echo "· worker/recon are bound in agent frontmatter (executor.md/scout.md) and apply to NEW sessions"
+echo "  (agent files are snapshotted at session start; the SessionStart reconciler keeps them linked to .model)."
+echo "· NOT moved in this session: the orchestrator and inherit agents (verifier/oracle) —"
 echo "  a running session's own model changes only via /model. To move it now, run:  /model $R"
-echo "  (/model is the primary lever: the reconciler re-derives the trio from .model on your next prompt,"
-echo "  unless an explicit pin is active.)"
-echo "· NEW sessions get all three; a plain launch uses orchestrator=$R."
+echo "· For a one-off different tier in THIS session, pass an explicit model on the Agent call."

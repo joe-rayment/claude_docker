@@ -56,7 +56,12 @@ name_for_rank() {  # human display name for a ladder rank
 }
 
 rank_of() {  # alias OR full family id -> rank; 0 = off-ladder/unknown
-    case "$1" in
+    # A trailing [variant] suffix (e.g. "claude-fable-5[1m]", "opus[1m]") is
+    # stripped for RANKING only — the /model picker persists such values, and
+    # with the env-var remap retired an alias always means its native family,
+    # so ranking the base is unambiguous. The caller keeps the exact original
+    # value in the top slot.
+    case "${1%\[*}" in
         fable  | claude-fable-*)  echo 4 ;;
         opus   | claude-opus-*)   echo 3 ;;
         sonnet | claude-sonnet-*) echo 2 ;;

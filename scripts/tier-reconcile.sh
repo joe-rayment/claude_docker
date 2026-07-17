@@ -1,52 +1,50 @@
 #!/bin/sh
-# tier-reconcile — keep the tier slots linked to the default model.
+# tier-reconcile — keep the worker/recon agent bindings linked to the default model.
 #
 # Reads .model from settings.json, derives the trio (via tier-derive), and
-# rewrites the ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL(+_NAME) slots ONLY
-# IF they differ from the derived values. This is the mechanism that links
-# /model → the worker/recon tiers: /model persists the new default to
-# settings.json, and the next UserPromptSubmit fires this — before any
-# subagent spawns that turn — so executor/scout always run models consecutive
-# to the current default.
+# rewrites the `model:` frontmatter line of executor.md / scout.md ONLY IF they
+# differ from the derived values. This is the mechanism that links /model → the
+# worker/recon tiers: /model persists the new default to settings.json, and the
+# next SessionStart/UserPromptSubmit fires this hook. Because agent definitions
+# are SNAPSHOTTED at session start (verified empirically 2026-07-17), the
+# rewritten bindings take effect in the NEXT session — the SessionStart run of
+# this hook is what guarantees every session's executor/scout are consistent
+# with .model from that session's first spawn.
 #
-# The _NAME writes exist because Claude Code's own /model picker reads the
-# SAME ANTHROPIC_DEFAULT_*_MODEL vars to build its "Opus"/"Sonnet"/"Haiku"
-# menu rows, defaulting each row's label to the companion *_NAME var (falling
-# back to the raw id, never to the hardcoded "Opus"/"Sonnet"/"Haiku" text) —
-# see tier-set.sh's header for how this was confirmed.
+# This hook NEVER touches:
+#   - .model itself (that is the user's lever, via /model or /tier), and
+#   - any ANTHROPIC_DEFAULT_* env var (writing those was the RETIRED v1
+#     mechanism — it corrupted the native /model picker, whose Opus/Sonnet/
+#     Haiku rows read those same vars and persist bare aliases on selection;
+#     see tier-set.sh's header for the full post-mortem).
 #
-# IMPORTANT: the _NAME sync is a SEPARATE concern from the VALUE derivation,
-# and runs unconditionally off whatever the slots ALREADY hold — not gated on
-# .model being on-ladder or on an explicit pin being absent. A pin (or an
-# off-ladder .model) only opts out of re-deriving the slot VALUES from
-# .model; it says nothing about whether the NAME already sitting next to a
-# perfectly nameable value is honest. Without this split, a session whose
-# .model has drifted off-ladder (e.g. a custom "opus[1m]" typed straight into
-# the picker) while ANTHROPIC_DEFAULT_OPUS_MODEL still holds a real, on-ladder
-# id from an earlier /tier run would NEVER get its _NAME written — the picker
-# would stay mislabeled for the rest of the session even though the fix was
-# "installed". So: VALUE re-derivation is gated (pin / on-ladder .model);
-# NAME sync is not — it always reflects whatever value ends up in each slot.
+# It DOES actively PURGE the legacy vars wherever it finds them —
+# ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL(_NAME) and
+# CLAUDE_CODE_SUBAGENT_MODEL — because any of them silently corrupts model
+# selection (the picker) or collapses the tiers onto one model. The purge runs
+# even when a pin or an off-ladder .model skips derivation.
 #
 # An explicit (2/3-arg) `tier-set` pin sets .env.TIER_EXPLICIT_PIN="1" to opt
-# the session OUT of VALUE auto-derivation — this hook then leaves the
-# pinned worker/recon VALUES alone (but still keeps their NAMEs honest).
-# Running a plain 1-arg `/tier <top>` clears the pin and resumes tracking
-# .model automatically.
+# the worker/recon bindings OUT of auto-derivation — this hook then leaves the
+# agent files alone. A plain 1-arg `/tier <top>` clears the pin and resumes
+# tracking .model automatically.
 #
 # Contract (it runs on every prompt, so all three matter):
 #   - Idempotent: no write when already in sync.
 #   - Silent: prints NOTHING on stdout (a UserPromptSubmit hook's stdout would
 #     be injected into the prompt). Diagnostics, if any, go to stderr.
-#   - Fast: a couple of jq reads + at most one atomic write.
-#   - Never clobbers a slot VALUE: an off-ladder/custom .model (tier-derive
-#     exits non-zero) or an active explicit pin leaves VALUES exactly as they
-#     are — only NAMEs may still be touched, to match those unchanged values.
+#   - Fast: a couple of jq/grep reads; writes only on diff.
+#   - Never clobbers a binding: an off-ladder/custom .model (tier-derive exits
+#     non-zero), an empty .model, or an active pin leaves the agent files
+#     exactly as they are.
 #
-# TIER_SETTINGS overrides the settings path (used by the test suite).
+# TIER_SETTINGS and TIER_AGENTS_DIR override the paths (used by the test suite).
 
 set -u
 SETTINGS="${TIER_SETTINGS:-$HOME/.claude/settings.json}"
+AGENTS="${TIER_AGENTS_DIR:-$HOME/.claude/agents}"
+EXEC_MD="$AGENTS/executor.md"
+SCOUT_MD="$AGENTS/scout.md"
 
 [ -f "$SETTINGS" ] || exit 0
 command -v jq >/dev/null 2>&1 || exit 0
@@ -55,51 +53,56 @@ command -v jq >/dev/null 2>&1 || exit 0
 DERIVE=$(command -v tier-derive 2>/dev/null) || DERIVE="$(dirname "$0")/tier-derive.sh"
 [ -x "$DERIVE" ] || exit 0
 
-name_for() { [ -n "$1" ] || return 0; "$DERIVE" --name "$1" 2>/dev/null || true; }
+fm_model() {  # current frontmatter `model:` value of an agent file ('' if none/missing)
+    grep -m1 '^model:' "$1" 2>/dev/null | sed 's/^model:[[:space:]]*//'
+}
 
-cur_o=$(jq -r '.env.ANTHROPIC_DEFAULT_OPUS_MODEL   // empty' "$SETTINGS" 2>/dev/null)
-cur_s=$(jq -r '.env.ANTHROPIC_DEFAULT_SONNET_MODEL // empty' "$SETTINGS" 2>/dev/null)
-cur_h=$(jq -r '.env.ANTHROPIC_DEFAULT_HAIKU_MODEL  // empty' "$SETTINGS" 2>/dev/null)
-cur_on=$(jq -r '.env.ANTHROPIC_DEFAULT_OPUS_MODEL_NAME   // empty' "$SETTINGS" 2>/dev/null)
-cur_sn=$(jq -r '.env.ANTHROPIC_DEFAULT_SONNET_MODEL_NAME // empty' "$SETTINGS" 2>/dev/null)
-cur_hn=$(jq -r '.env.ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME  // empty' "$SETTINGS" 2>/dev/null)
+fm_set() {  # fm_set <agent-file> <model-id> — rewrite the frontmatter model: line atomically
+    f=$1; id=$2
+    case "$id" in (*[!]a-zA-Z0-9._[-]*|'') return 0 ;; esac   # only safe id chars: sed/YAML injection guard
+    grep -q '^model:' "$f" 2>/dev/null || return 0   # no file/line -> nothing to bind, stay silent
+    mode=$(stat -c %a "$f" 2>/dev/null) || mode=644
+    tmp=$(mktemp "$f.XXXXXX") || return 0
+    if sed "0,/^model:/s|^model:.*|model: $id|" "$f" > "$tmp"; then
+        chmod "$mode" "$tmp" 2>/dev/null
+        mv "$tmp" "$f"
+    else
+        rm -f "$tmp"
+    fi
+}
 
-# VALUE re-derivation: skipped (new_* stay == cur_*) while pinned, while
-# .model is unset/off-ladder, or once a pin/off-ladder check below bails.
-new_o=$cur_o; new_s=$cur_s; new_h=$cur_h
-
-pinned=$(jq -r '.env.TIER_EXPLICIT_PIN // empty' "$SETTINGS" 2>/dev/null)
-if [ "$pinned" != "1" ]; then
-    model=$(jq -r '.model // empty' "$SETTINGS" 2>/dev/null)
-    if [ -n "$model" ] && trio=$("$DERIVE" "$model" 2>/dev/null); then
-        # shellcheck disable=SC2086 # trio is three shell-safe ids, intentional split
-        set -- $trio
-        [ $# -eq 3 ] && { new_o=$1; new_s=$2; new_h=$3; }
+# 1) Purge legacy picker-corrupting env vars, if any are present (always runs,
+#    even when a pin or off-ladder .model skips the derivation below).
+if jq -e '(.env // {}) | keys | map(select(test("^ANTHROPIC_DEFAULT_(OPUS|SONNET|HAIKU)_MODEL(_NAME)?$") or . == "CLAUDE_CODE_SUBAGENT_MODEL")) | length > 0' \
+        "$SETTINGS" >/dev/null 2>&1; then
+    tmp=$(mktemp "$SETTINGS.XXXXXX") || exit 0
+    if jq '.env = ((.env // {})
+                   | del(.ANTHROPIC_DEFAULT_OPUS_MODEL, .ANTHROPIC_DEFAULT_SONNET_MODEL, .ANTHROPIC_DEFAULT_HAIKU_MODEL,
+                         .ANTHROPIC_DEFAULT_OPUS_MODEL_NAME, .ANTHROPIC_DEFAULT_SONNET_MODEL_NAME, .ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME,
+                         .CLAUDE_CODE_SUBAGENT_MODEL))
+       ' "$SETTINGS" > "$tmp" 2>/dev/null && jq -e . "$tmp" >/dev/null 2>&1; then
+        mode=$(stat -c %a "$SETTINGS" 2>/dev/null) || mode=644
+        chmod "$mode" "$tmp" 2>/dev/null
+        mv "$tmp" "$SETTINGS"
+    else
+        rm -f "$tmp"
     fi
 fi
 
-# NAME sync: always reflects whichever value each slot ends up holding.
-new_on=$(name_for "$new_o"); new_sn=$(name_for "$new_s"); new_hn=$(name_for "$new_h")
+# 2) Derive worker/recon from .model and sync the agent bindings — unless
+#    pinned, .model is unset, or .model is off-ladder (never clobber).
+pinned=$(jq -r '.env.TIER_EXPLICIT_PIN // empty' "$SETTINGS" 2>/dev/null)
+[ "$pinned" = "1" ] && exit 0
 
-[ "$cur_o" = "$new_o" ] && [ "$cur_s" = "$new_s" ] && [ "$cur_h" = "$new_h" ] \
-    && [ "$cur_on" = "$new_on" ] && [ "$cur_sn" = "$new_sn" ] && [ "$cur_hn" = "$new_hn" ] \
-    && exit 0  # in sync
+model=$(jq -r '.model // empty' "$SETTINGS" 2>/dev/null)
+[ -n "$model" ] || exit 0
 
-tmp=$(mktemp "$SETTINGS.XXXXXX") || exit 0
-if jq --arg o "$new_o" --arg s "$new_s" --arg h "$new_h" \
-      --arg no "$new_on" --arg ns "$new_sn" --arg nh "$new_hn" '
-        .env = ((.env // {})
-                | (if $o != "" then .ANTHROPIC_DEFAULT_OPUS_MODEL   = $o else . end)
-                | (if $s != "" then .ANTHROPIC_DEFAULT_SONNET_MODEL = $s else . end)
-                | (if $h != "" then .ANTHROPIC_DEFAULT_HAIKU_MODEL  = $h else . end)
-                | (if $no != "" then .ANTHROPIC_DEFAULT_OPUS_MODEL_NAME   = $no else del(.ANTHROPIC_DEFAULT_OPUS_MODEL_NAME)   end)
-                | (if $ns != "" then .ANTHROPIC_DEFAULT_SONNET_MODEL_NAME = $ns else del(.ANTHROPIC_DEFAULT_SONNET_MODEL_NAME) end)
-                | (if $nh != "" then .ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME  = $nh else del(.ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME)  end))
-    ' "$SETTINGS" > "$tmp" 2>/dev/null && jq -e . "$tmp" >/dev/null 2>&1; then
-    mode=$(stat -c %a "$SETTINGS" 2>/dev/null) || mode=644
-    chmod "$mode" "$tmp" 2>/dev/null
-    mv "$tmp" "$SETTINGS"
-else
-    rm -f "$tmp"
-fi
+trio=$("$DERIVE" "$model" 2>/dev/null) || exit 0
+# shellcheck disable=SC2086 # intentional split; set -f so ids like opus[1m] can't glob-expand
+set -f; set -- $trio; set +f
+[ $# -eq 3 ] || exit 0
+want_w=$2; want_c=$3
+
+[ "$(fm_model "$EXEC_MD")" = "$want_w" ] || fm_set "$EXEC_MD" "$want_w"
+[ "$(fm_model "$SCOUT_MD")" = "$want_c" ] || fm_set "$SCOUT_MD" "$want_c"
 exit 0

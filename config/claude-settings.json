@@ -68,7 +68,7 @@
           },
           {
             "type": "command",
-            "command": "m=$(jq -r '.model // empty' \"$HOME/.claude/settings.local.json\" 2>/dev/null); [ -n \"$m\" ] || m=$(jq -r '.model // empty' \"$HOME/.claude/settings.json\" 2>/dev/null); echo \"tier slots → reasoning=${ANTHROPIC_DEFAULT_OPUS_MODEL:-opus (default)}  executor=${ANTHROPIC_DEFAULT_SONNET_MODEL:-sonnet (default)}  scout=${ANTHROPIC_DEFAULT_HAIKU_MODEL:-haiku (default)} | settings model=${m:-harness default} | verifier+oracle inherit the session model\""
+            "command": "m=$(jq -r '.model // empty' \"$HOME/.claude/settings.json\" 2>/dev/null); e=$(grep -m1 '^model:' \"$HOME/.claude/agents/executor.md\" 2>/dev/null | sed 's/^model:[[:space:]]*//'); s=$(grep -m1 '^model:' \"$HOME/.claude/agents/scout.md\" 2>/dev/null | sed 's/^model:[[:space:]]*//'); echo \"tier → orchestrator(settings model)=${m:-harness default}  executor=${e:-sonnet (frontmatter)}  scout=${s:-haiku (frontmatter)} | verifier+oracle inherit the session model\""
           }
         ]
       }
