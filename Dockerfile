@@ -175,6 +175,7 @@ COPY --chown=agent:agent scripts/tier-set.sh /usr/local/bin/tier-set
 COPY --chown=agent:agent scripts/tier-derive.sh /usr/local/bin/tier-derive
 COPY --chown=agent:agent scripts/tier-reconcile.sh /usr/local/bin/tier-reconcile
 COPY --chown=agent:agent scripts/disk-cleanup.sh /usr/local/bin/disk-cleanup
+COPY --chown=agent:agent scripts/bd-guard.sh /usr/local/bin/bd-guard
 COPY --chown=agent:agent run-tests.sh /usr/local/bin/run-tests.sh
 COPY --chown=agent:agent tests/ /opt/claude-dev/tests/
 COPY --chown=agent:agent knowledge-base/ /opt/claude-dev/knowledge-base/
@@ -209,6 +210,7 @@ RUN chmod +x /usr/local/bin/entrypoint.sh \
              /usr/local/bin/tier-derive \
              /usr/local/bin/tier-reconcile \
              /usr/local/bin/disk-cleanup \
+             /usr/local/bin/bd-guard \
              /usr/local/bin/run-tests.sh
 
 # Pin the Playwright CLI globally. take-screenshot calls this binary instead
