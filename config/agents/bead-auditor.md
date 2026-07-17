@@ -145,8 +145,10 @@ Held: K (passed audit)
   failure mode; state the concrete missing verification step.
 - **Don't ping-pong.** If a bead's notes already contain
   "Reopened by bead-auditor" from a recent run, be extra-rigorous
-  before reopening again — escalate via `bd human <id>` for human
-  review rather than starting a loop.
+  before reopening again — instead of starting a loop, leave the bead
+  open with an `--append-notes` explaining the impasse and surface it
+  in your report so the orchestrator can raise it in chat. Never park
+  it as human work — beads stay Claude-owned.
 - **Don't reopen what you can't audit.** If the change is outside
   this repo, or evidence is genuinely unobtainable in this
   environment (and no reasonable env fix exists), say so in the

@@ -2,7 +2,8 @@
   "model": "opus",
   "advisorModel": "fable",
   "env": {
-    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1",
+    "BEADS_ACTOR": "claude"
   },
   "statusLine": {
     "type": "command",

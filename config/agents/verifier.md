@@ -41,6 +41,9 @@ the truth *from scratch* against primary evidence, then compare.
   build and the actual tests yourself and read the output. Read the changed
   code directly. Construct the failing case the fix supposedly closes and
   check it. A green claim you did not watch turn green is unverified.
+  Where the claim is about runtime behavior, observe the running program —
+  `curl` the endpoint, `take-screenshot url|term` the UI or CLI — rather
+  than accepting a passing test as a proxy for it.
 - **Research/factual claims**: go to the primary source — the doc, the
   spec, the code of the dependency, the original data — via WebFetch /
   WebSearch or by reading the repo. A claim backed only by the worker's

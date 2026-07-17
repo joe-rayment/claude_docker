@@ -23,7 +23,9 @@ command_str=$(jq -r '.tool_input.command // empty' 2>/dev/null) || exit 0
 [ -n "$command_str" ] || exit 0
 
 # Fast path: only inspect commands that touch bead creation/mutation.
-printf '%s' "$command_str" | grep -qE '(^|[;&|(] *)bd +(create|new|update|assign)\b' || exit 0
+# `close` is included for its --reason text: leaving "user should push X"
+# in a close reason is the same violation as filing it as a bead.
+printf '%s' "$command_str" | grep -qE '(^|[;&|(] *)bd +(create|new|update|assign|close)\b' || exit 0
 
 block() {
   printf '%s\n' "$1" >&2

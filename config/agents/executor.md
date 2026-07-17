@@ -37,6 +37,15 @@ your work.
   underspecified, say so in your return instead of guessing wide.
 - Run the build/tests/commands your change touches. Observe real output;
   do not assume. Report what you actually saw.
+- **Verify in the running program, not with a stand-in.** Exercise the
+  actual behavior your change affects: run the app, hit the endpoint
+  (`curl`), capture the UI or CLI (`take-screenshot url|term`) and judge
+  from what you see. Do not substitute an artificial test for observing
+  the real thing — code-based tests are regression protection, not proof
+  the change works. If something needed to run the program is missing
+  from the environment, install it (`apt-get`, `pip`, `npm`) and keep
+  going; a missing dependency is part of your slice, not a reason to
+  stop or fall back to inspection.
 - Honor every explicit constraint in the brief (tool, flag, approach,
   naming). A "better" result that broke a stated constraint is a failure.
 

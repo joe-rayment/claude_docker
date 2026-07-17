@@ -143,7 +143,9 @@ The engine behind `/tier` is `tier-set` (`/usr/local/bin/tier-set`, repo `script
 
 ## Verification
 
-**Always verify changes by running the actual application** — code inspection isn't enough. Run the app, hit the endpoint, screenshot the UI. For CLI tools use `take-screenshot term "<command>"`; for web UIs use `take-screenshot url <URL>`; for APIs use `curl` or similar. Install missing tools as needed (`apt-get install`, `pip install`, `npm install`). Code-based tests (unit, integration) are for regression protection, not for verifying current work — run them to confirm you haven't broken other things. Before reporting a task as done, ask yourself: "Did I actually see this working?"
+**Always verify changes by running the actual application** — code inspection isn't enough. Run the app, hit the endpoint, screenshot the UI. For CLI tools use `take-screenshot term "<command>"`; for web UIs use `take-screenshot url <URL>`; for APIs use `curl` or similar. Code-based tests (unit, integration) are for regression protection, not for verifying current work — run them to confirm you haven't broken other things. Before reporting a task as done, ask yourself: "Did I actually see this working?"
+
+**The environment must be able to run the program — if it can't, fixing that is part of the task.** Install whatever is missing (`apt-get install`, `pip install`, `npm install`) and continue; never fall back to code inspection or an artificial test because a dependency wasn't there. When a runtime dependency turns out to be missing from the image, also add it to the `Dockerfile` so the gap never recurs — the container should always include everything needed to run and observe the program.
 
 ## Noticed Flaws — Fix or Surface
 

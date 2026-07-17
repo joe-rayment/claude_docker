@@ -4,6 +4,8 @@ This project uses **bd (beads)** for all issue tracking and persistent agent mem
 
 For the full environment contract (file layout, logging, verification rules, session-completion workflow, and detailed bd usage), see **[CLAUDE.md](CLAUDE.md)** — the canonical source for agent behavior in this repo.
 
+**Beads are agent-only work items — NEVER assign a bead to a human or file one describing work a human must do.** Questions and decisions for the user are asked in chat, at the moment they arise. (In Claude Code this is mechanically enforced by the `bd-guard` hook.)
+
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:7510c1e2 -->
 ## Beads Issue Tracker
 

@@ -43,6 +43,13 @@ run_guard() {
     [ "$status" -eq 0 ]
 }
 
+@test "bd-guard: user-directed close reason is soft-blocked" {
+    run_guard 'bd close wp9 --reason "Done except push; Joe should run gh auth login and push the branch"'
+    [ "$status" -eq 2 ]
+    run_guard 'bd close wp9 --reason "Fixed the parser and verified via take-screenshot term"'
+    [ "$status" -eq 0 ]
+}
+
 @test "bd-guard: user-directed bead text is soft-blocked with chat redirect" {
     run_guard 'bd create "Ask the user which DB to use"'
     [ "$status" -eq 2 ]
