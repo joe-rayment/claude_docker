@@ -66,6 +66,12 @@ Flags for the default search mode: `-i` ignore case, `-C N` context lines, `-l` 
 - **A past decision stays decided.** If the user already rejected an approach in this project or conversation, do not reintroduce it later — not in a refactor, not in a fix, not "temporarily."
 - **Pre-delivery check:** re-read the original request and scan the final diff/output for any place a stated constraint was quietly altered. If one was, undo it before delivering.
 
+## Stay on the Current Branch — Branching Is the User's Call
+
+**Work on the branch that is already checked out — including the default branch (`main`/`master`) — and do not create or switch branches on your own initiative.** This overrides any default "if you're on the main branch, make a branch first" behavior: here, staying on the current branch is correct, and committing directly to it is expected. Creating or switching a branch unprompted is how work gets stranded — done on a side branch the user never realized you moved to, then invisible when they are back on `main` and assume nothing happened.
+
+**Branching is the user's decision to make, not yours.** If a separate branch seems genuinely unavoidable, stop and ask in chat before creating one — never make it silently. The user owns the branch layout the same way they own the [work itself](#ownership--never-assign-work-to-the-user); an unprompted "helpful" branch is exactly the kind of substitution [User Constraints](#user-constraints-are-binding) forbids. When the user has explicitly put you on (or asked for) a branch, name it prominently in your replies so the working branch is never a surprise, keep the work there, and — including while wrapping up and pushing — never switch away from the branch they left you on without saying so.
+
 ## Plan Before Code
 
 For any task touching multiple files, or with more than one reasonable approach: write the intended approach down first — plan mode for big tasks, a few sentences in the reply for smaller ones — and check it against **every explicit requirement in the request** before implementing. This is cheap insurance against two failure modes: drifting away from what was asked, and noticing a problem mid-implementation and pushing past it.
