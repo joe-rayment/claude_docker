@@ -25,13 +25,17 @@
 # print NOTHING and exit 3. Callers must treat this as "custom/unmanaged" and
 # leave the slots untouched — never clobber a top we can't place on the ladder.
 #
+# Two auxiliary modes (same ladder, no separate table to drift):
+#   tier-derive --name <model-or-alias>   canonical DISPLAY NAME for a rung's
+#                                          concrete id ("Opus 4.8"); exit 1 and
+#                                          no output if off-ladder (caller
+#                                          falls back to the raw id).
+#   tier-derive --rank <model-or-alias>   numeric rank, 0 if off-ladder.
+#
 # Usage:  tier-derive <model-or-alias>
 # Exit:   0 derived (three ids on stdout) · 2 usage · 3 off-ladder (no output)
 
 set -u
-
-[ $# -ge 1 ] && [ -n "${1:-}" ] || { echo "usage: tier-derive <model-or-alias>" >&2; exit 2; }
-top=$1
 
 id_for_rank() {  # canonical concrete id for a ladder rank
     case "$1" in
@@ -39,6 +43,15 @@ id_for_rank() {  # canonical concrete id for a ladder rank
         3) echo claude-opus-4-8 ;;
         2) echo claude-sonnet-5 ;;
         1) echo claude-haiku-4-5-20251001 ;;
+    esac
+}
+
+name_for_rank() {  # human display name for a ladder rank
+    case "$1" in
+        4) echo "Fable 5" ;;
+        3) echo "Opus 4.8" ;;
+        2) echo "Sonnet 5" ;;
+        1) echo "Haiku 4.5" ;;
     esac
 }
 
@@ -52,6 +65,24 @@ rank_of() {  # alias OR full family id -> rank; 0 = off-ladder/unknown
     esac
 }
 
+[ $# -ge 1 ] && [ -n "${1:-}" ] || { echo "usage: tier-derive [--name|--rank] <model-or-alias>" >&2; exit 2; }
+
+case "$1" in
+    --name)
+        [ $# -ge 2 ] && [ -n "${2:-}" ] || { echo "usage: tier-derive --name <model-or-alias>" >&2; exit 2; }
+        r=$(rank_of "$2")
+        [ "$r" -eq 0 ] && exit 1   # off-ladder: no canonical name, caller falls back to the raw id
+        name_for_rank "$r"
+        exit 0
+        ;;
+    --rank)
+        [ $# -ge 2 ] && [ -n "${2:-}" ] || { echo "usage: tier-derive --rank <model-or-alias>" >&2; exit 2; }
+        rank_of "$2"
+        exit 0
+        ;;
+esac
+
+top=$1
 r=$(rank_of "$top")
 [ "$r" -eq 0 ] && exit 3   # off-ladder: signal custom, emit nothing
 

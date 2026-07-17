@@ -349,6 +349,18 @@ setup() {
     # off-ladder / unknown -> exit 3, no output (callers must not clobber)
     run "$d" best
     [ "$status" -eq 3 ] && [ -z "$output" ]
+
+    # --name: canonical picker-honest display name per rung; off-ladder -> exit 1, no output
+    [ "$("$d" --name fable)"  = "Fable 5" ]
+    [ "$("$d" --name opus)"   = "Opus 4.8" ]
+    [ "$("$d" --name sonnet)" = "Sonnet 5" ]
+    [ "$("$d" --name haiku)"  = "Haiku 4.5" ]
+    run "$d" --name best
+    [ "$status" -eq 1 ] && [ -z "$output" ]
+
+    # --rank: numeric rank, 0 for off-ladder
+    [ "$("$d" --rank fable)" = "4" ]
+    [ "$("$d" --rank best)"  = "0" ]
 }
 
 @test "tier-set derives the whole trio from one top, degrades, writes settings" {
@@ -356,14 +368,19 @@ setup() {
     ts=$(mktemp)
     printf '{"env":{"CLAUDE_CODE_SUBAGENT_MODEL":"bad"},"permissions":{"allow":["WebSearch"]}}\n' > "$ts"
 
-    # ONE top -> derived trio (fable -> fable/opus/sonnet); subagent-model purged; other keys kept
+    # ONE top -> derived trio (fable -> fable/opus/sonnet); subagent-model purged; other keys kept;
+    # honest picker labels (_NAME) written; no explicit pin
     run env TIER_SETTINGS="$ts" TIER_NO_PROBE=1 /usr/local/bin/tier-set fable
     [ "$status" -eq 0 ]
     jq -e '.model == "claude-fable-5"
            and .env.ANTHROPIC_DEFAULT_OPUS_MODEL == "claude-fable-5"
            and .env.ANTHROPIC_DEFAULT_SONNET_MODEL == "claude-opus-4-8"
            and .env.ANTHROPIC_DEFAULT_HAIKU_MODEL == "claude-sonnet-5"
+           and .env.ANTHROPIC_DEFAULT_OPUS_MODEL_NAME == "Fable 5"
+           and .env.ANTHROPIC_DEFAULT_SONNET_MODEL_NAME == "Opus 4.8"
+           and .env.ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME == "Sonnet 5"
            and (.env | has("CLAUDE_CODE_SUBAGENT_MODEL") | not)
+           and (.env | has("TIER_EXPLICIT_PIN") | not)
            and .permissions.allow == ["WebSearch"]' "$ts"
 
     # opus -> opus/sonnet/haiku
@@ -371,12 +388,6 @@ setup() {
     jq -e '.env.ANTHROPIC_DEFAULT_OPUS_MODEL == "claude-opus-4-8"
            and .env.ANTHROPIC_DEFAULT_SONNET_MODEL == "claude-sonnet-5"
            and .env.ANTHROPIC_DEFAULT_HAIKU_MODEL == "claude-haiku-4-5-20251001"' "$ts"
-
-    # extra positional args are ignored with a notice; trio still derived from the top
-    run env TIER_SETTINGS="$ts" TIER_NO_PROBE=1 /usr/local/bin/tier-set opus sonnet haiku
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"ignored"* ]]
-    jq -e '.env.ANTHROPIC_DEFAULT_HAIKU_MODEL == "claude-haiku-4-5-20251001"' "$ts"
 
     # unavailable top degrades downward (probe stubbed); trio derived from what bound
     fake=$(mktemp -d)
@@ -395,17 +406,63 @@ setup() {
     rm -rf "$ts" "$fake"
 }
 
+@test "tier-set explicit 2/3-arg forms pin the trio and survive reconcile" {
+    local ts
+    ts=$(mktemp)
+    printf '{}\n' > "$ts"
+
+    # 2 args -> a 2-level config: recon SHARES the worker slot, and a pin is set
+    run env TIER_SETTINGS="$ts" TIER_NO_PROBE=1 /usr/local/bin/tier-set opus haiku
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"explicit"* ]] && [[ "$output" == *"pinned"* ]]
+    jq -e '.model == "claude-opus-4-8"
+           and .env.ANTHROPIC_DEFAULT_SONNET_MODEL == "claude-haiku-4-5-20251001"
+           and .env.ANTHROPIC_DEFAULT_HAIKU_MODEL == "claude-haiku-4-5-20251001"
+           and .env.ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME == "Haiku 4.5"
+           and .env.TIER_EXPLICIT_PIN == "1"' "$ts"
+
+    # 3 args -> fully independent, non-consecutive combo accepted (fable top, sonnet worker, haiku recon)
+    run env TIER_SETTINGS="$ts" TIER_NO_PROBE=1 /usr/local/bin/tier-set fable sonnet haiku
+    [ "$status" -eq 0 ]
+    jq -e '.env.ANTHROPIC_DEFAULT_OPUS_MODEL == "claude-fable-5"
+           and .env.ANTHROPIC_DEFAULT_SONNET_MODEL == "claude-sonnet-5"
+           and .env.ANTHROPIC_DEFAULT_HAIKU_MODEL == "claude-haiku-4-5-20251001"
+           and .env.TIER_EXPLICIT_PIN == "1"' "$ts"
+
+    # a pinned trio survives tier-reconcile even when .model drifts underneath it
+    jq '.model = "sonnet"' "$ts" > "$ts.x" && mv "$ts.x" "$ts"
+    before=$(cat "$ts")
+    run env TIER_SETTINGS="$ts" /usr/local/bin/tier-reconcile
+    [ "$status" -eq 0 ] && [ -z "$output" ]
+    [ "$(cat "$ts")" = "$before" ]
+
+    # a 1-arg /tier clears the pin and reconcile resumes auto-deriving
+    run env TIER_SETTINGS="$ts" TIER_NO_PROBE=1 /usr/local/bin/tier-set haiku
+    [ "$status" -eq 0 ]
+    jq -e '(.env | has("TIER_EXPLICIT_PIN") | not)' "$ts"
+    jq '.model = "opus"' "$ts" > "$ts.x" && mv "$ts.x" "$ts"
+    env TIER_SETTINGS="$ts" /usr/local/bin/tier-reconcile
+    jq -e '.env.ANTHROPIC_DEFAULT_SONNET_MODEL == "claude-sonnet-5"
+           and .env.ANTHROPIC_DEFAULT_SONNET_MODEL_NAME == "Sonnet 5"' "$ts"
+
+    rm -f "$ts"
+}
+
 @test "tier-reconcile links slots to .model: sets, idempotent, drifts, never clobbers" {
     local ts m1 m2
     ts=$(mktemp)
-    # sets slots from .model (opus -> opus/sonnet/haiku), preserving other env keys, silently
+    # sets slots from .model (opus -> opus/sonnet/haiku), preserving other env keys, silently,
+    # including the honest _NAME labels for the /model picker
     echo '{"model":"opus","env":{"KEEP":"1"}}' > "$ts"
     run env TIER_SETTINGS="$ts" /usr/local/bin/tier-reconcile
     [ "$status" -eq 0 ] && [ -z "$output" ]
     jq -e '.env.KEEP == "1"
            and .env.ANTHROPIC_DEFAULT_OPUS_MODEL == "claude-opus-4-8"
            and .env.ANTHROPIC_DEFAULT_SONNET_MODEL == "claude-sonnet-5"
-           and .env.ANTHROPIC_DEFAULT_HAIKU_MODEL == "claude-haiku-4-5-20251001"' "$ts"
+           and .env.ANTHROPIC_DEFAULT_HAIKU_MODEL == "claude-haiku-4-5-20251001"
+           and .env.ANTHROPIC_DEFAULT_OPUS_MODEL_NAME == "Opus 4.8"
+           and .env.ANTHROPIC_DEFAULT_SONNET_MODEL_NAME == "Sonnet 5"
+           and .env.ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME == "Haiku 4.5"' "$ts"
 
     # idempotent: already in sync -> no rewrite (mtime unchanged)
     m1=$(stat -c %Y "$ts"); sleep 1
@@ -420,10 +477,33 @@ setup() {
            and .env.ANTHROPIC_DEFAULT_SONNET_MODEL == "claude-haiku-4-5-20251001"
            and .env.ANTHROPIC_DEFAULT_HAIKU_MODEL == "claude-haiku-4-5-20251001"' "$ts"
 
-    # off-ladder .model -> no-op, slots left exactly as they were
+    # off-ladder .model -> VALUES no-op, slots left exactly as they were
     jq '.model = "best"' "$ts" > "$ts.x" && mv "$ts.x" "$ts"
     env TIER_SETTINGS="$ts" /usr/local/bin/tier-reconcile
     jq -e '.env.ANTHROPIC_DEFAULT_OPUS_MODEL == "claude-sonnet-5"' "$ts"
+
+    rm -f "$ts"
+}
+
+@test "tier-reconcile syncs NAME to an existing slot value even when .model is off-ladder" {
+    # Regression: a session whose .model has drifted off-ladder (e.g. a custom
+    # "opus[1m]" typed straight into the picker) must still get honest picker
+    # labels for whatever real, on-ladder ids are already sitting in the
+    # ANTHROPIC_DEFAULT_*_MODEL slots — VALUE re-derivation being skipped must
+    # not also skip the NAME sync for those unchanged values.
+    local ts
+    ts=$(mktemp)
+    printf '{"model":"opus[1m]","env":{"ANTHROPIC_DEFAULT_OPUS_MODEL":"claude-sonnet-5","ANTHROPIC_DEFAULT_SONNET_MODEL":"claude-haiku-4-5-20251001","ANTHROPIC_DEFAULT_HAIKU_MODEL":"claude-haiku-4-5-20251001"}}\n' > "$ts"
+
+    run env TIER_SETTINGS="$ts" /usr/local/bin/tier-reconcile
+    [ "$status" -eq 0 ] && [ -z "$output" ]
+    jq -e '.model == "opus[1m]"
+           and .env.ANTHROPIC_DEFAULT_OPUS_MODEL == "claude-sonnet-5"
+           and .env.ANTHROPIC_DEFAULT_SONNET_MODEL == "claude-haiku-4-5-20251001"
+           and .env.ANTHROPIC_DEFAULT_HAIKU_MODEL == "claude-haiku-4-5-20251001"
+           and .env.ANTHROPIC_DEFAULT_OPUS_MODEL_NAME == "Sonnet 5"
+           and .env.ANTHROPIC_DEFAULT_SONNET_MODEL_NAME == "Haiku 4.5"
+           and .env.ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME == "Haiku 4.5"' "$ts"
 
     rm -f "$ts"
 }

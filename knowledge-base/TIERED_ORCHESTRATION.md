@@ -70,10 +70,18 @@ independent 3-model input — that could drift from the default and is gone.
                                      #   re-derives the trio (via the reconciler) on your next prompt
 /tier fable                         # explicit set: .model=fable + derived slots (fable/opus/sonnet)
 /tier claude-opus-4-8               # a full id works (dated/variant kept as-is on top)
-/tier opus sonnet                   # extra args IGNORED with a notice (trio is auto-derived)
+/tier opus sonnet                   # 2-level explicit PIN: worker=sonnet, recon shares the worker slot
+/tier opus sonnet haiku             # 3-level explicit PIN: worker/recon set independently, any combo
 /tier                               # no args: print the current binding + derived trio (writes nothing)
 /tier show                          # same as bare /tier
 ```
+
+A 2- or 3-arg `/tier` is an **explicit pin**, not a shorthand for the derived
+trio: it sets `.env.TIER_EXPLICIT_PIN="1"`, and `tier-reconcile` treats that as
+a standing opt-out — it will not overwrite the pinned worker/recon slots even
+as `.model` drifts underneath them (e.g. via `/model`). Run a plain 1-arg
+`/tier <top>` to clear the pin and resume auto-derivation. `tier-set show`
+reports whether a pin is currently active.
 
 Derivation table (`tier-derive`, the single source of truth):
 
@@ -131,10 +139,32 @@ It writes into `~/.claude/settings.json`:
 
 | Settings key | Slot | Roles that ride it |
 |--------------|------|--------------------|
-| `.model`                               | orchestrator | any plain `claude` launch |
-| `.env.ANTHROPIC_DEFAULT_OPUS_MODEL`    | reasoning    | anything on the `opus` alias |
-| `.env.ANTHROPIC_DEFAULT_SONNET_MODEL`  | worker       | executor |
-| `.env.ANTHROPIC_DEFAULT_HAIKU_MODEL`   | recon        | scout |
+| `.model`                                    | orchestrator | any plain `claude` launch |
+| `.env.ANTHROPIC_DEFAULT_OPUS_MODEL`(`_NAME`)   | reasoning    | anything on the `opus` alias |
+| `.env.ANTHROPIC_DEFAULT_SONNET_MODEL`(`_NAME`) | worker       | executor |
+| `.env.ANTHROPIC_DEFAULT_HAIKU_MODEL`(`_NAME`)  | recon        | scout |
+| `.env.TIER_EXPLICIT_PIN`               | (marker)     | tells `tier-reconcile` to leave the trio alone |
+
+**The `_NAME` vars fix a real bug (bd nbg): they keep Claude Code's own
+`/model` picker honest.** The picker reads the *same*
+`ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL` vars to build its "Opus" /
+"Sonnet" / "Haiku" menu rows — confirmed by reading the shipped `claude`
+binary's menu-builder directly (it is a de-minified-but-readable JS bundle,
+greppable with `grep -a`): each row is `{value:"opus", label:
+process.env.ANTHROPIC_DEFAULT_OPUS_MODEL_NAME ?? <the raw id>, ...}` (same
+pattern for `sonnet`/`haiku`/`fable`). Before this fix, `tier-set` wrote only
+the bare `_MODEL` var, so a `top=fable` session showed the picker rows
+"Opus"→claude-fable-5, "Sonnet"→claude-opus-4-8, "Haiku"→claude-sonnet-5 —
+each row's chrome (name) lied about which model it actually was, and picking
+a row silently wrote that row's `value` alias (e.g. `"opus"`) into `.model`,
+which `tier-reconcile` would then re-derive a **new** trio from — a confusing
+loop where the picker no longer meant what it said. `tier-set` and
+`tier-reconcile` now also write the companion `_NAME` var with a canonical
+display name (`tier-derive --name <id>`; e.g. "Fable 5", "Opus 4.8") for
+every slot, so each row shows the model it truly is. This is a **labeling
+fix, not an architecture change** — the underlying alias-remapping mechanism
+is unchanged and still the reason worker/recon route through the `sonnet`/
+`haiku` aliases in `executor.md`/`scout.md`'s `model:` frontmatter.
 
 The **worker and recon slots take effect in the current session**, not only
 new ones: Claude Code re-reads `settings.json` `env` when it spawns a
