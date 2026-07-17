@@ -3,6 +3,15 @@
 # Smoke tests — verify the container environment is correctly set up
 # These run without tmux and check static properties
 
+setup() {
+    # Route every mktemp/scratch dir under bats's per-test tmpdir, which bats
+    # removes at the end of the run on PASS *or* FAIL. Without this, a test that
+    # aborts on a failed assertion before its inline `rm -rf` leaks its temp
+    # dir — and some hold a ~2.4M `bd init` Dolt DB, so red iteration runs pile
+    # up multi-MB leftovers. See scripts/disk-cleanup.sh for the safety net.
+    export TMPDIR="$BATS_TEST_TMPDIR"
+}
+
 @test "scripts are present and executable" {
     [ -x /usr/local/bin/entrypoint.sh ]
     [ -x /usr/local/bin/container-welcome ]
@@ -57,7 +66,7 @@
 
 @test "csearch is present and works in all modes" {
     [ -x /usr/local/bin/csearch ]
-    local dir="/tmp/csearch-test-$$-$RANDOM"
+    local dir="$BATS_TEST_TMPDIR/csearch-test"
     mkdir -p "$dir"
     printf 'def foo(x):\n    return x\nclass Bar:\n    pass\n' > "$dir/sample.py"
     # find: literal-path content search
@@ -325,6 +334,14 @@
            and (.env | has("CLAUDE_CODE_SUBAGENT_MODEL") | not)
            and .permissions.allow == ["WebSearch"]' "$ts"
 
+    # 2 models: reasoning + worker set positionally, recon keeps its default
+    run env TIER_SETTINGS="$ts" TIER_NO_PROBE=1 /usr/local/bin/tier-set opus sonnet
+    [ "$status" -eq 0 ]
+    jq -e '.model == "claude-opus-4-8"
+           and .env.ANTHROPIC_DEFAULT_OPUS_MODEL == "claude-opus-4-8"
+           and .env.ANTHROPIC_DEFAULT_SONNET_MODEL == "claude-sonnet-5"
+           and .env.ANTHROPIC_DEFAULT_HAIKU_MODEL == "claude-haiku-4-5-20251001"' "$ts"
+
     # unavailable model degrades downward (probe stubbed, no API calls)
     fake=$(mktemp -d)
     printf '#!/bin/sh\ncase "$*" in *definitely-unavailable*) exit 1;; *) exit 0;; esac\n' > "$fake/claude"
@@ -344,4 +361,54 @@
     [ "$(cat "$ts")" = "NOT JSON" ]
 
     rm -rf "$ts" "$fake"
+}
+
+@test "tests do not leak temp dirs when an assertion fails" {
+    # Regression guard for the disk-space leak: a bats test that aborts on a
+    # failed assertion must NOT strand its scratch dir. We prove the suite-wide
+    # fix (routing scratch under bats's auto-cleaned tmpdir) by running a nested
+    # failing test and confirming bats reclaimed its run tree.
+    local nested run_tmp
+    nested="$BATS_TEST_TMPDIR/nested.bats"
+    run_tmp="$BATS_TEST_TMPDIR/nested-run"
+    mkdir -p "$run_tmp"
+    cat > "$nested" <<'EOF'
+setup() { export TMPDIR="$BATS_TEST_TMPDIR"; }
+@test "leaks nothing on failure" {
+    mktemp -d >/dev/null   # scratch under bats tmpdir
+    [ 1 = 2 ]              # abort before any inline cleanup
+}
+EOF
+    TMPDIR="$run_tmp" run bats "$nested"
+    [ "$status" -ne 0 ]                                  # the nested test failed, as designed
+    [ -z "$(find "$run_tmp" -maxdepth 1 -name 'bats-run-*' 2>/dev/null)" ]  # ...but left no run tree
+}
+
+@test "disk-cleanup age-gates temp/attachments and caps append-only logs" {
+    local dc ws scan
+    dc=/workspace/scripts/disk-cleanup.sh          # repo source: testable pre-rebuild
+    [ -x "$dc" ]
+    ws="$BATS_TEST_TMPDIR/ws"
+    scan="$BATS_TEST_TMPDIR/scan"
+    mkdir -p "$ws/attachments" "$ws/.claude/logs" "$scan"
+
+    # aged vs fresh attachment
+    : > "$ws/attachments/old.png"; touch -d '10 days ago' "$ws/attachments/old.png"
+    : > "$ws/attachments/fresh.png"
+    # aged vs fresh stray temp dir
+    mkdir -p "$scan/tmp.OLD"; touch -d '2 days ago' "$scan/tmp.OLD"
+    mkdir -p "$scan/tmp.NEW"
+    # oversized vs small append-only log
+    seq 1 8000 > "$ws/.claude/logs/runs.log"
+    seq 1 10   > "$ws/.claude/logs/errors.log"
+
+    WORKSPACE="$ws" TMP_SCAN_DIR="$scan" TMP_AGE_MIN=1440 \
+        ATTACH_AGE_DAYS=7 LOG_MAX_LINES=5000 "$dc" >/dev/null
+
+    [ -f "$ws/attachments/fresh.png" ]                        # fresh kept
+    [ ! -f "$ws/attachments/old.png" ]                        # aged removed
+    [ -d "$scan/tmp.NEW" ]                                    # fresh temp kept
+    [ ! -d "$scan/tmp.OLD" ]                                  # aged temp removed
+    [ "$(wc -l < "$ws/.claude/logs/runs.log")" -eq 5000 ]     # oversized log capped
+    [ "$(wc -l < "$ws/.claude/logs/errors.log")" -eq 10 ]     # small log untouched
 }

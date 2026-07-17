@@ -121,6 +121,15 @@ if command -v Xvfb &>/dev/null; then
     export DISPLAY=:99
 fi
 
+# Bound the container's disk footprint on every (re)start: sweep stray test
+# temp dirs, aged screenshots, and oversized append-only logs. Best-effort and
+# backgrounded so it never delays startup; the `command -v` guard makes it a
+# no-op on images built before disk-cleanup was baked in. Also runs per Claude
+# session via the SessionStart hook in claude-settings.json.
+if command -v disk-cleanup >/dev/null 2>&1; then
+    disk-cleanup >/dev/null 2>&1 &
+fi
+
 # Workspace validation
 if [ -z "$(ls -A /workspace 2>/dev/null)" ]; then
     echo -e "\033[33m⚠  WARNING: /workspace is empty — project may not be mounted.\033[0m"

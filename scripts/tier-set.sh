@@ -17,7 +17,9 @@
 #
 # Usage:
 #   tier-set                                # NO ARGS -> print the current binding (same as `show`)
-#   tier-set <reasoning> [worker] [recon]   # aliases (fable/opus/sonnet/haiku) or full ids
+#   tier-set <reasoning> [worker] [recon]   # 1-3 models; aliases (fable/opus/sonnet/haiku) or full ids
+#   tier-set opus sonnet                    #   2 models -> reasoning=opus, worker=sonnet, recon keeps default
+#   tier-set fable                          #   1 model  -> reasoning=fable, worker & recon keep defaults
 #   tier-set show                           # print the current binding
 #   TIER_NO_PROBE=1 tier-set ...            # skip availability probing (bind blind)
 #

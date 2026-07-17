@@ -49,9 +49,12 @@ _config_json() {
 }
 
 setup_file() {
-    # Create two temporary project directories (no Docker needed for this)
-    export PROJECT_A_DIR=$(mktemp -d "${TMPDIR:-/tmp}/claude-test-project-a.XXXXXX")
-    export PROJECT_B_DIR=$(mktemp -d "${TMPDIR:-/tmp}/claude-test-project-b.XXXXXX")
+    # Create the project dirs under bats's per-file tmpdir, which bats removes
+    # on PASS or FAIL — so a mid-setup failure can't strand them even if
+    # teardown_file doesn't run. teardown_file below still removes them eagerly.
+    export TMPDIR="$BATS_FILE_TMPDIR"
+    export PROJECT_A_DIR=$(mktemp -d "$BATS_FILE_TMPDIR/claude-test-project-a.XXXXXX")
+    export PROJECT_B_DIR=$(mktemp -d "$BATS_FILE_TMPDIR/claude-test-project-b.XXXXXX")
 
     echo "# Project A" > "$PROJECT_A_DIR/README.md"
     echo "# Project B" > "$PROJECT_B_DIR/README.md"

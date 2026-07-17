@@ -1,6 +1,6 @@
 ---
 description: Bind the model trio — worker+recon go live this session, orchestrator moves via /model
-argument-hint: "(no args = show current) | reasoning worker recon, e.g. fable opus haiku | show"
+argument-hint: "(no args = show current) | reasoning [worker] [recon] — 1-3 models, omitted slots keep defaults, e.g. opus sonnet | fable opus haiku | show"
 allowed-tools: Bash(tier-set:*)
 model: haiku
 effort: low

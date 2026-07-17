@@ -172,6 +172,7 @@ COPY --chown=agent:agent scripts/start-professor.sh /usr/local/bin/start-profess
 COPY --chown=agent:agent scripts/take-screenshot.sh /usr/local/bin/take-screenshot
 COPY --chown=agent:agent scripts/csearch.sh /usr/local/bin/csearch
 COPY --chown=agent:agent scripts/tier-set.sh /usr/local/bin/tier-set
+COPY --chown=agent:agent scripts/disk-cleanup.sh /usr/local/bin/disk-cleanup
 COPY --chown=agent:agent run-tests.sh /usr/local/bin/run-tests.sh
 COPY --chown=agent:agent tests/ /opt/claude-dev/tests/
 COPY --chown=agent:agent knowledge-base/ /opt/claude-dev/knowledge-base/
@@ -202,6 +203,7 @@ RUN chmod +x /usr/local/bin/entrypoint.sh \
              /usr/local/bin/start-professor.sh \
              /usr/local/bin/take-screenshot \
              /usr/local/bin/csearch \
+             /usr/local/bin/disk-cleanup \
              /usr/local/bin/run-tests.sh
 
 # Pin the Playwright CLI globally. take-screenshot calls this binary instead

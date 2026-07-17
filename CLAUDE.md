@@ -106,6 +106,7 @@ Say the session's model combination in the simplest possible form with the **`/t
 
 ```
 /tier fable opus haiku                # Fable orchestrator + Opus executors + Haiku scouts
+/tier opus sonnet                     # 2 models: Opus orchestrator + Sonnet executors, recon keeps default
 /tier fable                           # partial trio: lower slots keep defaults
 /tier                                 # no args: print the current binding (writes nothing)
 /tier show                            # same as bare /tier — print the current binding
@@ -201,11 +202,15 @@ take-screenshot term "my-tool --version"
 
 ## Cleanup
 
-Periodically clean up ephemeral files that accumulate during development:
+A `disk-cleanup` sweep runs automatically at container start (entrypoint) and at each Claude session start (SessionStart hook), so ephemeral files stay bounded without manual effort. It is best-effort, age-gated, and size-capped — it only touches known-ephemeral artifacts and never git-tracked source or the harness transcript store. It:
 
-- `/workspace/attachments/` — Delete old screenshots and reference files
-- `/workspace/.claude/plans/` — Remove completed or obsolete plan files
-- `/workspace/.claude/logs/` — Logs are gitignored; clear if they grow large
+- sweeps stray test temp dirs in `/tmp` (`tmp.*`, `bats-run-*`, `*.bats`, `claude-test-*`, `csearch-test-*`) older than 1 day;
+- deletes `/workspace/attachments/` files (screenshots, dropped files) older than 7 days;
+- caps each append-only `/workspace/.claude/logs/*.log` to its last 5000 lines (these are monolithic, so they're line-capped, not age-rotated).
+
+Run it by hand any time — `disk-cleanup` to sweep now, `disk-cleanup --dry-run` to preview. Override retention via env: `TMP_AGE_MIN`, `ATTACH_AGE_DAYS`, `LOG_MAX_LINES`. Still remove `/workspace/.claude/plans/` entries yourself when a plan is done — those aren't age-swept.
+
+The root-cause fix that made this necessary rare: `tests/*.bats` route all scratch under bats's per-test tmpdir, which bats auto-removes on pass **or** fail, so a failing test can no longer strand its temp dir (some held multi-MB `bd init` Dolt DBs).
 
 ## Beads (Agent Memory)
 
