@@ -130,6 +130,27 @@ if command -v disk-cleanup >/dev/null 2>&1; then
     disk-cleanup >/dev/null 2>&1 &
 fi
 
+# Generate the Playwright MCP server config for interactive browser automation
+# (click/fill/multi-step, beyond the static take-screenshot CLI). /workspace/.mcp.json
+# is gitignored; its servers auto-enable via enableAllProjectMcpServers. We only
+# (re)write the 'playwright' key, preserving any other servers the user defined.
+# No-op on images built before the pinned binary was baked.
+if command -v playwright-mcp >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
+    MCP_JSON=/workspace/.mcp.json
+    mcp_base='{}'
+    [ -f "$MCP_JSON" ] && jq -e . "$MCP_JSON" >/dev/null 2>&1 && mcp_base=$(cat "$MCP_JSON")
+    if printf '%s' "$mcp_base" | jq '
+            .mcpServers = ((.mcpServers // {}) | .playwright = {
+                command: "playwright-mcp",
+                args: ["--headless", "--browser", "chromium"],
+                env: { PLAYWRIGHT_BROWSERS_PATH: "/home/agent/.cache/ms-playwright" }
+            })' > "$MCP_JSON.tmp" 2>/dev/null; then
+        mv "$MCP_JSON.tmp" "$MCP_JSON"
+    else
+        rm -f "$MCP_JSON.tmp"
+    fi
+fi
+
 # Workspace validation
 if [ -z "$(ls -A /workspace 2>/dev/null)" ]; then
     echo -e "\033[33m⚠  WARNING: /workspace is empty — project may not be mounted.\033[0m"

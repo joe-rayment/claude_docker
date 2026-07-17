@@ -218,6 +218,17 @@ setup() {
     grep -q 'alias ss=' /etc/claude-dev/configs/.zshrc
 }
 
+@test "playwright MCP is pinned and generates a valid server config" {
+    command -v playwright-mcp >/dev/null 2>&1 \
+        || skip "playwright-mcp not installed (image built before it was baked)"
+    # the entrypoint-generated .mcp.json, if present, defines the playwright server
+    if [ -f /workspace/.mcp.json ]; then
+        jq -e '.mcpServers.playwright.command == "playwright-mcp"
+               and (.mcpServers.playwright.args | index("--headless") != null)' \
+            /workspace/.mcp.json
+    fi
+}
+
 @test "claude-settings.json includes beads SessionStart hook" {
     local settings="/etc/claude-dev/configs/claude-settings.json"
     jq -e '.hooks.SessionStart[0].hooks[0].command == "bd prime"' "$settings"

@@ -217,6 +217,16 @@ RUN chmod +x /usr/local/bin/entrypoint.sh \
 # Keep this version and the browser install below in lockstep when bumping.
 RUN npm install -g playwright@1.61.1
 
+# Playwright MCP server — interactive browser automation (click/fill/multi-step)
+# beyond the static take-screenshot CLI. Pinned in lockstep with the browser it
+# drives: @playwright/mcp@0.0.76 bundles playwright-core 1.61 (chromium rev 1226).
+# The entrypoint generates /workspace/.mcp.json defining a 'playwright' server
+# that runs the installed `playwright-mcp` binary against the baked browser.
+# Verified in-container: the server launches the baked chromium and answers an
+# MCP initialize handshake. Keep this version and its browser install (below) in
+# lockstep when bumping.
+RUN npm install -g @playwright/mcp@0.0.76
+
 # ── Agent: user-level tool install and final state ────────────────────
 USER agent
 
@@ -226,6 +236,13 @@ RUN curl -sSf https://raw.githubusercontent.com/lasantosr/intelli-shell/v3.4.0/i
 # Install Chromium for the pinned Playwright (as agent user so browsers cache
 # to ~/.cache/ms-playwright/, preserved by the home volume)
 RUN playwright install --with-deps chromium
+
+# Bake the Playwright MCP's matching browser too. @playwright/mcp@0.0.76 needs
+# chromium rev 1226, distinct from the 1.61.1 CLI's 1228 above — bake both so
+# neither hits "Executable doesn't exist". System deps already came from the
+# --with-deps install above, so this only fetches the browser binaries (as the
+# agent user, into the same home-volume cache).
+RUN node /usr/lib/node_modules/@playwright/mcp/node_modules/playwright-core/cli.js install chromium chromium-headless-shell
 
 # Install termshot for terminal screenshots (pinned)
 RUN go install github.com/homeport/termshot/cmd/termshot@v0.6.1
