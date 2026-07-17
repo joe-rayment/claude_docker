@@ -244,7 +244,7 @@ RUN playwright install --with-deps chromium
 # neither hits "Executable doesn't exist". System deps already came from the
 # --with-deps install above, so this only fetches the browser binaries (as the
 # agent user, into the same home-volume cache).
-RUN node /usr/lib/node_modules/@playwright/mcp/node_modules/playwright-core/cli.js install chromium chromium-headless-shell
+RUN node "$(npm root -g)/@playwright/mcp/node_modules/playwright-core/cli.js" install chromium chromium-headless-shell
 
 # Install termshot for terminal screenshots (pinned)
 RUN go install github.com/homeport/termshot/cmd/termshot@v0.6.1
