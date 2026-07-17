@@ -67,13 +67,15 @@ csd() { _claude_in_tmux claude --dangerously-skip-permissions --debug "$@" }
 cn()  { _claude_in_tmux claude "$@" }
 
 # ── Tiered orchestration: /tier (slash command) is the primary interface ────
-# The engine is /usr/local/bin/tier-set (repo: scripts/tier-set.sh). It maps
-# aliases (fable/opus/sonnet/haiku) to concrete ids, probes availability with
-# downward degradation, warns if a lower slot outranks the orchestrator, and
-# writes the trio into ~/.claude/settings.json (.model + the three
-# ANTHROPIC_DEFAULT_*_MODEL env slots) — which Claude Code applies to NEW
-# sessions. Verifier & oracle use `model: inherit` and always track the
-# orchestrator. Inside any session:  /tier fable opus haiku   or  /tier show
+# The engine is /usr/local/bin/tier-set (repo: scripts/tier-set.sh). You pick
+# ONE top model (alias fable/opus/sonnet/haiku or a full id); worker and recon
+# are DERIVED as the next two consecutive rungs down (via tier-derive), so the
+# trio can't drift from the default. tier-set probes the top with downward
+# degradation, then writes .model + the three ANTHROPIC_DEFAULT_*_MODEL env
+# slots into ~/.claude/settings.json. tier-reconcile (a SessionStart +
+# UserPromptSubmit hook) keeps those slots synced to .model whenever /model
+# changes it. Verifier & oracle use `model: inherit` and track the
+# orchestrator. Inside any session:  /tier opus   or  /model opus   or  /tier show
 #
 # The slot vars in settings `env` are OWNED by tier-set — don't hand-edit
 # them, and never add CLAUDE_CODE_SUBAGENT_MODEL (tier-set removes it; it

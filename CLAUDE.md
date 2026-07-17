@@ -72,7 +72,7 @@ For any task touching multiple files, or with more than one reasonable approach:
 
 ## Model Tiering & Orchestration — Spend Where It Compounds
 
-Tiering here is **role-based, never model-based.** Agents name *roles*; the concrete model behind each role is bound per session, so nothing breaks when models rotate. Worker roles are pinned to **alias slots** in their frontmatter; the checker roles (verifier, oracle) use **`model: inherit`** so they always run exactly the orchestrator's model — the checker is never weaker than the claims it checks. The invariant: **the orchestrator is the most capable model of the three**; the lower two slots are freely combinable per session (see *Per-session model selection* below).
+Tiering here is **role-based, never model-based.** Agents name *roles*; the concrete model behind each role is bound per session, so nothing breaks when models rotate. Worker roles are pinned to **alias slots** in their frontmatter; the checker roles (verifier, oracle) use **`model: inherit`** so they always run exactly the orchestrator's model — the checker is never weaker than the claims it checks. The invariant: **the orchestrator is the most capable model of the three** — enforced structurally now, because the lower two slots are *derived* from the top as the next two consecutive rungs down (see *Per-session model selection* below), not chosen independently.
 
 | Tier / role | Model binding | Default | Can delegate to | Use for |
 |------|------|---------------|-----------------|---------|
@@ -100,23 +100,38 @@ A worker's summary is an **input to check, not a fact.** Any non-trivial worker 
 
 The `oracle` (user-invoked, below) is the coarse checkpoint-level version of this for plans and big diffs; the `verifier` is the automatic, per-finding version the orchestrator runs itself.
 
-### Per-session model selection (bind three models, no file edits)
+### Per-session model selection (one top model → the trio derives, no file edits)
 
-Say the session's model combination in the simplest possible form with the **`/tier` slash command** — no shell involved. Args are aliases (`fable`/`opus`/`sonnet`/`haiku`) or full model IDs, mapped to concrete IDs before writing; partial trios keep defaults for the rest. No agent file is ever edited to switch models.
+The default model and the tier trio are a **single linked thing** so they can't drift. You pick ONE top model; worker and recon are **derived** as the next two consecutive rungs down the ladder (`fable > opus > sonnet > haiku`), clamped at the haiku floor:
+
+| top | → worker (executor) | → recon (scout) |
+|-----|--------------------|-----------------|
+| `fable`  | opus   | sonnet |
+| `opus`   | sonnet | haiku  |
+| `sonnet` | haiku  | haiku  |
+| `haiku`  | haiku  | haiku  |
+
+Two levers, kept in sync automatically:
 
 ```
-/tier fable opus haiku                # Fable orchestrator + Opus executors + Haiku scouts
-/tier opus sonnet                     # 2 models: Opus orchestrator + Sonnet executors, recon keeps default
-/tier fable                           # partial trio: lower slots keep defaults
-/tier                                 # no args: print the current binding (writes nothing)
-/tier show                            # same as bare /tier — print the current binding
+/model opus                           # PRIMARY in-session lever: moves the running orchestrator AND
+                                       #   (via the reconciler, on your next prompt) re-derives the trio
+/tier fable                           # explicit set: writes .model=fable + derived slots (fable/opus/sonnet)
+/tier claude-opus-4-8                 # a full id works too (dated/variant id kept as-is on top)
+/tier opus sonnet                     # extra args are IGNORED with a notice — the trio is auto-derived now
+/tier                                 # no args: print the current binding + derived trio (writes nothing)
+/tier show                            # same as bare /tier
 ```
 
-The engine is `tier-set` (`/usr/local/bin/tier-set`, repo `scripts/tier-set.sh`). It writes the trio into `~/.claude/settings.json` — `.model` (the orchestrator for any plain launch) plus the `ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL` env slots (opus alias / executor / scout). The **worker and recon slots take effect in the current session too**: Claude Code re-reads `settings.json` `env` when it spawns a subagent, so executors and scouts spawned *after* `/tier` runs use the new models immediately — no relaunch needed (verified empirically on Claude Code 2.1.206; the docs imply a launch-time snapshot, but the observed behaviour is a per-spawn re-read). What a file write **cannot** move is the **orchestrator** — this running session's own model — and by extension the `model: inherit` agents (verifier/oracle) that track it: only `/model <reasoning-id>` moves a running orchestrator (it also persists as the new-session default). So after `/tier`, the worker/recon tiers are already switched; run the `/model …` line the tool prints if you also want to move this session's orchestrator now. All three slots apply to any newly launched session. `tier-set` warns if a lower slot outranks the orchestrator (it must stay the most capable of the three). Shell sugar exists (`tier <trio>` = bind + launch, `tier-show`) but is optional — the slash command is the primary interface.
+**The reconciler is the mechanism that links them.** `tier-reconcile` (a `SessionStart` + `UserPromptSubmit` hook) reads `.model`, derives the trio via `tier-derive` (the single source of truth for the ladder), and rewrites the `ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL` slots **only if they differ** — idempotent, silent, fast. So when `/model` changes the default, the very next prompt re-derives the slots *before* any subagent spawns that turn, and executor/scout always run models consecutive to the current default. This relies on Claude Code re-reading `settings.json` `env` per subagent spawn (verified empirically on 2.1.206; the docs imply a launch-time snapshot, the observed behaviour is a per-spawn re-read).
 
-- **Graceful degradation.** Each slot falls **downward** (reasoning → Opus → Sonnet → Haiku; worker → Sonnet → Haiku; recon → Haiku → Sonnet). If a chosen model is unavailable (gated, out of credits, off-plan, safeguard-rerouted), `tier-set` falls through to the next candidate and prints what it actually bound; the SessionStart hook also echoes the live binding. Example: `/tier fable opus haiku` on a plan where Fable is gated binds the orchestrator to Opus 4.8 and says so. Fable 5 is a first-class candidate — never assume it is unavailable; the probe decides.
-- **Footguns to avoid:** never set `CLAUDE_CODE_SUBAGENT_MODEL` — it overrides *every* subagent's model and would collapse all three tiers onto one (`tier-set` removes it). The slot vars in settings `env` are **owned by `tier-set`** — don't hand-edit them, and don't export them in the shell (settings env overrides shell exports, so a shell export silently does nothing once `tier-set` has written the slots).
-- **After an image rebuild**, the config sync resets `settings.json` to the template — re-run `/tier` to restore your trio.
+The engine behind `/tier` is `tier-set` (`/usr/local/bin/tier-set`, repo `scripts/tier-set.sh`); it probes the top with downward fallback, then derives the trio from the top that actually bound. `tier-derive` and `tier-reconcile` live beside it. What a file write **cannot** move is the **running orchestrator** — this session's own model — and by extension the `model: inherit` agents (verifier/oracle) that track it: only `/model` moves a running orchestrator (it also persists as the new-session default). So `/tier` switches the worker/recon tiers immediately but tells you to run `/model` if you also want to move this session's orchestrator now; `/model` does both. All slots apply to any newly launched session.
+
+- **Off-ladder tops degrade gracefully.** If `.model` is a custom/unknown id the ladder can't place (`best`, a bare `sonnet[1m]`), the reconciler leaves the slots untouched (never clobbers) and `/tier show` flags the top as custom/unmanaged. A full *family* id (`claude-opus-4-8`, even dated) maps to its rung and derives beneath it.
+- **Graceful degradation on the top.** The top falls **downward** (fable → opus → sonnet → haiku) if a model is unavailable (gated, out of credits, off-plan, safeguard-rerouted); `tier-set` binds what it actually reached and derives the trio from that. Fable 5 is a first-class candidate — never assume it is unavailable; the probe decides.
+- **Footguns to avoid:** never set `CLAUDE_CODE_SUBAGENT_MODEL` — it overrides *every* subagent's model and would collapse all three tiers onto one (`tier-set` removes it). The slot vars in settings `env` are **owned by `tier-set`/`tier-reconcile`** — don't hand-edit them, and don't export them in the shell (settings env overrides shell exports).
+- **After an image rebuild**, the config sync resets `settings.json` to the template (which carries the reconciler hook) — re-run `/tier` or just send a prompt (the reconciler re-syncs the slots to `.model`).
+- **Residual caveat (unchanged):** a file write can't move the *running* orchestrator; only `/model` can. If you run `/tier` without `/model`, the slots follow `.model` but the running orchestrator stays put until you `/model`.
 
 **Oracle is user-invoked only — never spawn it unprompted.** The oracle inherits your model (always exactly the driver); its leverage is a clean context, not a bigger model — no sunk assumptions, an explicit refute-first mandate, high reasoning effort, and a verdict-first output cap. When a genuine choke point is met — (1) a plan for a large or risky implementation (~5+ files, schema/API/auth, hard to reverse), (2) the same bug survived two genuinely different fix attempts, (3) a one-way-door architecture decision, (4) a significant diff about to be pushed — you may note *once* that an oracle consult is available, then proceed with your own best judgment. The user triggers it ("second opinion", "ask the oracle"); `/advisor` is backed by `advisorModel`, which is pinned to `fable` because the advisor model must be **≥ the session's main model** — if you change the top tier, keep `advisorModel` at or above it. For one-way doors the user can ask for a **panel**: two oracle consults in parallel with different lenses (correctness-first vs simplicity-first) — where they disagree is where to think hardest.
 

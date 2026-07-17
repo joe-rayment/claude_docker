@@ -313,46 +313,67 @@ setup() {
     # orchestrator's model so they are never a tier below it.
     [ -x /usr/local/bin/tier-set ]
     grep -q 'claude-fable-5' /usr/local/bin/tier-set
+    # the derive + reconciler engine is installed alongside tier-set
+    [ -x /usr/local/bin/tier-derive ]
+    [ -x /usr/local/bin/tier-reconcile ]
     [ -f /etc/claude-dev/configs/commands/tier.md ]
     grep -q 'tier-set' /etc/claude-dev/configs/.zshrc
     grep -q '^model: inherit' /etc/claude-dev/configs/agents/verifier.md
     grep -q '^model: inherit' /etc/claude-dev/configs/agents/oracle.md
+    # the reconciler hook is staged in the settings template (SessionStart + UserPromptSubmit)
+    jq -e '[.hooks.SessionStart[].hooks[].command, .hooks.UserPromptSubmit[].hooks[].command]
+           | map(select(test("tier-reconcile"))) | length == 2' \
+        /etc/claude-dev/configs/claude-settings.json
 }
 
-@test "tier-set maps aliases, degrades downward, warns on inverted ranks, writes settings" {
+@test "tier-derive: ladder, floor clamp, alias + full id, off-ladder" {
+    local d=/usr/local/bin/tier-derive
+    [ -x "$d" ]
+    [ "$("$d" fable)"  = "claude-fable-5 claude-opus-4-8 claude-sonnet-5" ]
+    [ "$("$d" opus)"   = "claude-opus-4-8 claude-sonnet-5 claude-haiku-4-5-20251001" ]
+    [ "$("$d" sonnet)" = "claude-sonnet-5 claude-haiku-4-5-20251001 claude-haiku-4-5-20251001" ]
+    [ "$("$d" haiku)"  = "claude-haiku-4-5-20251001 claude-haiku-4-5-20251001 claude-haiku-4-5-20251001" ]
+    # a full family id (even dated) is kept as-is on top and derives beneath
+    [ "$("$d" claude-opus-4-8-20260101)" = "claude-opus-4-8-20260101 claude-sonnet-5 claude-haiku-4-5-20251001" ]
+    # off-ladder / unknown -> exit 3, no output (callers must not clobber)
+    run "$d" best
+    [ "$status" -eq 3 ] && [ -z "$output" ]
+}
+
+@test "tier-set derives the whole trio from one top, degrades, writes settings" {
     local ts fake
     ts=$(mktemp)
     printf '{"env":{"CLAUDE_CODE_SUBAGENT_MODEL":"bad"},"permissions":{"allow":["WebSearch"]}}\n' > "$ts"
 
-    # alias trio maps to concrete ids and lands in settings (no probe needed)
-    run env TIER_SETTINGS="$ts" TIER_NO_PROBE=1 /usr/local/bin/tier-set fable opus haiku
+    # ONE top -> derived trio (fable -> fable/opus/sonnet); subagent-model purged; other keys kept
+    run env TIER_SETTINGS="$ts" TIER_NO_PROBE=1 /usr/local/bin/tier-set fable
     [ "$status" -eq 0 ]
     jq -e '.model == "claude-fable-5"
            and .env.ANTHROPIC_DEFAULT_OPUS_MODEL == "claude-fable-5"
            and .env.ANTHROPIC_DEFAULT_SONNET_MODEL == "claude-opus-4-8"
-           and .env.ANTHROPIC_DEFAULT_HAIKU_MODEL == "claude-haiku-4-5-20251001"
+           and .env.ANTHROPIC_DEFAULT_HAIKU_MODEL == "claude-sonnet-5"
            and (.env | has("CLAUDE_CODE_SUBAGENT_MODEL") | not)
            and .permissions.allow == ["WebSearch"]' "$ts"
 
-    # 2 models: reasoning + worker set positionally, recon keeps its default
-    run env TIER_SETTINGS="$ts" TIER_NO_PROBE=1 /usr/local/bin/tier-set opus sonnet
-    [ "$status" -eq 0 ]
-    jq -e '.model == "claude-opus-4-8"
-           and .env.ANTHROPIC_DEFAULT_OPUS_MODEL == "claude-opus-4-8"
+    # opus -> opus/sonnet/haiku
+    run env TIER_SETTINGS="$ts" TIER_NO_PROBE=1 /usr/local/bin/tier-set opus
+    jq -e '.env.ANTHROPIC_DEFAULT_OPUS_MODEL == "claude-opus-4-8"
            and .env.ANTHROPIC_DEFAULT_SONNET_MODEL == "claude-sonnet-5"
            and .env.ANTHROPIC_DEFAULT_HAIKU_MODEL == "claude-haiku-4-5-20251001"' "$ts"
 
-    # unavailable model degrades downward (probe stubbed, no API calls)
+    # extra positional args are ignored with a notice; trio still derived from the top
+    run env TIER_SETTINGS="$ts" TIER_NO_PROBE=1 /usr/local/bin/tier-set opus sonnet haiku
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"ignored"* ]]
+    jq -e '.env.ANTHROPIC_DEFAULT_HAIKU_MODEL == "claude-haiku-4-5-20251001"' "$ts"
+
+    # unavailable top degrades downward (probe stubbed); trio derived from what bound
     fake=$(mktemp -d)
     printf '#!/bin/sh\ncase "$*" in *definitely-unavailable*) exit 1;; *) exit 0;; esac\n' > "$fake/claude"
     chmod +x "$fake/claude"
     run env TIER_SETTINGS="$ts" PATH="$fake:$PATH" /usr/local/bin/tier-set definitely-unavailable-model
     [ "$status" -eq 0 ]
-    jq -e '.model == "claude-opus-4-8"' "$ts"
-
-    # a lower slot outranking the reasoning slot draws a warning
-    run env TIER_SETTINGS="$ts" TIER_NO_PROBE=1 /usr/local/bin/tier-set haiku opus
-    [[ "$output" == *"outranks"* ]]
+    jq -e '.model == "claude-opus-4-8" and .env.ANTHROPIC_DEFAULT_SONNET_MODEL == "claude-sonnet-5"' "$ts"
 
     # corrupt settings are left untouched
     printf 'NOT JSON' > "$ts"
@@ -361,6 +382,39 @@ setup() {
     [ "$(cat "$ts")" = "NOT JSON" ]
 
     rm -rf "$ts" "$fake"
+}
+
+@test "tier-reconcile links slots to .model: sets, idempotent, drifts, never clobbers" {
+    local ts m1 m2
+    ts=$(mktemp)
+    # sets slots from .model (opus -> opus/sonnet/haiku), preserving other env keys, silently
+    echo '{"model":"opus","env":{"KEEP":"1"}}' > "$ts"
+    run env TIER_SETTINGS="$ts" /usr/local/bin/tier-reconcile
+    [ "$status" -eq 0 ] && [ -z "$output" ]
+    jq -e '.env.KEEP == "1"
+           and .env.ANTHROPIC_DEFAULT_OPUS_MODEL == "claude-opus-4-8"
+           and .env.ANTHROPIC_DEFAULT_SONNET_MODEL == "claude-sonnet-5"
+           and .env.ANTHROPIC_DEFAULT_HAIKU_MODEL == "claude-haiku-4-5-20251001"' "$ts"
+
+    # idempotent: already in sync -> no rewrite (mtime unchanged)
+    m1=$(stat -c %Y "$ts"); sleep 1
+    env TIER_SETTINGS="$ts" /usr/local/bin/tier-reconcile
+    m2=$(stat -c %Y "$ts")
+    [ "$m1" = "$m2" ]
+
+    # drift: move .model down a rung -> slots follow to sonnet/haiku/haiku
+    jq '.model = "sonnet"' "$ts" > "$ts.x" && mv "$ts.x" "$ts"
+    env TIER_SETTINGS="$ts" /usr/local/bin/tier-reconcile
+    jq -e '.env.ANTHROPIC_DEFAULT_OPUS_MODEL == "claude-sonnet-5"
+           and .env.ANTHROPIC_DEFAULT_SONNET_MODEL == "claude-haiku-4-5-20251001"
+           and .env.ANTHROPIC_DEFAULT_HAIKU_MODEL == "claude-haiku-4-5-20251001"' "$ts"
+
+    # off-ladder .model -> no-op, slots left exactly as they were
+    jq '.model = "best"' "$ts" > "$ts.x" && mv "$ts.x" "$ts"
+    env TIER_SETTINGS="$ts" /usr/local/bin/tier-reconcile
+    jq -e '.env.ANTHROPIC_DEFAULT_OPUS_MODEL == "claude-sonnet-5"' "$ts"
+
+    rm -f "$ts"
 }
 
 @test "tests do not leak temp dirs when an assertion fails" {

@@ -58,25 +58,53 @@ the "delegation" collapsed to a single agent.
   work and return a *compressed* result. If you could produce it in a
   couple of tool calls, don't delegate.
 
-## Setting the three models per session (no file edits)
+## Setting the tier per session — one top model, the rest derived (no file edits)
 
-Say the combination you want, in the simplest form, from inside any session —
-the **`/tier` slash command** (`~/.claude/commands/tier.md`, staged from
-`config/claude-commands/`):
+The default model and the trio are a **single linked thing**: you pick ONE top
+model and worker/recon are **derived** as the next two consecutive rungs down
+the ladder (`fable > opus > sonnet > haiku`), clamped at the haiku floor. No
+independent 3-model input — that could drift from the default and is gone.
 
 ```
-/tier fable opus haiku              # Fable orchestrator + Opus executors + Haiku scouts
-/tier fable                         # partial trio: lower slots keep defaults
-/tier                               # no args: print the current binding (writes nothing)
-/tier show                          # same as bare /tier — print the current binding
+/model opus                         # PRIMARY in-session lever: moves the orchestrator AND
+                                     #   re-derives the trio (via the reconciler) on your next prompt
+/tier fable                         # explicit set: .model=fable + derived slots (fable/opus/sonnet)
+/tier claude-opus-4-8               # a full id works (dated/variant kept as-is on top)
+/tier opus sonnet                   # extra args IGNORED with a notice (trio is auto-derived)
+/tier                               # no args: print the current binding + derived trio (writes nothing)
+/tier show                          # same as bare /tier
 ```
 
-The engine is **`tier-set`** (`/usr/local/bin/tier-set`, repo
-`scripts/tier-set.sh`) — a standalone POSIX script, no shell functions
-required. Optional shell sugar in `.zshrc` drives the same engine:
-`tier <trio>` (= `tier-set` + launch) and `tier-show` (= `tier-set show`).
-`TIER_NO_PROBE=1` skips availability probing; `TIER_SETTINGS=<path>` retargets
-the settings file (used by the test suite).
+Derivation table (`tier-derive`, the single source of truth):
+
+| top | worker (executor) | recon (scout) |
+|-----|-------------------|---------------|
+| fable  | opus   | sonnet |
+| opus   | sonnet | haiku  |
+| sonnet | haiku  | haiku  |
+| haiku  | haiku  | haiku  |
+
+Three small POSIX scripts (all in `/usr/local/bin`, repo `scripts/`):
+- **`tier-derive`** — `tier-derive <top>` → `<top> <worker> <recon>` (concrete
+  ids); exit 3 for an off-ladder/custom top (prints nothing, so callers leave
+  slots alone). The ONLY place the ladder lives.
+- **`tier-set`** — the `/tier` engine: probes the top with downward fallback,
+  then derives the trio from the top that bound, and writes settings.
+- **`tier-reconcile`** — the hook that links `/model` → trio (see below).
+
+Optional shell sugar in `.zshrc` drives the same engine: `tier <top>`
+(= `tier-set` + launch) and `tier-show` (= `tier-set show`). `TIER_NO_PROBE=1`
+skips availability probing; `TIER_SETTINGS=<path>` retargets the settings file
+(used by the test suite).
+
+**The reconciler (`tier-reconcile`) is what keeps `.model` and the trio in
+sync.** Wired as a `SessionStart` + `UserPromptSubmit` hook, it reads `.model`,
+derives the trio, and rewrites the `ANTHROPIC_DEFAULT_*` slots **only if they
+differ** — idempotent, silent on stdout (a UserPromptSubmit hook's stdout would
+be injected into the prompt), fast. An off-ladder `.model` is a no-op (never
+clobber a custom top). Because it runs on the prompt *before* any subagent
+spawns that turn, a `/model` change is reflected in executor/scout on the very
+next turn.
 
 **Why the `/tier` command frontmatter pins `model: haiku` + `effort: low`.**
 A custom command/skill is a *prompt*: after `!`tier-set …`` runs, its whole
@@ -92,11 +120,12 @@ prose of its own. Don't "simplify" these keys away — they are the fix for the
 expensive-cycle bug.
 
 Alias map: `fable→claude-fable-5`, `opus→claude-opus-4-8`,
-`sonnet→claude-sonnet-5`, `haiku→claude-haiku-4-5-20251001`; anything else
-passes through as a full model ID. Aliases are mapped **before** writing —
-never an alias string into the env var that defines that alias. `tier-set`
-warns when a lower slot outranks the reasoning slot (capability order
-fable > opus > sonnet > haiku; unknown IDs skip the check).
+`sonnet→claude-sonnet-5`, `haiku→claude-haiku-4-5-20251001`; a full family id
+(incl. dated/variant) maps to its rung, anything else is off-ladder. Aliases
+are mapped **before** writing — never an alias string into the env var that
+defines that alias. The orchestrator-is-strongest invariant is now *structural*
+(worker/recon are consecutive rungs below the top), so no rank warning is
+needed — you can't invert the trio.
 
 It writes into `~/.claude/settings.json`:
 
@@ -141,27 +170,26 @@ unavailable on the plan, `/advisor` fails visibly; swap the value then.
 
 ## Graceful degradation (fallback order)
 
-Each slot falls through a candidate list to the first available model,
-**without editing any file**, and prints what it bound:
+Only the **top** degrades now — worker/recon are derived from whatever top
+actually bound, so they never need their own fallback. The top falls through a
+candidate list to the first available model, **without editing any file**:
 
-- reasoning: `claude-opus-4-8` → `claude-sonnet-5` → `claude-haiku-4-5-20251001`
-- worker:    `claude-sonnet-5` → `claude-haiku-4-5-20251001`
-- recon:     `claude-haiku-4-5-20251001` → `claude-sonnet-5`
+- top: `<requested>` → `claude-opus-4-8` → `claude-sonnet-5` → `claude-haiku-4-5-20251001`
 
-The requested model is tried first, then the floor list — so `/tier fable …`
-tries Fable, then degrades downward. Fallback never escalates cost.
-`tier-set` probes each candidate with a tiny `claude -p` ping (skip with
-`TIER_NO_PROBE=1`; the probe is best-effort — a safeguard-rerouted model can
-still probe green). The SessionStart hook also echoes the live binding each
-session, so you always see what you actually got.
+The requested model is tried first, then the floor list — so `/tier fable`
+tries Fable, then degrades downward, and the trio is derived from the rung that
+bound. Fallback never escalates cost. `tier-set` probes each candidate with a
+tiny `claude -p` ping (skip with `TIER_NO_PROBE=1`; the probe is best-effort —
+a safeguard-rerouted model can still probe green). The SessionStart hook also
+echoes the live binding each session, so you always see what you actually got.
 
-**Demo — requested model unavailable (e.g. gated on the current plan):**
+**Demo — requested top unavailable (e.g. gated on the current plan):**
 
 ```
-/tier fable sonnet haiku           # if claude-fable-5 is gated here…
-tier[reasoning] claude-fable-5 unavailable, trying next...
-tier[reasoning] falling back -> claude-opus-4-8
-tier bound  orchestrator=claude-opus-4-8  worker=claude-sonnet-5  recon=claude-haiku-4-5-20251001
+/tier fable                        # if claude-fable-5 is gated here…
+tier[top] claude-fable-5 unavailable, trying next...
+tier[top] falling back -> claude-opus-4-8
+tier bound  top=claude-opus-4-8  →  worker=claude-sonnet-5  recon=claude-haiku-4-5-20251001  (worker/recon derived from the top)
 · LIVE in this session: executor=claude-sonnet-5 and scout=claude-haiku-4-5-20251001 — subagents spawned from now on use them
   (Claude Code re-reads settings.json env on each subagent spawn).
 · NOT moved in this session: the orchestrator (=claude-opus-4-8) and inherit agents (verifier/oracle) —

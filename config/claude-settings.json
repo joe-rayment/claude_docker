@@ -38,6 +38,7 @@
       {
         "matcher": "",
         "hooks": [
+          { "type": "command", "command": "command -v tier-reconcile >/dev/null 2>&1 && tier-reconcile >/dev/null 2>&1; true" },
           {
             "type": "command",
             "command": "echo 'Reminder: lead with the answer; include only what changes the reader'\\''s next action, in plain complete sentences — no process narration, no unasked-for caveats. Explicit user constraints are binding: never substitute your preference, even while debugging. If you noticed a flaw in your work, fix it or state it — never ship it silently.'"
@@ -51,6 +52,7 @@
         "hooks": [
           { "type": "command", "command": "bd prime" },
           { "type": "command", "command": "command -v disk-cleanup >/dev/null 2>&1 && (disk-cleanup >/dev/null 2>&1 &); true" },
+          { "type": "command", "command": "command -v tier-reconcile >/dev/null 2>&1 && tier-reconcile >/dev/null 2>&1; true" },
           { "type": "command", "command": "m=$(jq -r '.model // empty' \"$HOME/.claude/settings.local.json\" 2>/dev/null); [ -n \"$m\" ] || m=$(jq -r '.model // empty' \"$HOME/.claude/settings.json\" 2>/dev/null); echo \"tier slots → reasoning=${ANTHROPIC_DEFAULT_OPUS_MODEL:-opus (default)}  executor=${ANTHROPIC_DEFAULT_SONNET_MODEL:-sonnet (default)}  scout=${ANTHROPIC_DEFAULT_HAIKU_MODEL:-haiku (default)} | settings model=${m:-harness default} | verifier+oracle inherit the session model\"" }
         ]
       }
