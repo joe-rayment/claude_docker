@@ -50,6 +50,21 @@ run_guard() {
     [ "$status" -eq 0 ]
 }
 
+@test "bd-guard: close reason discharging residual work in prose is blocked" {
+    run_guard 'bd close vrv --reason "All subtasks done; the sole residual step is git push, auth-blocked, carried outside the tracker"'
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"follow-up bead"* ]]
+    run_guard 'bd close wp9 --reason "Closing per user direction. NOT verified in-container until rebuild"'
+    [ "$status" -eq 2 ]
+}
+
+@test "bd-guard: close reason naming a follow-up bead passes" {
+    run_guard 'bd close vrv --reason "Done; residual step (git push) filed as bead bd-x9 which Claude will run after auth is restored"'
+    [ "$status" -eq 0 ]
+    run_guard 'bd create "Track the remaining work items in the sprint board UI"'
+    [ "$status" -eq 0 ]
+}
+
 @test "bd-guard: user-directed bead text is soft-blocked with chat redirect" {
     run_guard 'bd create "Ask the user which DB to use"'
     [ "$status" -eq 2 ]

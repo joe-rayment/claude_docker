@@ -78,4 +78,20 @@ if printf '%s' "$command_str" | grep -qiE "$joined"; then
   block "BLOCKED (bd-guard): this bead's text describes work or a decision belonging to the user (matched a phrase like 'ask the user' / 'waiting for user' / 'user review'). Beads are Claude-only; questions are handled in chat. Do this instead, at the point of creation: (1) if a user decision is needed, ask it in your reply NOW — do not park it in a bead; (2) rewrite the bead as work Claude itself will do, including how Claude will verify it in the running program; (3) capture any already-made decision in the bead as a fact, not as a pending request. Only if this is a genuine false positive (the phrase is quoted content/code, not pending user work) re-run prefixed with BD_GUARD_ALLOW=1."
 fi
 
+# --- SOFT RULE (close only): residual work discharged in prose ---------------
+# Observed violation shape (2026-07-17 audit): a close_reason that admits
+# leftover or unverified work in prose ("the sole residual step is 'git
+# push'", "carried outside the tracker", "NOT verified in-container") —
+# discharging real work out of the tracker instead of filing a Claude-owned
+# follow-up bead. Exempt reasons that already point at a follow-up bead.
+if printf '%s' "$command_str" | grep -qE '(^|[;&|(] *)bd +close\b'; then
+  residual_re='(residual|remaining|outstanding|left.?over) (step|work|task|item)|carried outside the tracker|not (yet )?(verified|tested|pushed)|unverified|auth.?blocked'
+  followup_re='(follow.?up|filed|tracked|moved|captured) (as|in|to)? *(bead|bd[-_ ]|beads_|issue)'
+  if printf '%s' "$command_str" | grep -qiE "$residual_re" && \
+     ! printf '%s' "$command_str" | grep -qiE "$followup_re"; then
+    [ "${BD_GUARD_ALLOW:-0}" = "1" ] && exit 0
+    block "BLOCKED (bd-guard): this close reason admits residual or unverified work in prose. Closing a bead does not discharge the work — prose in a close reason is where tasks go to die. Before closing: (1) file a Claude-owned follow-up bead for the residual step (never assigned to the user) and mention its id in the close reason, or simply keep this bead open; (2) if the step is blocked on something only the user can do (e.g. credentials), the follow-up bead still carries it as Claude's open item — and ask the user for the unblocking action in chat NOW. Then re-run the close (BD_GUARD_ALLOW=1 only if the wording is a false positive)."
+  fi
+fi
+
 exit 0
