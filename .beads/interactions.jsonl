@@ -38,3 +38,4 @@
 {"id":"int-ddeef8e4","kind":"field_change","created_at":"2026-07-17T16:21:48.333511592Z","actor":"Joe","issue_id":"beads_claude_docker-vrv.4","extra":{"field":"status","new_value":"closed","old_value":"in_progress"}}
 {"id":"int-a35f704d","kind":"field_change","created_at":"2026-07-17T16:21:48.587926842Z","actor":"Joe","issue_id":"beads_claude_docker-vrv.6","extra":{"field":"status","new_value":"in_progress","old_value":"open"}}
 {"id":"int-19d19544","kind":"field_change","created_at":"2026-07-17T16:27:34.636462627Z","actor":"Joe","issue_id":"beads_claude_docker-1p4","extra":{"field":"status","new_value":"closed","old_value":"in_progress","reason":"Closed"}}
+{"id":"int-d8112139","kind":"field_change","created_at":"2026-07-17T16:40:33.021114834Z","actor":"Joe","issue_id":"beads_claude_docker-m3r","extra":{"field":"status","new_value":"closed","old_value":"open","reason":"Closed"}}
