@@ -22,7 +22,7 @@ why it must never come back.
 | `/model` picker shows odd rows, or picking a row lands on a different model | Legacy `ANTHROPIC_DEFAULT_*` vars survived in settings `env` (v1 residue). `tier-set show` warns if present; any `/tier` bind — or the reconciler on the next prompt — purges them. Never re-add them. |
 | Executor/scout ran the wrong model | (1) Check the binding: `grep '^model:' ~/.claude/agents/{executor,scout}.md`. (2) Remember **agent files are snapshotted at session start** — a mid-session rebind affects the *next* session, not this one. (3) Check for an active pin (`tier-set show`). (4) An off-ladder `.model` stops auto-derivation (never clobbers). |
 | All subagents run the same model | `CLAUDE_CODE_SUBAGENT_MODEL` is set somewhere — it overrides *every* subagent. tier-set/tier-reconcile purge it from settings `env`; also check shell exports. |
-| Agent spawn fails model-not-found | The frontmatter id is gated/retired on this account. Re-run `/tier <top>` — the probe degrades downward and binds what actually works. |
+| Agent spawn fails model-not-found | The frontmatter id is gated/retired on this account. Re-run `/tier` with `TIER_PROBE=1 tier-set …` (or name an available model explicitly) — the probe degrades downward and binds what actually works. |
 | Need a different tier for ONE spawn right now | Pass an explicit `model` on that Agent call — the only per-spawn override in a running session. |
 | `/tier` ran but this session's own model didn't change | Expected: a file write cannot move a running orchestrator. Run the `/model …` line tier-set prints. |
 | After an image rebuild the trio looks like the template defaults | Expected: rebuild resets agent files + settings from templates; the SessionStart reconciler re-derives from `.model` on the first session — no manual re-run needed. |
@@ -197,11 +197,12 @@ Three small POSIX scripts (installed in `/usr/local/bin`, repo `scripts/`):
   name, e.g. "Opus 4.8"), `--rank <id>` (0 = off-ladder). The ONLY place
   the ladder lives — tier-set and tier-reconcile both call it, so they can
   never disagree.
-- **`tier-set`** — the `/tier` engine: probes each requested slot with
-  downward fallback, writes `.model` + the two frontmatter `model:` lines
-  atomically (preserving file mode), sets/clears the pin, purges legacy
-  vars. If an agent file is missing or has no `model:` line it says so
-  ("slot NOT bound") and continues with the rest.
+- **`tier-set`** — the `/tier` engine: resolves aliases, writes `.model` +
+  the two frontmatter `model:` lines atomically (preserving file mode),
+  sets/clears the pin, purges legacy vars. Known ladder ids bind instantly
+  without probing; off-ladder/custom ids are probed with downward fallback
+  (see *Graceful degradation* below). If an agent file is missing or has no
+  `model:` line it says so ("slot NOT bound") and continues with the rest.
 - **`tier-reconcile`** — the SessionStart + UserPromptSubmit hook. Contract:
   purge legacy vars first (always); then stop if pinned, `.model` empty, or
   off-ladder; else derive the trio from `.model` and rewrite
@@ -215,7 +216,8 @@ Shell sugar in `.zshrc` drives the same engine: `tier <top>` (= `tier-set`
 **Test/override env vars:** `TIER_SETTINGS=<path>` retargets the settings
 file and `TIER_AGENTS_DIR=<dir>` the agents directory (both used by the
 test suite so tests never touch the live binding); `TIER_NO_PROBE=1` skips
-availability probing (bind blind).
+all availability probing, even off-ladder ids (bind blind); `TIER_PROBE=1`
+forces probing of every candidate (downward degradation).
 
 **Why the `/tier` command frontmatter pins `model: haiku` + `effort: low`.**
 A custom command/skill is a *prompt*: after `!`tier-set …`` runs, its whole
@@ -234,37 +236,43 @@ ever unavailable on the plan, `/advisor` fails visibly; swap the value then.
 
 ## Graceful degradation (probe + fallback)
 
-Every requested slot degrades **downward** to the first available model,
-without manual intervention. `tier-set` probes each candidate with a tiny
-`claude -p` ping (skip with `TIER_NO_PROBE=1`; best-effort — a
-safeguard-rerouted model can still probe green):
+A probe is a real `claude -p` round trip (~5–10 s per candidate), so
+probing is **selective**: the four known ladder ids are trusted and bind
+instantly with no probe; only off-ladder/custom ids are probed by default
+(typo guard, one retry per candidate), and `TIER_PROBE=1` forces probing
+of every candidate. This is deliberate — probing all slots made `/tier`
+take 15–25 s inside its `!`-preprocessing, and a single transient API blip
+on the recon floor (haiku has no candidate below it) exited non-zero and
+hard-failed the entire slash command (observed 2026-07-22). The trade-off:
+a gated/off-plan ladder model now surfaces at spawn or `/model` time
+instead of bind time; use `TIER_PROBE=1` when that matters.
+
+When probing runs, each slot degrades **downward** past candidates that
+fail (best-effort — a safeguard-rerouted model can still probe green):
 
 - top: `<requested>` → `claude-opus-4-8` → `claude-sonnet-5` → `claude-haiku-4-5-20251001`
 - worker (explicit form): `<requested>` → `claude-sonnet-5` → `claude-haiku-4-5-20251001`
 - recon (explicit form): `<requested>` → `claude-haiku-4-5-20251001`
 
-On the 1-arg path the trio is derived from **whichever top actually
-bound**, so worker/recon never need their own fallback there. Fallback
-never escalates cost. The SessionStart hook echoes the live binding each
-session, so you always see what you actually got.
+**A probe failure is never fatal.** If every candidate for a slot fails,
+the requested id is bound anyway with a `WARNING … bound '<id>' UNVERIFIED`
+line and exit 0 — the settings write always happens and the slash command
+cannot brick on a flaky probe. On the 1-arg path the trio is derived from
+**whichever top actually bound**, so worker/recon never need their own
+fallback there. Fallback never escalates cost. The SessionStart hook echoes
+the live binding each session, so you always see what you actually got.
 
-**Demo — requested top unavailable (e.g. gated on the current plan):**
+**Demo — off-ladder id that fails its probe:**
 
 ```
-/tier fable                        # if claude-fable-5 is gated here…
-tier[top] claude-fable-5 unavailable, trying next...
+/tier my-custom-model              # off-ladder ids are probed…
+tier[top] my-custom-model unavailable, trying next...
 tier[top] falling back -> claude-opus-4-8
 tier bound  top=claude-opus-4-8  →  worker=claude-sonnet-5  recon=claude-haiku-4-5-20251001  (worker/recon derived from the top)
-· /model picker untouched and fully native — every row and alias means exactly what it says.
-· worker/recon are bound in agent frontmatter (executor.md/scout.md) and apply to NEW sessions
-  (agent files are snapshotted at session start; the SessionStart reconciler keeps them linked to .model).
-· NOT moved in this session: the orchestrator and inherit agents (verifier/oracle) —
-  a running session's own model changes only via /model. To move it now, run:  /model claude-opus-4-8
-· For a one-off different tier in THIS session, pass an explicit model on the Agent call.
+→ run  /model claude-opus-4-8  to move THIS session's model now — new sessions pick everything up automatically.
 ```
 
-(Fable 5 is an active model — do not assume it is unavailable; the probe
-decides per session.)
+(Fable 5 is an active model — do not assume it is unavailable.)
 
 ## Post-mortem: why v1 (env-slot remap) was retired — never reintroduce it
 

@@ -35,9 +35,14 @@
 #     write cannot move a running session's own model.
 #   - Aliases are resolved to concrete ids before writing, so a binding never
 #     drifts with alias defaults.
-#   - Each slot degrades DOWNWARD to the first available model (probe = one
-#     tiny `claude -p` ping per candidate tried); the 1-arg form derives the
-#     trio from whichever top actually bound.
+#   - Probing is OPT-IN for known ladder ids: the four ladder models are
+#     trusted and bind instantly (a probe is a real `claude -p` round trip,
+#     ~5-10s each — probing all slots made /tier take 15-25s and one transient
+#     API blip hard-failed the whole bind). Off-ladder/custom ids are still
+#     probed (typo guard), with one retry. TIER_PROBE=1 forces probing of
+#     every candidate (downward degradation for gated/off-plan models).
+#     A probe failure is NEVER fatal: if no candidate passes, the requested
+#     id is bound anyway with a WARNING — it may then fail at spawn time.
 #   - A container rebuild resets the agent files and settings from the
 #     template; the SessionStart reconciler re-derives from .model, so no
 #     manual re-run is needed.
@@ -48,7 +53,8 @@
 #   tier-set <top> <worker>         # 2 models -> a 2-level config: recon SHARES the worker model
 #   tier-set <top> <worker> <recon> # 3 models -> fully independent 3-level config
 #   tier-set show                   # print the current binding
-#   TIER_NO_PROBE=1 tier-set ...    # skip availability probing (bind blind)
+#   TIER_NO_PROBE=1 tier-set ...    # never probe, even off-ladder ids (bind blind)
+#   TIER_PROBE=1 tier-set ...       # probe EVERY candidate (downward degradation)
 #
 # Ladder: fable > opus > sonnet > haiku.  1-arg default -> (top, top-1, top-2), floored:
 #   fable→fable/opus/sonnet · opus→opus/sonnet/haiku · sonnet→sonnet/haiku/haiku · haiku→haiku×3
@@ -75,13 +81,26 @@ alias_id() {  # alias -> concrete id; unknown strings pass through (full ids)
     esac
 }
 
+LADDER_IDS=" claude-fable-5 claude-opus-4-8 claude-sonnet-5 claude-haiku-4-5-20251001 "
+
+should_probe() {  # 0 -> this id gets an availability probe
+    [ -n "${TIER_NO_PROBE:-}" ] && return 1
+    [ -n "${TIER_PROBE:-}" ] && return 0
+    case "$LADDER_IDS" in (*" $1 "*) return 1 ;; esac   # known ladder id: trusted, bind instantly
+    return 0
+}
+
 probe() {  # 0 if the model looks usable; best-effort
-    [ -n "${TIER_NO_PROBE:-}" ] && return 0
     command -v claude >/dev/null 2>&1 || return 0   # can't probe -> trust the bind
     timeout 30 claude --model "$1" -p 'reply: ok' >/dev/null 2>&1
 }
 
-pick() {  # pick <slot-label> <candidate>... -> echoes first usable, degrading downward
+# pick <slot-label> <candidate>... — sets PICKED to the chosen id, degrading
+# downward past candidates that fail their probe. NEVER fails: on exhaustion it
+# binds the requested id unverified and appends to WARNINGS (a probe failure is
+# advisory — a hard exit here bricked the /tier slash command on one API blip).
+WARNINGS=""
+pick() {
     local slot want seen m
     slot=$1; shift
     want=$1
@@ -89,15 +108,17 @@ pick() {  # pick <slot-label> <candidate>... -> echoes first usable, degrading d
     for m in "$@"; do
         case "$seen" in (*" $m "*) continue ;; esac
         seen="$seen$m "
-        if probe "$m"; then
+        if ! should_probe "$m" || probe "$m" || probe "$m"; then   # one retry on transient blips
             [ "$m" = "$want" ] || echo "tier[$slot] falling back -> $m" >&2
-            echo "$m"
+            PICKED=$m
             return 0
         fi
         echo "tier[$slot] $m unavailable, trying next..." >&2
     done
-    echo "tier[$slot] no candidate available" >&2
-    return 1
+    WARNINGS="${WARNINGS}WARNING: tier[$slot] no candidate passed the probe — bound '$want' UNVERIFIED (it may fail at spawn time)
+"
+    PICKED=$want
+    return 0
 }
 
 # Locate tier-derive whether installed (/usr/local/bin) or run from the repo.
@@ -162,7 +183,7 @@ fi
 
 explicit=0
 if [ $# -eq 1 ]; then
-    R=$(pick top "$(alias_id "$1")" claude-opus-4-8 claude-sonnet-5 claude-haiku-4-5-20251001) || exit 1
+    pick top "$(alias_id "$1")" claude-opus-4-8 claude-sonnet-5 claude-haiku-4-5-20251001; R=$PICKED
     if trio=$("$DERIVE" "$R" 2>/dev/null); then   # derive worker+recon from the bound top
         # shellcheck disable=SC2086 # intentional split; set -f so ids like opus[1m] can't glob-expand
         set -f; set -- $trio; set +f
@@ -174,10 +195,10 @@ if [ $# -eq 1 ]; then
     fi
 else
     explicit=1
-    R=$(pick top    "$(alias_id "$1")" claude-opus-4-8 claude-sonnet-5 claude-haiku-4-5-20251001) || exit 1
-    W=$(pick worker "$(alias_id "$2")" claude-sonnet-5 claude-haiku-4-5-20251001) || exit 1
+    pick top    "$(alias_id "$1")" claude-opus-4-8 claude-sonnet-5 claude-haiku-4-5-20251001; R=$PICKED
+    pick worker "$(alias_id "$2")" claude-sonnet-5 claude-haiku-4-5-20251001; W=$PICKED
     if [ $# -ge 3 ]; then
-        C=$(pick recon "$(alias_id "$3")" claude-haiku-4-5-20251001) || exit 1
+        pick recon "$(alias_id "$3")" claude-haiku-4-5-20251001; C=$PICKED
         [ $# -gt 3 ] && shift 3 && echo "tier: extra args ignored (dropped: $*)" >&2
     else
         C=$W   # 2-arg form: a 2-level config — recon shares the worker model
@@ -217,14 +238,9 @@ if [ "$bind_fail" -eq 1 ]; then
 fi
 
 if [ "$explicit" -eq 1 ]; then
-    echo "tier bound (explicit)  top=$R  worker=$W  recon=$C"
-    echo "· pinned — the reconciler will NOT auto-derive over this until you run a 1-arg /tier <top>."
+    echo "tier bound (explicit, pinned)  top=$R  worker=$W  recon=$C  — a 1-arg /tier <top> clears the pin"
 else
     echo "tier bound  top=$R  →  worker=$W  recon=$C  (worker/recon derived from the top)"
 fi
-echo "· /model picker untouched and fully native — every row and alias means exactly what it says."
-echo "· worker/recon are bound in agent frontmatter (executor.md/scout.md) and apply to NEW sessions"
-echo "  (agent files are snapshotted at session start; the SessionStart reconciler keeps them linked to .model)."
-echo "· NOT moved in this session: the orchestrator and inherit agents (verifier/oracle) —"
-echo "  a running session's own model changes only via /model. To move it now, run:  /model $R"
-echo "· For a one-off different tier in THIS session, pass an explicit model on the Agent call."
+[ -n "$WARNINGS" ] && printf '%s' "$WARNINGS"
+echo "→ run  /model $R  to move THIS session's model now — new sessions pick everything up automatically."

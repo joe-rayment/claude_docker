@@ -485,6 +485,45 @@ fm_model_of() {  # frontmatter `model:` value of an agent file
     jq -e '.model == "opus"' "$ts"   # reconcile never touches .model
 }
 
+@test "tier-set: known ladder ids bind instantly without probing" {
+    local ts ad fake
+    ts=$(mktemp)
+    ad="$BATS_TEST_TMPDIR/agents"
+    tier_agents_fixture "$ad"
+    printf '{}\n' > "$ts"
+    # a stub `claude` that ALWAYS fails: if any probe ran, the bind would warn
+    # or fall back — ladder ids must be trusted and never probed by default
+    # (each probe is a multi-second API round trip; probing was why /tier hung)
+    fake=$(mktemp -d)
+    printf '#!/bin/sh\nexit 1\n' > "$fake/claude"
+    chmod +x "$fake/claude"
+    run env TIER_SETTINGS="$ts" TIER_AGENTS_DIR="$ad" PATH="$fake:$PATH" /usr/local/bin/tier-set fable opus haiku
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"WARNING"* ]] && [[ "$output" != *"falling back"* ]]
+    jq -e '.model == "claude-fable-5"' "$ts"
+    [ "$(fm_model_of "$ad/executor.md")" = "claude-opus-4-8" ]
+    [ "$(fm_model_of "$ad/scout.md")" = "claude-haiku-4-5-20251001" ]
+}
+
+@test "tier-set: probe exhaustion is non-fatal — binds unverified with a WARNING, exit 0" {
+    local ts ad fake
+    ts=$(mktemp)
+    ad="$BATS_TEST_TMPDIR/agents"
+    tier_agents_fixture "$ad"
+    printf '{}\n' > "$ts"
+    # TIER_PROBE=1 forces probing; haiku is the recon floor with no candidate
+    # below it — a probe failure there used to exit 1 and brick the /tier
+    # slash command. It must now bind the requested id anyway and exit 0.
+    fake=$(mktemp -d)
+    printf '#!/bin/sh\ncase "$*" in *haiku*) exit 1;; *) exit 0;; esac\n' > "$fake/claude"
+    chmod +x "$fake/claude"
+    run env TIER_SETTINGS="$ts" TIER_AGENTS_DIR="$ad" TIER_PROBE=1 PATH="$fake:$PATH" /usr/local/bin/tier-set fable opus haiku
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"WARNING"* ]] && [[ "$output" == *"UNVERIFIED"* ]]
+    jq -e '.model == "claude-fable-5"' "$ts"
+    [ "$(fm_model_of "$ad/scout.md")" = "claude-haiku-4-5-20251001" ]
+}
+
 @test "tier-reconcile: derives frontmatter from .model, idempotent, never clobbers" {
     local ts ad m1 m2 e1 e2 s1 s2
     ts=$(mktemp)
