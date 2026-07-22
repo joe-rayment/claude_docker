@@ -21,7 +21,8 @@
 # "claude-opus-4-8-20260101" stays as-is and derives sonnet/haiku beneath it);
 # a bare alias is resolved to its canonical id.
 #
-# Off-ladder / unknown top (a custom id, "best", a bare "sonnet[1m]", etc.):
+# Off-ladder / unknown top (a custom id, "best", a vendor-routed id — note a
+# "[1m]"-style variant like "sonnet[1m]" is NOT off-ladder; it ranks by family):
 # print NOTHING and exit 3. Callers must treat this as "custom/unmanaged" and
 # leave the slots untouched — never clobber a top we can't place on the ladder.
 #

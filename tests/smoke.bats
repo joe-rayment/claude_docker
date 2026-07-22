@@ -362,7 +362,7 @@ fm_model_of() {  # frontmatter `model:` value of an agent file
 }
 
 @test "tier-derive: ladder, floor clamp, alias + full id, off-ladder" {
-    local d=/usr/local/bin/tier-derive
+    local d=/workspace/scripts/tier-derive.sh
     [ -x "$d" ]
     [ "$("$d" fable)"  = "claude-fable-5 claude-opus-4-8 claude-sonnet-5" ]
     [ "$("$d" opus)"   = "claude-opus-4-8 claude-sonnet-5 claude-haiku-4-5-20251001" ]
@@ -376,7 +376,8 @@ fm_model_of() {  # frontmatter `model:` value of an agent file
     [ "$("$d" 'opus[1m]')" = "opus[1m] claude-sonnet-5 claude-haiku-4-5-20251001" ]
     # off-ladder / unknown -> exit 3, no output (callers must not clobber)
     run "$d" best
-    [ "$status" -eq 3 ] && [ -z "$output" ]
+    [ "$status" -eq 3 ]
+    [ -z "$output" ]
 
     # --name: canonical picker-honest display name per rung; off-ladder -> exit 1, no output
     [ "$("$d" --name fable)"  = "Fable 5" ]
@@ -384,7 +385,8 @@ fm_model_of() {  # frontmatter `model:` value of an agent file
     [ "$("$d" --name sonnet)" = "Sonnet 5" ]
     [ "$("$d" --name haiku)"  = "Haiku 4.5" ]
     run "$d" --name best
-    [ "$status" -eq 1 ] && [ -z "$output" ]
+    [ "$status" -eq 1 ]
+    [ -z "$output" ]
 
     # --rank: numeric rank, 0 for off-ladder; a [variant] suffix ranks by family
     [ "$("$d" --rank fable)" = "4" ]
@@ -403,7 +405,7 @@ fm_model_of() {  # frontmatter `model:` value of an agent file
     # ONE top -> .model gets the CONCRETE top id; the derived worker/recon land
     # in the agent files' frontmatter (fable -> executor=opus, scout=sonnet);
     # ALL legacy env vars purged; unrelated env/keys preserved; no explicit pin
-    run env TIER_SETTINGS="$ts" TIER_AGENTS_DIR="$ad" TIER_NO_PROBE=1 /usr/local/bin/tier-set fable
+    run env TIER_SETTINGS="$ts" TIER_AGENTS_DIR="$ad" TIER_DERIVE=/workspace/scripts/tier-derive.sh TIER_NO_PROBE=1 sh /workspace/scripts/tier-set.sh fable
     [ "$status" -eq 0 ]
     jq -e '.model == "claude-fable-5"
            and .env.KEEP == "1"
@@ -418,7 +420,7 @@ fm_model_of() {  # frontmatter `model:` value of an agent file
     grep -q 'Do the slice.' "$ad/executor.md"
 
     # opus -> executor=sonnet, scout=haiku
-    run env TIER_SETTINGS="$ts" TIER_AGENTS_DIR="$ad" TIER_NO_PROBE=1 /usr/local/bin/tier-set opus
+    run env TIER_SETTINGS="$ts" TIER_AGENTS_DIR="$ad" TIER_DERIVE=/workspace/scripts/tier-derive.sh TIER_NO_PROBE=1 sh /workspace/scripts/tier-set.sh opus
     [ "$status" -eq 0 ]
     jq -e '.model == "claude-opus-4-8"' "$ts"
     [ "$(fm_model_of "$ad/executor.md")" = "claude-sonnet-5" ]
@@ -428,7 +430,7 @@ fm_model_of() {  # frontmatter `model:` value of an agent file
     fake=$(mktemp -d)
     printf '#!/bin/sh\ncase "$*" in *definitely-unavailable*) exit 1;; *) exit 0;; esac\n' > "$fake/claude"
     chmod +x "$fake/claude"
-    run env TIER_SETTINGS="$ts" TIER_AGENTS_DIR="$ad" PATH="$fake:$PATH" /usr/local/bin/tier-set definitely-unavailable-model
+    run env TIER_SETTINGS="$ts" TIER_AGENTS_DIR="$ad" TIER_DERIVE=/workspace/scripts/tier-derive.sh PATH="$fake:$PATH" sh /workspace/scripts/tier-set.sh definitely-unavailable-model
     [ "$status" -eq 0 ]
     jq -e '.model == "claude-opus-4-8"' "$ts"
     [ "$(fm_model_of "$ad/executor.md")" = "claude-sonnet-5" ]
@@ -436,7 +438,7 @@ fm_model_of() {  # frontmatter `model:` value of an agent file
 
     # corrupt settings are left untouched — and the agent bindings stay put too
     printf 'NOT JSON' > "$ts"
-    run env TIER_SETTINGS="$ts" TIER_AGENTS_DIR="$ad" TIER_NO_PROBE=1 /usr/local/bin/tier-set fable
+    run env TIER_SETTINGS="$ts" TIER_AGENTS_DIR="$ad" TIER_DERIVE=/workspace/scripts/tier-derive.sh TIER_NO_PROBE=1 sh /workspace/scripts/tier-set.sh fable
     [ "$status" -ne 0 ]
     [ "$(cat "$ts")" = "NOT JSON" ]
     [ "$(fm_model_of "$ad/executor.md")" = "claude-sonnet-5" ]
@@ -450,15 +452,16 @@ fm_model_of() {  # frontmatter `model:` value of an agent file
     printf '{}\n' > "$ts"
 
     # 2 args -> a 2-level config: recon SHARES the worker model, and a pin is set
-    run env TIER_SETTINGS="$ts" TIER_AGENTS_DIR="$ad" TIER_NO_PROBE=1 /usr/local/bin/tier-set opus haiku
+    run env TIER_SETTINGS="$ts" TIER_AGENTS_DIR="$ad" TIER_DERIVE=/workspace/scripts/tier-derive.sh TIER_NO_PROBE=1 sh /workspace/scripts/tier-set.sh opus haiku
     [ "$status" -eq 0 ]
-    [[ "$output" == *"explicit"* ]] && [[ "$output" == *"pinned"* ]]
+    [[ "$output" == *"explicit"* ]]
+    [[ "$output" == *"pinned"* ]]
     jq -e '.model == "claude-opus-4-8" and .env.TIER_EXPLICIT_PIN == "1"' "$ts"
     [ "$(fm_model_of "$ad/executor.md")" = "claude-haiku-4-5-20251001" ]
     [ "$(fm_model_of "$ad/scout.md")" = "claude-haiku-4-5-20251001" ]
 
     # 3 args -> fully independent, non-consecutive combo accepted (fable top, sonnet worker, haiku recon)
-    run env TIER_SETTINGS="$ts" TIER_AGENTS_DIR="$ad" TIER_NO_PROBE=1 /usr/local/bin/tier-set fable sonnet haiku
+    run env TIER_SETTINGS="$ts" TIER_AGENTS_DIR="$ad" TIER_DERIVE=/workspace/scripts/tier-derive.sh TIER_NO_PROBE=1 sh /workspace/scripts/tier-set.sh fable sonnet haiku
     [ "$status" -eq 0 ]
     jq -e '.model == "claude-fable-5" and .env.TIER_EXPLICIT_PIN == "1"' "$ts"
     [ "$(fm_model_of "$ad/executor.md")" = "claude-sonnet-5" ]
@@ -468,18 +471,19 @@ fm_model_of() {  # frontmatter `model:` value of an agent file
     # it: settings AND both agent files stay byte-identical
     jq '.model = "sonnet"' "$ts" > "$ts.x" && mv "$ts.x" "$ts"
     before_s=$(cat "$ts"); before_e=$(cat "$ad/executor.md"); before_c=$(cat "$ad/scout.md")
-    run env TIER_SETTINGS="$ts" TIER_AGENTS_DIR="$ad" /usr/local/bin/tier-reconcile
-    [ "$status" -eq 0 ] && [ -z "$output" ]
+    run env TIER_SETTINGS="$ts" TIER_AGENTS_DIR="$ad" TIER_DERIVE=/workspace/scripts/tier-derive.sh sh /workspace/scripts/tier-reconcile.sh
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
     [ "$(cat "$ts")" = "$before_s" ]
     [ "$(cat "$ad/executor.md")" = "$before_e" ]
     [ "$(cat "$ad/scout.md")" = "$before_c" ]
 
     # a 1-arg /tier clears the pin and reconcile resumes deriving from .model
-    run env TIER_SETTINGS="$ts" TIER_AGENTS_DIR="$ad" TIER_NO_PROBE=1 /usr/local/bin/tier-set haiku
+    run env TIER_SETTINGS="$ts" TIER_AGENTS_DIR="$ad" TIER_DERIVE=/workspace/scripts/tier-derive.sh TIER_NO_PROBE=1 sh /workspace/scripts/tier-set.sh haiku
     [ "$status" -eq 0 ]
     jq -e '(.env | has("TIER_EXPLICIT_PIN") | not)' "$ts"
     jq '.model = "opus"' "$ts" > "$ts.x" && mv "$ts.x" "$ts"
-    env TIER_SETTINGS="$ts" TIER_AGENTS_DIR="$ad" /usr/local/bin/tier-reconcile
+    env TIER_SETTINGS="$ts" TIER_AGENTS_DIR="$ad" TIER_DERIVE=/workspace/scripts/tier-derive.sh sh /workspace/scripts/tier-reconcile.sh
     [ "$(fm_model_of "$ad/executor.md")" = "claude-sonnet-5" ]
     [ "$(fm_model_of "$ad/scout.md")" = "claude-haiku-4-5-20251001" ]
     jq -e '.model == "opus"' "$ts"   # reconcile never touches .model
@@ -497,9 +501,10 @@ fm_model_of() {  # frontmatter `model:` value of an agent file
     fake=$(mktemp -d)
     printf '#!/bin/sh\nexit 1\n' > "$fake/claude"
     chmod +x "$fake/claude"
-    run env TIER_SETTINGS="$ts" TIER_AGENTS_DIR="$ad" PATH="$fake:$PATH" /usr/local/bin/tier-set fable opus haiku
+    run env TIER_SETTINGS="$ts" TIER_AGENTS_DIR="$ad" TIER_DERIVE=/workspace/scripts/tier-derive.sh PATH="$fake:$PATH" sh /workspace/scripts/tier-set.sh fable opus haiku
     [ "$status" -eq 0 ]
-    [[ "$output" != *"WARNING"* ]] && [[ "$output" != *"falling back"* ]]
+    [[ "$output" != *"WARNING"* ]]
+    [[ "$output" != *"falling back"* ]]
     jq -e '.model == "claude-fable-5"' "$ts"
     [ "$(fm_model_of "$ad/executor.md")" = "claude-opus-4-8" ]
     [ "$(fm_model_of "$ad/scout.md")" = "claude-haiku-4-5-20251001" ]
@@ -517,9 +522,10 @@ fm_model_of() {  # frontmatter `model:` value of an agent file
     fake=$(mktemp -d)
     printf '#!/bin/sh\ncase "$*" in *haiku*) exit 1;; *) exit 0;; esac\n' > "$fake/claude"
     chmod +x "$fake/claude"
-    run env TIER_SETTINGS="$ts" TIER_AGENTS_DIR="$ad" TIER_PROBE=1 PATH="$fake:$PATH" /usr/local/bin/tier-set fable opus haiku
+    run env TIER_SETTINGS="$ts" TIER_AGENTS_DIR="$ad" TIER_DERIVE=/workspace/scripts/tier-derive.sh TIER_PROBE=1 PATH="$fake:$PATH" sh /workspace/scripts/tier-set.sh fable opus haiku
     [ "$status" -eq 0 ]
-    [[ "$output" == *"WARNING"* ]] && [[ "$output" == *"UNVERIFIED"* ]]
+    [[ "$output" == *"WARNING"* ]]
+    [[ "$output" == *"UNVERIFIED"* ]]
     jq -e '.model == "claude-fable-5"' "$ts"
     [ "$(fm_model_of "$ad/scout.md")" = "claude-haiku-4-5-20251001" ]
 }
@@ -534,8 +540,9 @@ fm_model_of() {  # frontmatter `model:` value of an agent file
     # into the agent files' frontmatter; preserves unrelated env keys; silent;
     # writes NO ANTHROPIC_DEFAULT_* var (the v1 remap is retired)
     echo '{"model":"opus","env":{"KEEP":"1"}}' > "$ts"
-    run env TIER_SETTINGS="$ts" TIER_AGENTS_DIR="$ad" /usr/local/bin/tier-reconcile
-    [ "$status" -eq 0 ] && [ -z "$output" ]
+    run env TIER_SETTINGS="$ts" TIER_AGENTS_DIR="$ad" TIER_DERIVE=/workspace/scripts/tier-derive.sh sh /workspace/scripts/tier-reconcile.sh
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
     jq -e '.model == "opus" and .env.KEEP == "1"
            and ((.env | keys | map(select(startswith("ANTHROPIC_DEFAULT"))) | length) == 0)' "$ts"
     [ "$(fm_model_of "$ad/executor.md")" = "claude-sonnet-5" ]
@@ -544,13 +551,15 @@ fm_model_of() {  # frontmatter `model:` value of an agent file
     # idempotent: already in sync -> no rewrite (settings AND agent mtimes unchanged)
     m1=$(stat -c %Y "$ts"); e1=$(stat -c %Y "$ad/executor.md"); s1=$(stat -c %Y "$ad/scout.md")
     sleep 1
-    env TIER_SETTINGS="$ts" TIER_AGENTS_DIR="$ad" /usr/local/bin/tier-reconcile
+    env TIER_SETTINGS="$ts" TIER_AGENTS_DIR="$ad" TIER_DERIVE=/workspace/scripts/tier-derive.sh sh /workspace/scripts/tier-reconcile.sh
     m2=$(stat -c %Y "$ts"); e2=$(stat -c %Y "$ad/executor.md"); s2=$(stat -c %Y "$ad/scout.md")
-    [ "$m1" = "$m2" ] && [ "$e1" = "$e2" ] && [ "$s1" = "$s2" ]
+    [ "$m1" = "$m2" ]
+    [ "$e1" = "$e2" ]
+    [ "$s1" = "$s2" ]
 
     # drift: move .model down a rung -> frontmatter follows (sonnet -> haiku/haiku)
     jq '.model = "sonnet"' "$ts" > "$ts.x" && mv "$ts.x" "$ts"
-    env TIER_SETTINGS="$ts" TIER_AGENTS_DIR="$ad" /usr/local/bin/tier-reconcile
+    env TIER_SETTINGS="$ts" TIER_AGENTS_DIR="$ad" TIER_DERIVE=/workspace/scripts/tier-derive.sh sh /workspace/scripts/tier-reconcile.sh
     [ "$(fm_model_of "$ad/executor.md")" = "claude-haiku-4-5-20251001" ]
     [ "$(fm_model_of "$ad/scout.md")" = "claude-haiku-4-5-20251001" ]
     jq -e '.model == "sonnet"' "$ts"   # .model itself is never modified
@@ -558,7 +567,7 @@ fm_model_of() {  # frontmatter `model:` value of an agent file
     # off-ladder .model (e.g. "best") -> agent files left EXACTLY as they were
     jq '.model = "best"' "$ts" > "$ts.x" && mv "$ts.x" "$ts"
     e1=$(cat "$ad/executor.md"); s1=$(cat "$ad/scout.md")
-    env TIER_SETTINGS="$ts" TIER_AGENTS_DIR="$ad" /usr/local/bin/tier-reconcile
+    env TIER_SETTINGS="$ts" TIER_AGENTS_DIR="$ad" TIER_DERIVE=/workspace/scripts/tier-derive.sh sh /workspace/scripts/tier-reconcile.sh
     [ "$(cat "$ad/executor.md")" = "$e1" ]
     [ "$(cat "$ad/scout.md")" = "$s1" ]
     jq -e '.model == "best"' "$ts"
@@ -578,8 +587,9 @@ fm_model_of() {  # frontmatter `model:` value of an agent file
 
     # off-ladder .model + legacy vars -> vars purged, agents untouched
     printf '{"model":"best","env":{"KEEP":"1","ANTHROPIC_DEFAULT_OPUS_MODEL":"claude-sonnet-5","ANTHROPIC_DEFAULT_OPUS_MODEL_NAME":"Sonnet 5","CLAUDE_CODE_SUBAGENT_MODEL":"claude-haiku-4-5-20251001"}}\n' > "$ts"
-    run env TIER_SETTINGS="$ts" TIER_AGENTS_DIR="$ad" /usr/local/bin/tier-reconcile
-    [ "$status" -eq 0 ] && [ -z "$output" ]
+    run env TIER_SETTINGS="$ts" TIER_AGENTS_DIR="$ad" TIER_DERIVE=/workspace/scripts/tier-derive.sh sh /workspace/scripts/tier-reconcile.sh
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
     jq -e '.model == "best" and .env.KEEP == "1"
            and ((.env | keys | map(select(startswith("ANTHROPIC_DEFAULT"))) | length) == 0)
            and (.env | has("CLAUDE_CODE_SUBAGENT_MODEL") | not)' "$ts"
@@ -588,8 +598,9 @@ fm_model_of() {  # frontmatter `model:` value of an agent file
 
     # pinned + legacy vars -> vars purged, pin preserved, agents untouched
     printf '{"model":"opus","env":{"TIER_EXPLICIT_PIN":"1","ANTHROPIC_DEFAULT_HAIKU_MODEL":"x"}}\n' > "$ts"
-    run env TIER_SETTINGS="$ts" TIER_AGENTS_DIR="$ad" /usr/local/bin/tier-reconcile
-    [ "$status" -eq 0 ] && [ -z "$output" ]
+    run env TIER_SETTINGS="$ts" TIER_AGENTS_DIR="$ad" TIER_DERIVE=/workspace/scripts/tier-derive.sh sh /workspace/scripts/tier-reconcile.sh
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
     jq -e '.model == "opus" and .env.TIER_EXPLICIT_PIN == "1"
            and ((.env | keys | map(select(startswith("ANTHROPIC_DEFAULT"))) | length) == 0)' "$ts"
     [ "$(cat "$ad/executor.md")" = "$e1" ]
@@ -644,4 +655,47 @@ EOF
     [ ! -d "$scan/tmp.OLD" ]                                  # aged temp removed
     [ "$(wc -l < "$ws/.claude/logs/runs.log")" -eq 5000 ]     # oversized log capped
     [ "$(wc -l < "$ws/.claude/logs/errors.log")" -eq 10 ]     # small log untouched
+}
+
+@test "disk-cleanup only removes pattern-matched entries and preserves log inode/mode" {
+    # Destructive-safety guard: the sweep must be surgical — it may only remove
+    # aged entries whose NAME matches a known-ephemeral pattern, must never sweep
+    # the scan dir itself (even when the dir's own basename matches a pattern),
+    # and its in-place log cap must preserve the file's inode and permissions.
+    local dc ws scan inode_before mode_before inode_after mode_after
+    dc=/workspace/scripts/disk-cleanup.sh
+    [ -x "$dc" ]
+
+    # (a)+(b) point TMP_SCAN_DIR at a dir whose OWN basename matches 'tmp.*';
+    # -mindepth 1 must keep the scan dir alive. Inside it: an aged matching
+    # entry (must go) alongside an aged NON-matching dir and plain file (must
+    # stay — a name outside the pattern set is off-limits no matter how old).
+    scan="$BATS_TEST_TMPDIR/tmp.selfmatch"
+    mkdir -p "$scan/keepme" "$scan/tmp.old"
+    : > "$scan/notes.txt"
+    touch -d '2 days ago' "$scan/keepme" "$scan/tmp.old" "$scan/notes.txt" "$scan"
+
+    # (c) an oversized log: chmod 640 and capture inode so we can prove the cap
+    # rewrites in place (truncate-write) rather than tmp+mv.
+    ws="$BATS_TEST_TMPDIR/ws2"
+    mkdir -p "$ws/.claude/logs"
+    seq 1 6000 > "$ws/.claude/logs/runs.log"
+    chmod 640 "$ws/.claude/logs/runs.log"
+    inode_before=$(stat -c %i "$ws/.claude/logs/runs.log")
+    mode_before=$(stat -c %a "$ws/.claude/logs/runs.log")
+
+    WORKSPACE="$ws" TMP_SCAN_DIR="$scan" TMP_AGE_MIN=1440 LOG_MAX_LINES=5000 \
+        sh "$dc" >/dev/null
+
+    [ -d "$scan" ]                          # scan dir survives despite tmp.* basename
+    [ -d "$scan/keepme" ]                   # aged NON-matching dir kept
+    [ -f "$scan/notes.txt" ]                # aged NON-matching plain file kept
+    [ ! -d "$scan/tmp.old" ]                # aged matching entry removed
+
+    inode_after=$(stat -c %i "$ws/.claude/logs/runs.log")
+    mode_after=$(stat -c %a "$ws/.claude/logs/runs.log")
+    [ "$(wc -l < "$ws/.claude/logs/runs.log")" -eq 5000 ]   # capped
+    [ "$mode_after" = "640" ]               # mode preserved
+    [ "$mode_after" = "$mode_before" ]
+    [ "$inode_after" = "$inode_before" ]    # inode preserved (in-place rewrite)
 }

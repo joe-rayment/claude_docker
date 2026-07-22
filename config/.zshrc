@@ -71,7 +71,8 @@ cn()  { _claude_in_tmux claude "$@" }
 # ONE top model (alias fable/opus/sonnet/haiku or a full id); worker and recon
 # are DERIVED as the next two consecutive rungs down (via tier-derive), so the
 # trio can't drift from the default (2/3-arg forms pin them explicitly).
-# tier-set probes the top with downward degradation, then writes .model into
+# tier-set writes .model (ladder ids bind instantly; off-ladder ids are
+# probed, TIER_PROBE=1 probes everything with downward degradation) into
 # ~/.claude/settings.json and a CONCRETE model id into the frontmatter of
 # ~/.claude/agents/executor.md (worker) and scout.md (recon). tier-reconcile
 # (a SessionStart + UserPromptSubmit hook) keeps those bindings synced to

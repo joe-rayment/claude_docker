@@ -114,8 +114,10 @@ teardown_file() {
     local name_a name_b
     name_a=$(_config_json "$PROJECT_A_DIR" | jq -r '.name')
     name_b=$(_config_json "$PROJECT_B_DIR" | jq -r '.name')
-    [ -n "$name_a" ] && [ "$name_a" != "null" ]
-    [ -n "$name_b" ] && [ "$name_b" != "null" ]
+    [ -n "$name_a" ]
+    [ "$name_a" != "null" ]
+    [ -n "$name_b" ]
+    [ "$name_b" != "null" ]
     [ "$name_a" != "$name_b" ]
 }
 

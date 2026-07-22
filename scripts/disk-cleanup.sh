@@ -44,7 +44,10 @@ note() { echo "disk-cleanup: $*"; }
 # against the cwd, and find -exec (not `for p in $(find ...)`) so paths with
 # spaces are handled correctly. wc -l over find's output gives the count.
 find_tmp() {  # find_tmp <extra find args...>
-    find "$TMP_SCAN_DIR" -maxdepth 1 -mmin +"$TMP_AGE_MIN" \
+    # -mindepth 1: never match the scan dir itself — a non-default TMP_SCAN_DIR
+    # whose basename matches a pattern (e.g. .../tmp.foo) would otherwise be
+    # swept whole at depth 0.
+    find "$TMP_SCAN_DIR" -mindepth 1 -maxdepth 1 -mmin +"$TMP_AGE_MIN" \
         \( -name 'tmp.*' -o -name 'bats-run-*' -o -name '*.bats' \
            -o -name 'claude-test-*' -o -name 'csearch-test-*' -o -name 'leaktest.*' \) \
         "$@" 2>/dev/null
@@ -84,11 +87,13 @@ if [ -d "$LOGS" ]; then
             if [ "$DRY" = 1 ]; then
                 note "[dry-run] would trim $(basename "$f") from $lines to $LOG_MAX_LINES lines"
             else
-                tmp="$f.cleanup.$$"
-                if tail -n "$LOG_MAX_LINES" "$f" > "$tmp" 2>/dev/null; then
-                    mv "$tmp" "$f" && note "trimmed $(basename "$f") from $lines to $LOG_MAX_LINES lines"
-                else
-                    rm -f "$tmp" 2>/dev/null
+                # Rewrite in place (capture then truncate-write) instead of
+                # tmp+mv: keeps the inode, mode, and owner. An append landing
+                # between the tail read and the write is still lost — accepted:
+                # log-only data, and the sweep runs at (session) start, not
+                # during heavy logging.
+                if kept=$(tail -n "$LOG_MAX_LINES" "$f" 2>/dev/null) && [ -n "$kept" ]; then
+                    printf '%s\n' "$kept" > "$f" && note "trimmed $(basename "$f") from $lines to $LOG_MAX_LINES lines"
                 fi
             fi
         fi

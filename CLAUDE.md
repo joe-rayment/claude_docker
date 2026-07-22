@@ -148,7 +148,7 @@ The engine behind `/tier` is `tier-set` (`/usr/local/bin/tier-set`, repo `script
 
 **Consult protocol (when invoked):** first check `bd` memories and the knowledge-base index — the answer may already be paid for. Then send a distilled brief: goal, constraints, what was tried and what happened, the exact question, file pointers. Never paste large code or diffs; the oracle reads the repo itself. Act on the verdict instead of re-asking.
 
-**Model unavailable / not-found.** By default `tier-set` trusts the four ladder ids, so a retired or gated model surfaces as a model-not-found at spawn or `/model` time, not at bind time. When that happens, re-run `/tier` for that slot with `TIER_PROBE=1` (probes every candidate and degrades downward to what actually answers) or name an available model explicitly — you never hand-edit agent files. The full playbook (roles, bindings, fallback, verification, rollback) is `knowledge-base/TIERED_ORCHESTRATION.md`.
+**Model unavailable / not-found.** By default `tier-set` trusts the four ladder ids, so a retired or gated model surfaces as a model-not-found at spawn or `/model` time, not at bind time. When that happens, re-bind from the shell with `TIER_PROBE=1 tier-set <top> …` (probes every candidate and degrades downward to what actually answers — an env prefix cannot be passed through the `/tier` slash command) or name an available model explicitly — you never hand-edit agent files. The full playbook (roles, bindings, fallback, verification, rollback) is `knowledge-base/TIERED_ORCHESTRATION.md`.
 
 **Never pay twice (capture rule).** When a consult — or your own hard-won debugging — yields a reusable insight (root cause, gotcha, recipe, rule), distill it immediately: `bd remember` for project facts; a `knowledge-base/` doc plus an index row in its `README.md` for step-shaped playbooks. The oracle ends every consult with a `Capture:` line — store it, don't drop it.
 
@@ -276,7 +276,7 @@ run-tests.sh smoke    # Smoke tests only
 run-tests.sh experience  # Experience tests only
 ```
 
-**Until the next image rebuild, do NOT invoke `run-tests.sh` at all** — the installed copy predates the `CLAUDE_DEV_TESTS` override (it silently ignores the variable) and its baked suite contains a test that re-invokes the full suite recursively, filling the disk with `/tmp/bats-run-*` dirs (root cause of the 2026-07-06 disk-full incident; fixed in repo `tests/smoke.bats`, baked copies still armed). Pre-rebuild, run the repo suite directly: `bats /workspace/tests/smoke.bats`. After a rebuild, `CLAUDE_DEV_TESTS=/workspace/tests run-tests.sh` works as documented below.
+Both invocation forms work: `run-tests.sh` runs the baked suite, and `CLAUDE_DEV_TESTS=/workspace/tests run-tests.sh` runs the repo suite (the installed copy honors the override; verified 2026-07-22). `bats /workspace/tests/<file>.bats` remains the quickest way to run a single repo suite directly.
 
 **`run-tests.sh` tests the baked image, not your working tree.** By default it runs `/opt/claude-dev/tests/` — the copy baked at the last image build — so a green run proves nothing about repo edits. To verify changes to `tests/`, `config/`, or `scripts/` before a rebuild, run `CLAUDE_DEV_TESTS=/workspace/tests run-tests.sh smoke`. Even then, assertions against staged artifacts (`/etc/claude-dev/configs/`, `/opt/claude-dev/`, `/usr/local/bin/`) stay red until the next host `./claude-dev --rebuild` — image staleness, not regression (see `knowledge-base/CONFIG_SYNC.md`).
 

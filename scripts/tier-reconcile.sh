@@ -49,8 +49,10 @@ SCOUT_MD="$AGENTS/scout.md"
 [ -f "$SETTINGS" ] || exit 0
 command -v jq >/dev/null 2>&1 || exit 0
 
-# Locate tier-derive whether installed (/usr/local/bin) or run from the repo.
-DERIVE=$(command -v tier-derive 2>/dev/null) || DERIVE="$(dirname "$0")/tier-derive.sh"
+# Locate tier-derive whether installed (/usr/local/bin) or run from the repo;
+# TIER_DERIVE overrides the lookup (test suite / non-standard layouts).
+DERIVE="${TIER_DERIVE:-}"
+[ -n "$DERIVE" ] || DERIVE=$(command -v tier-derive 2>/dev/null) || DERIVE="$(dirname "$0")/tier-derive.sh"
 [ -x "$DERIVE" ] || exit 0
 
 fm_model() {  # current frontmatter `model:` value of an agent file ('' if none/missing)

@@ -121,24 +121,34 @@ pick() {
     return 0
 }
 
-# Locate tier-derive whether installed (/usr/local/bin) or run from the repo.
-DERIVE=$(command -v tier-derive 2>/dev/null) || DERIVE="$(dirname "$0")/tier-derive.sh"
+# Locate tier-derive whether installed (/usr/local/bin) or run from the repo;
+# TIER_DERIVE overrides the lookup (test suite / non-standard layouts).
+DERIVE="${TIER_DERIVE:-}"
+[ -n "$DERIVE" ] || DERIVE=$(command -v tier-derive 2>/dev/null) || DERIVE="$(dirname "$0")/tier-derive.sh"
 
 fm_model() {  # current frontmatter `model:` value of an agent file ('' if none/missing)
     grep -m1 '^model:' "$1" 2>/dev/null | sed 's/^model:[[:space:]]*//'
 }
 
+fm_check() {  # fm_check <agent-file> <model-id> — fm_set's preconditions, no write.
+    # Run on every slot BEFORE the settings write: a slot that would fail must
+    # abort the whole bind while nothing is committed. Otherwise .model (and,
+    # on the explicit path, the PIN) land first, the frontmatter write then
+    # fails, and the pin blocks the reconciler from ever repairing the split.
+    case "$2" in (*[!]a-zA-Z0-9._[-]*|'')
+        echo "tier-set: refusing unsafe model id '$2' — nothing bound" >&2
+        return 1 ;;
+    esac
+    if ! grep -q '^model:' "$1" 2>/dev/null; then
+        echo "tier-set: $1 missing or has no 'model:' line — nothing bound" >&2
+        return 1
+    fi
+}
+
 fm_set() {  # fm_set <agent-file> <model-id> — rewrite the frontmatter model: line atomically
     local f id mode tmp
     f=$1; id=$2
-    case "$id" in (*[!]a-zA-Z0-9._[-]*|'')   # only safe id chars: sed/YAML injection guard
-        echo "tier-set: refusing unsafe model id '$id' — slot NOT bound" >&2
-        return 1 ;;
-    esac
-    if ! grep -q '^model:' "$f" 2>/dev/null; then
-        echo "tier-set: $f missing or has no 'model:' line — slot NOT bound" >&2
-        return 1
-    fi
+    fm_check "$f" "$id" || return 1   # defense in depth; primary check runs pre-commit
     mode=$(stat -c %a "$f" 2>/dev/null) || mode=644
     tmp=$(mktemp "$f.XXXXXX") || return 1
     if sed "0,/^model:/s|^model:.*|model: $id|" "$f" > "$tmp"; then
@@ -183,6 +193,14 @@ fi
 
 explicit=0
 if [ $# -eq 1 ]; then
+    # Guard the derive engine BEFORE using its output: a missing/non-executable
+    # tier-derive makes $("$DERIVE" ...) fail for the wrong reason, and the
+    # off-ladder else-branch below would silently flatten all three tiers onto
+    # the top — the exact collapse this design exists to prevent.
+    if [ ! -x "$DERIVE" ]; then
+        echo "tier-set: tier-derive not found or not executable ($DERIVE) — cannot derive the trio; nothing bound" >&2
+        exit 1
+    fi
     pick top "$(alias_id "$1")" claude-opus-4-8 claude-sonnet-5 claude-haiku-4-5-20251001; R=$PICKED
     if trio=$("$DERIVE" "$R" 2>/dev/null); then   # derive worker+recon from the bound top
         # shellcheck disable=SC2086 # intentional split; set -f so ids like opus[1m] can't glob-expand
@@ -204,6 +222,10 @@ else
         C=$W   # 2-arg form: a 2-level config — recon shares the worker model
     fi
 fi
+
+# Validate every slot before committing anything (see fm_check).
+fm_check "$EXEC_MD" "$W" || exit 1
+fm_check "$SCOUT_MD" "$C" || exit 1
 
 if [ ! -f "$SETTINGS" ]; then
     mkdir -p "$(dirname "$SETTINGS")"
@@ -233,7 +255,9 @@ bind_fail=0
 fm_set "$EXEC_MD" "$W" || bind_fail=1
 fm_set "$SCOUT_MD" "$C" || bind_fail=1
 if [ "$bind_fail" -eq 1 ]; then
-    echo "tier: PARTIAL bind — top=$R written to settings, but a worker/recon slot above FAILED (see stderr); fix the agent file and re-run."
+    # Only reachable on genuine IO failure (mktemp/sed/mv) — preconditions were
+    # checked before the settings write, so this is disk trouble, not bad input.
+    echo "tier: PARTIAL bind — top=$R written to settings, but a worker/recon frontmatter write FAILED (see stderr); fix and re-run."
     exit 1
 fi
 
