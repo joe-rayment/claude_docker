@@ -1,26 +1,37 @@
 ---
 name: snowpark-deploy
 description: >-
-  Deploy a Python stored procedure / function to Snowflake with the `snow` CLI
-  (Snowflake CLI, definition_version 2). Use whenever the user wants to create,
-  deploy, or update a Snowpark proc/UDF in this repo — especially into
-  SNOWFLAKE_INTELLIGENCE.TOOLS via the RESOLVER02 connection. Encodes the exact
-  config that works here so deploys don't fail on warehouse/role/package errors.
+  Prepare a complete, ready-to-run deploy package for a Python stored
+  procedure / function on Snowflake (Snowflake CLI `snow`,
+  definition_version 2) — for the USER to deploy. Claude never has Snowflake
+  access and never runs `snow`: it writes the four project files plus the
+  exact commands, and the user executes them on their own machine
+  (typically into SNOWFLAKE_INTELLIGENCE.TOOLS via their RESOLVER02
+  connection). Encodes the exact config that works so the user's deploy
+  doesn't fail on warehouse/role/package errors.
 ---
 
-# Deploying Snowpark procedures with the `snow` CLI
+# Preparing Snowpark deploy packages (user deploys, never Claude)
 
-This skill captures the working setup for this repo, distilled from a painful
-trial-and-error session. Follow it and the deploy works first try. The CLI is
-the **Snowflake CLI** (`snow`), project format `definition_version: 2`.
+**Division of labor is fixed: Claude writes everything; the user deploys.**
+Claude has no Snowflake connection and never will — do not run `snow`
+commands, do not ask for credentials, and do not file tasks that assume you
+can deploy or verify against the account. The deliverable is a package the
+user can run as-is, plus the exact commands and expected output, handed off
+in chat. (See the Snowflake project context rules — this skill is the
+deploy-shaped case of the same constraint.)
 
-## The four files (all required)
+This setup was distilled from a painful trial-and-error session. Package it
+exactly like this and the user's deploy works first try. The CLI is the
+**Snowflake CLI** (`snow`), project format `definition_version: 2`.
+
+## The four files Claude writes (all required)
 
 ```
 snowflake.yml        # project definition (NO packages field here)
 requirements.txt     # where Anaconda packages go
 src/<handler>.py     # def run(session, ...) -> ...
-deploy.sh            # build THEN deploy
+deploy.sh            # build THEN deploy — the user runs this
 ```
 
 ### snowflake.yml
@@ -65,17 +76,37 @@ snow snowpark deploy \
   --replace
 ```
 
-## The pitfalls that cost us the session (in order hit)
+## The handoff (how Claude delivers this)
+
+1. Write the four files into the repo and make `deploy.sh` executable.
+2. Tell the user in chat, concretely:
+   - the one-time `config.toml` requirement (pitfall 3 below) and the
+     `snow connection test --connection RESOLVER02` pre-check;
+   - to run `./deploy.sh` from the project root on their machine;
+   - the verification SQL to run afterward, with expected output.
+3. Ask the user to paste the deploy/verify output back. That paste is the
+   only verification available — an environment limitation, not delegable
+   work; keep the task claimed by Claude and blocked on their reply.
+
+What Claude CAN check locally before handoff: YAML is valid
+(`python3 -c 'import yaml,sys; yaml.safe_load(open("snowflake.yml"))'`),
+handler file parses (`python3 -m py_compile src/<handler>.py`), the handler
+name in `snowflake.yml` matches `<module>.<function>`, and every import in
+the handler has a matching line in `requirements.txt`. Do all of these —
+they are the failure modes that don't need an account to catch.
+
+## The pitfalls the user's deploy will hit without this config (in order once hit)
 
 1. **`deploy` alone fails: "Artifact …/src.zip … does not exist."**
-   `definition_version: 2` does NOT build implicitly. You must run
-   `snow snowpark build` first to produce `src.zip`. Always two steps.
+   `definition_version: 2` does NOT build implicitly. `snow snowpark build`
+   must run first to produce `src.zip`. Always two steps — which is why
+   `deploy.sh` encodes both.
 
 2. **"Insufficient privileges … CREATE STAGE on SCHEMA …TOOLS".**
    The default role (`DWH_BI_SERVICE`) can't create the deploy stage.
    Deploying into `SNOWFLAKE_INTELLIGENCE.TOOLS` needs role
    `SNOWFLAKE_INTELLIGENCE_ADMIN`. The deploy auto-creates the stage
-   `SNOWFLAKE_INTELLIGENCE.TOOLS.DEPLOY` — don't pre-create it.
+   `SNOWFLAKE_INTELLIGENCE.TOOLS.DEPLOY` — the user shouldn't pre-create it.
 
 3. **"The command requires warehouse. No warehouse found in current connection."**
    Do NOT try to fix this with flags. None of these worked:
@@ -84,15 +115,16 @@ snow snowpark deploy \
    - `--role …` flag — this is what *caused* the warehouse to drop out of
      the connection context in the first place.
 
-   **Fix: bake role AND warehouse into the connection in
-   `~/.snowflake/config.toml`, and pass NO `--role`/`--warehouse` flags.**
+   **Fix: the user bakes role AND warehouse into the connection in
+   `~/.snowflake/config.toml` (on their machine), and `deploy.sh` passes NO
+   `--role`/`--warehouse` flags.**
    ```toml
    [connections.RESOLVER02]
    # ...existing account/user/auth...
    role = "SNOWFLAKE_INTELLIGENCE_ADMIN"
    warehouse = "EXPLORATION"
    ```
-   Verify before deploying:
+   Pre-check the user runs before deploying:
    ```bash
    snow connection test --connection RESOLVER02
    # Role must show SNOWFLAKE_INTELLIGENCE_ADMIN, Warehouse must be non-empty
@@ -117,15 +149,17 @@ snow snowpark deploy \
    fix this — it was a red herring. The import is fine to keep for type hints
    *once the package is declared*.)
 
-## Verify after deploy
+## Verification SQL to hand the user
 ```sql
 CALL SNOWFLAKE_INTELLIGENCE.TOOLS.HELLO_WORLD();
 ```
+State the expected result alongside it, and ask for the output back.
 
-## Quick checklist for a new proc
+## Quick checklist before handing off a new proc
 - [ ] Handler in `src/`, signature `def run(session, ...)`
 - [ ] `snowflake-snowpark-python` (+ any other Anaconda deps) in `requirements.txt`
 - [ ] No `packages:` key in `snowflake.yml`
-- [ ] `role` + `warehouse` set in the `config.toml` connection, not via flags
+- [ ] Local checks run: YAML parses, handler compiles, handler path matches, deps covered
 - [ ] `deploy.sh` runs `snow snowpark build` before `snow snowpark deploy --replace`
-- [ ] `snow connection test` shows the right role/warehouse first
+- [ ] Handoff message includes: config.toml role/warehouse note, `snow connection test`
+      pre-check, `./deploy.sh`, verification SQL + expected output

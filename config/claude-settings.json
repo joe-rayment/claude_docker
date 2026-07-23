@@ -31,6 +31,10 @@
       "WebFetch(domain:deepwiki.com)",
       "WebFetch(domain:medium.com)",
       "WebFetch(domain:dev.to)"
+    ],
+    "deny": [
+      "Bash(snow *)",
+      "Bash(snowsql *)"
     ]
   },
   "enableAllProjectMcpServers": true,

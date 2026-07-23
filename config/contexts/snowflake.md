@@ -16,7 +16,7 @@ query, inspect, or modify the database from this container.
 - Design and verify around the limitation: build against sample/fixture data
   the user provides, and validate SQL locally where possible (syntax, dry
   parsing) rather than by execution.
-- Exception: if the user **explicitly directs** a deploy through a configured
-  `snow` CLI connection (see the `snowpark-deploy` skill), follow that
-  direction — it is user-sanctioned and scoped to deployment, not ad-hoc
-  querying.
+- Deploys are no exception: **the user deploys, never Claude.** For Snowpark
+  procs/UDFs, use the `snowpark-deploy` skill to prepare a complete deploy
+  package (project files, `deploy.sh`, verification SQL) that the user runs
+  on their own machine — Claude never runs `snow` at all.

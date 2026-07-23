@@ -40,6 +40,13 @@ setup() {
     [ -f /etc/claude-dev/contexts/snowflake.md ]
 }
 
+@test "snowflake access is fenced: deny rules staged, skill is handoff-only" {
+    jq -e '.permissions.deny | index("Bash(snow *)")' /etc/claude-dev/configs/claude-settings.json
+    jq -e '.permissions.deny | index("Bash(snowsql *)")' /etc/claude-dev/configs/claude-settings.json
+    grep -q "user deploys, never Claude" /etc/claude-dev/configs/skills/snowpark-deploy/SKILL.md
+    grep -q "the user deploys, never Claude" /etc/claude-dev/contexts/snowflake.md
+}
+
 @test "config checksum can be computed from staged configs" {
     [ -d /etc/claude-dev/configs ]
     local hash
