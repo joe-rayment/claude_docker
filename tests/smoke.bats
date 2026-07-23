@@ -35,6 +35,11 @@ setup() {
     command -v bd
 }
 
+@test "context-detect is installed with staged context rules" {
+    [ -x /usr/local/bin/context-detect ]
+    [ -f /etc/claude-dev/contexts/snowflake.md ]
+}
+
 @test "config checksum can be computed from staged configs" {
     [ -d /etc/claude-dev/configs ]
     local hash

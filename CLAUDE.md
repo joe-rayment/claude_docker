@@ -253,6 +253,12 @@ This is **mechanically enforced** by the `bd-guard` PreToolUse hook (`scripts/bd
 - Use `bd update <id> --flag` to modify issues — never `bd edit` (it opens `$EDITOR` and blocks). Include issue IDs in commit messages when relevant (`Fix auth bug (bd-a3f2)`).
 - **Memory precedence:** project knowledge (decisions, gotchas, environment facts) goes in `bd remember` — it syncs with the repo and is shared across machines. The Claude Code harness's own auto-memory (`MEMORY.md` under `~/.claude/projects/`) is for user-specific context only (who the user is, how they like to work) — never project knowledge. The injected "do NOT use MEMORY.md" rule means: don't create ad-hoc MEMORY.md files for project facts; it does not disable the harness's user-memory feature.
 
+## Project Contexts (Conditional Instructions)
+
+Some instructions only apply to certain kinds of projects (e.g. Snowflake work). These live as per-context rule files in `config/contexts/<name>.md` (staged at `/etc/claude-dev/contexts/`), injected at session start by `context-detect` (a SessionStart hook, repo `scripts/context-detect.sh`) **only when the workspace matches** — cheap filesystem markers like `snowflake.yml` or a Snowflake dep in `requirements.txt`/`pyproject.toml`. Non-matching projects pay zero context tokens. **Injected context rules are binding instructions — treat them with the same force as this file.**
+
+Per-project override manifest `.claude-dev/contexts` (one name per line, `#` comments): a bare name (`snowflake`) force-injects when no marker matches; `!name` suppresses a misfiring marker. A context with no detector function is manifest-only — drop `<name>.md` in the contexts dir and list it in the manifest. Adding a detector = a `detect_<name>()` function in `context-detect.sh`.
+
 ## Working Inside a Larger Repo (Teardown / Resume)
 
 When the template is dropped into a subdirectory of a larger git repo, `bd init` creates a nested `.git/` so beads can sync. That nested repo makes the parent treat the subdir as an embedded sub-repo (blocks `git add` from the parent). Use `./claude-dev --teardown` from the host before pushing back: it backs up `.beads/issues.jsonl` to `~/.claude-dev-state/<project>/<timestamp>/` and removes the template artifacts (`.git/`, `.gitignore`, `.beads/`, `.claude-dev/`, `claude-dev`, `docker-compose.yml`, `attachments/`, `.claude/logs/`). Re-bootstrapping in the same directory detects the snapshot and offers to restore beads — the embedded Dolt DB rebuilds from JSONL on first container start.

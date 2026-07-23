@@ -176,6 +176,7 @@ COPY --chown=agent:agent scripts/tier-derive.sh /usr/local/bin/tier-derive
 COPY --chown=agent:agent scripts/tier-reconcile.sh /usr/local/bin/tier-reconcile
 COPY --chown=agent:agent scripts/disk-cleanup.sh /usr/local/bin/disk-cleanup
 COPY --chown=agent:agent scripts/bd-guard.sh /usr/local/bin/bd-guard
+COPY --chown=agent:agent scripts/context-detect.sh /usr/local/bin/context-detect
 COPY --chown=agent:agent run-tests.sh /usr/local/bin/run-tests.sh
 COPY --chown=agent:agent tests/ /opt/claude-dev/tests/
 COPY --chown=agent:agent knowledge-base/ /opt/claude-dev/knowledge-base/
@@ -189,6 +190,10 @@ COPY config/.zshrc config/helix-config.toml config/intellishell-config.toml \
 COPY config/agents/ /etc/claude-dev/configs/agents/
 COPY config/skills/ /etc/claude-dev/configs/skills/
 COPY config/claude-commands/ /etc/claude-dev/configs/commands/
+# Context rule files read by context-detect (SessionStart hook). Staged
+# outside configs/ on purpose: they are inputs to a script, not synced into
+# the home volume, and shouldn't churn the config checksum semantics.
+COPY config/contexts/ /etc/claude-dev/contexts/
 
 # Copy configuration files to agent home
 COPY --chown=agent:agent config/.zshrc /home/agent/.zshrc

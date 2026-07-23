@@ -60,6 +60,10 @@
           },
           {
             "type": "command",
+            "command": "command -v context-detect >/dev/null 2>&1 && context-detect; true"
+          },
+          {
+            "type": "command",
             "command": "command -v disk-cleanup >/dev/null 2>&1 && (disk-cleanup >/dev/null 2>&1 &); true"
           },
           {
