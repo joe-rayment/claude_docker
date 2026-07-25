@@ -34,6 +34,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
+# The base image (Ubuntu "questing") replaces GNU coreutils' /usr/bin/stty with
+# uutils coreutils 0.2.2, whose `stty` can SAVE terminal state (stty -g) but not
+# RESTORE it — feeding its own saved string back errors "stty: invalid argument".
+# The claude binary save/restores the tty via stty at startup, so that error would
+# print on every launch. GNU stty survives as /usr/bin/gnustty; point the standard
+# names back at it. (Purging the uutils packages isn't possible — apt marks them
+# essential in this base.) test -x fails the build loudly if a future base digest
+# moves gnustty, rather than silently leaving a dangling stty symlink.
+RUN test -x /usr/bin/gnustty \
+    && ln -sf /usr/bin/gnustty /usr/bin/stty \
+    && ln -sf /usr/bin/gnustty /bin/stty \
+    && stty --version | grep -q 'GNU coreutils'
+
 # ── Agent: user-level shell setup ─────────────────────────────────────
 USER agent
 WORKDIR /home/agent
