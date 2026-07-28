@@ -78,11 +78,11 @@ For any task touching multiple files, or with more than one reasonable approach:
 
 ## Model Tiering & Orchestration — Spend Where It Compounds
 
-Tiering here is **role-based, never model-based.** Agents name *roles*; the concrete model behind each role is bound per session, so nothing breaks when models rotate. Worker roles carry a **concrete model id** in their frontmatter, written by `tier-set`/`tier-reconcile` (never by hand); the checker roles (verifier, oracle) use **`model: inherit`** so they always run exactly the orchestrator's model — the checker is never weaker than the claims it checks. The invariant: **the orchestrator is the most capable model of the three** — enforced on the *derived* (1-arg) path, where the lower two bindings are computed from the top as the next two consecutive rungs down (see *Per-session model selection* below); an explicit 2/3-arg pin accepts **any** combination by design, inverted ones included — that's the operator's call, not blocked.
+Tiering here is **role-based, never model-based.** Agents name *roles*; the concrete model behind each role is bound per session, so nothing breaks when models rotate. Worker roles carry a **concrete model id** in their frontmatter, written by `tier-set`/`tier-reconcile` (never by hand); the checker roles (verifier, oracle) use **`model: inherit`** so they always run exactly the orchestrator's model — the checker is never weaker than the claims it checks. The invariant: **the orchestrator is the most capable model of the three, and the expensive tiers (opus/fable) never take the worker seat** — enforced on the *derived* (1-arg) path, where the worker is one rung down capped at sonnet-class and recon is one rung below the worker (see *Per-session model selection* below); an explicit 2/3-arg pin accepts **any** combination by design, inverted ones included — that's the operator's call, not blocked.
 
 | Tier / role | Model binding | Default | Can delegate to | Use for |
 |------|------|---------------|-----------------|---------|
-| **orchestrator** = you, the main session | settings `model` (written by `tier-set`; moved in-session only by `/model`) | Opus 4.8 (settings default may differ) | executor, verifier, scout | decompose, delegate, synthesize, decide |
+| **orchestrator** = you, the main session | settings `model` (written by `tier-set`; moved in-session only by `/model`) | Opus 5 (settings default may differ) | executor, verifier, scout | decompose, delegate, synthesize, decide |
 | **executor** (`executor` agent) | concrete id in `~/.claude/agents/executor.md` frontmatter, written by `tier-set`/`tier-reconcile` | Sonnet 5 | `scout` only | one well-scoped implementation slice, end to end |
 | **scout** (`scout` agent) — **leaf** | concrete id in `scout.md` frontmatter, same mechanism | Haiku 4.5 | — (no `Agent` tool) | fan-out recon: find/usages/summaries |
 | **verifier** (`verifier` agent) — **leaf** | `inherit` | = orchestrator | — (no `Agent` tool) | independent check of one worker claim |
@@ -108,11 +108,11 @@ The `oracle` (user-invoked, below) is the coarse checkpoint-level version of thi
 
 ### Per-session model selection (one top model → the trio derives, no hand-edits)
 
-The default model and the tier trio are a **single linked thing** so they can't drift. You pick ONE top model; worker and recon are **derived** as the next two consecutive rungs down the ladder (`fable > opus > sonnet > haiku`), clamped at the haiku floor:
+The default model and the tier trio are a **single linked thing** so they can't drift. You pick ONE top model; worker and recon are **derived** down the ladder (`fable > opus > sonnet > haiku`): the worker is one rung down **capped at sonnet-class** — the orchestrator plans, delegates, and reviews, so opus/fable never sit in the worker seat — and recon is one rung below the worker, both clamped at the haiku floor:
 
 | top | → worker (executor) | → recon (scout) |
 |-----|--------------------|-----------------|
-| `fable`  | opus   | sonnet |
+| `fable`  | sonnet | haiku  |
 | `opus`   | sonnet | haiku  |
 | `sonnet` | haiku  | haiku  |
 | `haiku`  | haiku  | haiku  |
@@ -122,7 +122,7 @@ Two levers, kept in sync automatically:
 ```
 /model opus                           # PRIMARY in-session lever: moves the running orchestrator now AND
                                        #   (via the reconciler, next prompt) re-derives the worker/recon bindings
-/tier fable                           # explicit set: writes .model=claude-fable-5 + derived frontmatter bindings (fable/opus/sonnet)
+/tier fable                           # explicit set: writes .model=claude-fable-5 + derived frontmatter bindings (fable/sonnet/haiku)
 /tier claude-opus-4-8                 # a full id works too (dated/variant id kept as-is on top)
 /tier opus sonnet                     # 2-arg explicit PIN: worker=sonnet, recon shares the worker model
 /tier opus sonnet haiku               # 3-arg explicit PIN: worker/recon set independently, any combo

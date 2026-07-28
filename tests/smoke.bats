@@ -376,15 +376,16 @@ fm_model_of() {  # frontmatter `model:` value of an agent file
 @test "tier-derive: ladder, floor clamp, alias + full id, off-ladder" {
     local d=/workspace/scripts/tier-derive.sh
     [ -x "$d" ]
-    [ "$("$d" fable)"  = "claude-fable-5 claude-opus-4-8 claude-sonnet-5" ]
-    [ "$("$d" opus)"   = "claude-opus-4-8 claude-sonnet-5 claude-haiku-4-5-20251001" ]
+    # worker caps at sonnet-class: fable derives sonnet/haiku, NOT opus/sonnet
+    [ "$("$d" fable)"  = "claude-fable-5 claude-sonnet-5 claude-haiku-4-5-20251001" ]
+    [ "$("$d" opus)"   = "claude-opus-5 claude-sonnet-5 claude-haiku-4-5-20251001" ]
     [ "$("$d" sonnet)" = "claude-sonnet-5 claude-haiku-4-5-20251001 claude-haiku-4-5-20251001" ]
     [ "$("$d" haiku)"  = "claude-haiku-4-5-20251001 claude-haiku-4-5-20251001 claude-haiku-4-5-20251001" ]
     # a full family id (even dated) is kept as-is on top and derives beneath
     [ "$("$d" claude-opus-4-8-20260101)" = "claude-opus-4-8-20260101 claude-sonnet-5 claude-haiku-4-5-20251001" ]
     # a [variant] suffix ranks by its base family but is preserved VERBATIM on
     # top (the /model picker persists such values; aliases are native in v2)
-    [ "$("$d" 'claude-fable-5[1m]')" = "claude-fable-5[1m] claude-opus-4-8 claude-sonnet-5" ]
+    [ "$("$d" 'claude-fable-5[1m]')" = "claude-fable-5[1m] claude-sonnet-5 claude-haiku-4-5-20251001" ]
     [ "$("$d" 'opus[1m]')" = "opus[1m] claude-sonnet-5 claude-haiku-4-5-20251001" ]
     # off-ladder / unknown -> exit 3, no output (callers must not clobber)
     run "$d" best
@@ -393,7 +394,7 @@ fm_model_of() {  # frontmatter `model:` value of an agent file
 
     # --name: canonical picker-honest display name per rung; off-ladder -> exit 1, no output
     [ "$("$d" --name fable)"  = "Fable 5" ]
-    [ "$("$d" --name opus)"   = "Opus 4.8" ]
+    [ "$("$d" --name opus)"   = "Opus 5" ]
     [ "$("$d" --name sonnet)" = "Sonnet 5" ]
     [ "$("$d" --name haiku)"  = "Haiku 4.5" ]
     run "$d" --name best
@@ -415,8 +416,9 @@ fm_model_of() {  # frontmatter `model:` value of an agent file
     printf '{"env":{"KEEP":"1","CLAUDE_CODE_SUBAGENT_MODEL":"bad","ANTHROPIC_DEFAULT_OPUS_MODEL":"x","ANTHROPIC_DEFAULT_SONNET_MODEL":"x","ANTHROPIC_DEFAULT_HAIKU_MODEL":"x","ANTHROPIC_DEFAULT_OPUS_MODEL_NAME":"x","ANTHROPIC_DEFAULT_SONNET_MODEL_NAME":"x","ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME":"x"},"permissions":{"allow":["WebSearch"]}}\n' > "$ts"
 
     # ONE top -> .model gets the CONCRETE top id; the derived worker/recon land
-    # in the agent files' frontmatter (fable -> executor=opus, scout=sonnet);
-    # ALL legacy env vars purged; unrelated env/keys preserved; no explicit pin
+    # in the agent files' frontmatter (fable -> executor=sonnet, scout=haiku:
+    # the worker caps at sonnet-class); ALL legacy env vars purged; unrelated
+    # env/keys preserved; no explicit pin
     run env TIER_SETTINGS="$ts" TIER_AGENTS_DIR="$ad" TIER_DERIVE=/workspace/scripts/tier-derive.sh TIER_NO_PROBE=1 sh /workspace/scripts/tier-set.sh fable
     [ "$status" -eq 0 ]
     jq -e '.model == "claude-fable-5"
@@ -425,8 +427,8 @@ fm_model_of() {  # frontmatter `model:` value of an agent file
            and (.env | has("CLAUDE_CODE_SUBAGENT_MODEL") | not)
            and (.env | has("TIER_EXPLICIT_PIN") | not)
            and .permissions.allow == ["WebSearch"]' "$ts"
-    [ "$(fm_model_of "$ad/executor.md")" = "claude-opus-4-8" ]
-    [ "$(fm_model_of "$ad/scout.md")" = "claude-sonnet-5" ]
+    [ "$(fm_model_of "$ad/executor.md")" = "claude-sonnet-5" ]
+    [ "$(fm_model_of "$ad/scout.md")" = "claude-haiku-4-5-20251001" ]
     # only the model: line moved — the rest of the agent file is intact
     grep -q '^name: executor$' "$ad/executor.md"
     grep -q 'Do the slice.' "$ad/executor.md"
@@ -434,7 +436,7 @@ fm_model_of() {  # frontmatter `model:` value of an agent file
     # opus -> executor=sonnet, scout=haiku
     run env TIER_SETTINGS="$ts" TIER_AGENTS_DIR="$ad" TIER_DERIVE=/workspace/scripts/tier-derive.sh TIER_NO_PROBE=1 sh /workspace/scripts/tier-set.sh opus
     [ "$status" -eq 0 ]
-    jq -e '.model == "claude-opus-4-8"' "$ts"
+    jq -e '.model == "claude-opus-5"' "$ts"
     [ "$(fm_model_of "$ad/executor.md")" = "claude-sonnet-5" ]
     [ "$(fm_model_of "$ad/scout.md")" = "claude-haiku-4-5-20251001" ]
 
@@ -444,7 +446,7 @@ fm_model_of() {  # frontmatter `model:` value of an agent file
     chmod +x "$fake/claude"
     run env TIER_SETTINGS="$ts" TIER_AGENTS_DIR="$ad" TIER_DERIVE=/workspace/scripts/tier-derive.sh PATH="$fake:$PATH" sh /workspace/scripts/tier-set.sh definitely-unavailable-model
     [ "$status" -eq 0 ]
-    jq -e '.model == "claude-opus-4-8"' "$ts"
+    jq -e '.model == "claude-opus-5"' "$ts"
     [ "$(fm_model_of "$ad/executor.md")" = "claude-sonnet-5" ]
     [ "$(fm_model_of "$ad/scout.md")" = "claude-haiku-4-5-20251001" ]
 
@@ -468,7 +470,7 @@ fm_model_of() {  # frontmatter `model:` value of an agent file
     [ "$status" -eq 0 ]
     [[ "$output" == *"explicit"* ]]
     [[ "$output" == *"pinned"* ]]
-    jq -e '.model == "claude-opus-4-8" and .env.TIER_EXPLICIT_PIN == "1"' "$ts"
+    jq -e '.model == "claude-opus-5" and .env.TIER_EXPLICIT_PIN == "1"' "$ts"
     [ "$(fm_model_of "$ad/executor.md")" = "claude-haiku-4-5-20251001" ]
     [ "$(fm_model_of "$ad/scout.md")" = "claude-haiku-4-5-20251001" ]
 
@@ -518,7 +520,7 @@ fm_model_of() {  # frontmatter `model:` value of an agent file
     [[ "$output" != *"WARNING"* ]]
     [[ "$output" != *"falling back"* ]]
     jq -e '.model == "claude-fable-5"' "$ts"
-    [ "$(fm_model_of "$ad/executor.md")" = "claude-opus-4-8" ]
+    [ "$(fm_model_of "$ad/executor.md")" = "claude-opus-5" ]
     [ "$(fm_model_of "$ad/scout.md")" = "claude-haiku-4-5-20251001" ]
 }
 

@@ -41,9 +41,10 @@ The SessionStart status echo prints the live binding every session
 | **verifier** (leaf) | `config/agents/verifier.md` | `model: inherit` (= orchestrator) | — | independent check of one worker claim |
 | **oracle** | `config/agents/oracle.md` | `model: inherit` (= orchestrator) | — | user-invoked checkpoint consult |
 
-**Invariant: the orchestrator is the most capable model of the three** —
-enforced on the **derived (1-arg) path**, where worker/recon are always
-consecutive rungs below the top. An explicit 2/3-arg pin accepts **any**
+**Invariant: the orchestrator is the most capable model of the three, and
+the expensive tiers (opus/fable) never take the worker seat** — enforced on
+the **derived (1-arg) path**, where the worker is one rung down capped at
+sonnet-class and recon is one rung below the worker. An explicit 2/3-arg pin accepts **any**
 combination by design, including inverted ones (user decision, bead uhs) —
 that is the operator's call, not blocked. The checkers (verifier, oracle)
 use `model: inherit`, so they always run exactly the orchestrator's model —
@@ -150,7 +151,7 @@ reason.
 ```
 /model opus                         # PRIMARY in-session lever: moves the orchestrator now AND
                                      #   (via the reconciler) re-derives worker/recon for new sessions
-/tier fable                         # explicit set: .model=claude-fable-5 + frontmatter opus/sonnet
+/tier fable                         # explicit set: .model=claude-fable-5 + frontmatter sonnet/haiku
 /tier claude-opus-4-8               # a full id works (dated/variant kept as-is on top)
 /tier opus sonnet                   # 2-arg explicit PIN: recon shares the worker model
 /tier opus sonnet haiku             # 3-arg explicit PIN: fully independent, any combo
@@ -167,16 +168,19 @@ worker/recon bindings even as `.model` drifts underneath them (e.g. via
 reports whether a pin is active.
 
 Derivation table (`tier-derive`, the single source of truth for the ladder
-`fable > opus > sonnet > haiku`, floored at haiku):
+`fable > opus > sonnet > haiku`; the worker is one rung down **capped at
+sonnet-class** — opus/fable never take the worker seat, the orchestrator
+plans/delegates/reviews — and recon is one rung below the worker, floored
+at haiku):
 
 | top | worker (executor) | recon (scout) |
 |-----|-------------------|---------------|
-| fable  | opus   | sonnet |
+| fable  | sonnet | haiku  |
 | opus   | sonnet | haiku  |
 | sonnet | haiku  | haiku  |
 | haiku  | haiku  | haiku  |
 
-Alias map: `fable→claude-fable-5`, `opus→claude-opus-4-8`,
+Alias map: `fable→claude-fable-5`, `opus→claude-opus-5`,
 `sonnet→claude-sonnet-5`, `haiku→claude-haiku-4-5-20251001`. Aliases are
 resolved to **concrete ids before writing**, so a binding never drifts with
 alias defaults. A full family id (incl. dated/variant) maps to its rung and
@@ -194,7 +198,7 @@ Three small POSIX scripts (installed in `/usr/local/bin`, repo `scripts/`):
 
 - **`tier-derive`** — `tier-derive <top>` → `<top> <worker> <recon>`
   (concrete ids); exit 3 off-ladder. Aux modes: `--name <id>` (display
-  name, e.g. "Opus 4.8"), `--rank <id>` (0 = off-ladder). The ONLY place
+  name, e.g. "Opus 5"), `--rank <id>` (0 = off-ladder). The ONLY place
   the ladder lives — tier-set and tier-reconcile both call it, so they can
   never disagree.
 - **`tier-set`** — the `/tier` engine: resolves aliases, writes `.model` +
@@ -250,7 +254,7 @@ instead of bind time; use `TIER_PROBE=1` when that matters.
 When probing runs, each slot degrades **downward** past candidates that
 fail (best-effort — a safeguard-rerouted model can still probe green):
 
-- top: `<requested>` → `claude-opus-4-8` → `claude-sonnet-5` → `claude-haiku-4-5-20251001`
+- top: `<requested>` → `claude-opus-5` → `claude-sonnet-5` → `claude-haiku-4-5-20251001`
 - worker (explicit form): `<requested>` → `claude-sonnet-5` → `claude-haiku-4-5-20251001`
 - recon (explicit form): `<requested>` → `claude-haiku-4-5-20251001`
 
@@ -267,9 +271,9 @@ the live binding each session, so you always see what you actually got.
 ```
 /tier my-custom-model              # off-ladder ids are probed…
 tier[top] my-custom-model unavailable, trying next...
-tier[top] falling back -> claude-opus-4-8
-tier bound  top=claude-opus-4-8  →  worker=claude-sonnet-5  recon=claude-haiku-4-5-20251001  (worker/recon derived from the top)
-→ run  /model claude-opus-4-8  to move THIS session's model now — new sessions pick everything up automatically.
+tier[top] falling back -> claude-opus-5
+tier bound  top=claude-opus-5  →  worker=claude-sonnet-5  recon=claude-haiku-4-5-20251001  (worker/recon derived from the top)
+→ run  /model claude-opus-5  to move THIS session's model now — new sessions pick everything up automatically.
 ```
 
 (Fable 5 is an active model — do not assume it is unavailable.)

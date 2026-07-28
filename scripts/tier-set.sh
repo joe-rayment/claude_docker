@@ -49,7 +49,7 @@
 #
 # Usage:
 #   tier-set                        # NO ARGS -> print the current binding (same as `show`)
-#   tier-set <top>                  # 1 model  -> worker/recon AUTO-DERIVED (consecutive rungs down)
+#   tier-set <top>                  # 1 model  -> worker/recon AUTO-DERIVED (worker capped at sonnet-class)
 #   tier-set <top> <worker>         # 2 models -> a 2-level config: recon SHARES the worker model
 #   tier-set <top> <worker> <recon> # 3 models -> fully independent 3-level config
 #   tier-set show                   # print the current binding
@@ -57,7 +57,8 @@
 #   TIER_PROBE=1 tier-set ...       # probe EVERY candidate (downward degradation)
 #
 # Ladder: fable > opus > sonnet > haiku.  1-arg default -> (top, top-1, top-2), floored:
-#   fable→fable/opus/sonnet · opus→opus/sonnet/haiku · sonnet→sonnet/haiku/haiku · haiku→haiku×3
+#   worker caps at sonnet-class (opus/fable never take the worker seat), recon is one below the worker:
+#   fable→fable/sonnet/haiku · opus→opus/sonnet/haiku · sonnet→sonnet/haiku/haiku · haiku→haiku×3
 # A 2- or 3-arg explicit bind is NOT required to be consecutive rungs — any
 # combination is accepted (each slot independently probed/degraded). An
 # explicit bind sets .env.TIER_EXPLICIT_PIN="1" so the reconciler leaves the
@@ -74,14 +75,14 @@ SCOUT_MD="$AGENTS/scout.md"
 alias_id() {  # alias -> concrete id; unknown strings pass through (full ids)
     case "$1" in
         fable)  echo claude-fable-5 ;;
-        opus)   echo claude-opus-4-8 ;;
+        opus)   echo claude-opus-5 ;;
         sonnet) echo claude-sonnet-5 ;;
         haiku)  echo claude-haiku-4-5-20251001 ;;
         *)      echo "$1" ;;
     esac
 }
 
-LADDER_IDS=" claude-fable-5 claude-opus-4-8 claude-sonnet-5 claude-haiku-4-5-20251001 "
+LADDER_IDS=" claude-fable-5 claude-opus-5 claude-sonnet-5 claude-haiku-4-5-20251001 "
 
 should_probe() {  # 0 -> this id gets an availability probe
     [ -n "${TIER_NO_PROBE:-}" ] && return 1
@@ -184,7 +185,7 @@ if [ $# -eq 0 ] || [ "${1:-}" = "show" ]; then   # no args or `show` -> just pri
     else
         echo "no settings file at $SETTINGS"
     fi
-    echo "1-arg /tier auto-derives worker/recon as the next two rungs down (fable>opus>sonnet>haiku, floored)."
+    echo "1-arg /tier auto-derives worker/recon: worker = one rung down capped at sonnet-class, recon = one below the worker (fable>opus>sonnet>haiku, floored)."
     echo "2/3-arg /tier <top> <worker> [<recon>] pins those bindings explicitly (see the header of tier-set.sh)."
     echo "verifier & oracle inherit the orchestrator's model; /model is the primary in-session lever for the derived default."
     echo "worker/recon bindings apply to NEW sessions (agent files are snapshotted at session start); the orchestrator moves only via /model."
@@ -201,7 +202,7 @@ if [ $# -eq 1 ]; then
         echo "tier-set: tier-derive not found or not executable ($DERIVE) — cannot derive the trio; nothing bound" >&2
         exit 1
     fi
-    pick top "$(alias_id "$1")" claude-opus-4-8 claude-sonnet-5 claude-haiku-4-5-20251001; R=$PICKED
+    pick top "$(alias_id "$1")" claude-opus-5 claude-sonnet-5 claude-haiku-4-5-20251001; R=$PICKED
     if trio=$("$DERIVE" "$R" 2>/dev/null); then   # derive worker+recon from the bound top
         # shellcheck disable=SC2086 # intentional split; set -f so ids like opus[1m] can't glob-expand
         set -f; set -- $trio; set +f
@@ -213,7 +214,7 @@ if [ $# -eq 1 ]; then
     fi
 else
     explicit=1
-    pick top    "$(alias_id "$1")" claude-opus-4-8 claude-sonnet-5 claude-haiku-4-5-20251001; R=$PICKED
+    pick top    "$(alias_id "$1")" claude-opus-5 claude-sonnet-5 claude-haiku-4-5-20251001; R=$PICKED
     pick worker "$(alias_id "$2")" claude-sonnet-5 claude-haiku-4-5-20251001; W=$PICKED
     if [ $# -ge 3 ]; then
         pick recon "$(alias_id "$3")" claude-haiku-4-5-20251001; C=$PICKED

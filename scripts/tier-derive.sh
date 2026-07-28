@@ -6,14 +6,17 @@
 #
 #     <top> <worker> <recon>
 #
-# where worker and recon are the next two consecutive rungs down the ladder,
-# clamped at the haiku floor. This is the ONLY place the ladder and the
-# derivation live — tier-set (the /tier engine) and tier-reconcile (the hook)
-# both call it, so they can never disagree.
+# where worker is the next rung down CAPPED at sonnet-class, and recon is one
+# rung below the worker, both clamped at the haiku floor. The cap encodes the
+# core tiering rule: the orchestrator plans, delegates, and reviews — the
+# expensive tiers (opus/fable) never sit in the worker seat, no matter how
+# high the top is. This is the ONLY place the ladder and the derivation live —
+# tier-set (the /tier engine) and tier-reconcile (the hook) both call it, so
+# they can never disagree.
 #
 # Ladder (high→low, ranks): fable(4) > opus(3) > sonnet(2) > haiku(1).
-#   fable  → claude-fable-5 claude-opus-4-8 claude-sonnet-5
-#   opus   → claude-opus-4-8 claude-sonnet-5 claude-haiku-4-5-20251001
+#   fable  → claude-fable-5 claude-sonnet-5 claude-haiku-4-5-20251001
+#   opus   → claude-opus-5 claude-sonnet-5 claude-haiku-4-5-20251001
 #   sonnet → claude-sonnet-5 claude-haiku-4-5-20251001 claude-haiku-4-5-20251001
 #   haiku  → claude-haiku-4-5-20251001 (×3)
 #
@@ -28,7 +31,7 @@
 #
 # Two auxiliary modes (same ladder, no separate table to drift):
 #   tier-derive --name <model-or-alias>   canonical DISPLAY NAME for a rung's
-#                                          concrete id ("Opus 4.8"); exit 1 and
+#                                          concrete id ("Opus 5"); exit 1 and
 #                                          no output if off-ladder (caller
 #                                          falls back to the raw id).
 #   tier-derive --rank <model-or-alias>   numeric rank, 0 if off-ladder.
@@ -41,7 +44,7 @@ set -u
 id_for_rank() {  # canonical concrete id for a ladder rank
     case "$1" in
         4) echo claude-fable-5 ;;
-        3) echo claude-opus-4-8 ;;
+        3) echo claude-opus-5 ;;
         2) echo claude-sonnet-5 ;;
         1) echo claude-haiku-4-5-20251001 ;;
     esac
@@ -50,7 +53,7 @@ id_for_rank() {  # canonical concrete id for a ladder rank
 name_for_rank() {  # human display name for a ladder rank
     case "$1" in
         4) echo "Fable 5" ;;
-        3) echo "Opus 4.8" ;;
+        3) echo "Opus 5" ;;
         2) echo "Sonnet 5" ;;
         1) echo "Haiku 4.5" ;;
     esac
@@ -99,7 +102,9 @@ case "$top" in
     *)                       top_id=$top ;;
 esac
 
-wr=$((r - 1)); [ "$wr" -lt 1 ] && wr=1   # worker = one rung down, floored
-cr=$((r - 2)); [ "$cr" -lt 1 ] && cr=1   # recon  = two rungs down, floored
+wr=$((r - 1))
+[ "$wr" -gt 2 ] && wr=2                   # worker CAP: sonnet-class — opus/fable never take the worker seat
+[ "$wr" -lt 1 ] && wr=1                   # worker floor: haiku
+cr=$((wr - 1)); [ "$cr" -lt 1 ] && cr=1   # recon = one rung below the worker, floored
 
 echo "$top_id $(id_for_rank "$wr") $(id_for_rank "$cr")"

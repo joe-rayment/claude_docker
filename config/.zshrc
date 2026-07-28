@@ -69,8 +69,9 @@ cn()  { _claude_in_tmux claude "$@" }
 # ── Tiered orchestration: /tier (slash command) is the primary interface ────
 # The engine is /usr/local/bin/tier-set (repo: scripts/tier-set.sh). You pick
 # ONE top model (alias fable/opus/sonnet/haiku or a full id); worker and recon
-# are DERIVED as the next two consecutive rungs down (via tier-derive), so the
-# trio can't drift from the default (2/3-arg forms pin them explicitly).
+# are DERIVED via tier-derive — worker one rung down CAPPED at sonnet-class,
+# recon one below the worker — so the trio can't drift from the default
+# (2/3-arg forms pin them explicitly).
 # tier-set writes .model (ladder ids bind instantly; off-ladder ids are
 # probed, TIER_PROBE=1 probes everything with downward degradation) into
 # ~/.claude/settings.json and a CONCRETE model id into the frontmatter of
