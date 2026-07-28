@@ -325,6 +325,14 @@ setup() {
     jq -e '.advisorModel == "fable"' /etc/claude-dev/configs/claude-settings.json
 }
 
+@test "claude-settings.json disables the auto-turn on ! bash commands" {
+    # respondToBashCommands defaults to true in the CLI (>=2.1.186): every
+    # input-box `!` command costs a full model turn, which with no instruction
+    # attached tends to resume whatever task was last live. false keeps the
+    # output in context without the turn.
+    jq -e '.respondToBashCommands == false' /etc/claude-dev/configs/claude-settings.json
+}
+
 @test "knowledge-base index is staged" {
     [ -f /opt/claude-dev/knowledge-base/README.md ]
     grep -q 'BEADS_TROUBLESHOOTING' /opt/claude-dev/knowledge-base/README.md
