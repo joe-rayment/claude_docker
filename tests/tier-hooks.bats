@@ -240,6 +240,31 @@ mk_pricing_transcript() {
     [[ "$output" == *"~\$26 · ~\$53 at fable-5 → saved ~\$27"* ]]
 }
 
+@test "cost-mirror: counterfactual top is picked by price, not by main-side volume" {
+    # main: sonnet-5 at huge volume (cheap) and fable-5 at tiny volume
+    # (pricier); worker: haiku. Old bug: pick_top_model ranked main rows by
+    # (out+cr) volume, so sonnet-5 won on volume alone and fable-5's pricier
+    # tokens repriced DOWN, driving "saved" hugely negative. Fixed: top is
+    # ranked by output rate, so fable-5 wins despite its tiny volume, and
+    # every row -- including the worker's -- reprices at/above actual cost.
+    TP="$BATS_TEST_TMPDIR/proj-top/sess.jsonl"
+    mkdir -p "$BATS_TEST_TMPDIR/proj-top"
+    {
+        printf '{"message":{"model":"claude-sonnet-5","usage":{"output_tokens":1000000}}}\n'
+        printf '{"message":{"model":"claude-fable-5","usage":{"output_tokens":1000}}}\n'
+        printf '{"isSidechain":true,"message":{"model":"claude-haiku-4-5-20251001","usage":{"output_tokens":2000}}}\n'
+    } > "$TP"
+    run sh -c 'printf "{\"transcript_path\":\"%s\"}" "'"$TP"'" | python3 '"$MIRROR"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"at fable-5"* ]]
+    [[ "$output" != *"at sonnet-5"* ]]
+    run python3 "$MIRROR" --report "$TP"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"top model (counterfactual): fable-5"* ]]
+    WORKER_LINE=$(echo "$output" | grep '^worker')
+    [[ "$WORKER_LINE" != *"-\$"* ]]
+}
+
 @test "cost-mirror: sonnet-5 intro pricing flips exactly at the 2026-09-01 cutoff" {
     run python3 -c "
 import importlib.util

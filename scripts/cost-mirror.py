@@ -202,13 +202,24 @@ def summarise_tokens(total):
 
 
 def pick_top_model(total):
-    """Counterfactual reference model: the main-side model with the largest
-    (out+cr) among main rows; if there are no main rows at all, fall back to
-    the most expensive model observed (ranked by output rate; unknown models
-    rank last)."""
+    """Counterfactual reference model: the most EXPENSIVE model among main
+    rows, ranked by output rate from rates_for (unknown-rate models rank
+    below every known-rate model), tiebroken by (out+cr) volume descending.
+    Price, not volume, is what matters — a session that ran mostly on a
+    cheap model and briefly on a pricier one must still reprice everything
+    at the pricier tier, otherwise the pricier tokens reprice DOWN and
+    "saved" reads as a large, misleading negative. If there are no main rows
+    at all, fall back to the most expensive model observed overall (ranked
+    by output rate; unknown models rank last)."""
     main_rows = [(k.split("|", 1)[1], v) for k, v in total.items() if k.startswith("main|")]
     if main_rows:
-        main_rows.sort(key=lambda r: -(r[1]["out"] + r[1]["cr"]))
+        def sort_key(row):
+            model, counters = row
+            rates = rates_for(model)
+            rate = rates["out"] if rates else -1.0
+            return (-rate, -(counters["out"] + counters["cr"]))
+
+        main_rows.sort(key=sort_key)
         return main_rows[0][0]
     best, best_rate = None, -1.0
     for key in total:
