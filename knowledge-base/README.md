@@ -15,7 +15,7 @@ is the source; the `/opt` copy refreshes on image rebuild).
 | LIVE_TESTING.md | verify, screenshot, take-screenshot, playwright, curl, httpie, live test, xvfb | Behavioral verification patterns for web apps, APIs, CLIs, GUIs, and DBs. |
 | SNOWFLAKE_DEPLOY.md | snowflake, snow cli, notebook, --replace, imports, external access, stage | Notebook deploys: --replace clears imports; ALTER NOTEBOOK to restore. |
 | TEARDOWN_RECOVERY.md | teardown, resume, nested git, subdirectory, embedded repo, restore | Remove/restore the template inside a larger repo without breaking git. |
-| TIERED_ORCHESTRATION.md | orchestrator, executor, scout, verifier, tier, /tier, tier-set, tier-reconcile, tier-derive, roles, frontmatter model binding, model picker, pin, ANTHROPIC_DEFAULT purge, nested subagents, delegation, escalation, trust but verify, fallback, rollback | Role-based 3-tier orchestration (v2): `/tier` binds top in `.model` + worker/recon in agent frontmatter (env-slot remap retired/purged), nest ≤3 levels, verify worker output independently. |
+| TIERED_ORCHESTRATION.md | orchestrator, executor, scout, verifier, tier, /tier, tier-set, tier-reconcile, tier-derive, roles, frontmatter model binding, model picker, pin, ANTHROPIC_DEFAULT purge, nested subagents, delegation, escalation, trust but verify, fallback, rollback, cost-mirror, tier-cost, pricing, dollars, savings, counterfactual, PRICING_TABLE | Role-based 3-tier orchestration (v2): `/tier` binds top in `.model` + worker/recon in agent frontmatter (env-slot remap retired/purged), nest ≤3 levels, verify worker output independently; cost-mirror/tier-cost show per-model dollars and estimated tier savings. |
 
 ## Contributing a playbook
 

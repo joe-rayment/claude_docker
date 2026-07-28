@@ -266,6 +266,52 @@ session's main model** or `/advisor` is rejected. It is pinned to `fable` —
 the one static value valid above every trio this setup uses. If Fable is
 ever unavailable on the plan, `/advisor` fails visibly; swap the value then.
 
+## Cost monitor (cost-mirror / tier-cost, added 2026-07-28)
+
+The `cost-mirror` hook line (one per prompt) now shows, per `side|model`,
+token counts **and** dollars: `main: 63k out · 22.6M cache-read (fable-5) |
+workers: ... | ~$52 · ~$60 at fable-5 → saved ~$8.58`. The dollar clause is
+suppressed when it would round to $0.00 or only one model appears in the
+session (nothing to save against). Unknown/off-ladder models still show
+their tokens but contribute $0 and mark the clause with a trailing `?`.
+
+Run `tier-cost` (alias for `cost-mirror --report [transcript.jsonl]`) for
+the full per-model breakdown: one row per `side|model` with input/output/
+cache-read/cache-write tokens plus actual/at-top/saved dollars, and a
+TOTAL row. With no argument it defaults to the transcript recorded in the
+newest cost-mirror state file, falling back to the newest transcript under
+`~/.claude/projects/*/`. `--report` is read-only (never advances the
+incremental byte-offset state or writes it) and is NOT fail-silent — a
+missing/unreadable transcript prints to stderr and exits nonzero, since
+it's run directly from a terminal rather than from the hook.
+
+**The counterfactual, precisely:** "at top" reprices every row's *actual*
+token counts at the session's top model's rates — the top model being the
+main-side model with the largest `out+cr` observed (falling back to the
+most expensive model seen if there were no main rows at all). This is
+always an estimate: a cheaper/pricier model would not have emitted the
+identical token counts (different verbosity, different cache behavior), so
+"saved" is "what these same tokens would have cost at the top tier," not a
+guarantee of what actually would have happened.
+
+**Maintenance: refresh `PRICING_TABLE` from the claude-api skill whenever
+models or prices change.** Current table (`scripts/cost-mirror.py`), USD
+per MTok in/out, prefix-matched in order (first match wins):
+
+| prefix | in | out |
+|---|---|---|
+| `claude-fable-` / `claude-mythos-` | 10.00 | 50.00 |
+| `claude-opus-` | 5.00 | 25.00 |
+| `claude-sonnet-5` (intro, until 2026-09-01) | 2.00 | 10.00 |
+| `claude-sonnet-5` (standard, from 2026-09-01) | 3.00 | 15.00 |
+| `claude-sonnet-` (other sonnet ids) | 3.00 | 15.00 |
+| `claude-haiku-` | 1.00 | 5.00 |
+
+Derived per-model rates: cache-read = 0.1× input, cache-write-5m = 1.25×
+input, cache-write-1h = 2.0× input. The sonnet-5 intro cutoff is
+`SONNET5_INTRO_CUTOFF` in the script; `_sonnet5_rates(today=...)` takes an
+optional date for testing (see `tests/tier-hooks.bats`).
+
 ## Graceful degradation (probe + fallback)
 
 A probe is a real `claude -p` round trip (~5–10 s per candidate), so

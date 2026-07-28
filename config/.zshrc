@@ -97,6 +97,7 @@ tier() {
     _claude_in_tmux claude --dangerously-skip-permissions
 }
 tier-show() { tier-set show }
+alias tier-cost='cost-mirror --report'  # full per-model dollar breakdown
 alias menu='/usr/local/bin/guided-setup.sh'  # Setup menu
 alias dlog='dev-log'  # Development logger
 alias screenshot='take-screenshot'  # Screenshot tool
