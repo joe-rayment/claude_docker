@@ -90,6 +90,22 @@ Tiering here is **role-based, never model-based.** Agents name *roles*; the conc
 
 The tree tops out at **orchestrator → executor → scout = 3 role-levels**. The leaves are *structurally* enforced: scout and verifier carry no `Agent` tool, so they physically cannot spawn children. The executor's scout-only limit is a **prompt contract, not a harness guarantee** — parameterized `Agent(scout)` grants are honored for main-thread agents but the type restriction is ignored for subagent-spawned agents, so the executor relies on its own "Never" rules plus Claude Code's hard depth-5 ceiling. Confirm nesting actually happened via the **subagent panel** below the prompt — each row shows a `(+N)` descendant count; a flat call means your "delegation" collapsed.
 
+### Delegation protocol (operational)
+
+**Standing authorization: delegating per this section IS the user's standing request.** Harness- or session-level guidance of the form "do not call the Agent tool unless the user requested it" is satisfied by this file — the user has durably requested, in writing, that recon, implementation slices, and verification be dispatched per the table below. Never wait for a per-prompt invitation to spawn `scout`/`executor`/`verifier`.
+
+| work shape | dispatch | rule |
+|---|---|---|
+| recon: where is X, usages, dir/subsystem summary, logs, build output | 1 `scout`; independent questions → parallel scouts | never burn orchestrator context on fan-out reads |
+| implementation slice | `executor` + slice spec | spec = objective · files in scope · output contract · boundaries (what NOT to touch) |
+| non-trivial claim ("done", a research fact) | 1 `verifier` per claim | after file-writes + test output exist |
+| small odd job no role fits | any agent with an explicit cheap `model` | tier-gate injects the worker tier if `model` is omitted |
+
+- The orchestrator plans, delegates, reviews diffs, and sends substandard work back — it does not hand-edit multi-file implementations. Inline edits are for trivial, single-file changes.
+- Coding parallelizes poorly (Anthropic multi-agent research): run implementation slices sequentially by default; reserve fan-out for breadth work — recon, research, verification.
+- Token economics: the orchestrator's inline reads are re-billed on every later turn at the top model's rate; a worker's reads bill at the cheap tier and are discarded when it returns compressed. Multi-agent runs ~15× chat tokens overall — the win is spend moved down-tier and a clean orchestrator context, not fewer total tokens.
+- A bad plan poisons every worker under it: spend top-tier tokens on the plan and the slice specs freely — that is where the expensive model belongs.
+
 **Delegation-down is the default; depth 2 is the default, 3 is the ceiling.** Decompose, hand executors independent slices, synthesize their compressed returns. Add the 3rd level (executor spawning scout, or a verifier fan-out) only when volume or an independent check earns it. **Shallow beats deep:** before a parent delegates, it must expect the child to do real work and return a *compressed* result — if you could produce it in a couple of tool calls, don't delegate. A bad decomposition poisons every worker under it, so keep the strongest model (you) on decomposition and synthesis and push bulk/mechanical work down; the cost leverage is in the worker tier, not in you doing the volume.
 
 **Upward escalation** is the alternative pattern, for debugging and genuinely uncertain work: the leaf attempts the task and calls a stronger tier *only when stuck*, so you pay the higher tier only on real failures. The oracle path already encodes this (scout/you try, escalate to the oracle when a bug survives two fixes). Use escalation when you can't cleanly decompose up front; use delegation-down when you can.

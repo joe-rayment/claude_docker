@@ -50,6 +50,10 @@
           {
             "type": "command",
             "command": "echo 'Reminder: lead with the answer; include only what changes the reader'\\''s next action, in plain complete sentences — no process narration, no unasked-for caveats. Explicit user constraints are binding: never substitute your preference, even while debugging. If you noticed a flaw in your work, fix it or state it — never ship it silently.'"
+          },
+          {
+            "type": "command",
+            "command": "command -v cost-mirror >/dev/null 2>&1 && exec cost-mirror; [ -x \"$HOME/.claude/hooks/cost-mirror\" ] && exec \"$HOME/.claude/hooks/cost-mirror\"; exit 0"
           }
         ]
       }
@@ -110,6 +114,24 @@
           {
             "type": "command",
             "command": "command -v bd-guard >/dev/null 2>&1 && exec bd-guard; exit 0"
+          }
+        ]
+      },
+      {
+        "matcher": "Agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "command -v tier-gate >/dev/null 2>&1 && exec tier-gate; [ -x \"$HOME/.claude/hooks/tier-gate\" ] && exec \"$HOME/.claude/hooks/tier-gate\"; exit 0"
+          }
+        ]
+      },
+      {
+        "matcher": "Workflow",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "command -v workflow-lint >/dev/null 2>&1 && exec workflow-lint; [ -x \"$HOME/.claude/hooks/workflow-lint\" ] && exec \"$HOME/.claude/hooks/workflow-lint\"; exit 0"
           }
         ]
       }

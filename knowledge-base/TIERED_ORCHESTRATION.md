@@ -194,6 +194,34 @@ three slots to that same model** and says so — you asked for that top,
 you get it everywhere. `tier-set show` flags an off-ladder top as
 custom/unmanaged.
 
+### Spawn-time enforcement (added 2026-07-28)
+
+Frontmatter bindings alone did not move spend: generic (`general-purpose`)
+and workflow-internal spawns carry no binding, inherit the orchestrator's
+model, and accounted for the bulk of measured top-tier tokens (beads c2r,
+mi9). Three hooks close that gap — all fail OPEN, all tested in
+`tests/tier-hooks.bats`:
+
+- **`tier-gate`** (PreToolUse, matcher `Agent`) — a generic spawn with no
+  `model` gets the ladder's WORKER tier injected via `updatedInput`, with a
+  `systemMessage` announcing it. Explicit `model` always wins, on any type;
+  named roles and `model: inherit` checkers are never touched. The tier is
+  read from `tier-derive` at runtime and injected as the FAMILY ALIAS —
+  the Agent tool's `model` param rejects concrete ids (verified live:
+  `claude-sonnet-5` failed validation, `sonnet` routed correctly).
+- **`workflow-lint`** (PreToolUse, matcher `Workflow`) — denies a workflow
+  script whose `agent()` calls omit `model:` (best-effort line scan, 5-line
+  lookahead; `/* workflow-lint: model-ok */` suppresses). Enforcement sits
+  at the script boundary because workflow-internal spawns are not reliably
+  hook-reachable.
+- **`cost-mirror`** (UserPromptSubmit, python3) — injects one line of
+  by-model main-vs-workers token spend per prompt, computed incrementally
+  from the transcript (byte-offset state under `~/.claude/cache/cost-mirror/`,
+  ~10 ms warm). Visibility, not constraint.
+
+The operational dispatch rules (which role gets what work, standing
+delegation authorization) live in CLAUDE.md → *Delegation protocol*.
+
 Three small POSIX scripts (installed in `/usr/local/bin`, repo `scripts/`):
 
 - **`tier-derive`** — `tier-derive <top>` → `<top> <worker> <recon>`
