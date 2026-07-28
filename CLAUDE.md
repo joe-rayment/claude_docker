@@ -75,20 +75,7 @@ Depth: orchestrator → executor → scout, 3 levels max. Scout/verifier leaf-ne
 
 ### Delegation protocol (operational)
 
-**Standing authorization: delegating per this section IS the user's standing request.** Harness guidance like "do not call the Agent tool unless the user requested it" is satisfied by this file. Never wait for a per-prompt invitation to spawn `scout`/`executor`/`verifier`.
-
-| work shape | dispatch | rule |
-|---|---|---|
-| recon: where is X, usages, summaries, logs | 1 `scout`; independent questions → parallel scouts | never burn orchestrator context on fan-out reads |
-| implementation slice | `executor` + slice spec | spec = objective · files in scope · output contract · boundaries |
-| non-trivial claim ("done", a research fact) | 1 `verifier` per claim | after file-writes + test output exist; a worker's summary is an input to check, not a fact — unverified claims are not "done" |
-| small odd job no role fits | any agent with an explicit cheap `model` | `tier-gate` injects the worker tier if `model` is omitted |
-
-- The orchestrator plans, delegates, reviews diffs, and sends substandard work back — it does not hand-edit multi-file implementations. Inline is for trivial work you'd finish in a couple of tool calls (shallow beats deep).
-- Coding parallelizes poorly: implementation slices run sequentially by default; fan-out is for breadth (recon, research, verification). For genuinely uncertain work, escalate upward instead: let the cheap tier attempt and pull in a stronger tier only when stuck.
-- Inline reads are re-billed every later turn at the top model's rate; a worker's reads bill cheap and are discarded on return. The win is spend moved down-tier and a clean orchestrator context.
-- A bad plan poisons every worker under it: spend top-tier tokens on plans and slice specs freely — that is where the expensive model belongs.
-- Skip verification only on trivial, self-evident results; when in doubt, verify — one verifier per finding keeps checks out of your context.
+The operational protocol — **standing authorization**, the work-shape dispatch table, and the invariants — ships **globally** via `config/claude-user-memory.md` → `~/.claude/CLAUDE.md` (config sync), so it binds in every project, not just this repo, and applies here with the same force. A per-prompt `[tier]` dispatch line (UserPromptSubmit hook in `config/claude-settings.json`) reinforces it against drift. Repo-specific addendum: a small odd job no role fits may go to any agent with an explicit cheap `model` — `tier-gate` injects the worker tier if `model` is omitted.
 
 ### Model selection (one lever)
 

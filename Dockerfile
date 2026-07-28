@@ -201,7 +201,7 @@ COPY --chown=agent:agent knowledge-base/ /opt/claude-dev/knowledge-base/
 RUN mkdir -p /etc/claude-dev/configs/agents
 COPY config/.zshrc config/helix-config.toml config/intellishell-config.toml \
      config/intellishell-defaults.txt config/claude-settings.json \
-     config/statusline.sh config/tmux.conf \
+     config/statusline.sh config/tmux.conf config/claude-user-memory.md \
      /etc/claude-dev/configs/
 COPY config/agents/ /etc/claude-dev/configs/agents/
 COPY config/skills/ /etc/claude-dev/configs/skills/

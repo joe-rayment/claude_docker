@@ -92,6 +92,7 @@ if [ "$IMAGE_HASH" != "$VOLUME_HASH" ]; then
     merge_claude_settings_local
     cp /etc/claude-dev/configs/statusline.sh /home/agent/.claude/statusline.sh 2>/dev/null || true
     chmod +x /home/agent/.claude/statusline.sh 2>/dev/null || true
+    cp /etc/claude-dev/configs/claude-user-memory.md /home/agent/.claude/CLAUDE.md 2>/dev/null || true
     # Deploy custom agents
     mkdir -p /home/agent/.claude/agents
     cp /etc/claude-dev/configs/agents/*.md /home/agent/.claude/agents/ 2>/dev/null || true

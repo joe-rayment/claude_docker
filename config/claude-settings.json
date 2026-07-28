@@ -51,6 +51,10 @@
           {
             "type": "command",
             "command": "command -v cost-mirror >/dev/null 2>&1 && exec cost-mirror; [ -x \"$HOME/.claude/hooks/cost-mirror\" ] && exec \"$HOME/.claude/hooks/cost-mirror\"; exit 0"
+          },
+          {
+            "type": "command",
+            "command": "e=$(grep -m1 '^model:' \"$HOME/.claude/agents/executor.md\" 2>/dev/null | sed 's/^model:[[:space:]]*//'); s=$(grep -m1 '^model:' \"$HOME/.claude/agents/scout.md\" 2>/dev/null | sed 's/^model:[[:space:]]*//'); [ -n \"$e\" ] && echo \"[tier] worker=$e recon=${s:-?} — dispatch: recon→scout · slices→executor · claims→verifier · trivial→inline\"; true"
           }
         ]
       }

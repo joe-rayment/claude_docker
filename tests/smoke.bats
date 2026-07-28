@@ -333,6 +333,23 @@ setup() {
     jq -e '.respondToBashCommands == false' /etc/claude-dev/configs/claude-settings.json
 }
 
+@test "user-level tiering protocol is staged for sync" {
+    # config/claude-user-memory.md ships the delegation protocol to every
+    # project via ~/.claude/CLAUDE.md (user memory) — without it, tier
+    # bindings work but no session outside this repo ever delegates.
+    # Red until the next host rebuild (staged copy predates the edit).
+    [ -f /etc/claude-dev/configs/claude-user-memory.md ]
+    grep -q 'Standing authorization' /etc/claude-dev/configs/claude-user-memory.md
+}
+
+@test "entrypoint syncs the user-level CLAUDE.md" {
+    grep -q 'claude-user-memory.md /home/agent/.claude/CLAUDE.md' /usr/local/bin/entrypoint.sh
+}
+
+@test "claude-settings.json injects the per-prompt tier dispatch line" {
+    jq -e '[.hooks.UserPromptSubmit[].hooks[].command] | any(contains("dispatch: recon"))' /etc/claude-dev/configs/claude-settings.json
+}
+
 @test "knowledge-base index is staged" {
     [ -f /opt/claude-dev/knowledge-base/README.md ]
     grep -q 'BEADS_TROUBLESHOOTING' /opt/claude-dev/knowledge-base/README.md
