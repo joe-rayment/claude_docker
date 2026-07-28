@@ -2,30 +2,17 @@
 
 ## Environment
 
-You are running inside a Docker container. Your workspace is at `/workspace` (bind-mounted from the host). Your home directory `/home/agent` is a persistent Docker volume — auth, git config, and shell history survive rebuilds.
+You are running inside a Docker container built for exactly this: a pre-configured Claude Code that is safe to run with `--dangerously-skip-permissions` because it is sandboxed. Your workspace is `/workspace` (bind-mounted from the host); your home `/home/agent` is a persistent volume — auth, git config, and shell history survive rebuilds.
 
-Key tools: Git, GitHub CLI (`gh`), Python 3, Node.js, Go, Helix editor (`hx`).
+Key tools: Git, GitHub CLI (`gh`), Python 3, Node.js, Go, Helix (`hx`).
 
 ## Config Customization
 
-Config files are synced from the Docker image on startup (checksum-based). To persist personal customizations across rebuilds, use `.local` override files:
-
-| Config | Override file | Mechanism |
-|--------|--------------|-----------|
-| Shell | `~/.zshrc.local` | Sourced at end of `.zshrc` |
-| Claude Code | `~/.claude/settings.local.json` | Deep-merged into `settings.json` on startup |
-
-Helix (`~/.config/helix/config.toml`) and IntelliShell (`~/.config/intelli-shell/config.toml`) can be edited directly — they only get overwritten when the image config checksum changes.
-
-Merge semantics for `settings.local.json`: objects deep-merge (local wins per key); the `permissions.allow`/`deny`/`ask` arrays are **unioned** with the base lists; any other array is replaced wholesale. If the local file contains invalid JSON, the entrypoint warns and skips the merge rather than corrupting `settings.json`.
-
-## Core Principle
-
-**Run code, don't guess.** Execute commands, run tests, check output. If you're unsure whether something works, run it.
+Configs sync from the image on startup (checksum-based). Personal overrides survive rebuilds via `~/.zshrc.local` (sourced last) and `~/.claude/settings.local.json` (deep-merged; permission arrays are unioned). Details and edge cases: `knowledge-base/CONFIG_SYNC.md`.
 
 ## Searching Code — `csearch`
 
-`csearch` fuses discover + grep + read + signature into one local command (ripgrep under the hood — no network, no login, no telemetry). Prefer it for code search: one call instead of separate glob → grep → read round-trips, and it caps long lines so minified files don't blow up context.
+Prefer `csearch` (ripgrep-backed, local) over separate glob → grep → read round-trips; it caps long lines so minified files don't blow up context.
 
 ```bash
 csearch "useAuth" 'src/**/*.ts'   # grep, scoped to a glob (or a literal path)
@@ -35,301 +22,148 @@ csearch read src/app.ts 40-80     # read just lines 40–80, line-numbered
 csearch sig 'src/**/*.go'         # signatures/structure (funcs, classes, types)
 ```
 
-Flags for the default search mode: `-i` ignore case, `-C N` context lines, `-l` list files only, `-t TYPE` ripgrep file type, `-m N` max matches per file. Trailing args are literal paths if they exist, otherwise globs. No matches exits 0 (not an error).
+Flags: `-i` ignore case, `-C N` context, `-l` files only, `-t TYPE` ripgrep type, `-m N` max matches/file. No matches exits 0.
 
 ## Answer Style — Selective, Answer-First
 
-**Shortness comes from selecting content, not compressing wording.** Decide what the reader actually needs — drop everything else — then write what remains in plain, complete sentences. Do not shorten by chopping grammar into fragments or abbreviating; terseness of style is not the goal, absence of filler is.
+**Shortness comes from selecting content, not compressing wording.** Decide what the reader actually needs — drop everything else — then write what remains in plain, complete sentences. Terseness of style is not the goal; absence of filler is.
 
-- **Lead with the outcome.** The first sentence answers "what happened" or "what did you find" — the thing the user would ask for if they said "just the TLDR." Supporting detail comes after, and only if it changes what the reader does next.
-- **Cut, don't volunteer**: process narration (what you explored, every file touched), caveats, alternatives, background, root-cause essays, and "what I could do next" all go — unless asked. Trust the user to ask follow-ups.
-- **No structural bloat.** Simple answers get prose, not headers, bullet lists, tables, or "Summary" sections. No preambles ("Great question…", "I'll now…") or postambles ("Let me know if…").
-- **Match size to question.** Yes/no gets yes/no plus at most a one-line why. A finished task reports in one to three sentences: what changed, where, how it was verified.
-- **Brevity never costs correctness.** Code, commands, file paths, and exact values stay complete and accurate — never abbreviate those.
+- **Lead with the outcome.** First sentence = what happened or what you found. Detail after, only if it changes what the reader does next.
+- **Cut, don't volunteer**: process narration, caveats, alternatives, background, and "what I could do next" all go — unless asked.
+- **No structural bloat.** Simple answers get prose, not headers/bullets/tables. No preambles or postambles.
+- **Match size to question.** Yes/no gets yes/no plus a one-line why. A finished task reports in one to three sentences.
+- **Brevity never costs correctness.** Code, commands, paths, and exact values stay complete and accurate.
 
 ## Ownership — Never Assign Work to the User
 
-**NEVER assign the user tasks.** You own the work end to end. Do not hand the user a to-do list, "next steps you should run", "verification owed by you", checklists of commands to execute, or anything framed as theirs to complete. The user directs; Claude executes.
+**NEVER assign the user tasks.** You own the work end to end: no to-do lists, "next steps you should run", or verification framed as theirs. The user directs; Claude executes.
 
-- If something genuinely cannot be done or verified in this environment (e.g. a host-side `./claude-dev --rebuild` that must run outside the container), state it plainly as an **environment limitation**, do the best verification available here, and carry it as your own open item — do not delegate it back to the user.
-- Don't end responses by telling the user to run, close, push, or check things you could do yourself. Just do them.
-- **Don't ask the user to do something you have enough information to do or figure out yourself** (e.g. "run the following to confirm", "check whether X"). Run it, read it, work it out — then report the result.
-- **Never ask the user to confirm details they've already given you.** Re-read the conversation before asking; if the answer is already there, use it. Only ask when information is genuinely missing and you cannot obtain or infer it yourself.
-- Offering a choice when a decision is genuinely the user's to make is fine. Handing over execution work, or re-asking for what you already know, is not.
+- If something genuinely cannot be done or verified in this environment (e.g. a host-side `./claude-dev --rebuild`), state it as an **environment limitation**, do the best verification available here, and carry it as your own open item.
+- Don't ask the user to run, check, or confirm anything you can do or already know — re-read the conversation first; only ask when information is genuinely missing and unobtainable. Ask in chat, at the moment the question arises, only after exhausting your own options.
+- Offering a genuine decision to the user is fine. Handing over execution, or re-asking what you already know, is not.
 
 ## User Constraints Are Binding
 
-**Explicit user choices are hard constraints, not suggestions.** If the user specified a tool, library, approach, flag, browser mode (e.g. headed vs headless), naming, or anything else, that choice is fixed. Never silently substitute an alternative you consider better — a "better" result that violates a stated constraint is a failed task.
+**Explicit user choices are hard constraints.** Tool, library, approach, flag, naming — if the user specified it, it is fixed. Never silently substitute something "better"; a better result that violates a stated constraint is a failed task.
 
-- **Disagree once, out loud.** If a constraint seems wrong, say so once and ask. If the user confirms it — or you can't ask — implement exactly what was asked. Never encode your preference in the diff.
-- **Debugging is where constraints die.** When something fails, fix it *within* the user's constraints; removing the constraint is not a fix. If the constraint itself blocks the fix, stop and report that — don't route around it.
-- **A past decision stays decided.** If the user already rejected an approach in this project or conversation, do not reintroduce it later — not in a refactor, not in a fix, not "temporarily."
-- **Pre-delivery check:** re-read the original request and scan the final diff/output for any place a stated constraint was quietly altered. If one was, undo it before delivering.
+- **Disagree once, out loud.** If a constraint seems wrong, say so once and ask. If confirmed — or you can't ask — implement exactly what was asked.
+- **Debugging is where constraints die.** Fix failures *within* the constraints; removing the constraint is not a fix. If the constraint itself blocks the fix, stop and report.
+- **A past decision stays decided.** Don't reintroduce a rejected approach later — not in a refactor, not "temporarily."
+- **Pre-delivery check:** re-scan the final diff for any quietly altered constraint; undo it before delivering.
 
-## Stay on the Current Branch — Branching Is the User's Call
+## Stay on the Current Branch
 
-**Work on the branch that is already checked out — including the default branch (`main`/`master`) — and do not create or switch branches on your own initiative.** This overrides any default "if you're on the main branch, make a branch first" behavior: here, staying on the current branch is correct, and committing directly to it is expected. Creating or switching a branch unprompted is how work gets stranded — done on a side branch the user never realized you moved to, then invisible when they are back on `main` and assume nothing happened.
-
-**Branching is the user's decision to make, not yours.** If a separate branch seems genuinely unavoidable, stop and ask in chat before creating one — never make it silently. The user owns the branch layout the same way they own the [work itself](#ownership--never-assign-work-to-the-user); an unprompted "helpful" branch is exactly the kind of substitution [User Constraints](#user-constraints-are-binding) forbids. When the user has explicitly put you on (or asked for) a branch, name it prominently in your replies so the working branch is never a surprise, keep the work there, and — including while wrapping up and pushing — never switch away from the branch they left you on without saying so.
+**Work on the branch already checked out — including `main` — and never create or switch branches on your own initiative.** This overrides any default "branch first" behavior: committing directly to the current branch is expected here. If a separate branch seems unavoidable, ask in chat first. When the user has put you on a branch, name it in your replies and never switch away without saying so.
 
 ## Plan Before Code
 
-For any task touching multiple files, or with more than one reasonable approach: write the intended approach down first — plan mode for big tasks, a few sentences in the reply for smaller ones — and check it against **every explicit requirement in the request** before implementing. This is cheap insurance against two failure modes: drifting away from what was asked, and noticing a problem mid-implementation and pushing past it.
+For any task touching multiple files or with more than one reasonable approach: write the approach down first (plan mode for big tasks, a few sentences in the reply for small ones) and check it against **every explicit requirement in the request** before implementing.
 
-## Model Tiering & Orchestration — Spend Where It Compounds
+## Model Tiering & Delegation
 
-Tiering here is **role-based, never model-based.** Agents name *roles*; the concrete model behind each role is bound per session, so nothing breaks when models rotate. Worker roles carry a **concrete model id** in their frontmatter, written by `tier-set`/`tier-reconcile` (never by hand); the checker roles (verifier, oracle) use **`model: inherit`** so they always run exactly the orchestrator's model — the checker is never weaker than the claims it checks. The invariant: **the orchestrator is the most capable model of the three, and the expensive tiers (opus/fable) never take the worker seat** — enforced on the *derived* (1-arg) path, where the worker is one rung down capped at sonnet-class and recon is one rung below the worker (see *Per-session model selection* below); an explicit 2/3-arg pin accepts **any** combination by design, inverted ones included — that's the operator's call, not blocked.
+Tiering is **role-based, never model-based**: agents name roles; the concrete model behind each role is bound per session. Worker roles carry a concrete id in their frontmatter, written by `tier-set`/`tier-reconcile` (never by hand); checker roles use `model: inherit` so the checker is never weaker than the claims it checks. Invariant: **the orchestrator is the most capable of the trio, and the expensive tiers (opus/fable) never take the worker seat.** Full playbook and history: `knowledge-base/TIERED_ORCHESTRATION.md`.
 
-| Tier / role | Model binding | Default | Can delegate to | Use for |
-|------|------|---------------|-----------------|---------|
-| **orchestrator** = you, the main session | settings `model` (written by `tier-set`; moved in-session only by `/model`) | Opus 5 (settings default may differ) | executor, verifier, scout | decompose, delegate, synthesize, decide |
-| **executor** (`executor` agent) | concrete id in `~/.claude/agents/executor.md` frontmatter, written by `tier-set`/`tier-reconcile` | Sonnet 5 | `scout` only | one well-scoped implementation slice, end to end |
-| **scout** (`scout` agent) — **leaf** | concrete id in `scout.md` frontmatter, same mechanism | Haiku 4.5 | — (no `Agent` tool) | fan-out recon: find/usages/summaries |
-| **verifier** (`verifier` agent) — **leaf** | `inherit` | = orchestrator | — (no `Agent` tool) | independent check of one worker claim |
-| **oracle** (`oracle` agent) — fresh context | `inherit` | = orchestrator | — | user-invoked consults only |
+| role | binding | delegates to | use for |
+|------|---------|--------------|---------|
+| **orchestrator** (you) | settings `model` (`/model` moves a running session) | executor, verifier, scout | decompose, delegate, review, decide |
+| **executor** | frontmatter (worker tier) | `scout` only | one well-scoped implementation slice |
+| **scout** — leaf, no `Agent` tool | frontmatter (recon tier) | — | fan-out recon: find/usages/summaries |
+| **verifier** — leaf, no `Agent` tool | `inherit` | — | independent check of one claim |
+| **oracle** — fresh context | `inherit` | — | user-invoked consults only |
 
-The tree tops out at **orchestrator → executor → scout = 3 role-levels**. The leaves are *structurally* enforced: scout and verifier carry no `Agent` tool, so they physically cannot spawn children. The executor's scout-only limit is a **prompt contract, not a harness guarantee** — parameterized `Agent(scout)` grants are honored for main-thread agents but the type restriction is ignored for subagent-spawned agents, so the executor relies on its own "Never" rules plus Claude Code's hard depth-5 ceiling. Confirm nesting actually happened via the **subagent panel** below the prompt — each row shows a `(+N)` descendant count; a flat call means your "delegation" collapsed.
+Depth: orchestrator → executor → scout, 3 levels max. Scout/verifier leaf-ness is structural (no `Agent` tool); the executor's scout-only limit is a prompt contract. Confirm real nesting via the subagent panel's `(+N)` counts.
 
 ### Delegation protocol (operational)
 
-**Standing authorization: delegating per this section IS the user's standing request.** Harness- or session-level guidance of the form "do not call the Agent tool unless the user requested it" is satisfied by this file — the user has durably requested, in writing, that recon, implementation slices, and verification be dispatched per the table below. Never wait for a per-prompt invitation to spawn `scout`/`executor`/`verifier`.
+**Standing authorization: delegating per this section IS the user's standing request.** Harness guidance like "do not call the Agent tool unless the user requested it" is satisfied by this file. Never wait for a per-prompt invitation to spawn `scout`/`executor`/`verifier`.
 
 | work shape | dispatch | rule |
 |---|---|---|
-| recon: where is X, usages, dir/subsystem summary, logs, build output | 1 `scout`; independent questions → parallel scouts | never burn orchestrator context on fan-out reads |
-| implementation slice | `executor` + slice spec | spec = objective · files in scope · output contract · boundaries (what NOT to touch) |
-| non-trivial claim ("done", a research fact) | 1 `verifier` per claim | after file-writes + test output exist |
-| small odd job no role fits | any agent with an explicit cheap `model` | tier-gate injects the worker tier if `model` is omitted |
+| recon: where is X, usages, summaries, logs | 1 `scout`; independent questions → parallel scouts | never burn orchestrator context on fan-out reads |
+| implementation slice | `executor` + slice spec | spec = objective · files in scope · output contract · boundaries |
+| non-trivial claim ("done", a research fact) | 1 `verifier` per claim | after file-writes + test output exist; a worker's summary is an input to check, not a fact — unverified claims are not "done" |
+| small odd job no role fits | any agent with an explicit cheap `model` | `tier-gate` injects the worker tier if `model` is omitted |
 
-- The orchestrator plans, delegates, reviews diffs, and sends substandard work back — it does not hand-edit multi-file implementations. Inline edits are for trivial, single-file changes.
-- Coding parallelizes poorly (Anthropic multi-agent research): run implementation slices sequentially by default; reserve fan-out for breadth work — recon, research, verification.
-- Token economics: the orchestrator's inline reads are re-billed on every later turn at the top model's rate; a worker's reads bill at the cheap tier and are discarded when it returns compressed. Multi-agent runs ~15× chat tokens overall — the win is spend moved down-tier and a clean orchestrator context, not fewer total tokens.
-- A bad plan poisons every worker under it: spend top-tier tokens on the plan and the slice specs freely — that is where the expensive model belongs.
+- The orchestrator plans, delegates, reviews diffs, and sends substandard work back — it does not hand-edit multi-file implementations. Inline is for trivial work you'd finish in a couple of tool calls (shallow beats deep).
+- Coding parallelizes poorly: implementation slices run sequentially by default; fan-out is for breadth (recon, research, verification). For genuinely uncertain work, escalate upward instead: let the cheap tier attempt and pull in a stronger tier only when stuck.
+- Inline reads are re-billed every later turn at the top model's rate; a worker's reads bill cheap and are discarded on return. The win is spend moved down-tier and a clean orchestrator context.
+- A bad plan poisons every worker under it: spend top-tier tokens on plans and slice specs freely — that is where the expensive model belongs.
+- Skip verification only on trivial, self-evident results; when in doubt, verify — one verifier per finding keeps checks out of your context.
 
-**Delegation-down is the default; depth 2 is the default, 3 is the ceiling.** Decompose, hand executors independent slices, synthesize their compressed returns. Add the 3rd level (executor spawning scout, or a verifier fan-out) only when volume or an independent check earns it. **Shallow beats deep:** before a parent delegates, it must expect the child to do real work and return a *compressed* result — if you could produce it in a couple of tool calls, don't delegate. A bad decomposition poisons every worker under it, so keep the strongest model (you) on decomposition and synthesis and push bulk/mechanical work down; the cost leverage is in the worker tier, not in you doing the volume.
+### Model selection (one lever)
 
-**Upward escalation** is the alternative pattern, for debugging and genuinely uncertain work: the leaf attempts the task and calls a stronger tier *only when stuck*, so you pay the higher tier only on real failures. The oracle path already encodes this (scout/you try, escalate to the oracle when a bug survives two fixes). Use escalation when you can't cleanly decompose up front; use delegation-down when you can.
+`/model <top>` is the primary lever: it moves the running orchestrator and, via the `tier-reconcile` hook, re-derives worker/recon on the next prompt. `/tier <top>` does the same bind explicitly; bare `/tier` prints the trio. Derivation (ladder `fable > opus > sonnet > haiku`): worker = one rung down **capped at sonnet-class**, recon = one below the worker, floored at haiku — so `fable`/`opus` → sonnet/haiku, `sonnet`/`haiku` → haiku/haiku. `/tier <top> <worker> [<recon>]` pins any explicit combo until a 1-arg `/tier` clears it.
 
-**Scout first.** For searches, usage listings, and directory summaries, spawn `scout` (several in parallel for independent questions) instead of burning your own context — prefer it over the built-in Explore agent.
+- Agent files are snapshotted at session start: binding changes land in **new** sessions; for a one-off in-session tier, pass `model` on the `Agent` call.
+- **Never set** `CLAUDE_CODE_SUBAGENT_MODEL` or any `ANTHROPIC_DEFAULT_*_MODEL` var — they collapse the tiers and corrupt the `/model` picker; the tier scripts purge them on sight.
+- Off-ladder `.model` values are left unmanaged (never clobbered). A model-not-found at spawn time: re-bind with `TIER_PROBE=1 tier-set <top>` (probes and degrades downward). Fable 5 is active — never assume it is unavailable.
+- After an image rebuild, the SessionStart reconciler re-derives everything from `.model` automatically.
 
-### Trust, but verify — the orchestrator's standing policy
+Spawn-time enforcement (all fail open, `tests/tier-hooks.bats`): `tier-gate` injects the worker tier into generic spawns that omit `model`; `workflow-lint` denies workflow scripts whose `agent()` calls omit `model:`; `cost-mirror` shows per-prompt spend. An explicit `model` always wins.
 
-A worker's summary is an **input to check, not a fact.** Any non-trivial worker output is verified *independently*, by a `verifier` with fresh context and no stake in the answer — never by the worker grading itself (a model asked to recheck its own reasoning rationalizes a plausible-but-wrong result).
+**Oracle is user-invoked only — never spawn it unprompted.** Its leverage is a clean context: refute-first, verdict-first. Choke points where you may note *once* that a consult is available: a plan for a large/risky implementation, a bug surviving two different fix attempts, a one-way-door decision, a significant diff about to be pushed. Before consulting, check `bd` memories and the knowledge-base index; send a distilled brief (goal, constraints, what was tried, the exact question, file pointers — never pasted diffs), then act on the verdict. `advisorModel` must stay ≥ the session's top tier.
 
-- **Verification is mandatory** before you declare a task done, after file-writes + test output exist, and on any worker result you will fold into the final answer. **Unverified worker claims are not accepted as done.**
-- **How:** research claims are cross-checked against **primary sources**; code changes against **tests/build/an independent read**. Spawn **one `verifier` per finding** so the intermediate checks stay out of your context — the verifier returns a verdict, not a transcript.
-- **Proportionate:** skip verification only on trivial/self-evident results (the same threshold as "don't nest this"). Require it wherever a wrong-but-plausible result would propagate. When in doubt, verify — a bad worker output that reaches the final answer is the expensive failure.
-
-The `oracle` (user-invoked, below) is the coarse checkpoint-level version of this for plans and big diffs; the `verifier` is the automatic, per-finding version the orchestrator runs itself.
-
-### Per-session model selection (one top model → the trio derives, no hand-edits)
-
-The default model and the tier trio are a **single linked thing** so they can't drift. You pick ONE top model; worker and recon are **derived** down the ladder (`fable > opus > sonnet > haiku`): the worker is one rung down **capped at sonnet-class** — the orchestrator plans, delegates, and reviews, so opus/fable never sit in the worker seat — and recon is one rung below the worker, both clamped at the haiku floor:
-
-| top | → worker (executor) | → recon (scout) |
-|-----|--------------------|-----------------|
-| `fable`  | sonnet | haiku  |
-| `opus`   | sonnet | haiku  |
-| `sonnet` | haiku  | haiku  |
-| `haiku`  | haiku  | haiku  |
-
-Two levers, kept in sync automatically:
-
-```
-/model opus                           # PRIMARY in-session lever: moves the running orchestrator now AND
-                                       #   (via the reconciler, next prompt) re-derives the worker/recon bindings
-/tier fable                           # explicit set: writes .model=claude-fable-5 + derived frontmatter bindings (fable/sonnet/haiku)
-/tier claude-opus-4-8                 # a full id works too (dated/variant id kept as-is on top)
-/tier opus sonnet                     # 2-arg explicit PIN: worker=sonnet, recon shares the worker model
-/tier opus sonnet haiku               # 3-arg explicit PIN: worker/recon set independently, any combo
-/tier                                 # no args: print the current binding + derived trio (writes nothing)
-/tier show                            # same as bare /tier
-```
-
-A 2- or 3-arg `/tier` **pins** the trio (`.env.TIER_EXPLICIT_PIN="1"`) instead of deriving it — the reconciler then leaves worker/recon alone even as `.model` drifts, until a plain 1-arg `/tier <top>` clears the pin and resumes auto-derivation.
-
-**The reconciler is the mechanism that links them.** `tier-reconcile` (a `SessionStart` + `UserPromptSubmit` hook) reads `.model`, derives the trio via `tier-derive` (the single source of truth for the ladder), and rewrites the `model:` frontmatter lines of `executor.md`/`scout.md` **only if they differ** — idempotent, silent, fast. It also **purges** any legacy `ANTHROPIC_DEFAULT_*`/`CLAUDE_CODE_SUBAGENT_MODEL` vars it finds (that runs always, even when a pin or an off-ladder `.model` skips the derivation), and it **never touches `.model` itself**. Agent definitions are **snapshotted at session start** (verified empirically 2026-07-17): a mid-session frontmatter edit does not change spawns in the already-running session, so the worker/recon bindings apply to **new sessions** — the `SessionStart` reconcile run is what makes every session consistent with `.model` from its first spawn. For a one-off different tier mid-session, pass an explicit `model` on the `Agent` call.
-
-**Why v2 writes no env slots: the `/model` picker reads them and lies.** The picker builds its "Opus"/"Sonnet"/"Haiku" menu rows from the `ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL` vars and persists a **bare alias** (`opus`, `sonnet[1m]`, …) into `.model` on selection — so with slots remapped, an alias meant one thing when you picked it and another after any slot rewrite, and re-deriving from the alias *name* (not the slot's content) walked the whole trio down the ladder. Observed live 2026-07-17 (bead dsu): the picker offered only Fable/Sonnet-1M/Haiku, and `/model opus` landed on Fable, then later sessions on Haiku. v2 removes the collision at the root: worker/recon bind in agent frontmatter, no tier code writes any `ANTHROPIC_DEFAULT_*` var ever, and `tier-set`/`tier-reconcile` **purge** those vars wherever found — the picker stays fully native and honest, and an alias always means its native family.
-
-The engine behind `/tier` is `tier-set` (`/usr/local/bin/tier-set`, repo `scripts/tier-set.sh`); it resolves aliases to concrete ids, then writes `.model` and the two frontmatter bindings. Known ladder ids bind **instantly without probing** (a probe is a multi-second `claude -p` round trip — probing every slot made `/tier` hang for 15–25 s and one API blip hard-failed the bind); only off-ladder/custom ids are probed, and `TIER_PROBE=1` forces probing of every candidate with downward fallback. A probe failure is never fatal: on exhaustion the requested id binds anyway with a `WARNING … UNVERIFIED` line. `tier-derive` and `tier-reconcile` live beside it. What a file write **cannot** move is the **running orchestrator** — this session's own model — and by extension the `model: inherit` agents (verifier/oracle) that track it: only `/model` moves a running orchestrator (it also persists as the new-session default). And since agent files are snapshotted at session start, `/tier`'s worker/recon bindings land in newly launched sessions too — `/tier` therefore tells you to run `/model` if you want this session's orchestrator moved now, and to pass an explicit `model` on the `Agent` call for a one-off in-session tier.
-
-- **Off-ladder tops degrade gracefully.** If `.model` is a custom/unknown id the ladder can't place (`best`, a vendor-routed id), the reconciler leaves the agent bindings untouched (never clobbers) and `/tier show` flags the top as custom/unmanaged. A full *family* id (`claude-opus-4-8`, even dated) maps to its rung and derives beneath it; a `[1m]`-style variant (`sonnet[1m]`, `claude-fable-5[1m]`) ranks by its family too — unambiguous now that aliases are native.
-- **Graceful degradation is opt-in.** With `TIER_PROBE=1`, each slot falls **downward** (fable → opus → sonnet → haiku) past candidates that fail their availability probe; without it, ladder ids bind blind and a gated/off-plan model surfaces at spawn or `/model` time instead of bind time. Fable 5 is a first-class candidate — never assume it is unavailable.
-- **Footguns to avoid:** never set `CLAUDE_CODE_SUBAGENT_MODEL` — it overrides *every* subagent's model and would collapse all three tiers onto one — and never set **any** `ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL`(`_NAME`) var — they corrupt the native `/model` picker (mechanism v1's fatal flaw). `tier-set` **and** `tier-reconcile` purge all of them on sight, wherever found.
-- **After an image rebuild**, the config sync resets `settings.json` and the agent files to the template (which carries the reconciler hook) — re-run `/tier` or just start a session (the `SessionStart` reconciler re-derives the frontmatter bindings from `.model`).
-- **Residual caveat (unchanged):** a file write can't move the *running* orchestrator; only `/model` can. If you run `/tier` without `/model`, the agent bindings follow the new top but the running orchestrator stays put until you `/model`.
-
-**Oracle is user-invoked only — never spawn it unprompted.** The oracle inherits your model (always exactly the driver); its leverage is a clean context, not a bigger model — no sunk assumptions, an explicit refute-first mandate, high reasoning effort, and a verdict-first output cap. When a genuine choke point is met — (1) a plan for a large or risky implementation (~5+ files, schema/API/auth, hard to reverse), (2) the same bug survived two genuinely different fix attempts, (3) a one-way-door architecture decision, (4) a significant diff about to be pushed — you may note *once* that an oracle consult is available, then proceed with your own best judgment. The user triggers it ("second opinion", "ask the oracle"); `/advisor` is backed by `advisorModel`, which is pinned to `fable` because the advisor model must be **≥ the session's main model** — if you change the top tier, keep `advisorModel` at or above it. For one-way doors the user can ask for a **panel**: two oracle consults in parallel with different lenses (correctness-first vs simplicity-first) — where they disagree is where to think hardest.
-
-**Consult protocol (when invoked):** first check `bd` memories and the knowledge-base index — the answer may already be paid for. Then send a distilled brief: goal, constraints, what was tried and what happened, the exact question, file pointers. Never paste large code or diffs; the oracle reads the repo itself. Act on the verdict instead of re-asking.
-
-**Model unavailable / not-found.** By default `tier-set` trusts the four ladder ids, so a retired or gated model surfaces as a model-not-found at spawn or `/model` time, not at bind time. When that happens, re-bind from the shell with `TIER_PROBE=1 tier-set <top> …` (probes every candidate and degrades downward to what actually answers — an env prefix cannot be passed through the `/tier` slash command) or name an available model explicitly — you never hand-edit agent files. The full playbook (roles, bindings, fallback, verification, rollback) is `knowledge-base/TIERED_ORCHESTRATION.md`.
-
-**Never pay twice (capture rule).** When a consult — or your own hard-won debugging — yields a reusable insight (root cause, gotcha, recipe, rule), distill it immediately: `bd remember` for project facts; a `knowledge-base/` doc plus an index row in its `README.md` for step-shaped playbooks. The oracle ends every consult with a `Capture:` line — store it, don't drop it.
+**Never pay twice (capture rule).** When a consult or hard-won debugging yields a reusable insight, distill it immediately: `bd remember` for project facts; a `knowledge-base/` doc + index row for step-shaped playbooks.
 
 ## Verification
 
-**Always verify changes by running the actual application** — code inspection isn't enough. Run the app, hit the endpoint, screenshot the UI. For CLI tools use `take-screenshot term "<command>"`; for web UIs use `take-screenshot url <URL>`; for APIs use `curl` or similar. Code-based tests (unit, integration) are for regression protection, not for verifying current work — run them to confirm you haven't broken other things. Before reporting a task as done, ask yourself: "Did I actually see this working?"
+**Run code, don't guess — and verify by running the actual application.** Code inspection isn't enough: run the app, hit the endpoint, screenshot the UI (`take-screenshot term "<cmd>"` for CLIs, `take-screenshot url <URL>` for web, `curl` for APIs). Code-based tests are for regression protection, not for verifying current work. Before reporting done: "Did I actually see this working?"
 
-**The environment must be able to run the program — if it can't, fixing that is part of the task.** Install whatever is missing (`apt-get install`, `pip install`, `npm install`) and continue; never fall back to code inspection or an artificial test because a dependency wasn't there. When a runtime dependency turns out to be missing from the image, also add it to the `Dockerfile` so the gap never recurs — the container should always include everything needed to run and observe the program.
+**The environment must be able to run the program — if it can't, fixing that is part of the task.** Install whatever is missing and continue; never fall back to inspection or an artificial test because a dependency was absent. When a runtime dependency is missing from the image, also add it to the `Dockerfile` so the gap never recurs.
 
 ## Noticed Flaws — Fix or Surface
 
-**If you notice a problem in your own work — a flaw, weakness, unhandled edge case, or shortcut — you must either fix it before delivering or state it explicitly in the final answer.** Silently shipping a flaw you noticed is the worst failure mode: worse than being slow, worse than a longer answer. "I'll mention it if asked" is not an option — if the user would care, it goes in the response, prominently, not buried.
-
-Before delivering, run a self-review pass: re-read the original request, check each explicit requirement against the result, and confirm you saw it working (per [Verification](#verification)). Anything that fails the check gets fixed or flagged — never glossed over.
+**If you notice a problem in your own work — a flaw, unhandled edge case, shortcut — fix it before delivering or state it explicitly in the final answer.** Silently shipping a noticed flaw is the worst failure mode; "I'll mention it if asked" is not an option. Before delivering: re-read the original request, check each explicit requirement against the result, confirm you saw it working.
 
 ## Logging
 
-Use `dev-log` to record what happens during your session. Logs live at `/workspace/.claude/logs/`.
+`dev-log run|decision|error|change|show` records the session at `/workspace/.claude/logs/`. Log test/build/deploy runs (pass or fail), architecture-affecting decisions, unexpected errors, and non-obvious changes — not trivial reads. `dev-log show` at session start shows what happened before you.
 
-| Command | When to use |
-|---------|-------------|
-| `dev-log run "cmd" pass\|fail "reason" ["detail"]` | After running a command (tests, builds, deploys) |
-| `dev-log decision "description"` | When choosing between approaches |
-| `dev-log error "what" ["detail"]` | When something fails unexpectedly |
-| `dev-log change "what" "why"` | After modifying code or config |
-| `dev-log show [category] [N]` | View recent entries |
+## Files, Screenshots & Attachments
 
-Log every test run, build, and deploy (pass or fail), decisions that affect architecture or approach, errors with enough detail to diagnose later, and non-obvious changes. Don't log trivial reads or explorations. Run `dev-log show` at session start to see what happened before you.
-
-## Drag-and-Drop File Access
-
-The host user's home directory is mounted read-only at its original path inside the container. This means dragging files from the host into the terminal "just works" — the pasted path resolves to the same file inside the container.
-
-- **macOS**: Files under `/Users/<you>/` are accessible (Desktop, Downloads, Documents, etc.)
-- **Linux**: Files under `/home/<you>/` are accessible
-- For files outside your home directory, copy them to `/workspace/attachments/` instead
-
-The mount is read-only — the container cannot modify host files outside `/workspace`.
-
-## Sharing Files with Claude
-
-`/workspace/attachments/` is the directory for sharing files between the host and container (host path: `<project>/attachments/`, gitignored). Use the Read tool to view images (PNG, JPG, WebP, PDF).
-
-### When the user shares a file
-
-- If the user mentions a screenshot, image, or file to review, check `/workspace/attachments/` for recent files.
-- If the user pastes a path starting with `/Users/` or `/home/`, it's a **host path** — the host home mount makes these resolve directly. For paths outside `$HOME`, look in `/workspace/attachments/`.
-- Use `ls -lt /workspace/attachments/` to find the most recently added files.
-- The `grab <path>` command translates host paths to container paths.
-
-## Screenshots and Browser Tools
-
-This container has full browser and screenshot capabilities. **Use these as your primary verification tools.**
-
-### Quick Captures
-
-| Command | What it captures |
-|---------|-----------------|
-| `take-screenshot url <URL>` | Web page via Playwright |
-| `take-screenshot url --full-page <URL>` | Full scrollable page |
-| `take-screenshot url --device "iPhone 11" <URL>` | Mobile emulation |
-| `take-screenshot display` | X11 display (Xvfb) |
-| `take-screenshot term "<command>"` | Terminal command output via termshot |
-
-Screenshots save to `/workspace/attachments/` by default. View them with the Read tool (supports PNG, JPG, WebP).
-
-### Verification Examples
-
-```bash
-# Verify a web app change
-take-screenshot url http://localhost:3000
-
-# Verify an API endpoint
-curl -s http://localhost:8080/api/health | jq .
-
-# Verify a CLI tool
-take-screenshot term "my-tool --version"
-```
+- The host home directory is mounted **read-only** at its original path, so pasted/dragged host paths under `/Users/<you>` or `/home/<you>` resolve directly; `grab <path>` translates anything else. `/workspace/attachments/` (gitignored) is the shared drop directory — check it (`ls -lt`) when the user mentions a file or screenshot; view images with the Read tool.
+- `take-screenshot url <URL>` (Playwright; `--full-page`, `--device "iPhone 11"`), `take-screenshot display` (Xvfb), `take-screenshot term "<command>"` (termshot). Screenshots land in `/workspace/attachments/` — these are your primary verification tools.
 
 ## Cleanup
 
-A `disk-cleanup` sweep runs automatically at container start (entrypoint) and at each Claude session start (SessionStart hook), so ephemeral files stay bounded without manual effort. It is best-effort, age-gated, and size-capped — it only touches known-ephemeral artifacts and never git-tracked source or the harness transcript store. It:
+`disk-cleanup` sweeps ephemeral artifacts automatically at container and session start (stray `/tmp` test dirs >1d, attachments >7d, logs line-capped); run `disk-cleanup --dry-run` to preview. It never touches git-tracked source. Remove finished `/workspace/.claude/plans/` entries yourself. Details: `knowledge-base/DISK_SPACE.md`.
 
-- sweeps stray test temp dirs in `/tmp` (`tmp.*`, `bats-run-*`, `*.bats`, `claude-test-*`, `csearch-test-*`) older than 1 day;
-- deletes `/workspace/attachments/` files (screenshots, dropped files) older than 7 days;
-- caps each append-only `/workspace/.claude/logs/*.log` to its last 5000 lines (these are monolithic, so they're line-capped, not age-rotated).
+## Beads — Container-Specific Rules
 
-Run it by hand any time — `disk-cleanup` to sweep now, `disk-cleanup --dry-run` to preview. Override retention via env: `TMP_AGE_MIN`, `ATTACH_AGE_DAYS`, `LOG_MAX_LINES`. Still remove `/workspace/.claude/plans/` entries yourself when a plan is done — those aren't age-swept.
+Beads runs in **embedded Dolt mode** (no server); the full command reference and session-close protocol arrive via the `bd prime` SessionStart hook — refer to that block. Container specifics:
 
-The root-cause fix that made this necessary rare: `tests/*.bats` route all scratch under bats's per-test tmpdir, which bats auto-removes on pass **or** fail, so a failing test can no longer strand its temp dir (some held multi-MB `bd init` Dolt DBs).
+- `bd-guard` (PreToolUse) mechanically enforces the no-human-beads rule: human assignees are hard-blocked; user-directed bead text is redirected to chat. `BD_GUARD_ALLOW=1` only for genuine false positives, never to park user work.
+- The Dolt DB at `.beads/embeddeddolt/` (gitignored) is the source of truth; `.beads/issues.jsonl` is a passive git-tracked export. Repair with `bd doctor --fix --yes`. Use `bd update` flags, never `bd edit` (blocks on `$EDITOR`). Reference bead ids in commit messages.
+- **Memory precedence:** project knowledge → `bd remember` (syncs with the repo). The harness's own auto-memory is for user-specific context only — never project facts.
 
-## Beads (Agent Memory)
+## Project Contexts
 
-This environment uses [Beads](https://github.com/gastownhall/beads) (`bd`) for persistent task tracking across sessions, in **embedded Dolt mode** (no SQL server). The full command reference and session-close protocol are auto-injected each session via the `bd prime` SessionStart hook — refer to that block, not a duplicate copy here.
+Per-project-type rules (`config/contexts/<name>.md`, staged at `/etc/claude-dev/contexts/`) are injected at session start by `context-detect` only when workspace markers match; non-matching projects pay zero tokens. **Injected context rules are binding — same force as this file.** Override manifest `.claude-dev/contexts`: bare name force-injects, `!name` suppresses.
 
-**Beads are ONLY for Claude Code's own work. They CANNOT be assigned to a human.** A bead is Claude's task memory across sessions. Never create a bead that represents work for the user to do — not "review this", not "decide X", not "run Y". If work is blocked on a human decision, ask the user directly in the conversation — right when the question arises, not at session end. The only valid assignee is Claude itself, via `--claim`.
+## Working Inside a Larger Repo
 
-This is **mechanically enforced** by the `bd-guard` PreToolUse hook (`scripts/bd-guard.sh`): a human assignee on `bd create/update/assign` is hard-blocked (no override), and user-directed bead text ("ask the user…", "waiting for Joe…") is blocked with a redirect to chat. `BD_GUARD_ALLOW=1` overrides the text check for genuine false positives (the phrase is quoted content or code, not pending user work) — never to park user work in a bead.
-
-- The embedded Dolt database at `/workspace/.beads/embeddeddolt/` (gitignored) is the live source of truth; `.beads/issues.jsonl` is a passive, git-tracked export used to rebuild the database (e.g. after teardown/resume or corruption). Always edit issues via `bd` commands, never by editing the JSONL.
-- To repair a broken database: `cd /workspace && bd doctor --fix --yes` (self-healing also runs at entrypoint, welcome screen, and menu option 3). No server to start — bd works directly against the on-disk database.
-- Use `bd update <id> --flag` to modify issues — never `bd edit` (it opens `$EDITOR` and blocks). Include issue IDs in commit messages when relevant (`Fix auth bug (bd-a3f2)`).
-- **Memory precedence:** project knowledge (decisions, gotchas, environment facts) goes in `bd remember` — it syncs with the repo and is shared across machines. The Claude Code harness's own auto-memory (`MEMORY.md` under `~/.claude/projects/`) is for user-specific context only (who the user is, how they like to work) — never project knowledge. The injected "do NOT use MEMORY.md" rule means: don't create ad-hoc MEMORY.md files for project facts; it does not disable the harness's user-memory feature.
-
-## Project Contexts (Conditional Instructions)
-
-Some instructions only apply to certain kinds of projects (e.g. Snowflake work). These live as per-context rule files in `config/contexts/<name>.md` (staged at `/etc/claude-dev/contexts/`), injected at session start by `context-detect` (a SessionStart hook, repo `scripts/context-detect.sh`) **only when the workspace matches** — cheap filesystem markers like `snowflake.yml` or a Snowflake dep in `requirements.txt`/`pyproject.toml`. Non-matching projects pay zero context tokens. **Injected context rules are binding instructions — treat them with the same force as this file.**
-
-Per-project override manifest `.claude-dev/contexts` (one name per line, `#` comments): a bare name (`snowflake`) force-injects when no marker matches; `!name` suppresses a misfiring marker. A context with no detector function is manifest-only — drop `<name>.md` in the contexts dir and list it in the manifest. Adding a detector = a `detect_<name>()` function in `context-detect.sh`.
-
-## Working Inside a Larger Repo (Teardown / Resume)
-
-When the template is dropped into a subdirectory of a larger git repo, `bd init` creates a nested `.git/` so beads can sync. That nested repo makes the parent treat the subdir as an embedded sub-repo (blocks `git add` from the parent). Use `./claude-dev --teardown` from the host before pushing back: it backs up `.beads/issues.jsonl` to `~/.claude-dev-state/<project>/<timestamp>/` and removes the template artifacts (`.git/`, `.gitignore`, `.beads/`, `.claude-dev/`, `claude-dev`, `docker-compose.yml`, `attachments/`, `.claude/logs/`). Re-bootstrapping in the same directory detects the snapshot and offers to restore beads — the embedded Dolt DB rebuilds from JSONL on first container start.
+Dropping the template into a subdirectory of a bigger repo nests a `.git/` (for beads sync) that blocks `git add` from the parent — run `./claude-dev --teardown` from the host before pushing back; it snapshots beads and removes template artifacts. Playbook: `knowledge-base/TEARDOWN_RECOVERY.md`.
 
 ## Knowledge Base
 
-Curated playbooks for issues that were expensive to solve once live in `/opt/claude-dev/knowledge-base/` (repo source: `knowledge-base/`). Read `README.md` there first: it is the keyword index and the authoritative list of playbooks. Check it before debugging infrastructure, re-deriving a procedure, or escalating to the oracle — the answer may already be paid for. When you solve something that cost real effort, contribute it back following the convention in that README (see the capture rule in Model Tiering).
+Curated playbooks live at `/opt/claude-dev/knowledge-base/` (repo: `knowledge-base/`); its `README.md` is the keyword index. Check it before debugging infrastructure or consulting the oracle — the answer may already be paid for. Contribute solved-once problems back per that README.
 
 ## Experience Testing
 
-Run `run-tests.sh` inside the container to verify the environment works correctly. Tests cover:
-
-- **Smoke tests**: Scripts present, binaries installed, configs valid.
-- **Experience tests**: Welcome screen renders, menus navigate correctly, invalid input handled.
-
-Run tests after making changes to container setup, entrypoint, or menu scripts.
-
-```bash
-run-tests.sh          # Run all tests
-run-tests.sh smoke    # Smoke tests only
-run-tests.sh experience  # Experience tests only
-```
-
-Both invocation forms work: `run-tests.sh` runs the baked suite, and `CLAUDE_DEV_TESTS=/workspace/tests run-tests.sh` runs the repo suite (the installed copy honors the override; verified 2026-07-22). `bats /workspace/tests/<file>.bats` remains the quickest way to run a single repo suite directly.
-
-**`run-tests.sh` tests the baked image, not your working tree.** By default it runs `/opt/claude-dev/tests/` — the copy baked at the last image build — so a green run proves nothing about repo edits. To verify changes to `tests/`, `config/`, or `scripts/` before a rebuild, run `CLAUDE_DEV_TESTS=/workspace/tests run-tests.sh smoke`. Even then, assertions against staged artifacts (`/etc/claude-dev/configs/`, `/opt/claude-dev/`, `/usr/local/bin/`) stay red until the next host `./claude-dev --rebuild` — image staleness, not regression (see `knowledge-base/CONFIG_SYNC.md`).
-
-## Session Checklist
-
-### Start
-1. Read recent logs: `dev-log show`
-2. Check git status: `gs` (alias for `git status`)
-3. Understand the current task before writing code.
-
-### End
-Follow the **[Session Completion](#session-completion)** workflow below — it is the single session-end protocol (file beads for follow-ups, run quality gates, update issue status, push to remote). In addition:
-1. Ensure all changes are logged via `dev-log`.
-2. Session logs are auto-exported on Claude exit (via hook).
+`run-tests.sh [smoke|experience|multi-project|all]` verifies the environment. **It tests the baked image, not your working tree** — for repo edits run `CLAUDE_DEV_TESTS=/workspace/tests run-tests.sh smoke` (or `bats /workspace/tests/<file>.bats` directly). Assertions against staged artifacts (`/etc/claude-dev/`, `/opt/claude-dev/`, `/usr/local/bin/`) stay red until the next host rebuild — staleness, not regression (`knowledge-base/CONFIG_SYNC.md`).
 
 ## Quick Reference
 
 | Shortcut | Command |
 |----------|---------|
-| `cs` | `claude --dangerously-skip-permissions` |
-| `csd` | `claude --dangerously-skip-permissions --debug` |
-| `menu` | Setup/options menu |
-| `dlog` | `dev-log` |
-| `gs` | `git status` |
+| `cs` / `csd` | `claude --dangerously-skip-permissions` (+ `--debug`) |
 | `cn` | `claude` (normal mode) |
+| `menu` | Setup/options menu |
+| `gs` | `git status` |
+| `dlog` | `dev-log` |
+| `cse` | `csearch` |
+| `ss` | `take-screenshot` |
 | `hx` / `vim` | Helix editor |
-| `view-logs` | Interactive Claude log viewer |
-| `clog-latest` | View latest Claude debug log |
-| `clog-export` | Export latest log to workspace |
-| `screenshot` / `ss` | `take-screenshot` |
-| `cse` | `csearch` (lean combined code search) |
 
 
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:7510c1e2 -->

@@ -49,10 +49,6 @@
           },
           {
             "type": "command",
-            "command": "echo 'Reminder: lead with the answer; include only what changes the reader'\\''s next action, in plain complete sentences — no process narration, no unasked-for caveats. Explicit user constraints are binding: never substitute your preference, even while debugging. If you noticed a flaw in your work, fix it or state it — never ship it silently.'"
-          },
-          {
-            "type": "command",
             "command": "command -v cost-mirror >/dev/null 2>&1 && exec cost-mirror; [ -x \"$HOME/.claude/hooks/cost-mirror\" ] && exec \"$HOME/.claude/hooks/cost-mirror\"; exit 0"
           }
         ]
