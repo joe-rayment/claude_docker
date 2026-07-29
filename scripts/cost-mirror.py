@@ -23,9 +23,22 @@ model-dependent so this is always an estimate. Unknown/off-ladder models
 still show their tokens but cost $0 and mark the line with a trailing '?'.
 "<synthetic>" rows are skipped.
 
+Billing mode: this template runs under both a raw API key and a Claude
+subscription. Under a subscription the dollar figure isn't a bill, it's
+what the session would have cost on the API — same math, different label
+("API-equiv"). COST_MIRROR_BILLING=api|sub forces the mode; otherwise it's
+auto-detected (see detect_billing_mode): an ANTHROPIC_API_KEY/
+ANTHROPIC_AUTH_TOKEN in the environment means "api", else the presence of
+claudeAiOauth.subscriptionType in ~/.claude/.credentials.json means "sub",
+else it defaults to "api". Billing mode is a render-time label only, never
+part of the persisted state.
+
 Failure posture: fail SILENT AND OPEN — any error prints nothing and exits 0.
 Env: COST_MIRROR_DISABLE=1 bypasses; COST_MIRROR_STATE_DIR overrides the
-state directory (tests).
+state directory (tests); COST_MIRROR_CREDENTIALS_PATH overrides the
+credentials file consulted for billing-mode auto-detection (tests);
+COST_MIRROR_PROJECTS_DIR overrides the ~/.claude/projects root that --all
+scans (tests).
 
 On-demand report: `cost-mirror --report [transcript.jsonl]` prints a
 human-readable per-model table (same totals as the hook line) to stdout.
@@ -38,6 +51,22 @@ throwaway dict and never writes state, so it can be run any number of times
 without disturbing the hook's incremental counters. Unlike hook mode it is
 NOT fail-silent: a missing/unreadable transcript prints to stderr and exits
 nonzero, since this path is invoked directly from a terminal to debug.
+
+Cross-session report: `cost-mirror --report --all [--since <N>d]` scopes
+the report to every transcript found on disk, independent of any live
+session — every ~/.claude/projects/*/*.jsonl plus each one's beside-it
+subagents/*.jsonl (no positional transcript argument in this mode).
+--since 7d/30d/etc limits it to transcripts modified in that window;
+without it every transcript is included. Output is a per-session table
+(project, short session id, last-modified date, total tokens, actual $,
+newest first) followed by the same per-side|model breakdown and grand
+total render_report produces for a single session. Because this can mean
+scanning hundreds of files, it keeps its own persisted incremental cache —
+a dedicated `all-sessions.json` in the state dir, keyed by file path with
+the same {off, agg} shape as the hook's per-session state — so repeat runs
+only read appended bytes; this cache is separate from the hook's
+per-session state files, and plain `--report` (no --all) still never
+writes any state at all.
 """
 
 import glob
@@ -45,6 +74,7 @@ import hashlib
 import json
 import os
 import sys
+import time
 from datetime import date
 
 
@@ -122,6 +152,40 @@ def _state_dir():
     )
 
 
+def detect_billing_mode():
+    """(mode, detail) where mode is "api" or "sub" and detail is a short
+    human-readable string naming the signal used, for the --report line.
+
+    Precedence: COST_MIRROR_BILLING=api|sub forces it. Otherwise auto-detect:
+    an API key/token in the environment means requests are billed per-token
+    regardless of any OAuth credentials also present, so that wins first.
+    Failing that, ~/.claude/.credentials.json (the Claude Code OAuth/login
+    credential store) is inspected for claudeAiOauth.subscriptionType — its
+    presence means this session authenticates via a Claude subscription, not
+    an API key, which is the most reliable signal available in this
+    environment (checked live: no ANTHROPIC_API_KEY/ANTHROPIC_AUTH_TOKEN is
+    set here, and the credentials file carries subscriptionType "max"). If
+    neither signal is found, default to "api" (today's behaviour) rather
+    than guess."""
+    forced = os.environ.get("COST_MIRROR_BILLING")
+    if forced in ("api", "sub"):
+        return forced, "forced via COST_MIRROR_BILLING"
+    if os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN"):
+        return "api", "auto: API key/token in env"
+    cred_path = os.environ.get("COST_MIRROR_CREDENTIALS_PATH") or os.path.expanduser(
+        "~/.claude/.credentials.json"
+    )
+    try:
+        with open(cred_path) as fh:
+            creds = json.load(fh)
+        oauth = creds.get("claudeAiOauth")
+        if isinstance(oauth, dict) and oauth.get("subscriptionType"):
+            return "sub", f"auto: oauth creds (subscriptionType={oauth['subscriptionType']})"
+    except Exception:
+        pass
+    return "api", "auto: no billing signal found, defaulting to api"
+
+
 def scan_file(path, assume_worker, fstate):
     """Add tokens from lines appended since the recorded offset."""
     try:
@@ -187,6 +251,9 @@ def aggregate_total(files_state):
 
 
 def summarise_tokens(total):
+    """One compact clause per side: in/out/cache-read/cache-write token counts,
+    each omitted when zero so a quiet session (e.g. a worker with no cache
+    writes) stays short. Order is in, out, cache-r, cache-w."""
     parts = []
     for side in ("main", "workers"):
         skey = "main" if side == "main" else "worker"
@@ -194,10 +261,23 @@ def summarise_tokens(total):
         if not rows:
             continue
         rows.sort(key=lambda r: -(r[1]["out"] + r[1]["cr"]))
-        out = sum(v["out"] for _, v in rows)
-        cread = sum(v["cr"] for _, v in rows)
+        n_in = sum(v["in"] for _, v in rows)
+        n_out = sum(v["out"] for _, v in rows)
+        n_cr = sum(v["cr"] for _, v in rows)
+        n_cw = sum(v["w5"] + v["w1"] for _, v in rows)
         models = ", ".join(m.replace("claude-", "") for m, _ in rows[:3])
-        parts.append(f"{side}: {fmt(out)} out · {fmt(cread)} cache-read ({models})")
+        comps = []
+        if n_in:
+            comps.append(f"{fmt(n_in)} in")
+        if n_out:
+            comps.append(f"{fmt(n_out)} out")
+        if n_cr:
+            comps.append(f"{fmt(n_cr)} cache-r")
+        if n_cw:
+            comps.append(f"{fmt(n_cw)} cache-w")
+        if not comps:  # all-zero usage row: keep the side visible rather than blank
+            comps = ["0 out"]
+        parts.append(f"{side}: {' · '.join(comps)} ({models})")
     return " | ".join(parts)
 
 
@@ -231,11 +311,16 @@ def pick_top_model(total):
     return best
 
 
-def summarise_dollars(total):
+def summarise_dollars(total, billing_mode="api"):
     """Actual dollar cost, plus an "at top model" counterfactual and the
     resulting savings, as a compact clause (or "" if there's nothing to
     show). Unknown-priced models still contribute their tokens to the token
-    summary but cost $0 here and mark the clause with a trailing '?'."""
+    summary but cost $0 here and mark the clause with a trailing '?'.
+
+    billing_mode "sub" means this session is paid for via a Claude
+    subscription rather than per-token API billing: the math is identical,
+    but the leading figure isn't a bill, it's what the session would have
+    cost on the API, so it is labelled "API-equiv"."""
     if not total:
         return ""
     models_seen = {key.split("|", 1)[1] for key in total}
@@ -245,6 +330,8 @@ def summarise_dollars(total):
     clause = f"~{fmt_usd(actual)}"
     if unknown:
         clause += "?"
+    if billing_mode == "sub":
+        clause += " API-equiv"
 
     top = pick_top_model(total)
     top_rates = rates_for(top) if top else None
@@ -278,21 +365,176 @@ def _default_transcript():
         if tp and os.path.isfile(tp):
             return tp
     projects = sorted(
-        glob.glob(os.path.expanduser("~/.claude/projects/*/*.jsonl")),
+        glob.glob(os.path.join(_projects_dir(), "*", "*.jsonl")),
         key=lambda p: os.path.getmtime(p),
         reverse=True,
     )
     return projects[0] if projects else None
 
 
-def render_report(tp, total):
+def _parse_since(raw):
+    """'7d' / '30d' -> 7 / 30 (int days). Only the '<N>d' form is accepted;
+    raises ValueError with a usable message on anything else."""
+    raw = raw.strip()
+    if not raw.endswith("d") or not raw[:-1].isdigit():
+        raise ValueError(f"--since expects e.g. 7d or 30d, got {raw!r}")
+    return int(raw[:-1])
+
+
+def _projects_dir():
+    return os.environ.get("COST_MIRROR_PROJECTS_DIR") or os.path.expanduser(
+        "~/.claude/projects"
+    )
+
+
+def _list_transcripts(since_days=None):
+    """Every top-level session transcript under <projects_dir>/*/*.jsonl
+    (NOT the beside-it subagents/*.jsonl — those are pulled in per-session by
+    scan_session), newest-mtime first, optionally limited to files modified
+    within the last since_days days."""
+    paths = glob.glob(os.path.join(_projects_dir(), "*", "*.jsonl"))
+    if since_days is not None:
+        cutoff = time.time() - since_days * 86400
+        paths = [p for p in paths if os.path.getmtime(p) >= cutoff]
+    return sorted(paths, key=os.path.getmtime, reverse=True)
+
+
+def _session_file_paths(tp):
+    """[tp] plus its beside-it subagents/*.jsonl — the same file set
+    scan_session() scans for one session, recomputed here (read-only glob,
+    scan_session itself is untouched) so --all can group the flat cross-
+    session cache back into per-session rows."""
+    subdir = os.path.join(os.path.splitext(tp)[0], "subagents")
+    return [tp] + sorted(glob.glob(os.path.join(subdir, "*.jsonl")))
+
+
+def _all_state_path():
+    """Path to the --all incremental cache. Deliberately a single dedicated
+    file, separate from the hook's per-session state files (named by a
+    sha256 hash of their transcript path) that live in the same directory —
+    plain `--report` must keep writing no state at all; only --report --all
+    ever touches this file."""
+    return os.path.join(_state_dir(), "all-sessions.json")
+
+
+def _load_all_cache():
+    path = _all_state_path()
+    try:
+        with open(path) as fh:
+            data = json.load(fh)
+    except Exception:
+        data = {}
+    if data.get("v") != STATE_VERSION:  # old/missing schema: rescan clean
+        data = {}
+    data["v"] = STATE_VERSION
+    data.setdefault("files", {})
+    return data
+
+
+def _save_all_cache(data):
+    path = _all_state_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w") as fh:
+        json.dump(data, fh)
+    os.replace(tmp, path)
+
+
+def render_all_sessions_table(session_rows, since_days=None):
+    """One row per transcript — project dir, short session id, last-modified
+    date, total tokens, actual $ — sorted by most recent first."""
+    scope = f" (modified in the last {since_days}d)" if since_days is not None else ""
+    lines = [f"cost-mirror report --all{scope} — {len(session_rows)} session(s)", ""]
+    cols = ("project", "session", "modified", "tokens", "actual $")
+    widths = (40, 10, 12, 9, 10)
+
+    def fmt_row(values):
+        return "".join(
+            v.ljust(w) if i < 3 else v.rjust(w) for i, (v, w) in enumerate(zip(values, widths))
+        )
+
+    header = fmt_row(cols)
+    lines += [header, "-" * len(header)]
+    for row in sorted(session_rows, key=lambda r: -r["mtime"]):
+        modified = date.fromtimestamp(row["mtime"]).isoformat()
+        project = row["project"]
+        if len(project) > widths[0] - 1:
+            project = project[: widths[0] - 2] + "…"
+        lines.append(fmt_row((
+            project, row["session"], modified, fmt(row["tokens"]), fmt_usd(row["actual"]),
+        )))
+    return "\n".join(lines)
+
+
+def run_report_all(since_days):
+    """--report --all entry point: aggregate every transcript under
+    ~/.claude/projects/*/*.jsonl (plus each one's beside-it
+    subagents/*.jsonl), optionally scoped to --since. Reuses scan_session()/
+    aggregate_total() unchanged per-file and per-session; only the grouping
+    and cache bookkeeping here are new. NOT fail-silent, like plain
+    --report — a transcript-free corpus prints a message and exits nonzero."""
+    transcripts = _list_transcripts(since_days)
+    if not transcripts:
+        scope = f" modified in the last {since_days}d" if since_days is not None else ""
+        print(
+            f"cost-mirror --report --all: no transcript files found under "
+            f"{os.path.join(_projects_dir(), '*', '*.jsonl')}{scope}",
+            file=sys.stderr,
+        )
+        return 1
+
+    cache = _load_all_cache()
+    files_state = cache["files"]  # persisted across runs: path -> {off, agg}
+
+    session_rows = []
+    selected_state = {}  # this run's scope only (cache may hold more history)
+    for tp in transcripts:
+        scan_session(tp, files_state)
+        paths = [p for p in _session_file_paths(tp) if p in files_state]
+        session_state = {p: files_state[p] for p in paths}
+        selected_state.update(session_state)
+        session_total = aggregate_total(session_state)
+        tokens = sum(sum(c.values()) for c in session_total.values())
+        actual = sum(
+            cost(c, rates_for(key.split("|", 1)[1])) for key, c in session_total.items()
+        )
+        session_rows.append({
+            "project": os.path.basename(os.path.dirname(tp)),
+            "session": os.path.splitext(os.path.basename(tp))[0][:8],
+            "mtime": os.path.getmtime(tp),
+            "tokens": tokens,
+            "actual": actual,
+        })
+
+    _save_all_cache(cache)
+
+    grand_total = aggregate_total(selected_state)
+    billing_mode, billing_detail = detect_billing_mode()
+    since_label = f", since {since_days}d" if since_days is not None else ""
+    label = f"ALL sessions ({len(transcripts)} transcripts{since_label})"
+
+    print(render_all_sessions_table(session_rows, since_days))
+    print()
+    print(render_report(label, grand_total, billing_mode, billing_detail))
+    return 0
+
+
+def render_report(tp, total, billing_mode="api", billing_detail=""):
     """Human-readable per-side|model table: token counts plus actual/at-top/
     saved dollars, with a totals row. cache-write is shown as one combined
-    column (w5+w1) for compactness."""
+    column (w5+w1) for compactness.
+
+    A "billing: ..." line naming the mode/detection signal is always
+    emitted, in both api and sub mode. billing_mode "sub" additionally
+    marks the money columns as API-equivalent (subscription billing, not a
+    per-token bill) without altering the table's column layout."""
     top = pick_top_model(total)
     top_rates = rates_for(top) if top else None
 
     lines = [f"cost-mirror report — {tp}"]
+    mode_label = "subscription" if billing_mode == "sub" else "API"
+    equiv_note = " — dollars are API-equivalent" if billing_mode == "sub" else ""
+    lines.append(f"billing: {mode_label} ({billing_detail}){equiv_note}")
     if top:
         note = ""
         if top.startswith("claude-sonnet-5") and date.today() < SONNET5_INTRO_CUTOFF:
@@ -302,8 +544,14 @@ def render_report(tp, total):
         lines.append("top model (counterfactual): none (no rows scanned)")
     lines.append("")
 
-    cols = ("side", "model", "in", "out", "cache-r", "cache-w", "actual $", "at-top $", "saved $")
-    widths = (7, 28, 9, 9, 9, 9, 10, 10, 10)
+    money_suffix = "*" if billing_mode == "sub" else ""
+    cols = (
+        "side", "model", "in", "out", "cache-r", "cache-w",
+        f"actual ${money_suffix}", f"at-top ${money_suffix}", f"saved ${money_suffix}",
+    )
+    # token columns at 11 (not 9) so a --all grand total (routinely 9-digit
+    # cache-r/cache-w counts) never runs two numbers together with no gap
+    widths = (7, 28, 11, 11, 11, 11, 10, 10, 10)
 
     def fmt_row(values):
         return "".join(
@@ -345,8 +593,44 @@ def render_report(tp, total):
 def run_report(argv):
     """--report entry point. NOT fail-silent: prints to stderr and returns a
     nonzero exit code on a missing/unreadable transcript, since this is run
-    directly from a terminal rather than from the hook."""
-    tp = argv[0] if argv else _default_transcript()
+    directly from a terminal rather than from the hook.
+
+    --all switches to cross-session mode (see run_report_all): every
+    transcript is read directly off disk, independent of any live session,
+    and no positional transcript argument is accepted. --since <N>d (e.g.
+    7d, 30d) narrows --all to transcripts modified in that window; it is
+    a no-op without --all, since single-transcript mode has nothing to
+    filter."""
+    all_mode = False
+    since_days = None
+    positional = []
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg == "--all":
+            all_mode = True
+            i += 1
+        elif arg == "--since" or arg.startswith("--since="):
+            if arg == "--since":
+                if i + 1 >= len(argv):
+                    print("cost-mirror --report: --since requires a value, e.g. --since 7d", file=sys.stderr)
+                    return 1
+                raw, i = argv[i + 1], i + 2
+            else:
+                raw, i = arg.split("=", 1)[1], i + 1
+            try:
+                since_days = _parse_since(raw)
+            except ValueError as exc:
+                print(f"cost-mirror --report: {exc}", file=sys.stderr)
+                return 1
+        else:
+            positional.append(arg)
+            i += 1
+
+    if all_mode:
+        return run_report_all(since_days)
+
+    tp = positional[0] if positional else _default_transcript()
     if not tp:
         print(
             "cost-mirror --report: no transcript given and none found under "
@@ -360,7 +644,8 @@ def run_report(argv):
         return 1
     files_state = {}  # throwaway: full scan from offset 0, state never written
     scan_session(tp, files_state)
-    print(render_report(tp, aggregate_total(files_state)))
+    billing_mode, billing_detail = detect_billing_mode()
+    print(render_report(tp, aggregate_total(files_state), billing_mode, billing_detail))
     return 0
 
 
@@ -396,7 +681,8 @@ def main():
         json.dump(state, fh)
     os.replace(tmp, state_path)
     if token_line:
-        dollar_clause = summarise_dollars(total)
+        billing_mode, _ = detect_billing_mode()
+        dollar_clause = summarise_dollars(total, billing_mode)
         line = f"{token_line} | {dollar_clause}" if dollar_clause else token_line
         print(f"[cost-mirror] this session — {line}")
 

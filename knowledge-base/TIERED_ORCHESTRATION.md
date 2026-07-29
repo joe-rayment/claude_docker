@@ -268,12 +268,35 @@ ever unavailable on the plan, `/advisor` fails visibly; swap the value then.
 
 ## Cost monitor (cost-mirror / tier-cost, added 2026-07-28)
 
-The `cost-mirror` hook line (one per prompt) now shows, per `side|model`,
-token counts **and** dollars: `main: 63k out · 22.6M cache-read (fable-5) |
-workers: ... | ~$52 · ~$60 at fable-5 → saved ~$8.58`. The dollar clause is
-suppressed when it would round to $0.00 or only one model appears in the
-session (nothing to save against). Unknown/off-ladder models still show
-their tokens but contribute $0 and mark the clause with a trailing `?`.
+The `cost-mirror` hook line (one per prompt) shows, per `side|model`, token
+counts **and** dollars: `main: 42k in · 113 out · 38k cache-w (opus-5) |
+workers: ... | ~$52 · ~$60 at fable-5 → saved ~$8.58`. The token summary
+covers all four counters — in, out, cache-r, cache-w — but **omits any
+component that's zero**, so a quiet side (e.g. a worker that never wrote to
+cache) stays short instead of padding the line with `0 cache-r`. The dollar
+clause is suppressed when it would round to $0.00 or only one model appears
+in the session (nothing to save against). Unknown/off-ladder models still
+show their tokens but contribute $0 and mark the clause with a trailing `?`.
+
+**Billing mode: API vs subscription (2026-07-29).** The same container runs
+under either a raw API key or a Claude subscription; under a subscription
+the dollar figure isn't a bill, it's what the session *would* cost on the
+API — same math, `API-equiv` label instead. `COST_MIRROR_BILLING=api|sub`
+forces the mode; otherwise `detect_billing_mode()` auto-detects, in order:
+(1) `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN` in the environment → `api`
+(an explicit key means per-token billing regardless of any OAuth creds also
+present); (2) `claudeAiOauth.subscriptionType` present in
+`~/.claude/.credentials.json` (override: `COST_MIRROR_CREDENTIALS_PATH`,
+tests only) → `sub`; (3) neither signal found → defaults to `api` rather
+than guessing. In `api` mode the hook line is byte-identical to before this
+feature; in `sub` mode the actual-cost figure gets ` API-equiv` appended,
+e.g. `~$0.45 API-equiv · ~$1.20 at opus-5 → saved ~$0.75` — the savings
+clause is unchanged since it was already a counterfactual either way.
+`--report` gains a `billing: <mode> (<how determined>)` line up top (plus
+`— dollars are API-equivalent` in sub mode) and marks the three money
+column headers with a trailing `*` in sub mode; the table's columns/widths
+and data rows are otherwise untouched. Billing mode is computed at render
+time only — it is never written into the persisted per-session state.
 
 Run `tier-cost` (alias for `cost-mirror --report [transcript.jsonl]`) for
 the full per-model breakdown: one row per `side|model` with input/output/
@@ -284,6 +307,33 @@ newest cost-mirror state file, falling back to the newest transcript under
 incremental byte-offset state or writes it) and is NOT fail-silent — a
 missing/unreadable transcript prints to stderr and exits nonzero, since
 it's run directly from a terminal rather than from the hook.
+
+**Cross-session: `--report --all [--since <N>d]` (added 2026-07-29).**
+Everything above is scoped to one transcript; `--all` instead reads every
+`~/.claude/projects/*/*.jsonl` on disk (plus each one's beside-it
+`subagents/*.jsonl`), independent of any live session — no positional
+transcript argument in this mode. Output is a per-session table (project
+dir, short session id, last-modified date, total tokens, actual $, newest
+first) followed by the same per-side|model breakdown and grand total
+`--report` produces for one session, computed over everything scanned.
+`--since 7d` / `--since 30d` (any `<N>d`) narrows the file set to
+transcripts modified in that window — a bare `--all` includes everything.
+The billing-mode label and the counterfactual/top-model math apply to the
+aggregate exactly as in single-session mode.
+
+Scanning hundreds of transcripts on every invocation would be slow, so
+`--all` keeps its own persisted incremental cache — `all-sessions.json` in
+the cost-mirror state dir, keyed by file path with the same `{off, agg}`
+shape as the hook's per-session state — so a warm run only reads bytes
+appended since the last `--all` run. This cache is a **dedicated file**,
+never one of the hook's per-session `<sha256>.json` state files: plain
+`--report` (no `--all`) still writes zero state, unchanged. Measured on
+this container's own `~/.claude/projects/` (47 top-level transcripts, ~110
+files with subagents, ~21 MB): cold run 0.055s, warm run 0.014s. A corpus
+with no transcripts at all prints a message to stderr and exits nonzero
+rather than crashing; `--all` is otherwise NOT fail-silent, like plain
+`--report`. Test-only override: `COST_MIRROR_PROJECTS_DIR` replaces
+`~/.claude/projects` as the root `--all` scans.
 
 **The counterfactual, precisely:** "at top" reprices every row's *actual*
 token counts at the session's top model's rates — the top model being the
