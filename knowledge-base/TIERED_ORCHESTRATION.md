@@ -312,6 +312,62 @@ input, cache-write-1h = 2.0× input. The sonnet-5 intro cutoff is
 `SONNET5_INTRO_CUTOFF` in the script; `_sonnet5_rates(today=...)` takes an
 optional date for testing (see `tests/tier-hooks.bats`).
 
+## Delegation gate (2026-07-29)
+
+**Why instructions alone failed.** The protocol above is text, and text
+didn't bind behavior: the motivating session logged 1 demonstration scout
+against ~20 inline main-loop calls with the full protocol already live. A
+headless matrix confirmed it wasn't a one-off — with the global protocol
+and the per-prompt `[tier]` line both present, two of three task shapes
+(B, C below) ran **100% inline** in their control children. Guidance alone
+doesn't move spend; only a mechanical gate does.
+
+**Mechanism.** `scripts/delegation-gate.py` (PreToolUse) counts
+consecutive Read/Grep/Glob/Edit/Write/NotebookEdit + non-exempt-Bash calls
+made by the **main loop only**, never a subagent. Mode (env
+`DELEGATION_GATE_MODE` / `~/.claude/delegation-gate.mode`, default
+`warn`): `warn` fires a one-shot `additionalContext` nudge at streak 4;
+`enforce` always denies Edit/Write/NotebookEdit (naming executor) and
+denies other counted tools past streak 8 (naming scout). Housekeeping
+Bash (`bd`, read/commit-ish `git`, `bats`, `dev-log`, `cost-mirror`,
+`tier-*`, `run-tests`, `take-screenshot`) is exempt from counting
+entirely. `Agent`/`Workflow` resets the streak to 0 — the "I delegated"
+signal. Fails open.
+
+**Discriminator, and the dead-gate lesson.** The obvious signal — a
+subagent `transcript_path` containing `/subagents/` — is a red herring:
+byte-identical for main-loop and subagent calls. The real signal,
+`agent_id`, changes shape mid-session: absent pre-first-spawn, present-
+but-`null` on main-loop calls after any spawn, populated only on subagent
+calls. An earlier version assumed `agent_id: null` was the only main-loop
+shape and was tested only against it — 12/12 green — while real
+early-session traffic (key **absent**) fell through as "subagent, skip":
+the gate silently never fired, caught only by zero state files in real
+sessions, not by its own test suite. A worker's report and the synthetic
+fixtures encoded the same wrong assumption, so the tests validated the
+bug. Lesson: check empirical claims against raw evidence, not a report or
+a test suite built on the same unverified premise. Current tests lock in
+both main-loop shapes plus a regression guard against the transcript_path
+hypothesis (`tests/delegation-gate.bats`).
+
+**2-round headless matrix (12 children): dead-gate control vs live gate.**
+**A** (recon): regression guard passes clean — 3 scouts, 0 inline reads.
+**B**: warn causally flips the shape — the streak-4 note is followed by
+an executor spawn on the very next move, at both sonnet and fable top
+tiers; enforce's deny paths are live too — an Edit-deny redirected a
+fable session into its executor, and a `DENY_AT=1` child went deny →
+scout → correct answer. **C** (audit): the honest negative — bursts stay
+~4 calls, never reaching `DENY_AT=8`, so enforce never trips, and its one
+warn-mode delegation spawned subagent_type-less `general-purpose` instead
+of `scout` (functionally delegated, wrong tier, recon pricing forfeited —
+why the protocol now spells out `subagent_type: "scout"` explicitly).
+Every variant's final answer stayed correct, independently re-verified.
+
+**Tuning decision.** Ship the observed defaults — warn at streak 4,
+enforce's deny at streak 8. `enforce` is the user's escalation endpoint,
+one env flip away (`DELEGATION_GATE_MODE=enforce` or
+`~/.claude/delegation-gate.mode`) — no code change required.
+
 ## Graceful degradation (probe + fallback)
 
 A probe is a real `claude -p` round trip (~5–10 s per candidate), so
@@ -410,6 +466,13 @@ reconciler replaces them with concrete ids on first run.
 
 Revision log (each reversible via git on the listed files):
 
+- **2026-07-29 — delegation gate (beads arr/0xi/p1r):**
+  `scripts/delegation-gate.py` + `tests/delegation-gate.bats` added;
+  `config/claude-settings.json` gains the PreToolUse entry;
+  `config/claude-user-memory.md` dispatch-table wording tightened
+  (whole-task trivial rule, explicit `subagent_type: "scout"`); this doc
+  gains the Delegation gate section. Rollback = revert those files and
+  remove the settings entry; the gate fails open if the binary is absent.
 - **2026-07-17 — mechanism v2 (frontmatter binding; bead dsu):**
   `scripts/tier-set.sh`, `scripts/tier-reconcile.sh`, `scripts/tier-derive.sh`
   rewritten (env-slot remap retired, purge policy added, `TIER_AGENTS_DIR`

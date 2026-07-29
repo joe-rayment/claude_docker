@@ -10,10 +10,10 @@ This applies in **every project** run inside the claude-dev container. Tier bind
 
 | work shape | dispatch |
 |---|---|
-| recon: where is X, usages, summaries, logs, versions | 1 `scout`; independent questions → parallel scouts |
+| recon: where is X, usages, summaries, logs, versions | 1 `scout` (`Agent` with `subagent_type: "scout"` — omit it and you get general-purpose at the wrong tier, forfeiting recon pricing); independent questions → parallel scouts |
 | implementation slice | `executor` + slice spec (objective · files in scope · output contract · boundaries) |
 | non-trivial claim — "done", a bug diagnosis, a research fact | 1 `verifier` per claim, after artifacts exist |
-| trivial: done in a couple of your own tool calls | inline — don't spawn for it |
+| trivial: the **whole task** fits in a couple of your own tool calls | inline — but a stream of individually-small checks is recon: batch it into one scout |
 
 A codebase question is recon **plus** reasoning, not a reason to skip delegation: scouts fetch the evidence, you conclude from their summaries.
 
