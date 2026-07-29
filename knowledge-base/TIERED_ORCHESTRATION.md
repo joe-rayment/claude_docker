@@ -352,9 +352,10 @@ hypothesis (`tests/delegation-gate.bats`).
 
 **2-round headless matrix (12 children): dead-gate control vs live gate.**
 **A** (recon): regression guard passes clean — 3 scouts, 0 inline reads.
-**B**: warn causally flips the shape — the streak-4 note is followed by
-an executor spawn on the very next move, at both sonnet and fable top
-tiers; enforce's deny paths are live too — an Edit-deny redirected a
+**B**: flips under warn at both sonnet and fable top tiers (streak-4 note
+recorded, executor spawn on the very next move) — but see the channel
+caveat below before reading that ordering as causal in headless runs;
+enforce's deny paths are unambiguously live — an Edit-deny redirected a
 fable session into its executor, and a `DENY_AT=1` child went deny →
 scout → correct answer. **C** (audit): the honest negative — bursts stay
 ~4 calls, never reaching `DENY_AT=8`, so enforce never trips, and its one
@@ -363,10 +364,25 @@ of `scout` (functionally delegated, wrong tier, recon pricing forfeited —
 why the protocol now spells out `subagent_type: "scout"` explicitly).
 Every variant's final answer stayed correct, independently re-verified.
 
+**Warn-channel matrix (v2.1.220, probed).** A DENY's
+`permissionDecisionReason` reaches the model **always** — it arrives as
+an `is_error` tool_result and is followed as a literal instruction (both
+probes confirmed unprompted compliance). An ALLOW's `additionalContext`
+(and `systemMessage`) is **harness-dependent**: in an interactive/agent
+session it lands in model context (observed live — the shipping session
+read its own streak-4 warn and delegated), but in headless `claude -p`
+children a full content-scan of every user/assistant message found the
+probe strings **only in sidecar attachment records, never model-visible**.
+Two implications: headless B-warn "flips" may be spontaneous delegation
+rather than warn-caused (n=1, channel inert there), and in headless
+pipelines only `enforce` actually steers.
+
 **Tuning decision.** Ship the observed defaults — warn at streak 4,
-enforce's deny at streak 8. `enforce` is the user's escalation endpoint,
-one env flip away (`DELEGATION_GATE_MODE=enforce` or
-`~/.claude/delegation-gate.mode`) — no code change required.
+enforce's deny at streak 8. Warn targets interactive sessions, where its
+channel demonstrably lands; `enforce` is the user's escalation endpoint
+and the only reliable lever for headless children — one env flip away
+(`DELEGATION_GATE_MODE=enforce` or `~/.claude/delegation-gate.mode`), no
+code change required.
 
 ## Graceful degradation (probe + fallback)
 

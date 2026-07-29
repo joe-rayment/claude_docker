@@ -42,18 +42,18 @@ State: ~/.claude/cache/delegation-gate/<session_id>.json holds
 {"streak": int, "warned": bool}. Missing/corrupt state starts fresh.
 Opportunistic GC unlinks sibling state files untouched for 7+ days.
 
-Output channel for warn (STEP 0): a channel probe (gateprobe/) fed a Read
-call both hookSpecificOutput.additionalContext and a top-level
-systemMessage from an ALLOW decision. Both showed up in the resulting
-transcript only as inert "attachment" metadata (types
-hook_additional_context / hook_system_message) — neither string was ever
-folded into any actual user/assistant message content in that run, so
-which channel an interactive session's model actually reads stayed
-unproven either way (the probe necessarily ran headless via `claude -p`;
-an interactive session may assemble context differently). Per the probe
-brief's own fallback for exactly this ambiguity, this hook emits
-additionalContext, the documented field for this purpose — revisit if
-live interactive use shows the warn note never lands.
+Output channel for warn (probed twice, v2.1.220 — resolved picture): a
+DENY's permissionDecisionReason reaches the model ALWAYS (arrives as an
+is_error tool_result; both probes showed unprompted compliance with the
+reason text). An ALLOW's additionalContext/systemMessage is
+HARNESS-DEPENDENT: in an interactive/agent session it lands in model
+context (observed live — the session that shipped this hook read its own
+streak-4 warn and delegated in response), but in headless `claude -p`
+runs a full content-scan of every user/assistant message found the probe
+strings only in sidecar attachment records, never model-visible. So warn
+mode is effective in interactive sessions and inert in headless children;
+where headless behavior must actually change, use enforce — only a deny
+steers there.
 
 Failure posture: fail SILENT AND OPEN. Any error — malformed stdin,
 unreadable state, an unwritable cache dir — exits 0 with no output.
