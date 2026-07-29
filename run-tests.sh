@@ -36,7 +36,8 @@ case "$SUITE" in
     all)
         echo "Running all tests..."
         bats "$TEST_DIR/smoke.bats" "$TEST_DIR/experience.bats" "$TEST_DIR/multi-project.bats" \
-             "$TEST_DIR/bd-guard.bats" "$TEST_DIR/context-detect.bats" "$TEST_DIR/tier-hooks.bats"
+             "$TEST_DIR/bd-guard.bats" "$TEST_DIR/context-detect.bats" "$TEST_DIR/tier-hooks.bats" \
+             "$TEST_DIR/hook-staging.bats" "$TEST_DIR/delegation-gate.bats"
         ;;
     *)
         echo "Usage: run-tests.sh [smoke|experience|multi-project|all]" >&2

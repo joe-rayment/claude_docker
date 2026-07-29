@@ -193,6 +193,7 @@ COPY --chown=agent:agent scripts/cost-mirror.py /usr/local/bin/cost-mirror
 COPY --chown=agent:agent scripts/disk-cleanup.sh /usr/local/bin/disk-cleanup
 COPY --chown=agent:agent scripts/bd-guard.sh /usr/local/bin/bd-guard
 COPY --chown=agent:agent scripts/context-detect.sh /usr/local/bin/context-detect
+COPY --chown=agent:agent scripts/delegation-gate.py /usr/local/bin/delegation-gate
 COPY --chown=agent:agent run-tests.sh /usr/local/bin/run-tests.sh
 COPY --chown=agent:agent tests/ /opt/claude-dev/tests/
 COPY --chown=agent:agent knowledge-base/ /opt/claude-dev/knowledge-base/
@@ -232,6 +233,7 @@ RUN chmod +x /usr/local/bin/entrypoint.sh \
              /usr/local/bin/tier-reconcile \
              /usr/local/bin/disk-cleanup \
              /usr/local/bin/bd-guard \
+             /usr/local/bin/delegation-gate \
              /usr/local/bin/run-tests.sh
 
 # Pin the Playwright CLI globally. take-screenshot calls this binary instead

@@ -141,7 +141,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/usr/local/bin/delegation-gate",
+            "command": "command -v delegation-gate >/dev/null 2>&1 && exec delegation-gate; [ -x \"$HOME/.claude/hooks/delegation-gate\" ] && exec \"$HOME/.claude/hooks/delegation-gate\"; exit 0",
             "timeout": 10
           }
         ]
