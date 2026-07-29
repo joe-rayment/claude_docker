@@ -8,7 +8,7 @@
 # subagent's PreToolUse payload carries "/subagents/" in transcript_path
 # was DISPROVEN by a live probe (scratchpad/gateprobe/) — transcript_path
 # is identical for main-loop and subagent calls. The real discriminator is
-# agent_id/agent_type, populated only for subagent-originated calls. Tests
+# agent_id/agent_type: ABSENT on real main-loop calls, populated on subagent calls. Tests
 # below use agent_id as the discriminator and include a regression guard
 # (see "transcript_path is NOT the discriminator") locking in that finding.
 
@@ -28,11 +28,22 @@ state_file() {
 
 # ── main-loop counting ──────────────────────────────────────────────────────
 
-@test "main-loop Read increments streak in state file" {
-    run sh -c 'jq -cn "{tool_name:\"Read\",session_id:\"s1\",agent_id:null,tool_input:{file_path:\"/x\"}}" | python3 '"$GATE"
+@test "main-loop Read increments streak in state file (REAL payload shape: agent_id key ABSENT)" {
+    # Real v2.1.220 main-loop payloads carry NO agent_id key at all. The
+    # originally shipped gate read key-absence as "subagent, don't gate"
+    # and therefore never fired on real traffic — this fixture is the
+    # regression guard: absence MUST count as main loop.
+    run sh -c 'jq -cn "{tool_name:\"Read\",session_id:\"s1\",tool_input:{file_path:\"/x\"}}" | python3 '"$GATE"
     [ "$status" -eq 0 ]
     [ -z "$output" ]
     jq -e '.streak == 1' "$(state_file s1)"
+}
+
+@test "main-loop Read with agent_id:null (legacy/alternate shape) also counts" {
+    run sh -c 'jq -cn "{tool_name:\"Read\",session_id:\"s1b\",agent_id:null,tool_input:{file_path:\"/x\"}}" | python3 '"$GATE"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+    jq -e '.streak == 1' "$(state_file s1b)"
 }
 
 @test "subagent call (agent_id set) is skipped: no state change, empty output" {

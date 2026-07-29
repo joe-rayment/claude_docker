@@ -12,16 +12,19 @@ either nudges (warn) or blocks (enforce) once a streak crosses a threshold.
 Calling the Agent (or Workflow) tool resets the streak to zero — that is
 the "I delegated" signal.
 
-Main-loop discriminator (STEP 0, empirical probe in scratchpad/gateprobe/):
-the obvious hypothesis — that a subagent's PreToolUse payload carries a
-transcript_path under .../subagents/agent-*.jsonl — is WRONG. That path
-does exist on disk (the harness writes each subagent's own transcript
-there), but the transcript_path FIELD DELIVERED TO THE HOOK is identical
-for a main-loop call and a subagent's own call: both point at the
-top-level session's own <session_id>.jsonl. The field that actually
-discriminates is agent_id/agent_type: both keys are present on every
-PreToolUse payload observed, null for a main-loop call and populated
-(e.g. "scout") for a call made from inside a subagent. See is_main_loop().
+Main-loop discriminator (empirical, scratchpad/gateprobe/ raw log,
+harness v2.1.220): the obvious hypothesis — that a subagent's PreToolUse
+payload carries a transcript_path under .../subagents/agent-*.jsonl — is
+WRONG. That path does exist on disk, but the transcript_path FIELD
+DELIVERED TO THE HOOK is byte-identical for a main-loop call and a
+subagent's own call: both point at the top-level session's own
+<session_id>.jsonl. What actually discriminates is agent_id/agent_type —
+and on real main-loop payloads those keys are ABSENT ENTIRELY (not
+present-with-null; an earlier report claimed null and shipped a gate that
+never fired, caught only by behavioral evidence: zero state files across
+real runs). Subagent-originated calls carry both keys populated (e.g.
+agent_type "scout"). So: agent_id absent OR null/empty = main loop;
+agent_id populated = subagent. See is_main_loop().
 
 Mode: env DELEGATION_GATE_MODE, else ~/.claude/delegation-gate.mode
 (single word), else "warn".
@@ -81,15 +84,13 @@ EXEMPT_BASH_RE = re.compile(
 
 
 def is_main_loop(payload):
-    """True only when confident this tool call originates in the top-level
-    orchestrator loop, not a subagent. See the module docstring for the
-    STEP 0 finding: the discriminator is agent_id, not transcript_path. A
-    payload missing the agent_id key entirely (an unrecognized schema) is
-    treated as NOT main-loop — falsely throttling a subagent would break
-    scout fan-out, which currently works and must keep working, so
-    uncertainty always resolves toward leaving the call alone."""
-    if "agent_id" not in payload:
-        return False
+    """True when this tool call originates in the top-level orchestrator
+    loop, not a subagent. Real main-loop payloads carry NO agent_id key at
+    all (v2.1.220, verified against the raw gateprobe log); subagent calls
+    carry agent_id populated. Treating key-absence as "subagent" is the
+    exact bug that shipped a never-firing gate — absence IS the main loop.
+    A populated agent_id is the only positive subagent signal, so that —
+    and only that — suppresses gating."""
     return not payload.get("agent_id")
 
 
