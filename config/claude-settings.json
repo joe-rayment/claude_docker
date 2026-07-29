@@ -135,6 +135,16 @@
             "command": "command -v workflow-lint >/dev/null 2>&1 && exec workflow-lint; [ -x \"$HOME/.claude/hooks/workflow-lint\" ] && exec \"$HOME/.claude/hooks/workflow-lint\"; exit 0"
           }
         ]
+      },
+      {
+        "matcher": "Read|Grep|Glob|Bash|Edit|Write|NotebookEdit|Agent|Workflow",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/local/bin/delegation-gate",
+            "timeout": 10
+          }
+        ]
       }
     ]
   }
