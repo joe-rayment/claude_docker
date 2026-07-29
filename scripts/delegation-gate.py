@@ -82,6 +82,14 @@ EXEMPT_BASH_RE = re.compile(
     r"|bats|dev-log|cost-mirror|tier-|delegation-gate|run-tests|take-screenshot)\b"
 )
 
+# Compound-command handling: a single Bash tool call is often several
+# shell commands chained together (the session-close protocol commonly
+# writes `cd /workspace && bd close ... && git push`). EXEMPT_BASH_RE
+# alone only ever sees the whole string, so it anchors on the FIRST
+# command -- a leading `cd` made an otherwise all-exempt line count.
+BASH_SPLIT_RE = re.compile(r"&&|\|\||\||;|\n")
+CD_SEGMENT_RE = re.compile(r"^cd\b")
+
 
 def is_main_loop(payload):
     """True when this tool call originates in the top-level orchestrator
@@ -95,7 +103,23 @@ def is_main_loop(payload):
 
 
 def is_exempt_bash(command):
-    return bool(EXEMPT_BASH_RE.match(command or ""))
+    """A compound line is exempt iff, after dropping leading pure `cd`
+    navigation segments (a bare directory change carries no work), every
+    remaining segment matches EXEMPT_BASH_RE. Splits on &&, ||, |, ;, and
+    newlines. A line that is ONLY leading cd segments is exempt (pure
+    navigation). A mixed line -- an exempt segment plus a non-exempt one,
+    in any position -- stays NOT exempt: partial exemption must not
+    become a smuggling hole."""
+    if not command or not command.strip():
+        return False
+    segments = [s.strip() for s in BASH_SPLIT_RE.split(command) if s.strip()]
+    i = 0
+    while i < len(segments) and CD_SEGMENT_RE.match(segments[i]):
+        i += 1
+    segments = segments[i:]
+    if not segments:
+        return True  # pure cd navigation: no work performed
+    return all(EXEMPT_BASH_RE.match(s) for s in segments)
 
 
 def state_dir():

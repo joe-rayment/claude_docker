@@ -139,6 +139,51 @@ state_file() {
     [ ! -f "$(state_file s6)" ]
 }
 
+@test "exempt Bash: leading cd then bd is exempt (cd /workspace && bd close)" {
+    export DELEGATION_GATE_MODE=enforce
+    export DELEGATION_GATE_DENY_AT=1
+    run sh -c 'jq -cn "{tool_name:\"Bash\",session_id:\"s6a\",agent_id:null,tool_input:{command:\"cd /workspace && bd close x --reason y\"}}" | python3 '"$GATE"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+    [ ! -f "$(state_file s6a)" ]
+}
+
+@test "exempt Bash: leading cd then git push via semicolon is exempt (cd /a; git push)" {
+    export DELEGATION_GATE_MODE=enforce
+    export DELEGATION_GATE_DENY_AT=1
+    run sh -c 'jq -cn "{tool_name:\"Bash\",session_id:\"s6b\",agent_id:null,tool_input:{command:\"cd /a; git push\"}}" | python3 '"$GATE"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+    [ ! -f "$(state_file s6b)" ]
+}
+
+@test "exempt Bash: multiline session-close sequence is exempt" {
+    export DELEGATION_GATE_MODE=enforce
+    export DELEGATION_GATE_DENY_AT=1
+    run sh -c 'jq -cn "{tool_name:\"Bash\",session_id:\"s6c\",agent_id:null,tool_input:{command:\"cd /workspace\ngit add -A\ngit commit -m x\ngit push\"}}" | python3 '"$GATE"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+    [ ! -f "$(state_file s6c)" ]
+}
+
+@test "mixed Bash: exempt segments plus a non-exempt cat is NOT exempt (increments streak)" {
+    export DELEGATION_GATE_MODE=enforce
+    export DELEGATION_GATE_DENY_AT=99
+    run sh -c 'jq -cn "{tool_name:\"Bash\",session_id:\"s6d\",agent_id:null,tool_input:{command:\"cd /w && bd ready && cat /etc/passwd\"}}" | python3 '"$GATE"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+    jq -e '.streak == 1' "$(state_file s6d)"
+}
+
+@test "exempt Bash: bare cd with no other command is exempt (pure navigation)" {
+    export DELEGATION_GATE_MODE=enforce
+    export DELEGATION_GATE_DENY_AT=1
+    run sh -c 'jq -cn "{tool_name:\"Bash\",session_id:\"s6e\",agent_id:null,tool_input:{command:\"cd /tmp\"}}" | python3 '"$GATE"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+    [ ! -f "$(state_file s6e)" ]
+}
+
 @test "mode=off: silent allow for everything, including Edit and a past-threshold Read" {
     export DELEGATION_GATE_MODE=off
     export DELEGATION_GATE_DENY_AT=1
