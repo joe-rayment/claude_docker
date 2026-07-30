@@ -298,51 +298,176 @@ column headers with a trailing `*` in sub mode; the table's columns/widths
 and data rows are otherwise untouched. Billing mode is computed at render
 time only — it is never written into the persisted per-session state.
 
-Run `tier-cost` (alias for `cost-mirror --report [transcript.jsonl]`) for
-the full per-model breakdown: one row per `side|model` with input/output/
-cache-read/cache-write tokens plus actual/at-top/saved dollars, and a
-TOTAL row. With no argument it defaults to the transcript recorded in the
-newest cost-mirror state file, falling back to the newest transcript under
-`~/.claude/projects/*/`. `--report` is read-only (never advances the
-incremental byte-offset state or writes it) and is NOT fail-silent — a
-missing/unreadable transcript prints to stderr and exits nonzero, since
-it's run directly from a terminal rather than from the hook.
+Run `tier-cost` (alias for `cost-mirror --report`) for the full per-model
+breakdown: one row per `side|model` with input/output/cache-read/cache-
+write tokens plus actual/at-top/saved dollars, and a TOTAL row.
+`--report` is read-only (never advances the incremental byte-offset state)
+and is NOT fail-silent — a missing/unreadable/ambiguous transcript prints
+to stderr and exits nonzero, since it's run directly from a terminal
+rather than from the hook.
 
-**Cross-session: `--report --all [--since <N>d]` (added 2026-07-29).**
-Everything above is scoped to one transcript; `--all` instead reads every
-`~/.claude/projects/*/*.jsonl` on disk (plus each one's beside-it
-`subagents/*.jsonl`), independent of any live session — no positional
-transcript argument in this mode. Output is a per-session table (project
-dir, short session id, last-modified date, total tokens, actual $, newest
-first) followed by the same per-side|model breakdown and grand total
-`--report` produces for one session, computed over everything scanned.
+**Bare `--report` aggregates by default (changed 2026-07-30).** A user
+saw `tier-cost` report ~$12 saved, started and killed a second parallel
+session for a small task, then re-ran `tier-cost` and saw a nearly-blank
+~$0.70 session — no data was lost, but bare `--report` used to call
+`_default_transcript()`, which returns the `tp` from the **newest state
+file by mtime**; the parallel session's hook had written a fresher state
+file, so the default silently pointed there instead. Bare `--report` (and
+`tier-cost`) is now exactly what `--all` did before this change — see
+"Cross-session" below — with `--all` kept as an accepted no-op alias so
+old habits/docs still work. Three flags select a single session instead:
+  - `--report <transcript.jsonl>` — a specific transcript, given directly.
+  - `--report --session <prefix>` — the transcript whose `sessionId` (or
+    filename UUID) starts with `<prefix>`; ambiguous or no-match prefixes
+    fail loud, listing candidates.
+  - `--report --this` — the *old* bare-default behaviour verbatim: the
+    transcript recorded in the newest cost-mirror hook state file. Spelling
+    out "whichever session's hook most recently fired, which may not be
+    the one you're sitting in" as an opt-in flag is the actual fix — the
+    bug was that this was silent and implicit.
+All three single-session forms are read-only, including with respect to
+`lifetime.json` (below) — they never write any state.
+
+**Cross-session aggregate: `[--since <N>d]` (added 2026-07-29, now the
+default).** Reads every `~/.claude/projects/*/*.jsonl` on disk (plus each
+one's beside-it `subagents/*.jsonl`), independent of any live session — no
+positional transcript argument in this mode. Output is a per-session table
+(project dir, short session id, last-modified date, total tokens, actual
+$, newest first) followed by the same per-side|model breakdown and grand
+total `--report` produces for one session, computed over everything
+scanned. The header states the scope plainly: session count, project-dir
+count, and the `--since` window when given — never again silently blank.
 `--since 7d` / `--since 30d` (any `<N>d`) narrows the file set to
-transcripts modified in that window — a bare `--all` includes everything.
+transcripts modified in that window — without it, everything is included.
 The billing-mode label and the counterfactual/top-model math apply to the
 aggregate exactly as in single-session mode.
 
-Scanning hundreds of transcripts on every invocation would be slow, so
-`--all` keeps its own persisted incremental cache — `all-sessions.json` in
-the cost-mirror state dir, keyed by file path with the same `{off, agg}`
-shape as the hook's per-session state — so a warm run only reads bytes
-appended since the last `--all` run. This cache is a **dedicated file**,
-never one of the hook's per-session `<sha256>.json` state files: plain
-`--report` (no `--all`) still writes zero state, unchanged. Measured on
-this container's own `~/.claude/projects/` (47 top-level transcripts, ~110
+Scanning hundreds of transcripts on every invocation would be slow, so the
+aggregate keeps its own persisted incremental cache — `all-sessions.json`
+in the cost-mirror state dir, keyed by file path with the same `{off,
+agg}` shape as the hook's per-session state — so a warm run only reads
+bytes appended since the last run. This cache is a **dedicated file**,
+never one of the hook's per-session `<sha256>.json` state files: the
+single-session forms above still write zero state. Measured on this
+container's own `~/.claude/projects/` (47 top-level transcripts, ~110
 files with subagents, ~21 MB): cold run 0.055s, warm run 0.014s. A corpus
-with no transcripts at all prints a message to stderr and exits nonzero
-rather than crashing; `--all` is otherwise NOT fail-silent, like plain
-`--report`. Test-only override: `COST_MIRROR_PROJECTS_DIR` replaces
-`~/.claude/projects` as the root `--all` scans.
+with nothing to report (no live transcripts on disk AND no lifetime
+history in scope, see below) prints a message to stderr and exits nonzero
+rather than crashing; the aggregate is otherwise NOT fail-silent, like
+every `--report` mode. Test-only override: `COST_MIRROR_PROJECTS_DIR`
+replaces `~/.claude/projects` as the root the aggregate scans.
 
-**The counterfactual, precisely:** "at top" reprices every row's *actual*
-token counts at the session's top model's rates — the top model being the
-main-side model with the largest `out+cr` observed (falling back to the
-most expensive model seen if there were no main rows at all). This is
-always an estimate: a cheaper/pricier model would not have emitted the
-identical token counts (different verbosity, different cache behavior), so
-"saved" is "what these same tokens would have cost at the top tier," not a
-guarantee of what actually would have happened.
+**Durable lifetime rollup (added 2026-07-30).** Transcripts get deleted
+(disk-cleanup, manual pruning), which used to silently erase their spend
+from every future aggregate report. Both the hook (for the live session)
+and the aggregate report path now write each session's final
+`sessionId|side|model` counters into `lifetime.json` in the state dir —
+schema-versioned like the other state files. Writes are **REPLACE, never
+increment**: every existing row for a session_id is dropped before the
+freshly (re)scanned totals are written back in, so rescanning the same
+transcript any number of times cannot inflate the durable total — this is
+the single load-bearing property and is tested explicitly (three
+successive aggregate runs must produce byte-identical output and an
+unchanged `lifetime.json` after the second). The aggregate report unions
+live-scanned transcripts with lifetime rows whose transcript no longer
+exists on disk, so a deleted session's spend still counts toward the
+grand total and the per-session table; a footnote names how many sessions
+were pulled from history rather than disk. Single-session views
+(`--session`/`--this`/a direct positional transcript) never touch
+`lifetime.json`, preserving their read-only-with-respect-to-state
+guarantee — checked in tests by checksumming the whole state directory,
+not just listing filenames, since a same-name rewrite-in-place wouldn't
+show up in `ls`. `disk-cleanup.sh` was audited and confirmed to never
+touch the cost-mirror state dir (`~/.claude/cache/cost-mirror`, under
+`$HOME` — none of its three sweep targets, `$TMP_SCAN_DIR` default `/tmp`,
+`$WORKSPACE/attachments`, or `$WORKSPACE/.claude/logs`, overlap it), so no
+changes were needed there for `lifetime.json` to survive a sweep.
+
+**The counterfactual, precisely — delegation-only savings via tier epochs
+(fixed 2026-07-30, replacing the "reprice everything at one top model"
+method below).** The original method picked the single most EXPENSIVE
+model seen among main-loop rows all session (`pick_top_model`, main rows
+ranked by output rate, falling back to the most expensive model overall if
+there were no main rows) and repriced **every** row — main-loop included —
+at that model's rate; `saved = at_top − actual`. That conflated two very
+different things: delegating work to a cheap worker (real savings) and the
+orchestrator itself dropping to a cheaper tier mid-session via `/tier`
+(not savings — just a smaller bill for the *same* seat). A session that
+ran Opus for an hour then `/tier sonnet` kept "top" pinned at Opus for the
+rest of the session, so every post-downgrade main-loop token was misreported
+as "saved," inflating the headline figure.
+
+The fix: each session's main-loop rows are ordered by their transcript
+`timestamp` and split into **tier epochs** — maximal runs of consecutive
+main-loop rows sharing the same `message.model` (`_epochs_from_main_buckets`
+in `scripts/cost-mirror.py`). A worker row reprices only against the epoch
+its *own* timestamp falls into; a main-loop row's tier *is* the epoch it's
+in by construction, so main-loop spend can no longer appear in "saved" at
+all — `session_epoch_pricing` enforces this unconditionally (main rows
+always get `at_epoch == actual`), not merely as a side effect of bucket
+math. The first and last epochs are then CLAMPED to cover the whole session
+timeline (start pulled back, end pushed to infinity), so a worker row
+before the session's first main-loop row or after its last still reprices
+against the nearest orchestrator tier instead of costing zero — the only
+case that still costs zero toward "saved" is a worker row with no
+parseable `timestamp` of its own, in a session whose main rows DO have
+usable timestamps (there's genuinely no bucket to place it in); a session
+with no main-loop rows at all also produces zero everywhere, since it has
+no epochs to reprice against. Epochs are computed and summed **strictly per session**; an aggregate
+`--report` (multi-session) never lets one session's tier reprice another's
+spend (`_add_pricing` sums each session's own `session_epoch_pricing`
+output — it never merges bucket data across sessions before pricing).
+
+For state-size reasons (the incremental scan must stay bounded across a
+long session, not grow with row count — see "Mechanics" above), rows are
+grouped into 5-minute buckets (`BUCKET_SECONDS`) before epochs are computed,
+not compared row-by-row; a bucket containing more than one main model (a
+genuine tier change inside one 5-minute window, or — far more commonly — a
+whole session with no `timestamp` field on any row, which all collapse into
+one shared `NA_BUCKET`) resolves via `pick_top_model`'s own price-ranked
+pick restricted to just that bucket. Reusing that exact tie-break (price,
+not volume) is what makes a session with **no timestamps at all** collapse
+to a single epoch. Where that session also used only ONE main-loop model it
+reduces EXACTLY to the old whole-session method; where it used two, the
+main-row pin correctly suppresses the old method's fake "saving" on
+main-loop spend, so the figures deliberately differ. Combined with the
+outward clamp described above, the exact-reduction case also covers a
+session with real timestamps and only ONE main-loop model: its single epoch
+is clamped to span the whole timeline.
+
+This is the compatibility guarantee, stated precisely: **a session that
+never changed its main-loop model, and whose worker rows all carry parseable
+timestamps, produces the identical figure this always did.** Both conditions
+are load-bearing — an untimestamped worker inside an otherwise-timestamped
+session has no bucket to place it in and contributes zero, which does differ
+from the old figure. Asserted directly in `tests/tier-hooks.bats`, both with
+and without real timestamps present.
+`pick_top_model` itself wasn't removed — it's reused per-bucket internally,
+and still names the "top model (counterfactual)"/hook-line "at `<model>`"
+label — but it no longer drives any dollar figure on its own.
+
+This is still always an estimate even within an epoch: a cheaper/pricier
+model would not have emitted the identical token counts (different
+verbosity, different cache behavior), so "saved" is "what these same
+worker tokens would have cost run on the orchestrator's own tier at the
+time," not a guarantee of what actually would have happened.
+
+Housekeeping riding along with the epoch fix: (1) `STATE_VERSION` bumped to
+3 (the persisted per-file `agg` gained a bucketed sibling, `bagg`, so an
+old v2 state is rescanned clean rather than silently missing epoch history
+for bytes already consumed) — but `lifetime.json`'s schema didn't change,
+so it now has its own `LIFETIME_VERSION` (still 2) rather than riding the
+same bump and being wiped for no reason. (2) `run_report_all`'s title line
+now reads `len(session_rows)` (live + lifetime-only) instead of
+`len(transcripts)` (live only), so it can't read "0 transcripts" directly
+above a table headed "2 session(s)" when sessions were pulled from
+lifetime history. (3) the comment above `_update_lifetime`'s call in the
+hook's `main()` now says what actually happens: that call isn't wrapped in
+its own try/except, so a failure there is caught only by the outer
+fail-silent guard, silently skipping that prompt's hook line too — not
+just the lifetime write, as the old comment implied — which is still
+judged acceptable since the overall fail-open contract (never crash the
+prompt) holds either way.
 
 **Maintenance: refresh `PRICING_TABLE` from the claude-api skill whenever
 models or prices change.** Current table (`scripts/cost-mirror.py`), USD

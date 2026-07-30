@@ -221,12 +221,17 @@ mk_pricing_transcript() {
     } > "$TP"
 }
 
-@test "cost-mirror: v2 state schema is written; an old-schema state triggers a clean full rescan" {
+@test "cost-mirror: v3 state schema is written; an old-schema state triggers a clean full rescan" {
+    # v3 (was v2): bumped for "bagg" (bucketed agg, see BUCKET_SECONDS) so
+    # tier-epoch history isn't silently missing for bytes an old v2 state
+    # had already consumed.
     mk_transcript
     sh -c 'printf "{\"transcript_path\":\"%s\"}" "'"$TP"'" | python3 '"$MIRROR" > /dev/null
-    STATE_FILE=$(ls "$COST_MIRROR_STATE_DIR"/*.json)
+    # exclude lifetime.json — the hook now also writes the durable rollup
+    # alongside its per-session <sha256>.json state file
+    STATE_FILE=$(ls "$COST_MIRROR_STATE_DIR"/*.json | grep -v /lifetime.json)
     [ -n "$STATE_FILE" ]
-    jq -e '.v == 2' "$STATE_FILE"
+    jq -e '.v == 3' "$STATE_FILE"
     jq -e --arg tp "$TP" '.files[$tp].agg["main|claude-opus-5"].out == 10' "$STATE_FILE"
     jq -e --arg tp "$TP" '.files[$tp].agg["main|claude-opus-5"].cr == 100' "$STATE_FILE"
     # seed an old-schema (list-agg, no v key) state with a bogus stale offset
@@ -234,7 +239,19 @@ mk_pricing_transcript() {
     run sh -c 'printf "{\"transcript_path\":\"%s\"}" "'"$TP"'" | python3 '"$MIRROR"
     [ "$status" -eq 0 ]
     [[ "$output" == *"main: 10 out · 100 cache-r (opus-5)"* ]]
-    jq -e '.v == 2' "$STATE_FILE"
+    jq -e '.v == 3' "$STATE_FILE"
+}
+
+@test "cost-mirror: v3 upgrade does NOT wipe lifetime.json (separate LIFETIME_VERSION)" {
+    # lifetime.json's own schema didn't change in this slice; it must
+    # survive a scan-state STATE_VERSION bump untouched, on its own
+    # LIFETIME_VERSION constant.
+    mk_transcript
+    sh -c 'printf "{\"transcript_path\":\"%s\"}" "'"$TP"'" | python3 '"$MIRROR" > /dev/null
+    LIFETIME="$COST_MIRROR_STATE_DIR/lifetime.json"
+    [ -f "$LIFETIME" ]
+    jq -e '.v == 2' "$LIFETIME"
+    jq -e 'any(.sessions[]; .out == 10)' "$LIFETIME"
 }
 
 @test "cost-mirror: pricing math — known token counts across two models produce the exact dollar clause" {
@@ -385,9 +402,10 @@ print(cm._sonnet5_rates(date(2026, 9, 1)))
     run sh -c 'printf "{\"transcript_path\":\"%s\"}" "'"$TP"'" | python3 '"$MIRROR"
     [ "$status" -eq 0 ]
     [[ "$output" == *"~\$26 · ~\$53 at fable-5 → saved ~\$27"* ]]
-    STATE_FILE=$(ls "$COST_MIRROR_STATE_DIR"/*.json)
-    [ -n "$STATE_FILE" ]
-    CHECKSUM_BEFORE=$(md5sum "$STATE_FILE" | awk '{print $1}')
+    # whole-state-dir checksum (not a single filename) — the hook now
+    # writes BOTH a per-session <sha256>.json file AND lifetime.json, and
+    # this asserts a positional --report touches neither.
+    CHECKSUM_BEFORE=$(state_dir_checksum)
     run python3 "$MIRROR" --report "$TP"
     [ "$status" -eq 0 ]
     [[ "$output" == *"TOTAL"* ]]
@@ -398,7 +416,7 @@ print(cm._sonnet5_rates(date(2026, 9, 1)))
     run python3 "$MIRROR" --report "$TP"
     [ "$status" -eq 0 ]
     [ "$output" = "$FIRST_REPORT" ]
-    CHECKSUM_AFTER=$(md5sum "$STATE_FILE" | awk '{print $1}')
+    CHECKSUM_AFTER=$(state_dir_checksum)
     [ "$CHECKSUM_BEFORE" = "$CHECKSUM_AFTER" ]
 }
 
@@ -439,20 +457,33 @@ state_dir_checksum() {
     # also changes the TOTAL row below.
     #
     # Hand-computed at PRICING_TABLE rates (opus-5 out=25, haiku-4-5 out=5
-    # USD/MTok; output_tokens only, so each row is one term):
-    #   sess-a main   (opus-5,  out=1,000,000) = 1,000,000 * 25 / 1e6 = $25
-    #   sess-a worker (haiku,   out=1,000,000) = 1,000,000 *  5 / 1e6 =  $5
-    #   sess-b main   (haiku,   out=2,000,000) = 2,000,000 *  5 / 1e6 = $10
-    #   sess-b worker (opus-5,  out=  200,000) =   200,000 * 25 / 1e6 =  $5
-    #   actual total = 25 + 5 + 10 + 5                                = $45
-    #   top model (highest output rate among MAIN rows) = opus-5 (25 > 5)
-    #   at-top: every row repriced at opus-5's rate
-    #     sess-a main   1,000,000 * 25 / 1e6 = $25 (already opus-5)
-    #     sess-a worker 1,000,000 * 25 / 1e6 = $25
-    #     sess-b main   2,000,000 * 25 / 1e6 = $50
-    #     sess-b worker   200,000 * 25 / 1e6 =  $5
-    #     at-top total = 25 + 25 + 50 + 5                            = $105
-    #   saved = 105 - 45                                              = $60
+    # USD/MTok; output_tokens only, so each row is one term). Neither
+    # session carries a "timestamp" field, so every row lands in the
+    # shared NA_BUCKET and each session collapses to ONE tier epoch (its
+    # single main-loop model) — but epochs are computed and priced PER
+    # SESSION (session_epoch_pricing on that session's OWN bucket_total,
+    # summed via _add_pricing), never by merging both sessions' rows into
+    # one epoch set, so sess-a's opus-5 tier must never reprice sess-b's
+    # haiku-tier spend or vice versa ("neither reprices the other"):
+    #   sess-a main   (opus-5,  out=1,000,000) actual = 1,000,000*25/1e6 = $25
+    #   sess-a worker (haiku,   out=1,000,000) actual = 1,000,000* 5/1e6 =  $5
+    #     sess-a's only main model is opus-5 -> sess-a's one epoch = opus-5
+    #     worker at_epoch = 1,000,000*25/1e6 = $25 -> sess-a saved = 25-5 = $20
+    #   sess-b main   (haiku,   out=2,000,000) actual = 2,000,000* 5/1e6 = $10
+    #   sess-b worker (opus-5,  out=  200,000) actual =   200,000*25/1e6 =  $5
+    #     sess-b's only main model is haiku   -> sess-b's one epoch = haiku
+    #     worker at_epoch =   200,000* 5/1e6 =  $1 -> sess-b saved = 1-5 = -$4
+    #   actual total = 25 + 5 + 10 + 5                                 = $45
+    #   at-top total: main rows NEVER reprice (always at_epoch==actual, by
+    #   construction — that's the fix) + worker at_epoch from above:
+    #     sess-a: main $25 (unchanged) + worker $25 = $50
+    #     sess-b: main $10 (unchanged) + worker  $1 = $11
+    #     at-top total = 50 + 11                                       = $61
+    #   saved = 61 - 45 = 20 + (-4)                                    = $16
+    #   (the OLD single-session-wide-top method gave at-top $105/saved $60
+    #   here — reproduced by tests below — by repricing sess-b's ENTIRE
+    #   haiku-tier main+worker spend at sess-a's opus-5 rate; this is
+    #   exactly the cross-session leak the per-session epoch fix closes)
     #   TOTAL row raw counters: in=0, out=4,200,000, cache-r=0, cache-w=0
     ALLDIR="$BATS_TEST_TMPDIR/allprojects"
     mkdir -p "$ALLDIR/proj-a/sess-a/subagents" "$ALLDIR/proj-b/sess-b/subagents"
@@ -467,7 +498,7 @@ state_dir_checksum() {
     export COST_MIRROR_PROJECTS_DIR="$ALLDIR"
 
     mkdir -p "$COST_MIRROR_STATE_DIR"
-    printf '{"v":2,"files":{"%s/proj-c/stale.jsonl":{"off":999,"agg":{"main|claude-fable-5":{"in":0,"out":9999999,"cr":0,"w5":0,"w1":0}}}}}' \
+    printf '{"v":3,"files":{"%s/proj-c/stale.jsonl":{"off":999,"agg":{"main|claude-fable-5":{"in":0,"out":9999999,"cr":0,"w5":0,"w1":0}}}}}' \
         "$ALLDIR" > "$COST_MIRROR_STATE_DIR/all-sessions.json"
 
     run python3 "$MIRROR" --report --all
@@ -486,8 +517,8 @@ state_dir_checksum() {
     [ "${F[3]}" = "0" ]
     [ "${F[4]}" = "0" ]
     [ "${F[5]}" = '$45' ]
-    [ "${F[6]}" = '$105' ]
-    [ "${F[7]}" = '$60' ]
+    [ "${F[6]}" = '$61' ]
+    [ "${F[7]}" = '$16' ]
 }
 
 @test "cost-mirror --report --all: no transcripts found prints a message and exits nonzero" {
@@ -571,8 +602,12 @@ with open(path, 'wb') as fh:
     run python3 "$MIRROR" --report --all
     [ "$status" -eq 0 ]
     [ -f "$COST_MIRROR_STATE_DIR/all-sessions.json" ]
+    # all-sessions.json (incremental cache) + lifetime.json (durable
+    # rollup) — no per-session <sha256>.json hook state files, since --all
+    # never ran the hook.
+    [ -f "$COST_MIRROR_STATE_DIR/lifetime.json" ]
     COUNT=$(ls "$COST_MIRROR_STATE_DIR" | wc -l)
-    [ "$COUNT" -eq 1 ]
+    [ "$COUNT" -eq 2 ]
 }
 
 @test "cost-mirror --report: plain single-transcript mode still writes no state, even with an --all cache present" {
@@ -589,21 +624,519 @@ with open(path, 'wb') as fh:
     [ "$BEFORE" = "$AFTER" ]
 }
 
-@test "cost-mirror --report: bare --report with COST_MIRROR_PROJECTS_DIR honours the override, matching --all" {
+@test "cost-mirror --report --this: honours COST_MIRROR_PROJECTS_DIR for the no-state-file fallback" {
     # _default_transcript() used to hardcode ~/.claude/projects/*/*.jsonl
     # for its no-state-file fallback, so COST_MIRROR_PROJECTS_DIR (honoured
-    # by --all) was silently ignored by a bare --report with no state dir
-    # to consult. Point COST_MIRROR_PROJECTS_DIR at a scratch corpus (a
-    # single transcript, so the newest-mtime fallback is unambiguous) with
-    # no prior cost-mirror state at all and confirm the bare --report
-    # default lookup still finds and reports on it.
+    # by --all) was silently ignored. Point COST_MIRROR_PROJECTS_DIR at a
+    # scratch corpus (a single transcript, so the newest-mtime fallback is
+    # unambiguous) with no prior cost-mirror state at all and confirm
+    # --this's default lookup still finds and reports on it.
     SCRATCH="$BATS_TEST_TMPDIR/scratchprojects"
     mkdir -p "$SCRATCH/proj-only"
     printf '{"message":{"model":"claude-opus-5","usage":{"output_tokens":10,"cache_read_input_tokens":100}}}\n' \
         > "$SCRATCH/proj-only/sess-only.jsonl"
     export COST_MIRROR_PROJECTS_DIR="$SCRATCH"
-    run python3 "$MIRROR" --report
+    run python3 "$MIRROR" --report --this
     [ "$status" -eq 0 ]
     [[ "$output" == *"cost-mirror report — $SCRATCH/proj-only/sess-only.jsonl"* ]]
     [[ "$output" == *"opus-5"* ]]
+}
+
+@test "cost-mirror --report: bare default now aggregates (was: single newest-state-file transcript)" {
+    # The behavior contract changed in this slice: bare --report (the
+    # tier-cost alias) is now the aggregate report, matching --all
+    # byte-for-byte, rather than falling back through _default_transcript().
+    mk_all_projects
+    run python3 "$MIRROR" --report
+    bare_status="$status"
+    bare_output="$output"
+    run python3 "$MIRROR" --report --all
+    [ "$status" -eq 0 ]
+    [ "$bare_status" -eq 0 ]
+    [ "$bare_output" = "$output" ]
+    [[ "$bare_output" == *"session(s) across"* ]]
+}
+
+@test "cost-mirror --report: the reported regression — bare default aggregates instead of pointing at the newest hook state file" {
+    # Reproduces the exact bug from the bead: two sessions, one LARGE and
+    # richly priced, one NEAR-EMPTY whose hook ran (and so whose state file
+    # was written) LATER -- e.g. a second parallel session started and
+    # immediately killed. Under the OLD behaviour, bare --report called
+    # _default_transcript(), which returns the tp recorded in the
+    # newest-mtime STATE FILE -- so it silently reported only the
+    # near-empty session while the large session's spend went unreported
+    # (no data lost, the report just quietly pointed elsewhere). This test
+    # was confirmed to FAIL against the pre-slice code (bare --report
+    # showed only the haiku/near-empty session, TOTAL out=1) and PASS
+    # against this slice's code. Bare --report must now include BOTH
+    # sessions, with total actual dollars equal to their sum.
+    PROJECTS="$BATS_TEST_TMPDIR/regression-projects"
+    mkdir -p "$PROJECTS/bigproj" "$PROJECTS/smallproj"
+    BIG="$PROJECTS/bigproj/big.jsonl"
+    SMALL="$PROJECTS/smallproj/small.jsonl"
+    printf '{"message":{"model":"claude-opus-5","usage":{"output_tokens":1000000}}}\n' > "$BIG"
+    printf '{"message":{"model":"claude-haiku-4-5-20251001","usage":{"output_tokens":1}}}\n' > "$SMALL"
+    export COST_MIRROR_PROJECTS_DIR="$PROJECTS"
+
+    # Run the hook for the BIG session first...
+    sh -c 'printf "{\"transcript_path\":\"%s\"}" "'"$BIG"'" | python3 '"$MIRROR" > /dev/null
+    # ...then for the SMALL session, and force its state file strictly
+    # newer so the newest-mtime pick is deterministic regardless of
+    # filesystem mtime granularity.
+    sh -c 'printf "{\"transcript_path\":\"%s\"}" "'"$SMALL"'" | python3 '"$MIRROR" > /dev/null
+    SMALL_STATE=$(python3 -c "import hashlib,sys; print(hashlib.sha256(sys.argv[1].encode()).hexdigest()[:16]+'.json')" "$SMALL")
+    touch -d "+1 hour" "$COST_MIRROR_STATE_DIR/$SMALL_STATE"
+
+    # Sanity: --this (the old default lookup, now opt-in) does point at the
+    # near-empty session — confirms the newer-state-file setup is correct.
+    run python3 "$MIRROR" --report --this
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"$SMALL"* ]]
+    [[ "$output" != *"$BIG"* ]]
+
+    run python3 "$MIRROR" --report
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"opus-5"* ]]
+    [[ "$output" == *"haiku-4-5-20251001"* ]]
+    TOTAL_LINE=$(echo "$output" | grep '^TOTAL')
+    read -r -a F <<< "$TOTAL_LINE"
+    # opus-5 1,000,000 out (BIG) + haiku 1 out (SMALL) = 1,000,001
+    [ "${F[2]}" = "1000001" ]
+}
+
+@test "cost-mirror --report --session: unique prefix selects the right transcript" {
+    PROJECTS="$BATS_TEST_TMPDIR/session-projects"
+    mkdir -p "$PROJECTS/proj-x" "$PROJECTS/proj-y"
+    printf '{"sessionId":"11111111-aaaa-bbbb-cccc-000000000001","message":{"model":"claude-opus-5","usage":{"output_tokens":10}}}\n' \
+        > "$PROJECTS/proj-x/11111111-aaaa-bbbb-cccc-000000000001.jsonl"
+    printf '{"sessionId":"22222222-aaaa-bbbb-cccc-000000000002","message":{"model":"claude-haiku-4-5-20251001","usage":{"output_tokens":20}}}\n' \
+        > "$PROJECTS/proj-y/22222222-aaaa-bbbb-cccc-000000000002.jsonl"
+    export COST_MIRROR_PROJECTS_DIR="$PROJECTS"
+
+    run python3 "$MIRROR" --report --session 1111
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"opus-5"* ]]
+    [[ "$output" != *"haiku"* ]]
+}
+
+@test "cost-mirror --report --session: ambiguous prefix fails loud listing candidates" {
+    PROJECTS="$BATS_TEST_TMPDIR/session-projects-ambig"
+    mkdir -p "$PROJECTS/proj-y"
+    printf '{"sessionId":"22222222-aaaa-bbbb-cccc-000000000002","message":{"model":"claude-haiku-4-5-20251001","usage":{"output_tokens":20}}}\n' \
+        > "$PROJECTS/proj-y/22222222-aaaa-bbbb-cccc-000000000002.jsonl"
+    printf '{"sessionId":"22223333-aaaa-bbbb-cccc-000000000003","message":{"model":"claude-fable-5","usage":{"output_tokens":30}}}\n' \
+        > "$PROJECTS/proj-y/22223333-aaaa-bbbb-cccc-000000000003.jsonl"
+    export COST_MIRROR_PROJECTS_DIR="$PROJECTS"
+
+    run python3 "$MIRROR" --report --session 2222
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"ambiguous"* ]]
+    [[ "$output" == *"22222222"* ]]
+    [[ "$output" == *"22223333"* ]]
+}
+
+@test "cost-mirror --report --session: no-match prefix fails loud" {
+    PROJECTS="$BATS_TEST_TMPDIR/session-projects-nomatch"
+    mkdir -p "$PROJECTS/proj-x"
+    printf '{"sessionId":"11111111-aaaa-bbbb-cccc-000000000001","message":{"model":"claude-opus-5","usage":{"output_tokens":10}}}\n' \
+        > "$PROJECTS/proj-x/11111111-aaaa-bbbb-cccc-000000000001.jsonl"
+    export COST_MIRROR_PROJECTS_DIR="$PROJECTS"
+
+    run python3 "$MIRROR" --report --session zzzz
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"no session matches"* ]]
+}
+
+@test "cost-mirror --report --this: reproduces the old single-session default (newest hook state file)" {
+    mk_transcript
+    sh -c 'printf "{\"transcript_path\":\"%s\"}" "'"$TP"'" | python3 '"$MIRROR" > /dev/null
+    run python3 "$MIRROR" --report --this
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"cost-mirror report — $TP"* ]]
+    [[ "$output" == *"opus-5"* ]]
+}
+
+@test "cost-mirror --report: lifetime.json is idempotent across repeated aggregate runs (replace, never increment)" {
+    mk_all_projects
+    run python3 "$MIRROR" --report --all
+    [ "$status" -eq 0 ]
+    FIRST="$output"
+    LIFETIME="$COST_MIRROR_STATE_DIR/lifetime.json"
+    [ -f "$LIFETIME" ]
+
+    run python3 "$MIRROR" --report --all
+    [ "$status" -eq 0 ]
+    SECOND="$output"
+    [ "$FIRST" = "$SECOND" ]
+    CHECKSUM_AFTER_2=$(md5sum "$LIFETIME" | awk '{print $1}')
+
+    run python3 "$MIRROR" --report --all
+    [ "$status" -eq 0 ]
+    THIRD="$output"
+    [ "$SECOND" = "$THIRD" ]
+    CHECKSUM_AFTER_3=$(md5sum "$LIFETIME" | awk '{print $1}')
+    [ "$CHECKSUM_AFTER_2" = "$CHECKSUM_AFTER_3" ]
+}
+
+@test "cost-mirror --report: durable lifetime rollup — a deleted transcript's spend still counts, with a footnote" {
+    mk_all_projects
+    run python3 "$MIRROR" --report --all
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"2 session(s)"* ]]
+    BEFORE_TOTAL=$(echo "$output" | grep '^TOTAL')
+
+    rm "$ALLDIR/proj-a/sess-a.jsonl"
+    run python3 "$MIRROR" --report --all
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"2 session(s)"* ]]
+    [[ "$output" == *"no longer on disk"* ]]
+    AFTER_TOTAL=$(echo "$output" | grep '^TOTAL')
+    [ "$BEFORE_TOTAL" = "$AFTER_TOTAL" ]
+}
+
+@test "cost-mirror --report --session/--this: write no state, even with lifetime.json present" {
+    mk_all_projects
+    run python3 "$MIRROR" --report --all
+    [ "$status" -eq 0 ]
+    [ -f "$COST_MIRROR_STATE_DIR/lifetime.json" ]
+    BEFORE=$(state_dir_checksum)
+
+    run python3 "$MIRROR" --report --session sess-a
+    [ "$status" -eq 0 ]
+    run python3 "$MIRROR" --report --this
+    [ "$status" -eq 0 ]
+
+    AFTER=$(state_dir_checksum)
+    [ "$BEFORE" = "$AFTER" ]
+}
+
+# ── cost-mirror: tier epochs (delegation-only savings) ──────────────────────
+
+mk_epoch_transcript() {
+    # Single session; main-loop tier changes from opus-5 to haiku-4-5
+    # mid-session (a real /tier downgrade), timestamped for real this
+    # time (not the NA-bucket fallback other fixtures rely on). Worker
+    # (isSidechain) rows scattered before/during/after both epochs. Every
+    # row is output_tokens=1,000,000 (opus-5 $25/MTok, haiku-4-5 $5/MTok
+    # out rate) so every dollar figure below is a whole multiple of $5.
+    TP="$BATS_TEST_TMPDIR/proj-epoch/sess.jsonl"
+    mkdir -p "$BATS_TEST_TMPDIR/proj-epoch"
+    {
+        # before the first main row -- inside the clamped-backward opus-5
+        # epoch (see _epochs_from_main_buckets), not "outside every epoch"
+        printf '{"isSidechain":true,"timestamp":"2026-07-28T23:00:00Z","message":{"model":"claude-haiku-4-5-20251001","usage":{"output_tokens":1000000}}}\n'
+        # opus-5 epoch: one main row, one worker row inside it
+        printf '{"timestamp":"2026-07-29T00:00:00Z","message":{"model":"claude-opus-5","usage":{"output_tokens":1000000}}}\n'
+        printf '{"isSidechain":true,"timestamp":"2026-07-29T00:01:00Z","message":{"model":"claude-haiku-4-5-20251001","usage":{"output_tokens":1000000}}}\n'
+        # /tier downgrade to haiku-4-5: new epoch, one main row, one
+        # worker row inside it (already at the epoch's own rate -> $0)
+        printf '{"timestamp":"2026-07-29T00:10:00Z","message":{"model":"claude-haiku-4-5-20251001","usage":{"output_tokens":1000000}}}\n'
+        printf '{"isSidechain":true,"timestamp":"2026-07-29T00:11:00Z","message":{"model":"claude-haiku-4-5-20251001","usage":{"output_tokens":1000000}}}\n'
+        # after the last main row -- inside the clamped-forward haiku-4-5
+        # epoch, not "outside every epoch"
+        printf '{"isSidechain":true,"timestamp":"2026-07-29T01:00:00Z","message":{"model":"claude-haiku-4-5-20251001","usage":{"output_tokens":1000000}}}\n'
+    } > "$TP"
+}
+
+@test "cost-mirror: mid-session /tier change — delegation-only savings, proven to differ from the old whole-session method" {
+    mk_epoch_transcript
+    # Hand-computed at PRICING_TABLE rates (opus-5 out=25, haiku-4-5 out=5
+    # USD/MTok; every row is 1,000,000 out, so each term is $25 or $5).
+    # _epochs_from_main_buckets clamps the first/last epoch to cover the
+    # WHOLE session timeline (see module docstring / defect-1 fix), so the
+    # two boundary workers are NOT "outside every epoch" -- they reprice
+    # against the nearest orchestrator tier, same as any interior worker:
+    #   main opus-5   epoch [-inf, 00:10)    actual $25 (never repriced)
+    #   main haiku-4-5 epoch [00:10, +inf)   actual  $5 (never repriced)
+    #   worker @00:01 (inside opus-5 epoch)  actual $5, at_epoch(opus) $25
+    #                                        -> saved $20
+    #   worker @00:11 (inside haiku-4-5 epoch) actual $5, at_epoch(haiku) $5
+    #                                        -> saved $0
+    #   worker @23:00 prev day (before the first main row, now inside the
+    #     clamped-backward opus-5 epoch) actual $5, at_epoch(opus) $25
+    #                                        -> saved $20
+    #   worker @01:00 (after the last main row, now inside the
+    #     clamped-forward haiku-4-5 epoch) actual $5, at_epoch(haiku) $5
+    #                                        -> saved $0
+    #   actual total = 25 + 5 + 5+5+5+5                              = $50
+    #   saved total  = 20 + 0 + 20 + 0                                = $40
+    #   at-top total = actual + saved                                = $90
+    #
+    #   OLD single-top method (pick_top_model over the WHOLE session,
+    #   reprice everything including main-loop rows): top=opus-5 (priced
+    #   higher than haiku-4-5); reprices all 6 rows, main included, at
+    #   opus-5's $25 rate -> old at-top = 25*6 = $150, old saved = $100.
+    #   $100 != $40 -- proves the fix still changes the actual number (main-
+    #   loop spend still never shows up as "saved") even though the clamp
+    #   now reprices both boundary workers same as the old method would
+    #   have priced them (at opus, the epoch nearest in time) rather than
+    #   dropping them to zero.
+    run sh -c 'printf "{\"transcript_path\":\"%s\"}" "'"$TP"'" | python3 '"$MIRROR"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"~\$50 · ~\$90 at opus-5 → saved ~\$40"* ]]
+    [[ "$output" != *"saved ~\$100"* ]]
+
+    run python3 "$MIRROR" --report "$TP"
+    [ "$status" -eq 0 ]
+    TOTAL_LINE=$(echo "$output" | grep '^TOTAL')
+    read -r -a F <<< "$TOTAL_LINE"
+    [ "${F[5]}" = '$50' ]
+    [ "${F[6]}" = '$90' ]
+    [ "${F[7]}" = '$40' ]
+    # Main-loop spend can never show a nonzero "saved" -- the whole point
+    # of the fix -- even the DOWNGRADE-side main row (haiku-4-5, cheaper
+    # than the session's opus-5 "top"), whose saved would have been a
+    # large FAKE $20 (25-5) under the old whole-session repricing.
+    MAIN_HAIKU_LINE=$(echo "$output" | grep '^main.*haiku')
+    read -r -a MH <<< "$MAIN_HAIKU_LINE"
+    [ "${MH[6]}" = '$5.00' ]
+    [ "${MH[7]}" = '$5.00' ]
+    [ "${MH[8]}" = '$0.00' ]
+    # the (single, since side+model aggregates all 4 buckets together)
+    # worker row: actual $5*4=$20, at-top 25(23:00)+25(00:01)+5(00:11)+5(01:00)=$60,
+    # saved $40 -- both boundary workers now reprice at their nearest
+    # epoch instead of falling outside every epoch.
+    WORKER_LINE=$(echo "$output" | grep '^worker')
+    read -r -a WL <<< "$WORKER_LINE"
+    [ "${WL[6]}" = '$20' ]
+    [ "${WL[7]}" = '$60' ]
+    [ "${WL[8]}" = '$40' ]
+}
+
+@test "cost-mirror: no-tier-change session with real timestamps still matches the pre-epoch dollar clause exactly" {
+    # The compatibility guarantee ("a session that never changed model
+    # must produce EXACTLY today's number") holds with real per-row
+    # timestamps too, not just the NA-bucket no-timestamp fallback other
+    # fixtures exercise — a single main-loop model forms exactly one
+    # epoch regardless, so the epoch-aware math reduces to the old one.
+    TP="$BATS_TEST_TMPDIR/proj-notierchange/sess.jsonl"
+    mkdir -p "$BATS_TEST_TMPDIR/proj-notierchange"
+    {
+        printf '{"timestamp":"2026-07-29T00:00:00Z","message":{"model":"claude-fable-5","usage":{"input_tokens":1000000,"output_tokens":100000,"cache_read_input_tokens":1000000,"cache_creation":{"ephemeral_5m_input_tokens":400000,"ephemeral_1h_input_tokens":100000}}}}\n'
+        printf '{"isSidechain":true,"timestamp":"2026-07-29T00:01:00Z","message":{"model":"claude-haiku-4-5-20251001","usage":{"input_tokens":2000000,"output_tokens":200000}}}\n'
+    } > "$TP"
+    run sh -c 'printf "{\"transcript_path\":\"%s\"}" "'"$TP"'" | python3 '"$MIRROR"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"~\$26 · ~\$53 at fable-5 → saved ~\$27"* ]]
+}
+
+@test "cost-mirror: worker rows with no main rows at all — no epochs, no savings claimed" {
+    TP="$BATS_TEST_TMPDIR/proj-workeronly/sess.jsonl"
+    mkdir -p "$BATS_TEST_TMPDIR/proj-workeronly"
+    printf '{"isSidechain":true,"timestamp":"2026-07-29T00:00:00Z","message":{"model":"claude-haiku-4-5-20251001","usage":{"output_tokens":1000000}}}\n' > "$TP"
+    run sh -c 'printf "{\"transcript_path\":\"%s\"}" "'"$TP"'" | python3 '"$MIRROR"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"workers: 1.0M out (haiku-4-5-20251001)"* ]]
+    [[ "$output" == *"~\$5.00"* ]]
+    [[ "$output" != *"saved"* ]]
+
+    run python3 "$MIRROR" --report "$TP"
+    [ "$status" -eq 0 ]
+    WORKER_LINE=$(echo "$output" | grep '^worker')
+    read -r -a WL <<< "$WORKER_LINE"
+    [ "${WL[6]}" = '$5.00' ]
+    [ "${WL[7]}" = '$5.00' ]
+    [ "${WL[8]}" = '$0.00' ]
+}
+
+@test "cost-mirror: missing or unparseable timestamp does not crash, falls back to the shared NA bucket" {
+    TP="$BATS_TEST_TMPDIR/proj-badts/sess.jsonl"
+    mkdir -p "$BATS_TEST_TMPDIR/proj-badts"
+    {
+        printf '{"timestamp":"not-a-real-date","message":{"model":"claude-fable-5","usage":{"input_tokens":1000000,"output_tokens":100000,"cache_read_input_tokens":1000000,"cache_creation":{"ephemeral_5m_input_tokens":400000,"ephemeral_1h_input_tokens":100000}}}}\n'
+        printf '{"isSidechain":true,"message":{"model":"claude-haiku-4-5-20251001","usage":{"input_tokens":2000000,"output_tokens":200000}}}\n'
+    } > "$TP"
+    run sh -c 'printf "{\"transcript_path\":\"%s\"}" "'"$TP"'" | python3 '"$MIRROR"
+    [ "$status" -eq 0 ]
+    # same token profile as mk_pricing_transcript (fable-5 main + haiku
+    # worker) -- one row's timestamp is a garbage string, the other has
+    # none at all; both must land in NA_BUCKET without crashing and
+    # reduce to the single-epoch/whole-session math, same $26/$53/$27.
+    [[ "$output" == *"~\$26 · ~\$53 at fable-5 → saved ~\$27"* ]]
+}
+
+@test "cost-mirror: rows out of chronological order (clock skew) still epoch correctly — buckets are sorted, not scan order" {
+    TP="$BATS_TEST_TMPDIR/proj-skew/sess.jsonl"
+    mkdir -p "$BATS_TEST_TMPDIR/proj-skew"
+    {
+        # the haiku-4-5 main row is WRITTEN FIRST even though its own
+        # timestamp is LATER than the opus-5 row below it — simulates a
+        # backwards system-clock jump or two interleaved writers.
+        printf '{"timestamp":"2026-07-29T00:10:00Z","message":{"model":"claude-haiku-4-5-20251001","usage":{"output_tokens":1000000}}}\n'
+        printf '{"timestamp":"2026-07-29T00:00:00Z","message":{"model":"claude-opus-5","usage":{"output_tokens":1000000}}}\n'
+        printf '{"isSidechain":true,"timestamp":"2026-07-29T00:01:00Z","message":{"model":"claude-haiku-4-5-20251001","usage":{"output_tokens":1000000}}}\n'
+        printf '{"isSidechain":true,"timestamp":"2026-07-29T00:11:00Z","message":{"model":"claude-haiku-4-5-20251001","usage":{"output_tokens":1000000}}}\n'
+    } > "$TP"
+    run sh -c 'printf "{\"transcript_path\":\"%s\"}" "'"$TP"'" | python3 '"$MIRROR"
+    [ "$status" -eq 0 ]
+    # same epochs (opus-5 [00:00,00:10), haiku-4-5 [00:10,...)) as if the
+    # file were written in chronological order: worker@00:01 still
+    # reprices at opus-5 (saved $20), worker@00:11 still at haiku-4-5
+    # (saved $0) — main $25+$5, worker $5+$5=$10 actual, $25+$5=$30 at-top
+    [[ "$output" == *"~\$40 · ~\$60 at opus-5 → saved ~\$20"* ]]
+}
+
+@test "cost-mirror: single-model session with workers before the first and after the last main row matches the pre-epoch method byte-for-byte" {
+    # The compatibility guarantee (module docstring / defect-1 fix): a
+    # session that never changed its main-loop model must produce the
+    # EXACT figure the old whole-session "reprice everything at the one
+    # top model" method produced -- including for workers timestamped
+    # entirely outside the main-loop's own bucket span. Before the fix,
+    # _epochs_from_main_buckets built epochs spanning only [first main
+    # bucket, last main bucket + 1), so these two boundary workers fell
+    # in no epoch and contributed $0 to "saved" -- breaking the guarantee
+    # (verified: this exact fixture reported saved $0.00 pre-fix, vs the
+    # $54 below post-fix and under the true pre-epoch method alike).
+    TP="$BATS_TEST_TMPDIR/proj-nt4/sess.jsonl"
+    mkdir -p "$BATS_TEST_TMPDIR/proj-nt4"
+    {
+        # worker BEFORE the only main row
+        printf '{"isSidechain":true,"timestamp":"2026-07-28T23:00:00Z","message":{"model":"claude-haiku-4-5-20251001","usage":{"input_tokens":2000000,"output_tokens":200000}}}\n'
+        # the only main row (fable-5) -- same profile as mk_pricing_transcript,
+        # actual $23 (see that fixture's comment for the hand-computation)
+        printf '{"timestamp":"2026-07-29T00:00:00Z","message":{"model":"claude-fable-5","usage":{"input_tokens":1000000,"output_tokens":100000,"cache_read_input_tokens":1000000,"cache_creation":{"ephemeral_5m_input_tokens":400000,"ephemeral_1h_input_tokens":100000}}}}\n'
+        # worker AFTER the only main row
+        printf '{"isSidechain":true,"timestamp":"2026-07-29T01:00:00Z","message":{"model":"claude-haiku-4-5-20251001","usage":{"input_tokens":2000000,"output_tokens":200000}}}\n'
+    } > "$TP"
+    run sh -c 'printf "{\"transcript_path\":\"%s\"}" "'"$TP"'" | python3 '"$MIRROR"
+    [ "$status" -eq 0 ]
+    # main $23 + two workers at $3 each = $29 actual; both workers reprice
+    # at fable-5 ($30 apiece) same as the old single-top method would ->
+    # at-top $23+30+30=$83, saved $54 (NOT $0 -- the pre-fix bug's figure).
+    [[ "$output" == *"~\$29 · ~\$83 at fable-5 → saved ~\$54"* ]]
+    [[ "$output" != *"saved ~\$0"* ]]
+
+    run python3 "$MIRROR" --report "$TP"
+    [ "$status" -eq 0 ]
+    TOTAL_LINE=$(echo "$output" | grep '^TOTAL')
+    read -r -a F <<< "$TOTAL_LINE"
+    [ "${F[5]}" = '$29' ]
+    [ "${F[6]}" = '$83' ]
+    [ "${F[7]}" = '$54' ]
+}
+
+@test "cost-mirror: mutation kill (M1) — a bucket mixing two main-loop models with zero worker rows never shows main-loop spend as saved" {
+    # M1 mutant: delete the main-row pin at session_epoch_pricing's
+    # `if side == "main": d["at_epoch"] += actual; continue`. Two main
+    # rows share one 5-minute bucket (a genuine tier change inside one
+    # window), so pick_top_model resolves the bucket's epoch to opus-5
+    # (pricier) -- WITHOUT the pin, the losing haiku-4-5 main row would
+    # fall through to the epoch lookup too and reprice at opus-5's rate,
+    # surfacing main-loop spend as fake "saved" ($0.50 actual repriced to
+    # $2.50, saved $2.00) -- exactly what the pin forbids. No worker rows
+    # at all, so this isolates the pin from epoch-boundary/worker logic.
+    TP="$BATS_TEST_TMPDIR/proj-m1/sess.jsonl"
+    mkdir -p "$BATS_TEST_TMPDIR/proj-m1"
+    {
+        printf '{"timestamp":"2026-07-29T00:00:00Z","message":{"model":"claude-haiku-4-5-20251001","usage":{"output_tokens":100000}}}\n'
+        printf '{"timestamp":"2026-07-29T00:01:00Z","message":{"model":"claude-opus-5","usage":{"output_tokens":100000}}}\n'
+    } > "$TP"
+    run python3 "$MIRROR" --report "$TP"
+    [ "$status" -eq 0 ]
+    MAIN_HAIKU_LINE=$(echo "$output" | grep '^main.*haiku')
+    read -r -a MH <<< "$MAIN_HAIKU_LINE"
+    [ "${MH[6]}" = '$0.50' ]
+    [ "${MH[7]}" = '$0.50' ]
+    [ "${MH[8]}" = '$0.00' ]
+    MAIN_OPUS_LINE=$(echo "$output" | grep '^main.*opus')
+    read -r -a MO <<< "$MAIN_OPUS_LINE"
+    [ "${MO[6]}" = '$2.50' ]
+    [ "${MO[7]}" = '$2.50' ]
+    [ "${MO[8]}" = '$0.00' ]
+    TOTAL_LINE=$(echo "$output" | grep '^TOTAL')
+    read -r -a F <<< "$TOTAL_LINE"
+    [ "${F[5]}" = '$3.00' ]
+    [ "${F[6]}" = '$3.00' ]
+    [ "${F[7]}" = '$0.00' ]
+}
+
+@test "cost-mirror: mutation kill (M3) — epochs are built from buckets in ascending order, not scan/arrival order" {
+    # M3 mutant: replace `for bucket in sorted(by_bucket)` with plain
+    # `for bucket in by_bucket` (dict/arrival order). File order here is
+    # bucket10=opus-5, bucket0=haiku-4-5, bucket5=sonnet-5 -- i.e. written
+    # out of chronological order -- with a worker at bucket7 (interior,
+    # between the sonnet-5 and opus-5 main rows). Correctly sorted, the
+    # worker's bucket falls in the opus-5 epoch (the true last epoch,
+    # extended forward by the defect-1 clamp) -> saved $20. Built in scan
+    # order instead, the opus-5@bucket10 row ends up misplaced first in
+    # the epoch list and gets folded into a dead/empty range, so the
+    # clamp instead extends the WRONG (sonnet-5) epoch forward -> saved
+    # only $5 -- a materially different, wrong answer that test 55's
+    # existing fixture doesn't catch (see M3 in the defect writeup).
+    TP="$BATS_TEST_TMPDIR/proj-m3/sess.jsonl"
+    mkdir -p "$BATS_TEST_TMPDIR/proj-m3"
+    {
+        printf '{"timestamp":"2026-07-29T00:50:00Z","message":{"model":"claude-opus-5","usage":{"output_tokens":1000000}}}\n'
+        printf '{"timestamp":"2026-07-29T00:00:00Z","message":{"model":"claude-haiku-4-5-20251001","usage":{"output_tokens":1000000}}}\n'
+        printf '{"timestamp":"2026-07-29T00:25:00Z","message":{"model":"claude-sonnet-5","usage":{"output_tokens":1000000}}}\n'
+        printf '{"isSidechain":true,"timestamp":"2026-07-29T00:55:00Z","message":{"model":"claude-haiku-4-5-20251001","usage":{"output_tokens":1000000}}}\n'
+    } > "$TP"
+    run python3 "$MIRROR" --report "$TP"
+    [ "$status" -eq 0 ]
+    WORKER_LINE=$(echo "$output" | grep '^worker')
+    read -r -a WL <<< "$WORKER_LINE"
+    [ "${WL[6]}" = '$5.00' ]
+    [ "${WL[7]}" = '$25' ]
+    [ "${WL[8]}" = '$20' ]
+    TOTAL_LINE=$(echo "$output" | grep '^TOTAL')
+    read -r -a F <<< "$TOTAL_LINE"
+    [ "${F[5]}" = '$45' ]
+    [ "${F[6]}" = '$65' ]
+    [ "${F[7]}" = '$20' ]
+}
+
+@test "cost-mirror: negative savings — a worker pricier than its epoch's orchestrator is NOT clamped to zero" {
+    # A worker on a pricier model than the main-loop tier at the time
+    # (e.g. escalating to fable-5 for a hard problem while the
+    # orchestrator itself runs haiku-4-5) must show a genuine NEGATIVE
+    # "saved" -- that IS the true cost of that choice, and clamping it to
+    # zero would hide it. fmt_usd renders the sign, never absorbs it.
+    TP="$BATS_TEST_TMPDIR/proj-negsave/sess.jsonl"
+    mkdir -p "$BATS_TEST_TMPDIR/proj-negsave"
+    {
+        printf '{"timestamp":"2026-07-29T00:00:00Z","message":{"model":"claude-haiku-4-5-20251001","usage":{"output_tokens":1000000}}}\n'
+        printf '{"isSidechain":true,"timestamp":"2026-07-29T00:01:00Z","message":{"model":"claude-fable-5","usage":{"output_tokens":10000}}}\n'
+    } > "$TP"
+    run sh -c 'printf "{\"transcript_path\":\"%s\"}" "'"$TP"'" | python3 '"$MIRROR"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"saved ~-\$0.45"* ]]
+
+    run python3 "$MIRROR" --report "$TP"
+    [ "$status" -eq 0 ]
+    WORKER_LINE=$(echo "$output" | grep '^worker')
+    read -r -a WL <<< "$WORKER_LINE"
+    [ "${WL[6]}" = '$0.50' ]
+    [ "${WL[7]}" = '$0.05' ]
+    [ "${WL[8]}" = '-$0.45' ]
+}
+
+@test "cost-mirror --report --all: sessions overlapping in real time never reprice each other, even sharing a 5-minute bucket" {
+    # sess-a and sess-b use the IDENTICAL timestamps below, so if the two
+    # sessions' bucketed rows were ever merged before epochs are computed,
+    # this shared bucket would contain BOTH main models and resolve to
+    # opus-5 (pricier) for both sessions — reproducing exactly the
+    # cross-session leak the per-session epoch computation must prevent.
+    ALLDIR="$BATS_TEST_TMPDIR/allprojects-ts"
+    mkdir -p "$ALLDIR/proj-a" "$ALLDIR/proj-b"
+    {
+        printf '{"timestamp":"2026-07-29T00:00:00Z","message":{"model":"claude-opus-5","usage":{"output_tokens":1000000}}}\n'
+        printf '{"isSidechain":true,"timestamp":"2026-07-29T00:01:00Z","message":{"model":"claude-haiku-4-5-20251001","usage":{"output_tokens":1000000}}}\n'
+    } > "$ALLDIR/proj-a/sess-a.jsonl"
+    {
+        printf '{"timestamp":"2026-07-29T00:00:00Z","message":{"model":"claude-haiku-4-5-20251001","usage":{"output_tokens":1000000}}}\n'
+        printf '{"isSidechain":true,"timestamp":"2026-07-29T00:01:00Z","message":{"model":"claude-haiku-4-5-20251001","usage":{"output_tokens":1000000}}}\n'
+    } > "$ALLDIR/proj-b/sess-b.jsonl"
+    export COST_MIRROR_PROJECTS_DIR="$ALLDIR"
+
+    # sess-a: main opus-5 tier -> worker (haiku-4-5) genuinely saved $20
+    # (25-5) by delegating instead of running that work on opus-5.
+    # sess-b: main was ALREADY haiku-4-5 the whole time -> its haiku-4-5
+    # worker saves $0 (already at that tier) — UNLESS wrongly repriced at
+    # sess-a's opus-5, which would ALSO show a fake $20.
+    run python3 "$MIRROR" --report --all
+    [ "$status" -eq 0 ]
+    TOTAL_LINE=$(echo "$output" | grep '^TOTAL')
+    read -r -a F <<< "$TOTAL_LINE"
+    [ "${F[7]}" = '$20' ]
+    [ "${F[7]}" != '$40' ]
 }
