@@ -559,6 +559,85 @@ and the only reliable lever for headless children — one env flip away
 (`DELEGATION_GATE_MODE=enforce` or `~/.claude/delegation-gate.mode`), no
 code change required.
 
+## Delegation gate hardening (2026-07-30)
+
+**(a) The one-shot-warn defect.** The original gate warned once, at
+streak 4, then fell permanently silent for the rest of the session — the
+one mechanism that fires *mid-turn*, on the exact behavior it exists to
+interrupt, shut itself up after a single use. A session that read the
+streak-4 note and kept grinding anyway got no second nudge at streak 12,
+20, or 200; the gate degraded to a no-op for the remainder of any session
+that didn't correct on the first try. Fixed with a watermark, not a
+boolean: `warned_at` records the streak at which the last warn fired, and
+the gate warns again whenever `streak - warned_at >= DELEGATION_GATE_WARN_EVERY`
+(default 8) — so 4, 12, 20 … — with wording that escalates at 2× and 6×
+`warn_at` (standing-authorization reminder, then the token re-billing
+economics). `Agent`/`Workflow` use clears both `streak` and `warned_at`,
+so a session that actually delegates gets tier-1 wording again on its next
+drift rather than staying primed at the escalated tier. Legacy
+`{"warned": true}` state (no watermark) migrates to `warned_at = streak`
+on load, so an upgraded session doesn't immediately re-warn on the same
+streak that already warned it once under the old boolean.
+
+**(b) Two-axis modes, and why `guard` is now the default.** Mode used to
+be a single warn/enforce switch; it's now `off` · `warn-only` (alias
+`warn`) · `guard` · `enforce`, each a strict superset of the last:
+`guard` denies Edit/Write/NotebookEdit in the main loop unconditionally
+(reads/Bash still only warned), `enforce` adds a read/Bash streak-deny on
+top of `guard`. The default moved from `warn` to `guard` because of the
+**warn-channel finding** above this section: a DENY's
+`permissionDecisionReason` reaches the model *always* (arrives as an
+`is_error` tool_result, followed as a literal instruction — both probes
+confirmed unprompted compliance), but an ALLOW's `additionalContext` is
+**harness-dependent** — it lands in model context in an interactive
+session but was found only in sidecar attachment records, never
+model-visible, in headless `claude -p` children. A warn-only default is
+therefore silently inert in exactly the automation contexts most likely
+to grind unsupervised; a denial is the only channel that cannot be
+silently dropped by the harness. `guard` picks the smallest denial
+surface that is still unconditionally effective — implementation edits
+are the executor's seat regardless of streak — while leaving recon
+(Read/Grep/Glob/Bash) on the repeating-warn cadence rather than a hard
+deny, since recon volume is legitimately spiky in ways edit volume isn't.
+An unrecognized `DELEGATION_GATE_MODE` value (typo, stale env) falls back
+to `guard`, never to a weaker mode — the gate must not silently degrade
+on a misspelling.
+
+**(c) The plan/memory carve-out.** Under `guard`/`enforce`, Edit/Write to
+`~/.claude/plans/**` (or any path containing `/.claude/plans/`, covering a
+git-root-relative plan dir too) or the harness auto-memory dir
+(`~/.claude/projects/*/memory/`) is allowed even mid-streak. Without this,
+`guard`'s "always deny an edit in the main loop" rule would deny the
+orchestrator's *own* plan file and its own memory writes — both of which
+are explicitly the orchestrator's seat per CLAUDE.md's "Plan Before Code"
+and the harness's own auto-memory mechanics, never the executor's. The
+carve-out must be **proven** from an explicit, resolvable path in
+`tool_input`; a call with no determinable path is NOT carved out (denied)
+— the exception is never the default. `/tmp` and the scratchpad are
+deliberately excluded from the carve-out: either would be a smuggling
+hole for real implementation edits routed around the gate.
+
+**Drift metrics now surfaced.** `max_streak`/`warns`/`denies` persist for
+the life of the session (only `streak`/`warned_at` reset on
+`Agent`/`Workflow` use) and are read directly by `cost-mirror` (not
+imported — the state-dir path constant is duplicated locally in
+`scripts/cost-mirror.py` with a comment naming `delegation-gate.py` as the
+owner) to append a short `| inline: max streak N · W warn(s) · D deny/denies`
+clause (e.g. `max streak 12 · 3 warns · 1 deny`, singularised at 1) to the
+per-prompt spend line, omitted entirely when there's nothing to report.
+See "Cost monitor" above for the rest of that line's
+anatomy.
+
+**Compaction can no longer launder the protocol out of context.**
+`scripts/tier-prime.sh` is now the single owner of the tier-reminder
+wording, called from both `SessionStart` (bare) and `PreCompact`
+(`--full`, adding the dispatch table and the standing-authorization
+sentence) — before this, `PreCompact` ran only `bd prime` and a
+compaction could silently drop the delegation protocol from context for
+the rest of the session. `config/claude-user-memory.md`'s invariants now
+say explicitly that a compaction, a long turn, or a context summary does
+not revoke the standing authorization.
+
 ## Graceful degradation (probe + fallback)
 
 A probe is a real `claude -p` round trip (~5–10 s per candidate), so

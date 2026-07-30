@@ -84,6 +84,22 @@ credentials file consulted for billing-mode auto-detection (tests);
 COST_MIRROR_PROJECTS_DIR overrides the ~/.claude/projects root that --all
 scans (tests).
 
+Delegation-gate drift segment (added 2026-07-30): scripts/delegation-gate.py
+persists {"max_streak", "warns", "denies"} per session (see its module
+docstring) as a mechanical record of how much main-loop grinding actually
+happened, independent of anything reported here. The hook line appends a
+short " | inline: max streak N · W warn(s) · D deny/denies" clause read
+straight from that session's state file
+(~/.claude/cache/delegation-gate/<session_id>.json, session_id taken from
+this hook's own event payload the same way delegation-gate.py reads it from
+its PreToolUse payload). This module does NOT import delegation-gate.py —
+its state-dir path is duplicated locally (see DELEGATION_GATE_* below, with
+a comment naming the owner) rather than coupling the two scripts. The
+segment is omitted entirely when there is nothing to report (max_streak 0
+and no warns/denies) and degrades exactly like the rest of this script: a
+missing, unreadable, or malformed state file, or a missing session_id,
+yields "" silently — never an exception, never a broken cost line.
+
 On-demand report: `cost-mirror --report` (bare, i.e. the `tier-cost` alias)
 now AGGREGATES — it scans every transcript on disk (see "Cross-session"
 below) and is the same thing `--all` did before this changed; `--all`
@@ -193,6 +209,12 @@ NA_BUCKET = -1  # sentinel for a row with no usable timestamp; see _parse_ts
 # sonnet-5 intro pricing (2.00/10.00 per MTok in/out) holds while today is
 # strictly before this date; from then on it reverts to the standard 3/15.
 SONNET5_INTRO_CUTOFF = date(2026, 9, 1)
+
+# scripts/delegation-gate.py OWNS this path constant; duplicated here (not
+# imported) to keep the two scripts decoupled -- see the module docstring's
+# "Delegation-gate drift segment" section. Keep in sync by hand if
+# delegation-gate.py ever moves its state.
+DELEGATION_GATE_STATE_DIR = "~/.claude/cache/delegation-gate"
 
 
 def _sonnet5_rates(today=None):
@@ -653,6 +675,38 @@ def summarise_dollars(total, bucket_total, billing_mode="api"):
         top_short = top.replace("claude-", "")
         clause += f" · ~{fmt_usd(at_top)} at {top_short} → saved ~{fmt_usd(saved)}"
     return clause
+
+
+def delegation_drift_segment(session_id):
+    """" | inline: max streak N · W warn(s) · D deny/denies" clause for this
+    session's delegation-gate drift, or "" when there's nothing to report or
+    the state can't be read -- see the module docstring's "Delegation-gate
+    drift segment" section. Reads delegation-gate.py's own per-session state
+    file directly (path duplicated locally, not imported); degrades exactly
+    like the rest of this script on any failure."""
+    if not session_id:
+        return ""
+    path = os.path.join(
+        os.path.expanduser(DELEGATION_GATE_STATE_DIR), f"{session_id}.json"
+    )
+    try:
+        with open(path) as fh:
+            state = json.load(fh)
+        if not isinstance(state, dict):
+            return ""
+        max_streak = int(state.get("max_streak", 0) or 0)
+        warns = int(state.get("warns", 0) or 0)
+        denies = int(state.get("denies", 0) or 0)
+    except Exception:
+        return ""
+    if not max_streak and not warns and not denies:
+        return ""
+    parts = [f"max streak {max_streak}"]
+    if warns:
+        parts.append(f"{warns} warn" if warns == 1 else f"{warns} warns")
+    if denies:
+        parts.append(f"{denies} deny" if denies == 1 else f"{denies} denies")
+    return "inline: " + " · ".join(parts)
 
 
 def _default_transcript():
@@ -1282,6 +1336,9 @@ def main():
         bucket_total = aggregate_bucket_total(files_state)
         dollar_clause = summarise_dollars(total, bucket_total, billing_mode)
         line = f"{token_line} | {dollar_clause}" if dollar_clause else token_line
+        drift = delegation_drift_segment(event.get("session_id"))
+        if drift:
+            line = f"{line} | {drift}"
         print(f"[cost-mirror] this session — {line}")
 
 

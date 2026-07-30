@@ -81,7 +81,7 @@
           },
           {
             "type": "command",
-            "command": "m=$(jq -r '.model // empty' \"$HOME/.claude/settings.json\" 2>/dev/null); e=$(grep -m1 '^model:' \"$HOME/.claude/agents/executor.md\" 2>/dev/null | sed 's/^model:[[:space:]]*//'); s=$(grep -m1 '^model:' \"$HOME/.claude/agents/scout.md\" 2>/dev/null | sed 's/^model:[[:space:]]*//'); echo \"tier \u2192 orchestrator(settings model)=${m:-harness default}  executor=${e:-sonnet (frontmatter)}  scout=${s:-haiku (frontmatter)} | verifier+oracle inherit the session model\""
+            "command": "r=$(git rev-parse --show-toplevel 2>/dev/null); [ -n \"$r\" ] && [ -x \"$r/scripts/tier-prime.sh\" ] && { \"$r/scripts/tier-prime.sh\" 2>/dev/null; exit 0; }; command -v tier-prime >/dev/null 2>&1 && { tier-prime 2>/dev/null; exit 0; }; [ -x \"$HOME/.claude/hooks/tier-prime\" ] && { \"$HOME/.claude/hooks/tier-prime\" 2>/dev/null; exit 0; }; exit 0"
           },
           {
             "type": "command",
@@ -97,6 +97,10 @@
           {
             "type": "command",
             "command": "bd prime"
+          },
+          {
+            "type": "command",
+            "command": "r=$(git rev-parse --show-toplevel 2>/dev/null); [ -n \"$r\" ] && [ -x \"$r/scripts/tier-prime.sh\" ] && { \"$r/scripts/tier-prime.sh\" --full 2>/dev/null; exit 0; }; command -v tier-prime >/dev/null 2>&1 && { tier-prime --full 2>/dev/null; exit 0; }; [ -x \"$HOME/.claude/hooks/tier-prime\" ] && { \"$HOME/.claude/hooks/tier-prime\" --full 2>/dev/null; exit 0; }; exit 0"
           }
         ]
       }

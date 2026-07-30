@@ -188,6 +188,7 @@ COPY --chown=agent:agent scripts/tier-set.sh /usr/local/bin/tier-set
 COPY --chown=agent:agent scripts/tier-derive.sh /usr/local/bin/tier-derive
 COPY --chown=agent:agent scripts/tier-reconcile.sh /usr/local/bin/tier-reconcile
 COPY --chown=agent:agent scripts/tier-gate.sh /usr/local/bin/tier-gate
+COPY --chown=agent:agent scripts/tier-prime.sh /usr/local/bin/tier-prime
 COPY --chown=agent:agent scripts/workflow-lint.sh /usr/local/bin/workflow-lint
 COPY --chown=agent:agent scripts/cost-mirror.py /usr/local/bin/cost-mirror
 COPY --chown=agent:agent scripts/disk-cleanup.sh /usr/local/bin/disk-cleanup

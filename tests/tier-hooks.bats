@@ -1,14 +1,18 @@
 #!/usr/bin/env bats
-# tier-hooks.bats — the three spend-enforcement hooks:
+# tier-hooks.bats — the spend-enforcement / tier-reminder hooks:
 #   tier-gate      PreToolUse[Agent]     default-cheap model for generic spawns
 #   workflow-lint  PreToolUse[Workflow]  deny scripts whose agent() omits model
 #   cost-mirror    UserPromptSubmit      by-model session spend line
-# All three fail OPEN: any malformed/missing input path must be silent exit 0.
+#   tier-prime     SessionStart/PreCompact  tier trio + protocol restatement
+# All fail OPEN: any malformed/missing input path must be silent exit 0.
 
 GATE=/workspace/scripts/tier-gate.sh
 LINT=/workspace/scripts/workflow-lint.sh
 MIRROR=/workspace/scripts/cost-mirror.py
 DERIVE=/workspace/scripts/tier-derive.sh
+PRIME=/workspace/scripts/tier-prime.sh
+DOCKERFILE=/workspace/Dockerfile
+SETTINGS_JSON=/workspace/config/claude-settings.json
 
 setup() {
     export TMPDIR="$BATS_TEST_TMPDIR"
@@ -99,6 +103,89 @@ mirror() { python3 "$MIRROR"; }
     run sh -c 'printf %s "{\"tool_name\":\"Agent\",\"tool_input\":{\"prompt\":\"p\"}}" | TIER_GATE_DERIVE='"$stub"' sh '"$GATE"
     [ "$status" -eq 0 ]
     [ -z "$output" ]
+}
+
+# ── tier-prime ───────────────────────────────────────────────────────────────
+
+setup_prime_agents() {
+    # a scratch agents dir with executor.md/scout.md frontmatter, so the
+    # trio line doesn't depend on this container's real bindings
+    AGENTS_DIR="$BATS_TEST_TMPDIR/agents"
+    mkdir -p "$AGENTS_DIR"
+    printf -- '---\nname: executor\nmodel: claude-sonnet-5\n---\nbody\n' > "$AGENTS_DIR/executor.md"
+    printf -- '---\nname: scout\nmodel: claude-haiku-4-5-20251001\n---\nbody\n' > "$AGENTS_DIR/scout.md"
+    export TIER_PRIME_SETTINGS="$SETTINGS"
+    export TIER_PRIME_AGENTS_DIR="$AGENTS_DIR"
+}
+
+@test "tier-prime: no args prints the trio line and exits 0" {
+    setup_prime_agents
+    run "$PRIME"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"tier → orchestrator(settings model)=claude-fable-5[1m]"* ]]
+    [[ "$output" == *"executor=claude-sonnet-5"* ]]
+    [[ "$output" == *"scout=claude-haiku-4-5-20251001"* ]]
+    [[ "$output" == *"verifier+oracle inherit the session model"* ]]
+}
+
+@test "tier-prime: --full adds the dispatch table and the standing-authorization sentence" {
+    setup_prime_agents
+    run "$PRIME" --full
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"tier → orchestrator(settings model)=claude-fable-5[1m]"* ]]
+    [[ "$output" == *"recon→scout"* ]]
+    [[ "$output" == *"implementation slice→executor"* ]]
+    [[ "$output" == *"non-trivial claim→verifier"* ]]
+    [[ "$output" == *"trivial"*"→inline"* ]]
+    [[ "$output" == *'subagent_type: "scout"'* ]]
+    [[ "$output" == *"wrong tier"* ]]
+    [[ "$output" == *"standing authorization"* ]]
+    [[ "$output" == *"user's standing request"* ]]
+    [[ "$output" == *"does NOT apply in this container"* ]]
+}
+
+@test "tier-prime: HOME unset still exits 0 with fallback text (no 'unbound variable' abort)" {
+    unset TIER_PRIME_SETTINGS TIER_PRIME_AGENTS_DIR
+    run env -u HOME -u TIER_PRIME_SETTINGS -u TIER_PRIME_AGENTS_DIR "$PRIME"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"orchestrator(settings model)=harness default"* ]]
+    run env -u HOME -u TIER_PRIME_SETTINGS -u TIER_PRIME_AGENTS_DIR "$PRIME" --full
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"standing authorization"* ]]
+}
+
+@test "tier-prime: missing settings/agent files still exits 0 with fallback text" {
+    export TIER_PRIME_SETTINGS="$BATS_TEST_TMPDIR/nope-settings.json"
+    export TIER_PRIME_AGENTS_DIR="$BATS_TEST_TMPDIR/nope-agents"
+    run "$PRIME"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"orchestrator(settings model)=harness default"* ]]
+    [[ "$output" == *"executor=sonnet (frontmatter)"* ]]
+    [[ "$output" == *"scout=haiku (frontmatter)"* ]]
+    run "$PRIME" --full
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"standing authorization"* ]]
+}
+
+@test "tier-prime: trio line matches the exact expected string, character for character" {
+    setup_prime_agents
+    run "$PRIME"
+    [ "$status" -eq 0 ]
+    expected='tier → orchestrator(settings model)=claude-fable-5[1m]  executor=claude-sonnet-5  scout=claude-haiku-4-5-20251001 | verifier+oracle inherit the session model'
+    [ "$output" = "$expected" ]
+}
+
+@test "config/claude-settings.json: SessionStart references tier-prime; PreCompact is exactly [bd prime, tier-prime --full] in order" {
+    jq -e . "$SETTINGS_JSON"
+    jq -e '[.hooks.SessionStart[].hooks[].command] | any(contains("tier-prime"))' "$SETTINGS_JSON"
+    jq -e '[.hooks.PreCompact[].hooks] | flatten | length == 2' "$SETTINGS_JSON"
+    jq -e '[.hooks.PreCompact[].hooks] | flatten | .[0].command | contains("bd prime")' "$SETTINGS_JSON"
+    jq -e '[.hooks.PreCompact[].hooks] | flatten | .[1].command | contains("tier-prime")' "$SETTINGS_JSON"
+    jq -e '[.hooks.PreCompact[].hooks] | flatten | .[1].command | contains("--full")' "$SETTINGS_JSON"
+}
+
+@test "Dockerfile: tier-prime.sh is COPY'd to /usr/local/bin/tier-prime" {
+    grep -qE 'COPY .*scripts/tier-prime\.sh .*/usr/local/bin/tier-prime$' "$DOCKERFILE"
 }
 
 # ── workflow-lint ────────────────────────────────────────────────────────────
@@ -1139,4 +1226,91 @@ mk_epoch_transcript() {
     read -r -a F <<< "$TOTAL_LINE"
     [ "${F[7]}" = '$20' ]
     [ "${F[7]}" != '$40' ]
+}
+
+# ── cost-mirror: delegation-gate drift segment ─────────────────────────────
+#
+# delegation-gate.py persists {"max_streak","warns","denies"} per session at
+# ~/.claude/cache/delegation-gate/<session_id>.json (see its own module
+# docstring). cost-mirror appends a short " | inline: ..." clause read from
+# that file, resolving session_id from its own hook event the same way
+# delegation-gate reads it from its PreToolUse payload -- a plain top-level
+# "session_id" field. These tests override HOME (unlike the rest of this
+# file, which never touches it) because that's the only path delegation-gate
+# state lives under; each test sets it locally so no other test is affected.
+
+dg_state_file() {
+    echo "$HOME/.claude/cache/delegation-gate/$1.json"
+}
+
+@test "cost-mirror: drift segment absent when the delegation-gate state file is missing" {
+    export HOME="$BATS_TEST_TMPDIR/home-dg1"
+    mkdir -p "$HOME"
+    mk_transcript
+    run sh -c 'printf "{\"transcript_path\":\"%s\",\"session_id\":\"nofile\"}" "'"$TP"'" | python3 '"$MIRROR"
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"inline:"* ]]
+}
+
+@test "cost-mirror: drift segment absent when max_streak/warns/denies are all zero" {
+    export HOME="$BATS_TEST_TMPDIR/home-dg2"
+    mkdir -p "$HOME/.claude/cache/delegation-gate"
+    printf '{"streak":0,"warned_at":0,"max_streak":0,"warns":0,"denies":0}' > "$(dg_state_file zeros)"
+    mk_transcript
+    run sh -c 'printf "{\"transcript_path\":\"%s\",\"session_id\":\"zeros\"}" "'"$TP"'" | python3 '"$MIRROR"
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"inline:"* ]]
+}
+
+@test "cost-mirror: drift segment present and pluralised (3 warns, 1 deny)" {
+    export HOME="$BATS_TEST_TMPDIR/home-dg3"
+    mkdir -p "$HOME/.claude/cache/delegation-gate"
+    printf '{"streak":5,"warned_at":5,"max_streak":12,"warns":3,"denies":1}' > "$(dg_state_file plural)"
+    mk_transcript
+    run sh -c 'printf "{\"transcript_path\":\"%s\",\"session_id\":\"plural\"}" "'"$TP"'" | python3 '"$MIRROR"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"| inline: max streak 12 · 3 warns · 1 deny"* ]]
+}
+
+@test "cost-mirror: drift segment singularises 1 warn and 2 pluralises denies" {
+    export HOME="$BATS_TEST_TMPDIR/home-dg4"
+    mkdir -p "$HOME/.claude/cache/delegation-gate"
+    printf '{"streak":1,"warned_at":1,"max_streak":4,"warns":1,"denies":2}' > "$(dg_state_file singular)"
+    mk_transcript
+    run sh -c 'printf "{\"transcript_path\":\"%s\",\"session_id\":\"singular\"}" "'"$TP"'" | python3 '"$MIRROR"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"| inline: max streak 4 · 1 warn · 2 denies"* ]]
+}
+
+@test "cost-mirror: drift segment shows max streak alone when there were no warns or denies (e.g. mode=off)" {
+    export HOME="$BATS_TEST_TMPDIR/home-dg5"
+    mkdir -p "$HOME/.claude/cache/delegation-gate"
+    printf '{"streak":6,"warned_at":0,"max_streak":6,"warns":0,"denies":0}' > "$(dg_state_file streakonly)"
+    mk_transcript
+    run sh -c 'printf "{\"transcript_path\":\"%s\",\"session_id\":\"streakonly\"}" "'"$TP"'" | python3 '"$MIRROR"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"| inline: max streak 6"* ]]
+    [[ "$output" != *"warn"* ]]
+}
+
+@test "cost-mirror: malformed delegation-gate state file does not break the cost line" {
+    export HOME="$BATS_TEST_TMPDIR/home-dg6"
+    mkdir -p "$HOME/.claude/cache/delegation-gate"
+    printf 'NOT JSON AT ALL' > "$(dg_state_file broken)"
+    mk_transcript
+    run sh -c 'printf "{\"transcript_path\":\"%s\",\"session_id\":\"broken\"}" "'"$TP"'" | python3 '"$MIRROR"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"[cost-mirror] this session"* ]]
+    [[ "$output" != *"inline:"* ]]
+}
+
+@test "cost-mirror: no session_id in the event omits the drift segment without erroring" {
+    export HOME="$BATS_TEST_TMPDIR/home-dg7"
+    mkdir -p "$HOME/.claude/cache/delegation-gate"
+    printf '{"max_streak":9,"warns":2,"denies":0}' > "$(dg_state_file orphan)"
+    mk_transcript
+    run sh -c 'printf "{\"transcript_path\":\"%s\"}" "'"$TP"'" | python3 '"$MIRROR"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"[cost-mirror] this session"* ]]
+    [[ "$output" != *"inline:"* ]]
 }

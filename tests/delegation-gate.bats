@@ -68,14 +68,15 @@ state_file() {
     [ "$status" -eq 0 ]
     [ -z "$output" ]
     jq -e '.streak == 0' "$(state_file s3)"
-    jq -e '.warned == false' "$(state_file s3)"
+    jq -e '.warned_at == 0' "$(state_file s3)"
 }
 
-# ── warn mode ────────────────────────────────────────────────────────────────
+# ── warn cadence ─────────────────────────────────────────────────────────────
 
-@test "warn mode: WARN_AT-th call fires the note once, the call after stays silent" {
-    export DELEGATION_GATE_MODE=warn
+@test "warn-only mode: WARN_AT-th call fires the note once, calls 5-7 stay silent, streak 8/16 warn again (repeat cadence)" {
+    export DELEGATION_GATE_MODE=warn-only
     export DELEGATION_GATE_WARN_AT=4
+    export DELEGATION_GATE_WARN_EVERY=4
     for i in 1 2 3; do
         run sh -c 'jq -cn "{tool_name:\"Read\",session_id:\"s4\",agent_id:null,tool_input:{}}" | python3 '"$GATE"
         [ "$status" -eq 0 ]
@@ -85,13 +86,37 @@ state_file() {
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.hookSpecificOutput.permissionDecision == "allow"'
     echo "$output" | jq -e '.hookSpecificOutput.additionalContext | test("4 consecutive")'
+    for i in 5 6 7; do
+        run sh -c 'jq -cn "{tool_name:\"Read\",session_id:\"s4\",agent_id:null,tool_input:{}}" | python3 '"$GATE"
+        [ "$status" -eq 0 ]
+        [ -z "$output" ]
+    done
     run sh -c 'jq -cn "{tool_name:\"Read\",session_id:\"s4\",agent_id:null,tool_input:{}}" | python3 '"$GATE"
     [ "$status" -eq 0 ]
-    [ -z "$output" ]
+    echo "$output" | jq -e '.hookSpecificOutput.permissionDecision == "allow"'
+    echo "$output" | jq -e '.hookSpecificOutput.additionalContext | test("8 consecutive")'
+    for i in 9 10 11; do
+        run sh -c 'jq -cn "{tool_name:\"Read\",session_id:\"s4\",agent_id:null,tool_input:{}}" | python3 '"$GATE"
+        [ "$status" -eq 0 ]
+        [ -z "$output" ]
+    done
+    run sh -c 'jq -cn "{tool_name:\"Read\",session_id:\"s4\",agent_id:null,tool_input:{}}" | python3 '"$GATE"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.hookSpecificOutput.permissionDecision == "allow"'
+    echo "$output" | jq -e '.hookSpecificOutput.additionalContext | test("12 consecutive")'
+    for i in 13 14 15; do
+        run sh -c 'jq -cn "{tool_name:\"Read\",session_id:\"s4\",agent_id:null,tool_input:{}}" | python3 '"$GATE"
+        [ "$status" -eq 0 ]
+        [ -z "$output" ]
+    done
+    run sh -c 'jq -cn "{tool_name:\"Read\",session_id:\"s4\",agent_id:null,tool_input:{}}" | python3 '"$GATE"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.hookSpecificOutput.permissionDecision == "allow"'
+    echo "$output" | jq -e '.hookSpecificOutput.additionalContext | test("16 consecutive")'
 }
 
 @test "env override: DELEGATION_GATE_WARN_AT=2 fires the note at streak 2" {
-    export DELEGATION_GATE_MODE=warn
+    export DELEGATION_GATE_MODE=warn-only
     export DELEGATION_GATE_WARN_AT=2
     run sh -c 'jq -cn "{tool_name:\"Read\",session_id:\"s9\",agent_id:null,tool_input:{}}" | python3 '"$GATE"
     [ "$status" -eq 0 ]
@@ -99,6 +124,52 @@ state_file() {
     run sh -c 'jq -cn "{tool_name:\"Read\",session_id:\"s9\",agent_id:null,tool_input:{}}" | python3 '"$GATE"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.hookSpecificOutput.additionalContext | test("2 consecutive")'
+}
+
+@test "warn (legacy alias for warn-only) still fires and never denies" {
+    export DELEGATION_GATE_MODE=warn
+    export DELEGATION_GATE_WARN_AT=1
+    run sh -c 'jq -cn "{tool_name:\"Edit\",session_id:\"s9b\",agent_id:null,tool_input:{file_path:\"/workspace/src/x.py\"}}" | python3 '"$GATE"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.hookSpecificOutput.permissionDecision == "allow"'
+}
+
+@test "escalated warn text: tier2 phrase at streak 8, tier3 phrase at streak 24 (WARN_EVERY=1)" {
+    export DELEGATION_GATE_MODE=warn-only
+    export DELEGATION_GATE_WARN_AT=4
+    export DELEGATION_GATE_WARN_EVERY=1
+    for i in $(seq 1 8); do
+        run sh -c 'jq -cn "{tool_name:\"Read\",session_id:\"s10\",agent_id:null,tool_input:{}}" | python3 '"$GATE"
+        [ "$status" -eq 0 ]
+    done
+    echo "$output" | jq -e '.hookSpecificOutput.additionalContext | test("standing request")'
+    echo "$output" | jq -e '(.hookSpecificOutput.additionalContext | test("re-billed")) == false'
+    for i in $(seq 9 24); do
+        run sh -c 'jq -cn "{tool_name:\"Read\",session_id:\"s10\",agent_id:null,tool_input:{}}" | python3 '"$GATE"
+        [ "$status" -eq 0 ]
+    done
+    echo "$output" | jq -e '.hookSpecificOutput.additionalContext | test("re-billed")'
+}
+
+@test "Agent reset clears the warned_at watermark: next warn after reset is tier-1 text again" {
+    export DELEGATION_GATE_MODE=warn-only
+    export DELEGATION_GATE_WARN_AT=4
+    export DELEGATION_GATE_WARN_EVERY=1
+    for i in $(seq 1 8); do
+        run sh -c 'jq -cn "{tool_name:\"Read\",session_id:\"s11\",agent_id:null,tool_input:{}}" | python3 '"$GATE"
+    done
+    echo "$output" | jq -e '.hookSpecificOutput.additionalContext | test("standing request")'
+    run sh -c 'jq -cn "{tool_name:\"Agent\",session_id:\"s11\",agent_id:null,tool_input:{subagent_type:\"scout\",prompt:\"p\"}}" | python3 '"$GATE"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+    for i in 1 2 3; do
+        run sh -c 'jq -cn "{tool_name:\"Read\",session_id:\"s11\",agent_id:null,tool_input:{}}" | python3 '"$GATE"
+        [ -z "$output" ]
+    done
+    run sh -c 'jq -cn "{tool_name:\"Read\",session_id:\"s11\",agent_id:null,tool_input:{}}" | python3 '"$GATE"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.hookSpecificOutput.additionalContext | test("4 consecutive")'
+    echo "$output" | jq -e '(.hookSpecificOutput.additionalContext | test("standing request")) == false'
 }
 
 # ── enforce mode ─────────────────────────────────────────────────────────────
@@ -114,6 +185,7 @@ state_file() {
 @test "enforce: Read at DENY_AT is denied naming scout; Read below DENY_AT is allowed" {
     export DELEGATION_GATE_MODE=enforce
     export DELEGATION_GATE_DENY_AT=8
+    export DELEGATION_GATE_WARN_AT=99  # isolate the deny-at-streak behavior from the (separately tested) warn cadence
     for i in 1 2 3 4 5 6 7; do
         run sh -c 'jq -cn "{tool_name:\"Read\",session_id:\"s5b\",agent_id:null,tool_input:{}}" | python3 '"$GATE"
         [ "$status" -eq 0 ]
@@ -124,6 +196,141 @@ state_file() {
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.hookSpecificOutput.permissionDecision == "deny"'
     echo "$output" | jq -e '.hookSpecificOutput.permissionDecisionReason | test("scout")'
+}
+
+# ── guard mode (new default) ────────────────────────────────────────────────
+
+@test "guard mode (default when unset) denies a Write to /workspace/src/x.py naming the executor" {
+    run sh -c 'jq -cn "{tool_name:\"Write\",session_id:\"s12\",agent_id:null,tool_input:{file_path:\"/workspace/src/x.py\"}}" | python3 '"$GATE"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.hookSpecificOutput.permissionDecision == "deny"'
+    echo "$output" | jq -e '.hookSpecificOutput.permissionDecisionReason | test("executor")'
+}
+
+@test "guard mode: unrecognized DELEGATION_GATE_MODE value also denies (never silently weakens)" {
+    export DELEGATION_GATE_MODE=bogus-typo
+    run sh -c 'jq -cn "{tool_name:\"Write\",session_id:\"s12b\",agent_id:null,tool_input:{file_path:\"/workspace/src/x.py\"}}" | python3 '"$GATE"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.hookSpecificOutput.permissionDecision == "deny"'
+}
+
+@test "guard mode allows a Write to \$HOME/.claude/plans/x.md (plan carve-out)" {
+    export DELEGATION_GATE_MODE=guard
+    run sh -c 'jq -cn "{tool_name:\"Write\",session_id:\"s13\",agent_id:null,tool_input:{file_path:(env.HOME+\"/.claude/plans/x.md\")}}" | python3 '"$GATE"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+}
+
+@test "guard mode allows a Write to any path containing /.claude/plans/ (git-root-relative plan dir)" {
+    export DELEGATION_GATE_MODE=guard
+    run sh -c 'jq -cn "{tool_name:\"Write\",session_id:\"s14\",agent_id:null,tool_input:{file_path:\"/workspace/.claude/plans/y.md\"}}" | python3 '"$GATE"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+}
+
+@test "guard mode allows an Edit under the harness auto-memory dir (~/.claude/projects/*/memory/)" {
+    export DELEGATION_GATE_MODE=guard
+    run sh -c 'jq -cn "{tool_name:\"Edit\",session_id:\"s15\",agent_id:null,tool_input:{file_path:(env.HOME+\"/.claude/projects/-workspace/memory/foo.md\")}}" | python3 '"$GATE"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+}
+
+@test "guard mode denies a NotebookEdit with no resolvable path (carve-out must be proven)" {
+    export DELEGATION_GATE_MODE=guard
+    run sh -c 'jq -cn "{tool_name:\"NotebookEdit\",session_id:\"s15b\",agent_id:null,tool_input:{}}" | python3 '"$GATE"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.hookSpecificOutput.permissionDecision == "deny"'
+}
+
+@test "guard mode allows a Read even at streak 20 (reads are never denied under guard)" {
+    export DELEGATION_GATE_MODE=guard
+    for i in $(seq 1 20); do
+        run sh -c 'jq -cn "{tool_name:\"Read\",session_id:\"s16\",agent_id:null,tool_input:{}}" | python3 '"$GATE"
+        [ "$status" -eq 0 ]
+    done
+    jq -e '.streak == 20' "$(state_file s16)"
+    jq -e '.denies == 0' "$(state_file s16)"
+}
+
+@test "enforce mode still denies a Read once it reaches DENY_AT (guard's floor plus the read-streak deny)" {
+    export DELEGATION_GATE_MODE=enforce
+    export DELEGATION_GATE_DENY_AT=8
+    for i in 1 2 3 4 5 6 7; do
+        run sh -c 'jq -cn "{tool_name:\"Read\",session_id:\"s17\",agent_id:null,tool_input:{}}" | python3 '"$GATE"
+    done
+    run sh -c 'jq -cn "{tool_name:\"Read\",session_id:\"s17\",agent_id:null,tool_input:{}}" | python3 '"$GATE"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.hookSpecificOutput.permissionDecision == "deny"'
+    echo "$output" | jq -e '.hookSpecificOutput.permissionDecisionReason | test("scout")'
+}
+
+@test "warn-only mode denies nothing, even an Edit or a Read well past DENY_AT" {
+    export DELEGATION_GATE_MODE=warn-only
+    export DELEGATION_GATE_DENY_AT=1
+    export DELEGATION_GATE_WARN_AT=1
+    run sh -c 'jq -cn "{tool_name:\"Edit\",session_id:\"s18\",agent_id:null,tool_input:{file_path:\"/workspace/src/x.py\"}}" | python3 '"$GATE"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.hookSpecificOutput.permissionDecision == "allow"'
+    for i in 1 2 3 4 5 6 7 8; do
+        run sh -c 'jq -cn "{tool_name:\"Read\",session_id:\"s18b\",agent_id:null,tool_input:{}}" | python3 '"$GATE"
+        [ "$status" -eq 0 ]
+    done
+    jq -e '.denies == 0' "$(state_file s18b)"
+}
+
+# ── legacy state migration and drift metrics ────────────────────────────────
+
+@test "legacy state {streak:5,warned:true} migrates warned_at=5 without re-warning until cadence is due" {
+    export DELEGATION_GATE_MODE=warn-only
+    export DELEGATION_GATE_WARN_AT=4
+    export DELEGATION_GATE_WARN_EVERY=8
+    mkdir -p "$HOME/.claude/cache/delegation-gate"
+    printf '{"streak":5,"warned":true}' > "$(state_file s19)"
+    run sh -c 'jq -cn "{tool_name:\"Read\",session_id:\"s19\",agent_id:null,tool_input:{}}" | python3 '"$GATE"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+    jq -e '.streak == 6' "$(state_file s19)"
+    jq -e '.warned_at == 5' "$(state_file s19)"
+    for i in 1 2 3 4 5 6; do
+        run sh -c 'jq -cn "{tool_name:\"Read\",session_id:\"s19\",agent_id:null,tool_input:{}}" | python3 '"$GATE"
+        [ -z "$output" ]
+    done
+    jq -e '.streak == 12' "$(state_file s19)"
+    run sh -c 'jq -cn "{tool_name:\"Read\",session_id:\"s19\",agent_id:null,tool_input:{}}" | python3 '"$GATE"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.hookSpecificOutput.permissionDecision == "allow"'
+    jq -e '.streak == 13' "$(state_file s19)"
+}
+
+@test "missing new keys in an old state file default to 0" {
+    mkdir -p "$HOME/.claude/cache/delegation-gate"
+    printf '{"streak":2}' > "$(state_file s19b)"
+    export DELEGATION_GATE_MODE=warn-only
+    export DELEGATION_GATE_WARN_AT=99
+    run sh -c 'jq -cn "{tool_name:\"Read\",session_id:\"s19b\",agent_id:null,tool_input:{}}" | python3 '"$GATE"
+    [ "$status" -eq 0 ]
+    jq -e '.warned_at == 0' "$(state_file s19b)"
+    jq -e '.max_streak == 3' "$(state_file s19b)"
+    jq -e '.warns == 0' "$(state_file s19b)"
+    jq -e '.denies == 0' "$(state_file s19b)"
+}
+
+@test "max_streak, warns, and denies survive an Agent reset (only streak/warned_at reset)" {
+    export DELEGATION_GATE_MODE=warn-only
+    export DELEGATION_GATE_WARN_AT=2
+    export DELEGATION_GATE_WARN_EVERY=1
+    for i in 1 2 3; do
+        run sh -c 'jq -cn "{tool_name:\"Read\",session_id:\"s20\",agent_id:null,tool_input:{}}" | python3 '"$GATE"
+    done
+    jq -e '.max_streak == 3' "$(state_file s20)"
+    jq -e '.warns == 2' "$(state_file s20)"
+    run sh -c 'jq -cn "{tool_name:\"Agent\",session_id:\"s20\",agent_id:null,tool_input:{subagent_type:\"scout\",prompt:\"p\"}}" | python3 '"$GATE"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+    jq -e '.streak == 0' "$(state_file s20)"
+    jq -e '.warned_at == 0' "$(state_file s20)"
+    jq -e '.max_streak == 3' "$(state_file s20)"
+    jq -e '.warns == 2' "$(state_file s20)"
 }
 
 # ── exemptions and mode=off ─────────────────────────────────────────────────
