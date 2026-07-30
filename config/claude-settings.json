@@ -54,7 +54,7 @@
           },
           {
             "type": "command",
-            "command": "e=$(grep -m1 '^model:' \"$HOME/.claude/agents/executor.md\" 2>/dev/null | sed 's/^model:[[:space:]]*//'); s=$(grep -m1 '^model:' \"$HOME/.claude/agents/scout.md\" 2>/dev/null | sed 's/^model:[[:space:]]*//'); [ -n \"$e\" ] && echo \"[tier] worker=$e recon=${s:-?} — dispatch: recon→scout · slices→executor · claims→verifier · trivial→inline\"; true"
+            "command": "e=$(grep -m1 '^model:' \"$HOME/.claude/agents/executor.md\" 2>/dev/null | sed 's/^model:[[:space:]]*//'); s=$(grep -m1 '^model:' \"$HOME/.claude/agents/scout.md\" 2>/dev/null | sed 's/^model:[[:space:]]*//'); [ -n \"$e\" ] && echo \"[tier] worker=$e recon=${s:-?} \u2014 dispatch: recon\u2192scout \u00b7 slices\u2192executor \u00b7 claims\u2192verifier \u00b7 trivial\u2192inline\"; true"
           }
         ]
       }
@@ -81,7 +81,11 @@
           },
           {
             "type": "command",
-            "command": "m=$(jq -r '.model // empty' \"$HOME/.claude/settings.json\" 2>/dev/null); e=$(grep -m1 '^model:' \"$HOME/.claude/agents/executor.md\" 2>/dev/null | sed 's/^model:[[:space:]]*//'); s=$(grep -m1 '^model:' \"$HOME/.claude/agents/scout.md\" 2>/dev/null | sed 's/^model:[[:space:]]*//'); echo \"tier → orchestrator(settings model)=${m:-harness default}  executor=${e:-sonnet (frontmatter)}  scout=${s:-haiku (frontmatter)} | verifier+oracle inherit the session model\""
+            "command": "m=$(jq -r '.model // empty' \"$HOME/.claude/settings.json\" 2>/dev/null); e=$(grep -m1 '^model:' \"$HOME/.claude/agents/executor.md\" 2>/dev/null | sed 's/^model:[[:space:]]*//'); s=$(grep -m1 '^model:' \"$HOME/.claude/agents/scout.md\" 2>/dev/null | sed 's/^model:[[:space:]]*//'); echo \"tier \u2192 orchestrator(settings model)=${m:-harness default}  executor=${e:-sonnet (frontmatter)}  scout=${s:-haiku (frontmatter)} | verifier+oracle inherit the session model\""
+          },
+          {
+            "type": "command",
+            "command": "r=$(git rev-parse --show-toplevel 2>/dev/null); [ -n \"$r\" ] && [ -x \"$r/scripts/image-drift.py\" ] && { \"$r/scripts/image-drift.py\" 2>/dev/null; exit 0; }; command -v image-drift >/dev/null 2>&1 && { image-drift 2>/dev/null; exit 0; }; [ -x \"$HOME/.claude/hooks/image-drift\" ] && { \"$HOME/.claude/hooks/image-drift\" 2>/dev/null; exit 0; }; exit 0"
           }
         ]
       }

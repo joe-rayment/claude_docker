@@ -36,6 +36,7 @@ Usage: hook-staging-check.py <dockerfile> <settings.json>
 Prints one violation per line and exits 1 if any are found, else exits 0
 silently.
 """
+import importlib.util
 import json
 import os
 import re
@@ -68,16 +69,34 @@ SAFE_FIRST_TOKENS = {
 }
 
 
+_copy_entries_fn = None
+
+
+def _load_copy_entries():
+    """Import copy_entries() from scripts/image-drift.py — the single owner
+    of this parser (beads_claude_docker-0v3 blocker 1). image-drift.py is a
+    production script staged into the image; this test helper is the one
+    allowed to depend on the repo tree (it always runs from a git checkout,
+    never from a stripped/staged image), so the import direction points
+    test -> production, never the reverse.
+
+    Loaded dynamically (by path, not package import) so this stays a
+    zero-dependency script.
+    """
+    global _copy_entries_fn
+    if _copy_entries_fn is None:
+        root = repo_root()
+        target = os.path.join(root, "scripts", "image-drift.py")
+        spec = importlib.util.spec_from_file_location("image_drift", target)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        _copy_entries_fn = module.copy_entries
+    return _copy_entries_fn
+
+
 def copy_entries(dockerfile_text):
     """(source_path, dest_name) for every `COPY [flags] <src> /usr/local/bin/<dest>` line."""
-    entries = []
-    for m in re.finditer(
-        r"^COPY\s+(?:--\S+\s+)*(\S+)\s+/usr/local/bin/(\S+)\s*$",
-        dockerfile_text,
-        re.MULTILINE,
-    ):
-        entries.append((m.group(1), m.group(2)))
-    return entries
+    return _load_copy_entries()(dockerfile_text)
 
 
 def copy_dest_names(dockerfile_text):

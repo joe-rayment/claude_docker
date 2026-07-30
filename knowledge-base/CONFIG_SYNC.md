@@ -46,6 +46,48 @@ CLAUDE_DEV_TESTS=/workspace/tests run-tests.sh smoke
 Tests asserting layer-2 paths stay red until the host rebuild — staleness, not
 regression; never "fix" them by editing the assertions.
 
+## Automated detection: image-drift
+
+`/usr/local/bin/<tool>` is layer 2 (the image-baked copy); `scripts/<tool>`
+in the repo is layer 1 (the source of truth). A `git commit` to a script
+updates layer 1 immediately but layer 2 only on the next host-side
+`./claude-dev --rebuild` — nothing enforced that gap before
+beads_claude_docker-0v3, which caused three separate confusions in one
+session (a hook crashing because the image predated it, `cost-mirror`
+printing a stale output format, `run-tests.sh` silently resolving to the
+image copy and running 6 suites instead of 8).
+
+`scripts/image-drift.py` is a SessionStart hook that hashes every script
+named in a Dockerfile `COPY ... /usr/local/bin/<dest>` line (mapping
+derived from the Dockerfile, never hardcoded — via `copy_entries()`, which
+`scripts/image-drift.py` owns and `tests/helpers/hook-staging-check.py`'s
+sibling "missing COPY" check imports FROM it, not the reverse: a
+production script staged into the image must never depend on `tests/`
+being present) against its staged counterpart. Silent when everything matches;
+one line naming every drifted script otherwise, e.g.:
+
+```
+image-drift: staged /usr/local/bin copies are stale vs repo (cost-mirror, run-tests.sh) — run ./claude-dev --rebuild on the host
+```
+
+It fails open always (no Dockerfile, no repo, unreadable file — silent,
+exit 0) and only fires inside the template repo itself: the positive
+marker is the Dockerfile referencing `/opt/claude-dev` (the template's own
+staging root), not mere presence of a `scripts/` + `Dockerfile` pair — an
+unrelated project can easily have both (a scratch project with its own
+`Dockerfile` and `scripts/` produced a spurious "staged copies are stale"
+hit before this marker was added, beads_claude_docker-0v3 blocker 2). The
+hook registration in `claude-settings.json`
+prefers the **repo** copy of the checker over the staged one (resolved via
+`git rev-parse --show-toplevel`) — the checker is itself a staged script,
+so running the possibly-stale staged copy to detect staleness would be
+circular.
+
+Seeing the message means: the repo has diverged from what is actually
+running in this container. Run a host-side `./claude-dev --rebuild`, or
+live-patch the specific file (`sudo cp scripts/x.sh /usr/local/bin/x`) to
+unblock immediately.
+
 ## Gotcha: the live settings.json diverges — and the session writes to it
 
 `~/.claude/settings.json` (layer 3) is only re-copied when the layer-2 checksum

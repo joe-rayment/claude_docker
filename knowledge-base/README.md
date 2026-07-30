@@ -10,7 +10,7 @@ is the source; the `/opt` copy refreshes on image rebuild).
 | Doc | Keywords | One-liner |
 |-----|----------|-----------|
 | BEADS_TROUBLESHOOTING.md | beads, bd, dolt, embedded, corrupt, doctor, jsonl, sync | Fix a broken bd database: doctor --fix, JSONL rebuild, no-server model. |
-| CONFIG_SYNC.md | config, sync, checksum, zshrc, settings.local.json, overwritten, merge, layers, baked, stale, run-tests, CLAUDE_DEV_TESTS, diverged | The four config layers, the baked-tests verification trap, live-divergence gotchas, and local overrides. |
+| CONFIG_SYNC.md | config, sync, checksum, zshrc, settings.local.json, overwritten, merge, layers, baked, stale, run-tests, CLAUDE_DEV_TESTS, diverged, image-drift, rebuild | The four config layers, the baked-tests verification trap, live-divergence gotchas, local overrides, and the image-drift SessionStart check that flags a stale /usr/local/bin. |
 | DISK_SPACE.md | disk, space, full, no space left on device, df, du, docker, prune, overlay, vm, build cache, bats-run, recursion, runaway | "Container full" is the host Docker VM, not the container: du -x vs df trap; fix is host-side docker prune. |
 | LIVE_TESTING.md | verify, screenshot, take-screenshot, playwright, curl, httpie, live test, xvfb | Behavioral verification patterns for web apps, APIs, CLIs, GUIs, and DBs. |
 | SNOWFLAKE_DEPLOY.md | snowflake, snow cli, notebook, --replace, imports, external access, stage | Notebook deploys: --replace clears imports; ALTER NOTEBOOK to restore. |
