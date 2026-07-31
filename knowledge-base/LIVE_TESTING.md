@@ -92,3 +92,38 @@ go install github.com/some/tool@latest
 ```
 
 The goal is always: **see it working with your own eyes** (via screenshots, command output, or browser interaction).
+
+## Writing bats regression tests
+
+Two rules learned from real test failures in this repo, not just style
+preferences.
+
+**One assertion per line.** An `A && B` chain is defanged by `set -e`: bash
+only applies `-e` to the *last* command in a `&&`/`||` list, so a false `A`
+that is not the test's last line lets execution fall through to the next
+line, silently masking the failure. Verified 2026-07-31 — a failing chain
+mid-body prints the next line and the enclosing function returns 0:
+
+```bash
+bash -c 'set -e; f(){ false && echo unreachable; echo "MASKED: reached"; }; f; echo "exit=$?"'
+# → MASKED: reached
+#   exit=0
+```
+
+The same chain as the function's *last* line does abort (bats would then
+correctly fail the test):
+
+```bash
+bash -c 'set -e; f(){ echo before; false && echo unreachable; }; f; echo AFTER'
+# → before          (AFTER never prints — function returned 1, script exited)
+```
+
+So `A && B` is only safe for genuine flow control (`cd x && y`), never as a
+stand-in for two separate assertions — write them as two lines instead.
+
+**Never `mktemp` your own scratch directory.** `setup()` must do
+`export TMPDIR="$BATS_TEST_TMPDIR"` (see `tests/context-detect.bats`,
+`tests/hook-staging.bats` for the pattern in this repo) so bats removes the
+directory whether the test passes or fails. An inline `rm -rf` at the end
+of the test body leaks the directory on every run where an assertion
+aborts the test early — the cleanup line never gets a chance to execute.

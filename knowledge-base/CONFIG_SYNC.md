@@ -118,3 +118,56 @@ after the session ends.
 | `settings.json` invalid (entrypoint warns) | `jq empty ~/.claude/settings.json` to locate the error, fix or delete the file, restart — sync re-copies the base |
 | Overrides not applied | `jq empty ~/.claude/settings.local.json` — invalid JSON skips the merge |
 | Config stuck on old version | `rm ~/.config-hash` and restart the container to force a full re-sync |
+
+## Confirming a rebuild actually happened
+
+Use PID 1's start time, not `uptime -s`: `uptime -s` reports the **host**
+kernel's boot time, which is shared across every container on that host and
+looks unchanged across a plain container restart — it tells you nothing
+about whether *this* container was rebuilt. `ps` on PID 1 (the container's
+own init) is the container-relevant clock:
+
+```bash
+ps -o pid,lstart,etime,cmd -p 1          # container init start time
+uptime -s                                # host kernel boot time — do NOT use this for rebuild evidence
+```
+
+Verified 2026-07-31 in this container: `ps -p 1` reports `Wed Jul 29
+07:45:23 2026`; `uptime -s` reports `2026-07-29 01:40:25` — they diverge,
+confirming these are two different clocks. Compare PID 1's `lstart`
+against the mtimes of files under `/etc/claude-dev/configs`
+(`ls -la --time-style=full-iso /etc/claude-dev/configs`): init starting
+**after** those mtimes is real rebuild evidence; init starting before them
+(or `uptime -s` alone) is not. Recorded after a session wrongly declared a
+rebuild had not happened based on a stable `uptime -s`.
+
+## Renaming a scripts/*.sh file requires updating its Dockerfile COPY line
+
+Scripts install to bare names in `/usr/local/bin/` via one `COPY
+--chown=agent:agent scripts/<file> /usr/local/bin/<dest>` line per script,
+and every runtime reference — shell aliases, tests, the entrypoint,
+docs, `settings.json` permission entries — uses the **installed** name,
+not the repo filename. Renaming a script therefore touches exactly one
+Dockerfile line in addition to the rename itself; skipping it breaks the
+image build (the old `COPY` source no longer exists) on the next rebuild.
+
+Find the current line with a grep anchor, not an absolute line number —
+line numbers drift silently as the Dockerfile grows. Verified 2026-07-31:
+a previously-recorded citation of `Dockerfile:170` had already drifted to
+line 178 by the time of this check.
+
+```bash
+grep -n "COPY --chown=agent:agent scripts/" Dockerfile
+```
+
+## Self-modification blocks when live-syncing config
+
+The permission classifier blocks an agent from live-editing its own
+startup config, even when the content being copied is verbatim template
+material the user asked to sync. Agent-file copies into
+`~/.claude/agents/` and shell-function injection into `~/.zshrc` clear
+with one round of explicit per-action user authorization; edits that add
+hooks to a **live** `~/.claude/settings.json` stay blocked even then,
+because hooks in that file auto-execute at every session start. Do not
+retry a blocked self-modification with a workaround (e.g. a wrapper
+script) — surface the block and let the user decide how to proceed.
