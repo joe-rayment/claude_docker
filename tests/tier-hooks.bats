@@ -239,6 +239,402 @@ setup_prime_agents() {
     [ -z "$output" ]
 }
 
+@test "workflow-lint: multi-line prompt with model far past the old 5-line window passes" {
+    f="$BATS_TEST_TMPDIR/wf.js"
+    cat > "$f" <<'EOF'
+const r = await agent(`
+  line 1 of a long prompt
+  line 2 of a long prompt
+  line 3 of a long prompt
+  line 4 of a long prompt
+  line 5 of a long prompt
+  line 6 of a long prompt
+  line 7 of a long prompt
+  line 8 of a long prompt
+  line 9 of a long prompt
+  line 10 of a long prompt
+  line 11 of a long prompt
+  line 12 of a long prompt
+  line 13 of a long prompt
+  line 14 of a long prompt
+`, { model: "claude-haiku-4-5-20251001" })
+EOF
+    run sh -c 'jq -cn --rawfile s "'"$f"'" "{tool_name:\"Workflow\",tool_input:{script:\$s}}" | sh '"$LINT"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+}
+
+@test "workflow-lint: prose containing the literal token agent( passes (template, string, and comment)" {
+    # prose mentions sit more than 5 lines from any real model: line, so a
+    # scanner that (like the pre-masking original) just line-greps for
+    # agent( and looks 5 lines ahead for model: would flag every prose line
+    # here; only masking string/template/comment content out first passes it.
+    f="$BATS_TEST_TMPDIR/wf.js"
+    cat > "$f" <<'EOF'
+const p1 = `please audit every agent() call in the script`
+const p2 = "make sure agent() calls all set a model"
+const p3 = 'agent( calls need review too'
+// review each agent() call before merging
+/* also check every agent() call in the diff */
+// filler line 1 to push past the old 5-line window
+// filler line 2 to push past the old 5-line window
+// filler line 3 to push past the old 5-line window
+// filler line 4 to push past the old 5-line window
+// filler line 5 to push past the old 5-line window
+const a = await agent(p1, { model: "claude-haiku-4-5-20251001" })
+const b = await agent(p2, { model: "claude-sonnet-5" })
+EOF
+    run sh -c 'jq -cn --rawfile s "'"$f"'" "{tool_name:\"Workflow\",tool_input:{script:\$s}}" | sh '"$LINT"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+}
+
+@test "workflow-lint: genuine missing model inside a long multi-line call still denies" {
+    f="$BATS_TEST_TMPDIR/wf.js"
+    cat > "$f" <<'EOF'
+const r = await agent(`
+  line 1 of a long prompt
+  line 2 of a long prompt
+  line 3 of a long prompt
+  line 4 of a long prompt
+  line 5 of a long prompt
+  line 6 of a long prompt
+  line 7 of a long prompt
+  line 8 of a long prompt
+  line 9 of a long prompt
+  line 10 of a long prompt
+  line 11 of a long prompt
+  line 12 of a long prompt
+  line 13 of a long prompt
+  line 14 of a long prompt
+`, { schema: S, label: "l" })
+EOF
+    run sh -c 'jq -cn --rawfile s "'"$f"'" "{tool_name:\"Workflow\",tool_input:{script:\$s}}" | sh '"$LINT"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.hookSpecificOutput.permissionDecision == "deny"'
+    echo "$output" | jq -e '.hookSpecificOutput.permissionDecisionReason | test("line 1:")'
+}
+
+@test "workflow-lint: two agent() calls on one line, one missing a model, denies that line" {
+    run sh -c 'jq -cn "{tool_name:\"Workflow\",tool_input:{script:\"parallel([() => agent(a, {model: m}), () => agent(b, {schema: S})])\"}}" | sh '"$LINT"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.hookSpecificOutput.permissionDecision == "deny"'
+    echo "$output" | jq -e '.hookSpecificOutput.permissionDecisionReason | test("line 1:")'
+}
+
+@test "workflow-lint: model in a neighbouring call does not launder a missing one on the next line" {
+    run sh -c 'jq -cn "{tool_name:\"Workflow\",tool_input:{script:\"const a = await agent(\\\"a\\\", {model: \\\"m\\\"})\\nconst b = await agent(\\\"b\\\", {schema: S})\"}}" | sh '"$LINT"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.hookSpecificOutput.permissionDecision == "deny"'
+    echo "$output" | jq -e '.hookSpecificOutput.permissionDecisionReason | test("line 2:")'
+    echo "$output" | jq -e '.hookSpecificOutput.permissionDecisionReason | test("line 1:") | not'
+}
+
+@test "workflow-lint: WORKFLOW_LINT_WINDOW bounds the forward scan" {
+    f="$BATS_TEST_TMPDIR/wf.js"
+    printf 'const r = await agent(\n  a,\n  b,\n  c,\n  { model: "claude-haiku-4-5-20251001" }\n)\n' > "$f"
+    run sh -c 'jq -cn --rawfile s "'"$f"'" "{tool_name:\"Workflow\",tool_input:{script:\$s}}" | WORKFLOW_LINT_WINDOW=3 sh '"$LINT"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.hookSpecificOutput.permissionDecision == "deny"'
+    # the same script passes with the default (unbounded-enough) window
+    run sh -c 'jq -cn --rawfile s "'"$f"'" "{tool_name:\"Workflow\",tool_input:{script:\$s}}" | sh '"$LINT"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+}
+
+@test "workflow-lint: unterminated template literal masks a real modelless agent() call after it (documented best-effort limit)" {
+    f="$BATS_TEST_TMPDIR/wf.js"
+    printf 'const p = `this template never closes\nsome more text\nawait agent(x, {schema: S})\nstill no backtick\n' > "$f"
+    run sh -c 'jq -cn --rawfile s "'"$f"'" "{tool_name:\"Workflow\",tool_input:{script:\$s}}" | sh '"$LINT"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+}
+
+@test "workflow-lint: model-ok annotation still works on the line after the call's closing paren" {
+    run sh -c 'jq -cn "{tool_name:\"Workflow\",tool_input:{script:\"await agent(p, opts)\\n/* workflow-lint: model-ok */\"}}" | sh '"$LINT"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+}
+
+@test "workflow-lint: D1 a division right after a closed brace is not mistaken for a regex start" {
+    run sh -c 'jq -cn "{tool_name:\"Workflow\",tool_input:{script:\"agent(scout, { a: {}/2, model: \\\"haiku\\\" })\"}}" | sh '"$LINT"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+}
+
+@test "workflow-lint: D2 a regex literal right after a closed block comment is still recognised as a regex" {
+    f="$BATS_TEST_TMPDIR/wf.js"
+    cat > "$f" <<'EOF'
+agent(x, /*c*/ /y\(/, { model: "h" })
+EOF
+    run sh -c 'jq -cn --rawfile s "'"$f"'" "{tool_name:\"Workflow\",tool_input:{script:\$s}}" | sh '"$LINT"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+}
+
+@test "workflow-lint: D3 one-level nesting — a nested call's model does not launder a modelless outer call" {
+    f="$BATS_TEST_TMPDIR/wf.js"
+    cat > "$f" <<'EOF'
+await agent(outer, { schema: S }, agent(inner, { model: "m" }))
+EOF
+    run sh -c 'jq -cn --rawfile s "'"$f"'" "{tool_name:\"Workflow\",tool_input:{script:\$s}}" | sh '"$LINT"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.hookSpecificOutput.permissionDecision == "deny"'
+    echo "$output" | jq -e '.hookSpecificOutput.permissionDecisionReason | test("line 1:")'
+}
+
+@test "workflow-lint: D3 two-level nesting — an innermost model does not launder two modelless outer calls" {
+    f="$BATS_TEST_TMPDIR/wf.js"
+    cat > "$f" <<'EOF'
+await agent(outer, { schema: S }, agent(mid, { schema: S2 }, agent(inner, { model: "m" })))
+EOF
+    run sh -c 'jq -cn --rawfile s "'"$f"'" "{tool_name:\"Workflow\",tool_input:{script:\$s}}" | sh '"$LINT"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.hookSpecificOutput.permissionDecision == "deny"'
+    echo "$output" | jq -e '.hookSpecificOutput.permissionDecisionReason | test("line 1:")'
+}
+
+@test "workflow-lint: Object.assign opts built inline are collected and satisfy the guard" {
+    f="$BATS_TEST_TMPDIR/wf.js"
+    cat > "$f" <<'EOF'
+await agent("p", Object.assign({}, BASE, {model: M}))
+EOF
+    run sh -c 'jq -cn --rawfile s "'"$f"'" "{tool_name:\"Workflow\",tool_input:{script:\$s}}" | sh '"$LINT"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+}
+
+@test "workflow-lint: a spread ternary inside the opts literal is collected and satisfies the guard" {
+    f="$BATS_TEST_TMPDIR/wf.js"
+    cat > "$f" <<'EOF'
+await agent("p", {label: "x", ...(cheap ? {model: "haiku"} : {model: "sonnet"})})
+EOF
+    run sh -c 'jq -cn --rawfile s "'"$f"'" "{tool_name:\"Workflow\",tool_input:{script:\$s}}" | sh '"$LINT"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+}
+
+@test "workflow-lint: a bare ternary as the opts argument is collected and satisfies the guard" {
+    f="$BATS_TEST_TMPDIR/wf.js"
+    cat > "$f" <<'EOF'
+await agent("p", (cheap ? {model: "haiku"} : {model: "sonnet"}))
+EOF
+    run sh -c 'jq -cn --rawfile s "'"$f"'" "{tool_name:\"Workflow\",tool_input:{script:\$s}}" | sh '"$LINT"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+}
+
+@test "workflow-lint: a helper call (not agent() itself) returning opts is collected and satisfies the guard" {
+    f="$BATS_TEST_TMPDIR/wf.js"
+    cat > "$f" <<'EOF'
+await agent("p", buildOpts({model: "haiku"}))
+EOF
+    run sh -c 'jq -cn --rawfile s "'"$f"'" "{tool_name:\"Workflow\",tool_input:{script:\$s}}" | sh '"$LINT"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+}
+
+@test "workflow-lint: a nested agent( inside a .map closure in the outer call's arguments still denies" {
+    f="$BATS_TEST_TMPDIR/wf.js"
+    cat > "$f" <<'EOF'
+await agent(outer, { schema: S, onEach: items.map(x => agent(x, { model: m })) })
+EOF
+    run sh -c 'jq -cn --rawfile s "'"$f"'" "{tool_name:\"Workflow\",tool_input:{script:\$s}}" | sh '"$LINT"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.hookSpecificOutput.permissionDecision == "deny"'
+    echo "$output" | jq -e '.hookSpecificOutput.permissionDecisionReason | test("line 1:")'
+}
+
+@test "workflow-lint: D4 an identifier ending in model: does not satisfy the guard (with a genuine model: control)" {
+    run sh -c 'jq -cn "{tool_name:\"Workflow\",tool_input:{script:\"agent({ prompt: \\\"kitchen reno\\\", remodel: true })\"}}" | sh '"$LINT"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.hookSpecificOutput.permissionDecision == "deny"'
+    run sh -c 'jq -cn "{tool_name:\"Workflow\",tool_input:{script:\"agent({ prompt: \\\"kitchen reno\\\", model: \\\"h\\\" })\"}}" | sh '"$LINT"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+}
+
+@test "workflow-lint: a nested plain call before the opts object does not confuse the paren-depth walk" {
+    run sh -c 'jq -cn "{tool_name:\"Workflow\",tool_input:{script:\"await agent(foo(1), { model: \\\"m\\\" })\"}}" | sh '"$LINT"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+}
+
+@test "workflow-lint: an unterminated single-quoted string resyncs at EOL, so the next line's call is still checked" {
+    f="$BATS_TEST_TMPDIR/wf.js"
+    cat > "$f" <<'EOF'
+const s = 'unterminated
+await agent(x, { schema: S })
+EOF
+    run sh -c 'jq -cn --rawfile s "'"$f"'" "{tool_name:\"Workflow\",tool_input:{script:\$s}}" | sh '"$LINT"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.hookSpecificOutput.permissionDecision == "deny"'
+    echo "$output" | jq -e '.hookSpecificOutput.permissionDecisionReason | test("line 2:")'
+}
+
+@test "workflow-lint: an unterminated double-quoted string resyncs at EOL, so the next line's call is still checked" {
+    f="$BATS_TEST_TMPDIR/wf.js"
+    cat > "$f" <<'EOF'
+const s = "unterminated
+await agent(x, { schema: S })
+EOF
+    run sh -c 'jq -cn --rawfile s "'"$f"'" "{tool_name:\"Workflow\",tool_input:{script:\$s}}" | sh '"$LINT"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.hookSpecificOutput.permissionDecision == "deny"'
+    echo "$output" | jq -e '.hookSpecificOutput.permissionDecisionReason | test("line 2:")'
+}
+
+@test "workflow-lint: a nested object literal inside a \${...} template interpolation is handled (with model: and without)" {
+    f="$BATS_TEST_TMPDIR/wf.js"
+    cat > "$f" <<'EOF'
+await agent(`prompt ${JSON.stringify({a:1})}`, { model: "m" })
+EOF
+    run sh -c 'jq -cn --rawfile s "'"$f"'" "{tool_name:\"Workflow\",tool_input:{script:\$s}}" | sh '"$LINT"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+    cat > "$f" <<'EOF'
+await agent(`prompt ${JSON.stringify({a:1})}`, { schema: S })
+EOF
+    run sh -c 'jq -cn --rawfile s "'"$f"'" "{tool_name:\"Workflow\",tool_input:{script:\$s}}" | sh '"$LINT"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.hookSpecificOutput.permissionDecision == "deny"'
+}
+
+@test "workflow-lint: annotation exactly 2 lines past the call's closing paren line passes" {
+    f="$BATS_TEST_TMPDIR/wf.js"
+    cat > "$f" <<'EOF'
+const r = await agent(p, {
+  schema: S
+})
+// filler
+/* workflow-lint: model-ok */
+EOF
+    run sh -c 'jq -cn --rawfile s "'"$f"'" "{tool_name:\"Workflow\",tool_input:{script:\$s}}" | sh '"$LINT"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+}
+
+@test "workflow-lint: annotation 3 lines past the call's closing paren line is out of window and denies" {
+    f="$BATS_TEST_TMPDIR/wf.js"
+    cat > "$f" <<'EOF'
+const r = await agent(p, {
+  schema: S
+})
+// filler 1
+// filler 2
+/* workflow-lint: model-ok */
+EOF
+    run sh -c 'jq -cn --rawfile s "'"$f"'" "{tool_name:\"Workflow\",tool_input:{script:\$s}}" | sh '"$LINT"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.hookSpecificOutput.permissionDecision == "deny"'
+}
+
+@test "workflow-lint: several modelless calls on one line are reported as that one line, exactly once" {
+    f="$BATS_TEST_TMPDIR/wf.js"
+    cat > "$f" <<'EOF'
+parallel([agent(a, {schema: S}), agent(b, {schema: S2}), agent(c, {schema: S3})])
+EOF
+    run sh -c 'jq -cn --rawfile s "'"$f"'" "{tool_name:\"Workflow\",tool_input:{script:\$s}}" | sh '"$LINT"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.hookSpecificOutput.permissionDecision == "deny"'
+    echo "$output" | jq -e '[.hookSpecificOutput.permissionDecisionReason | scan("line 1:")] | length == 1'
+}
+
+@test "workflow-lint: D5 a single line packed with ~20000 agent( calls does not hang and still denies" {
+    f="$BATS_TEST_TMPDIR/wf.js"
+    awk 'BEGIN { for (i = 0; i < 20000; i++) printf "agent(x); "; print "" }' > "$f"
+    run sh -c 'jq -cn --rawfile s "'"$f"'" "{tool_name:\"Workflow\",tool_input:{script:\$s}}" | timeout 10 sh '"$LINT"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.hookSpecificOutput.permissionDecision == "deny"'
+}
+
+@test "workflow-lint: a script over WORKFLOW_LINT_MAX_BYTES fails open without scanning" {
+    f="$BATS_TEST_TMPDIR/wf.js"
+    awk 'BEGIN { for (i = 0; i < 500010; i++) printf "a"; print "" }' > "$f"
+    printf 'agent(x)\n' >> "$f"
+    run sh -c 'jq -cn --rawfile s "'"$f"'" "{tool_name:\"Workflow\",tool_input:{script:\$s}}" | timeout 10 sh '"$LINT"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+}
+
+@test "workflow-lint: WORKFLOW_LINT_MAX_BYTES is honoured, both raised and default" {
+    f="$BATS_TEST_TMPDIR/wf.js"
+    printf 'await agent(x, {schema: S}) // more than fifty bytes on this line\n' > "$f"
+    run sh -c 'jq -cn --rawfile s "'"$f"'" "{tool_name:\"Workflow\",tool_input:{script:\$s}}" | WORKFLOW_LINT_MAX_BYTES=50 sh '"$LINT"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+    run sh -c 'jq -cn --rawfile s "'"$f"'" "{tool_name:\"Workflow\",tool_input:{script:\$s}}" | sh '"$LINT"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.hookSpecificOutput.permissionDecision == "deny"'
+}
+
+@test "workflow-lint: WORKFLOW_LINT_MAX_PER_LINE excess is fail-open (documented silent bypass)" {
+    f="$BATS_TEST_TMPDIR/wf.js"
+    awk 'BEGIN { for (i = 0; i < 64; i++) printf "agent(x, {model: m}); "; printf "agent(y, {schema: S})\n" }' > "$f"
+    run sh -c 'jq -cn --rawfile s "'"$f"'" "{tool_name:\"Workflow\",tool_input:{script:\$s}}" | sh '"$LINT"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+}
+
+@test "workflow-lint: WORKFLOW_LINT_MAX_PER_LINE is honoured from the environment" {
+    run sh -c 'jq -cn "{tool_name:\"Workflow\",tool_input:{script:\"agent(y, {schema: S})\"}}" | WORKFLOW_LINT_MAX_PER_LINE=0 sh '"$LINT"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+    run sh -c 'jq -cn "{tool_name:\"Workflow\",tool_input:{script:\"agent(y, {schema: S})\"}}" | sh '"$LINT"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.hookSpecificOutput.permissionDecision == "deny"'
+}
+
+@test "workflow-lint: unterminated block comment masks a real modelless agent() call after it (documented best-effort limit)" {
+    f="$BATS_TEST_TMPDIR/wf.js"
+    printf '/* this comment never closes\nsome more text\nawait agent(x, {schema: S})\nstill no closing comment\n' > "$f"
+    run sh -c 'jq -cn --rawfile s "'"$f"'" "{tool_name:\"Workflow\",tool_input:{script:\$s}}" | sh '"$LINT"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+}
+
+@test "workflow-lint: WORKFLOW_LINT_DISABLE=1 bypasses entirely" {
+    run sh -c 'jq -cn "{tool_name:\"Workflow\",tool_input:{script:\"agent(y, {schema: S})\"}}" | WORKFLOW_LINT_DISABLE=1 sh '"$LINT"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+    run sh -c 'jq -cn "{tool_name:\"Workflow\",tool_input:{script:\"agent(y, {schema: S})\"}}" | sh '"$LINT"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.hookSpecificOutput.permissionDecision == "deny"'
+}
+
+@test "workflow-lint: a nested agent( call starting at column 1 of a continuation line is still recognised as nested" {
+    f="$BATS_TEST_TMPDIR/wf.js"
+    cat > "$f" <<'EOF'
+await agent(outer,
+agent(inner, { model: "m" }),
+{ schema: S })
+EOF
+    run sh -c 'jq -cn --rawfile s "'"$f"'" "{tool_name:\"Workflow\",tool_input:{script:\$s}}" | sh '"$LINT"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.hookSpecificOutput.permissionDecision == "deny"'
+    echo "$output" | jq -e '.hookSpecificOutput.permissionDecisionReason | test("line 1:")'
+}
+
+@test "workflow-lint: WORKFLOW_LINT_WINDOW truncation narrows the annotation window to the truncation point" {
+    f="$BATS_TEST_TMPDIR/wf.js"
+    cat > "$f" <<'EOF'
+const r = await agent(p, {
+  a: 1,
+  b: 2,
+  c: 3,
+  d: 4
+})
+// filler
+/* workflow-lint: model-ok */
+EOF
+    run sh -c 'jq -cn --rawfile s "'"$f"'" "{tool_name:\"Workflow\",tool_input:{script:\$s}}" | WORKFLOW_LINT_WINDOW=3 sh '"$LINT"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.hookSpecificOutput.permissionDecision == "deny"'
+    run sh -c 'jq -cn --rawfile s "'"$f"'" "{tool_name:\"Workflow\",tool_input:{script:\$s}}" | sh '"$LINT"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+}
+
 # ── cost-mirror ──────────────────────────────────────────────────────────────
 
 mk_transcript() {

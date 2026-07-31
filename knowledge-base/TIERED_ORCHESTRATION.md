@@ -210,9 +210,21 @@ mi9). Three hooks close that gap — all fail OPEN, all tested in
   the Agent tool's `model` param rejects concrete ids (verified live:
   `claude-sonnet-5` failed validation, `sonnet` routed correctly).
 - **`workflow-lint`** (PreToolUse, matcher `Workflow`) — denies a workflow
-  script whose `agent()` calls omit `model:` (best-effort line scan, 5-line
-  lookahead; `/* workflow-lint: model-ok */` suppresses). Enforcement sits
-  at the script boundary because workflow-internal spawns are not reliably
+  script whose `agent()` calls omit `model:` (char-by-char lexer masks
+  strings/templates/regex/comments, then scans each real call site from its
+  opening paren to the matching close paren, bounded by
+  `WORKFLOW_LINT_WINDOW` lines (default 200); `/* workflow-lint: model-ok */`
+  suppresses, honoured through 2 lines past the matching close paren). Two
+  fail-open caps bound the scan's own cost: `WORKFLOW_LINT_MAX_PER_LINE`
+  (default 64) caps how many `agent(` call sites are examined per source
+  line — beyond it, sites go unlinted rather than trigger the quadratic
+  cost of tens of thousands of forward walks over one line (~48s measured
+  uncapped, enough to wedge the tool call the hook guards);
+  `WORKFLOW_LINT_MAX_BYTES` (default 500000) skips the lexer entirely
+  above that size, because its char-by-char masking is itself quadratic in
+  a single line's length under mawk (~118s for a ~3MB one-line script) —
+  the script passes through unscanned. Enforcement sits at the script
+  boundary because workflow-internal spawns are not reliably
   hook-reachable.
 - **`cost-mirror`** (UserPromptSubmit, python3) — injects one line of
   by-model main-vs-workers token spend per prompt, computed incrementally

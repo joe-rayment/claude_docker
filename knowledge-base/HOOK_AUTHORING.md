@@ -2,7 +2,7 @@
 
 When to use: you're writing or debugging a Claude Code hook (`.claude/settings.json`
 `hooks` entries — `PreToolUse`, `SessionStart`, etc.) in this container and want
-to avoid two traps that already cost real debugging time here.
+to avoid four traps that already cost real debugging time here.
 
 ## jq's object-construction shorthand null-fills absent keys
 
@@ -59,3 +59,45 @@ the same tool call, so `updatedInput` contention is moot today. (What
 here — this entry is only the matcher-scope caveat.) If a future change
 ever widens `bd-guard`'s matcher to include `Agent` or `Workflow`, re-check
 for `updatedInput` contention with the tier hooks before shipping it.
+
+## A literal single quote breaks an awk program embedded in single-quoted shell
+
+`workflow-lint.sh` shells out to `awk '...'`, quoting the whole program with
+single quotes. Its masking lexer needs to compare a character against
+JavaScript's single-quote string delimiter — write that comparison as a
+literal `'` anywhere inside the awk block and the *shell* closes its
+quoting right there, not awk: everything after that point is reinterpreted
+as shell syntax instead of text handed to awk. The fix is awk's octal
+escape `"\047"` (see the `sq` state in `scripts/workflow-lint.sh`, where the
+quote delimiter is compared against `"\047"`, never against a literal `'`).
+
+This is not hypothetical: during this change an executor added an ordinary
+code comment inside that same awk block containing the word "doesn't" — the
+apostrophe alone was enough. Result: `Syntax error: "{" unexpected` at
+`awk`-invocation time, and 27 failing `tests/tier-hooks.bats` cases.
+
+**Rule:** inside an awk program embedded in a single-quoted shell string, no
+apostrophe may appear *anywhere* — not just in string/regex literals meant
+to represent `'`, but in ordinary awk comments and prose too. The shell's
+lexer runs before awk ever sees the text, and it does not know or care that
+the quote was "just a comment". Use `\047` for any single-quote character
+the awk program itself needs, and avoid apostrophes in comments within the
+block entirely (write "does not", not "doesn't").
+
+## Char-by-char string accumulation in awk is quadratic under mawk
+
+`workflow-lint.sh`'s masking lexer builds each masked output line one
+character at a time in a loop: `out = out c`. Under mawk (this container's
+`awk`), repeated string concatenation like this is O(n^2) in the length of
+a *single* line — measured here at ~118s for a ~3MB one-line script.
+Ordinary hand-written scripts never hit this: the pathology needs one
+enormous line, and multi-line scripts of any total size are unaffected
+because each line stays short.
+
+**Rule:** a scanner that rewrites or masks text char-by-char in awk needs
+an input-size cap that bails out *before* the lexer runs — a line-count
+bound does not help, because the pathology lives inside a single line, not
+across many of them. `workflow-lint.sh`'s `WORKFLOW_LINT_MAX_BYTES`
+(default 500000) is the worked example: above that many bytes the script
+skips the lexer entirely and passes the input through unscanned (fail
+open) rather than risk a multi-minute `PreToolUse` hook stall.
