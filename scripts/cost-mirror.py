@@ -9,18 +9,65 @@ from the live transcript, so the cost of working inline vs delegating is
 visible at the moment the choice is made. It constrains nothing.
 
 Mechanics: UserPromptSubmit stdout on exit 0 is added to the model's context.
-The main transcript and each subagents/*.jsonl are scanned INCREMENTALLY — a
-per-session state file under ~/.claude/cache/cost-mirror/ keeps a byte offset
-and running totals per file, so each prompt parses only appended lines (a
+The main transcript and every subagents/**/*.jsonl beneath it (recursive —
+see "Nested subagents" below) are scanned INCREMENTALLY — a per-session
+state file under ~/.claude/cache/cost-mirror/ keeps a byte offset and
+running totals per file, so each prompt parses only appended lines (a
 shrunk/rotated file rescans from zero). Assistant rows are aggregated by
 message.model: rows with isSidechain or living under subagents/ count as
-worker spend, the rest as main. Input, output, cache-read, and cache-write
-(5m/1h split, when the row breaks it out) tokens are all tracked. A static
-per-model USD/MTok pricing table (prefix-matched, see PRICING_TABLE) turns
-those into an actual dollar figure, plus a counterfactual "saved" figure —
-see "Delegation-only savings" below for what that's counterfactual against.
-Unknown/off-ladder models still show their tokens but cost $0 and mark the
-line with a trailing '?'. "<synthetic>" rows are skipped.
+worker spend (see "Per-role attribution" for how "worker" is now split),
+the rest as main. Input, output, cache-read, and cache-write (5m/1h split,
+when the row breaks it out) tokens are all tracked, de-duplicated first
+(see "Per-response de-duplication"). A static per-model USD/MTok pricing
+table (prefix-matched, see PRICING_TABLE) turns those into an actual
+dollar figure, plus a counterfactual "saved" figure — see "Delegation-only
+savings" below for what that's counterfactual against. Unknown/off-ladder
+models still show their tokens but cost $0 and mark the line with a
+trailing '?'. "<synthetic>" rows are skipped.
+
+Per-response de-duplication (added 2026-07-31): a single API response is
+written to the transcript as SEVERAL assistant rows sharing one
+message.id — one row per content block (thinking/text/tool_use) — and
+each row repeats the parent response's usage in full EXCEPT
+output_tokens, which is CUMULATIVE across the group (e.g. 3,3,3,3,3,571
+for one real six-block response). Counting every row as if it were its
+own full response double- (or worse-) counted input/cache-read/cache-
+write and inflated output too, overstating spend by roughly 2.17x
+machine-wide. scan_file now counts in/cache-r/cache-w ONCE per
+message.id (on the group's first row) and takes the MAX/last value for
+output (via a small per-file dedup ring persisted in fstate — see
+_dedup_seen/_dedup_note — so a group split across an incremental scan
+boundary still dedupes correctly). A row with no message.id (e.g. a
+hand-crafted test fixture) is never deduped, counted in full as before.
+This forced the STATE_VERSION bump (v3 -> v4, see below) and a rebuild of
+lifetime.json (LIFETIME_VERSION 2 -> 3): both persisted stores held
+counts inflated by the bug and had no record of which message.id
+contributed what, so there was no way to retroactively fix them in place.
+
+Nested subagents (added 2026-07-31): workflow-spawned agents land one
+directory deeper than a plain subagent spawn — subagents/workflows/
+<wf_id>/agent-*.jsonl — which the old single-level subagents/*.jsonl glob
+never matched, silently excluding those transcripts' spend from every
+report. scan_session (and the read-only mirror _session_file_paths()
+that --all uses to regroup its flat cache) now glob subagents/**/*.jsonl
+with recursive=True, which matches both the old flat layout and the
+nested one.
+
+Per-role attribution (added 2026-07-31): every subagent row used to share
+one bare "worker" side, mixing verifier/executor/scout/everything-else
+into one bucket. Each subagent transcript is now labelled "worker:<role>"
+from its co-located sidecar agent-<ID>.meta.json (see _agent_label) — the
+role is meta["customAgentType"] if present, else meta["agentType"];
+NAMED spawns put the spawn's *name* in agentType and the true role in
+customAgentType (e.g. {"agentType": "benchbase", "customAgentType":
+"executor"}), so agentType alone produces junk labels ("worker:final-
+check", "worker:gate-check", ...) and undercounts real roles. A missing/
+unreadable sidecar, or one with neither key, falls back to bare "worker"
+rather than guessing. Every consumer that used to compare a side to the
+literal string "worker" (summarise_tokens, session_delegation_savings,
+render_report) now treats "not main" as the worker test instead, so a
+per-role row is never silently dropped from the "workers:" hook clause,
+the delegation-savings sum, or the report table.
 
 Delegation-only savings: "saved" means spend that would not have happened
 without delegating to a cheaper WORKER model — never spend saved by running
@@ -185,16 +232,38 @@ def fmt_usd(x):
     return f"{sign}${x:.2f}"
 
 
-STATE_VERSION = 3  # bumped for "bagg" (bucketed agg, see BUCKET_SECONDS below);
-# an old v2 state has no bucket history for bytes already consumed, so the
-# version bump forces a one-time clean rescan on upgrade rather than
-# silently under-counting epochs for a session's earlier history.
-LIFETIME_VERSION = 2  # lifetime.json's schema (plain "sessionId|side|model"
-# counters, no bucket data) did NOT change in this slice — kept on its own
-# constant so the STATE_VERSION bump above (which exists purely to force a
-# rescan of the bucketed scan-state caches) does not also wipe durable
-# lifetime history that has nothing to do with buckets.
+STATE_VERSION = 4  # bumped from 3: every assistant JSONL row used to be
+# counted as if it were one full API response, but ONE response is written
+# as SEVERAL rows sharing one message.id (one row per content block --
+# thinking/text/tool_use), each repeating the parent response's usage in
+# full except output_tokens (cumulative across the group). That double-
+# (or worse-) counted in/cache-r/cache-w and inflated out too -- ~2.17x
+# machine-wide. A v3 state holds those inflated per-content-block counts
+# with no record of which message.id contributed what, so there is no way
+# to retroactively de-duplicate already-persisted totals; the version bump
+# forces a one-time clean rescan rather than mixing correct and doubled
+# dollars together. This bump ALSO changes what "worker" keys look like
+# (see _agent_label: bare "worker" splits into "worker:<role>" for a
+# labelled subagent transcript), so a clean rescan is needed for that
+# reason too -- an old state's "worker|model" rows would otherwise never
+# get their per-role split.
+LIFETIME_VERSION = 3  # bumped from 2 alongside STATE_VERSION this time --
+# unlike the earlier bagg-only STATE_VERSION bump (which left lifetime.json
+# untouched on purpose, see below), THIS bug corrupted the actual counters
+# _update_lifetime persists (the same double-counted in/out/cr/w5/w1 the
+# scan-state bump above describes), so carrying old lifetime rows forward
+# would keep reporting doubled dollars for every deleted-transcript session
+# forever. Kept as its OWN constant (not folded into STATE_VERSION) purely
+# so a FUTURE scan-state-only bump (e.g. another bagg-shaped change) can
+# again avoid wiping durable lifetime history that has nothing wrong with
+# it -- this slice needed both bumped, that doesn't mean they're coupled.
 COUNTER_KEYS = ("in", "out", "cr", "w5", "w1")
+
+# De-dup ring size for scan_file's per-message.id state (see _dedup_seen/
+# _dedup_note below): duplicate rows sharing a message.id are contiguous in
+# a transcript, so a short ring is enough to survive an incremental scan
+# boundary landing inside a group without growing state unboundedly.
+DEDUP_RING = 8
 
 # Tier-epoch bucketing (see "Delegation-only savings" in the module
 # docstring): main-loop and worker rows are grouped into BUCKET_SECONDS-wide
@@ -318,8 +387,40 @@ def detect_billing_mode():
     return "api", "auto: no billing signal found, defaulting to api"
 
 
-def scan_file(path, assume_worker, fstate):
-    """Add tokens from lines appended since the recorded offset."""
+def _dedup_seen(fstate, mid):
+    """The highest output_tokens recorded so far for message.id `mid` in
+    this file's persisted dedup ring, or None if `mid` hasn't been seen —
+    i.e. this is the first row of a new content-block group."""
+    for entry in fstate.get("dd", ()):
+        if entry[0] == mid:
+            return entry[1]
+    return None
+
+
+def _dedup_note(fstate, mid, out):
+    """Record/update the running-max output_tokens seen for message.id
+    `mid`, in a ring capped at DEDUP_RING entries (oldest dropped first --
+    duplicate rows for one message.id are contiguous, so a short ring
+    survives an incremental scan boundary landing inside a group without
+    growing state unboundedly). Persisted as plain lists (not tuples) in
+    fstate so it survives a JSON round-trip through the state file."""
+    dd = fstate.setdefault("dd", [])
+    for entry in dd:
+        if entry[0] == mid:
+            entry[1] = max(entry[1], out)
+            return
+    dd.append([mid, out])
+    del dd[:-DEDUP_RING]
+
+
+def scan_file(path, assume_worker, fstate, worker_label="worker"):
+    """Add tokens from lines appended since the recorded offset.
+
+    worker_label is the "side" bucket used for a row that IS a worker row
+    (assume_worker=True, or row["isSidechain"] for a sidechain row embedded
+    in the main transcript) — bare "worker" by default, or "worker:<role>"
+    for a per-role-labelled subagent transcript (see _agent_label /
+    scan_session). It never affects "main" rows."""
     try:
         size = os.path.getsize(path)
     except OSError:
@@ -352,7 +453,7 @@ def scan_file(path, assume_worker, fstate):
         usage = msg.get("usage") or {}
         if not model or model == "<synthetic>" or not isinstance(usage, dict):
             continue
-        side = "worker" if (assume_worker or row.get("isSidechain")) else "main"
+        side = worker_label if (assume_worker or row.get("isSidechain")) else "main"
         delta_in = usage.get("input_tokens", 0) or 0
         delta_out = usage.get("output_tokens", 0) or 0
         delta_cr = usage.get("cache_read_input_tokens", 0) or 0
@@ -363,6 +464,23 @@ def scan_file(path, assume_worker, fstate):
         else:
             delta_w5 = usage.get("cache_creation_input_tokens", 0) or 0
             delta_w1 = 0
+        # De-dup: one API response is written as several rows sharing one
+        # message.id (one row per content block), each repeating the
+        # parent response's in/cache-r/cache-w usage IN FULL, while
+        # output_tokens is CUMULATIVE across the group. Count in/cr/w5/w1
+        # only on the group's first row; for later rows in the group,
+        # count only the marginal (non-cumulative) increase in out, and
+        # zero the rest. A row with no message.id (e.g. hand-crafted test
+        # fixtures) is never deduped -- counted in full, as before.
+        mid = msg.get("id")
+        if mid:
+            seen = _dedup_seen(fstate, mid)
+            if seen is None:
+                _dedup_note(fstate, mid, delta_out)
+            else:
+                _dedup_note(fstate, mid, max(seen, delta_out))
+                delta_out = max(0, delta_out - seen)
+                delta_in = delta_cr = delta_w5 = delta_w1 = 0
         ts = _parse_ts(row.get("timestamp"))
         bucket = int(ts // BUCKET_SECONDS) if ts is not None else NA_BUCKET
         cur = agg.setdefault(f"{side}|{model}", _empty_counters())
@@ -376,14 +494,45 @@ def scan_file(path, assume_worker, fstate):
     fstate["off"] = off + end + 1
 
 
+def _agent_label(path):
+    """"worker:<role>" for a subagent transcript at `path`, read from its
+    co-located sidecar <same-stem>.meta.json. The effective role is
+    customAgentType when present, else bare agentType -- for a NAMED spawn
+    the sidecar puts the *name* in agentType and the true role in
+    customAgentType (e.g. {"agentType": "benchbase", "customAgentType":
+    "executor"}), so agentType alone would mislabel/fragment those rows
+    (junk like "worker:final-check", "worker:gate-check", and an
+    undercounted "worker:verifier"). A missing/unreadable sidecar, or one
+    with neither key, falls back to bare "worker" so nothing is ever
+    dropped or mislabelled on a guess."""
+    meta_path = os.path.splitext(path)[0] + ".meta.json"
+    try:
+        with open(meta_path) as fh:
+            meta = json.load(fh)
+        role = meta.get("customAgentType") or meta.get("agentType")
+        if role:
+            return f"worker:{role}"
+    except Exception:
+        pass
+    return "worker"
+
+
 def scan_session(tp, files_state):
-    """Scan the main transcript plus any beside-it subagents/*.jsonl into
-    files_state (a "path" -> {off, agg} dict), mutating it in place. Shared
-    by hook mode (incremental, persisted) and --report (one-shot, throwaway)."""
+    """Scan the main transcript plus every beside-it subagents/**/*.jsonl
+    (recursive: workflow-spawned agents land at subagents/workflows/<wf_id>/
+    agent-*.jsonl, one level deeper than a plain subagent spawn, and would
+    otherwise never be scanned at all) into files_state (a "path" ->
+    {off, agg} dict), mutating it in place. Shared by hook mode
+    (incremental, persisted) and --report (one-shot, throwaway).
+
+    Each subagent transcript gets its own per-role "side" label from
+    _agent_label (its co-located sidecar), rather than the bare "worker"
+    every subagent row used to share — see the module docstring."""
     scan_file(tp, False, files_state.setdefault(tp, {}))
     subdir = os.path.join(os.path.splitext(tp)[0], "subagents")
-    for sub in sorted(glob.glob(os.path.join(subdir, "*.jsonl"))):
-        scan_file(sub, True, files_state.setdefault(sub, {}))
+    pattern = os.path.join(subdir, "**", "*.jsonl")
+    for sub in sorted(glob.glob(pattern, recursive=True)):
+        scan_file(sub, True, files_state.setdefault(sub, {}), _agent_label(sub))
 
 
 def aggregate_total(files_state):
@@ -415,11 +564,19 @@ def aggregate_bucket_total(files_state):
 def summarise_tokens(total):
     """One compact clause per side: in/out/cache-read/cache-write token counts,
     each omitted when zero so a quiet session (e.g. a worker with no cache
-    writes) stays short. Order is in, out, cache-r, cache-w."""
+    writes) stays short. Order is in, out, cache-r, cache-w.
+
+    "workers" here means every row whose side is NOT literally "main" —
+    plain "worker" rows AND per-role "worker:<role>" rows (see
+    _agent_label) are folded into the same "workers" clause; this line is
+    an aggregate summary, per-role detail lives in render_report's table."""
     parts = []
     for side in ("main", "workers"):
-        skey = "main" if side == "main" else "worker"
-        rows = [(k.split("|", 1)[1], v) for k, v in total.items() if k.startswith(skey + "|")]
+        rows = [
+            (k.split("|", 1)[1], v)
+            for k, v in total.items()
+            if (k.split("|", 1)[0] == "main") == (side == "main")
+        ]
         if not rows:
             continue
         rows.sort(key=lambda r: -(r[1]["out"] + r[1]["cr"]))
@@ -629,12 +786,18 @@ def _add_pricing(dst, src):
 
 def session_delegation_savings(bucket_total):
     """This session's total delegation savings: Σ over WORKER "side|model"
-    rows of (at_epoch − actual) from session_epoch_pricing. Main-loop rows
-    never contribute (they always have at_epoch == actual there), so this
-    is equivalent to summing over every row, but summing worker-only here
-    makes that invariant explicit rather than relying on it silently."""
+    rows of (at_epoch − actual) from session_epoch_pricing. "worker" here
+    means any side that ISN'T "main" — plain "worker" rows and per-role
+    "worker:<role>" rows alike (see _agent_label); filtering on
+    `not key.startswith("main|")` rather than `key.startswith("worker|")`
+    is what makes that inclusive (the equality-style filter silently
+    dropped every per-role row and returned 0.0 "saved" for any session
+    with role-labelled subagents). Main-loop rows never contribute (they
+    always have at_epoch == actual there), so this is equivalent to
+    summing over every row, but summing worker-only here makes that
+    invariant explicit rather than relying on it silently."""
     pricing = session_epoch_pricing(bucket_total)
-    return sum(d["at_epoch"] - d["actual"] for key, d in pricing.items() if key.startswith("worker|"))
+    return sum(d["at_epoch"] - d["actual"] for key, d in pricing.items() if not key.startswith("main|"))
 
 
 def summarise_dollars(total, bucket_total, billing_mode="api"):
@@ -765,12 +928,13 @@ def _list_transcripts(since_days=None):
 
 
 def _session_file_paths(tp):
-    """[tp] plus its beside-it subagents/*.jsonl — the same file set
-    scan_session() scans for one session, recomputed here (read-only glob,
-    scan_session itself is untouched) so --all can group the flat cross-
-    session cache back into per-session rows."""
+    """[tp] plus its beside-it subagents/**/*.jsonl (recursive — same scope
+    as scan_session(), including nested subagents/workflows/<wf_id>/ agents)
+    — the same file set scan_session() scans for one session, recomputed
+    here (read-only glob, scan_session itself is untouched) so --all can
+    group the flat cross-session cache back into per-session rows."""
     subdir = os.path.join(os.path.splitext(tp)[0], "subagents")
-    return [tp] + sorted(glob.glob(os.path.join(subdir, "*.jsonl")))
+    return [tp] + sorted(glob.glob(os.path.join(subdir, "**", "*.jsonl"), recursive=True))
 
 
 def _all_state_path():
@@ -1122,8 +1286,10 @@ def render_report(tp, total, billing_mode="api", billing_detail="", pricing=None
         f"actual ${money_suffix}", f"at-top ${money_suffix}", f"saved ${money_suffix}",
     )
     # token columns at 11 (not 9) so a --all grand total (routinely 9-digit
-    # cache-r/cache-w counts) never runs two numbers together with no gap
-    widths = (7, 28, 11, 11, 11, 11, 10, 10, 10)
+    # cache-r/cache-w counts) never runs two numbers together with no gap.
+    # side widened from 7 to 18: "worker:<role>" rows (see _agent_label) run
+    # longer than bare "main"/"worker" -- e.g. "worker:verifier" is 16 chars.
+    widths = (18, 28, 11, 11, 11, 11, 10, 10, 10)
 
     def fmt_row(values):
         return "".join(
@@ -1135,8 +1301,12 @@ def render_report(tp, total, billing_mode="api", billing_detail="", pricing=None
 
     grand = _empty_counters()
     tot_actual = tot_at_top = 0.0
-    for side in ("main", "worker"):
-        rows = [(k.split("|", 1)[1], v) for k, v in total.items() if k.startswith(side + "|")]
+    # "main" first, then every other side seen (plain "worker" and each
+    # "worker:<role>" — see _agent_label), alphabetical among themselves so
+    # the table's row order is stable run to run rather than dict order.
+    sides = ["main"] + sorted({k.split("|", 1)[0] for k in total} - {"main"})
+    for side in sides:
+        rows = [(k.split("|", 1)[1], v) for k, v in total.items() if k.split("|", 1)[0] == side]
         rows.sort(key=lambda r: -(r[1]["out"] + r[1]["cr"]))
         for model, c in rows:
             rates = rates_for(model)
@@ -1145,8 +1315,12 @@ def render_report(tp, total, billing_mode="api", billing_detail="", pricing=None
             at_top = pr["at_epoch"]
             saved = at_top - actual
             label = model.replace("claude-", "") + ("" if rates else "?")
+            # side can be an arbitrary-length "worker:<role>" (customAgentType
+            # is free text); truncate rather than let an unusually long role
+            # name run into the model column with no gap between them.
+            side_label = side if len(side) <= widths[0] - 1 else side[: widths[0] - 2] + "…"
             lines.append(fmt_row((
-                side, label, str(c["in"]), str(c["out"]), str(c["cr"]), str(c["w5"] + c["w1"]),
+                side_label, label, str(c["in"]), str(c["out"]), str(c["cr"]), str(c["w5"] + c["w1"]),
                 fmt_usd(actual), fmt_usd(at_top), fmt_usd(saved),
             )))
             for k in COUNTER_KEYS:

@@ -68,7 +68,7 @@ Tiering is **role-based, never model-based**: agents name roles; the concrete mo
 | **orchestrator** (you) | settings `model` (`/model` moves a running session) | executor, verifier, scout | decompose, delegate, review, decide |
 | **executor** | frontmatter (worker tier) | `scout` only | one well-scoped implementation slice |
 | **scout** — leaf, no `Agent` tool | frontmatter (recon tier) | — | fan-out recon: find/usages/summaries |
-| **verifier** — leaf, no `Agent` tool | `inherit` | — | independent check of one claim |
+| **verifier** — leaf, no `Agent` tool | `inherit` | — | independent check of one evidence surface; verdict short of CONFIRMED blocks "done" |
 | **oracle** — fresh context | `inherit` | — | user-invoked consults only |
 
 Depth: orchestrator → executor → scout, 3 levels max. Scout/verifier leaf-ness is structural (no `Agent` tool); the executor's scout-only limit is a prompt contract. Confirm real nesting via the subagent panel's `(+N)` counts.

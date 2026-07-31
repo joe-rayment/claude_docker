@@ -308,17 +308,18 @@ mk_pricing_transcript() {
     } > "$TP"
 }
 
-@test "cost-mirror: v3 state schema is written; an old-schema state triggers a clean full rescan" {
-    # v3 (was v2): bumped for "bagg" (bucketed agg, see BUCKET_SECONDS) so
-    # tier-epoch history isn't silently missing for bytes an old v2 state
-    # had already consumed.
+@test "cost-mirror: v4 state schema is written; an old-schema state triggers a clean full rescan" {
+    # v4 (was v3): bumped for the message.id de-dup fix (a v3 state holds
+    # per-content-block-inflated counts with no record of which message.id
+    # contributed what, so it can't be fixed in place) and for the
+    # bare-"worker" -> "worker:<role>" per-role split.
     mk_transcript
     sh -c 'printf "{\"transcript_path\":\"%s\"}" "'"$TP"'" | python3 '"$MIRROR" > /dev/null
     # exclude lifetime.json — the hook now also writes the durable rollup
     # alongside its per-session <sha256>.json state file
     STATE_FILE=$(ls "$COST_MIRROR_STATE_DIR"/*.json | grep -v /lifetime.json)
     [ -n "$STATE_FILE" ]
-    jq -e '.v == 3' "$STATE_FILE"
+    jq -e '.v == 4' "$STATE_FILE"
     jq -e --arg tp "$TP" '.files[$tp].agg["main|claude-opus-5"].out == 10' "$STATE_FILE"
     jq -e --arg tp "$TP" '.files[$tp].agg["main|claude-opus-5"].cr == 100' "$STATE_FILE"
     # seed an old-schema (list-agg, no v key) state with a bogus stale offset
@@ -326,19 +327,186 @@ mk_pricing_transcript() {
     run sh -c 'printf "{\"transcript_path\":\"%s\"}" "'"$TP"'" | python3 '"$MIRROR"
     [ "$status" -eq 0 ]
     [[ "$output" == *"main: 10 out · 100 cache-r (opus-5)"* ]]
-    jq -e '.v == 3' "$STATE_FILE"
+    jq -e '.v == 4' "$STATE_FILE"
 }
 
-@test "cost-mirror: v3 upgrade does NOT wipe lifetime.json (separate LIFETIME_VERSION)" {
-    # lifetime.json's own schema didn't change in this slice; it must
-    # survive a scan-state STATE_VERSION bump untouched, on its own
-    # LIFETIME_VERSION constant.
+@test "cost-mirror: v4 upgrade does NOT wipe a schema-compatible lifetime.json (independent LIFETIME_VERSION constant)" {
+    # This slice bumped BOTH constants (the de-dup fix corrupted lifetime's
+    # own counters too — see LIFETIME_VERSION's comment), but the two stay
+    # independent constants on purpose: a lifetime.json already on the
+    # CURRENT LIFETIME_VERSION must survive an unrelated future scan-state
+    # STATE_VERSION bump untouched, same as v3's bagg-only bump left v2
+    # lifetime data alone.
     mk_transcript
     sh -c 'printf "{\"transcript_path\":\"%s\"}" "'"$TP"'" | python3 '"$MIRROR" > /dev/null
     LIFETIME="$COST_MIRROR_STATE_DIR/lifetime.json"
     [ -f "$LIFETIME" ]
-    jq -e '.v == 2' "$LIFETIME"
+    jq -e '.v == 3' "$LIFETIME"
     jq -e 'any(.sessions[]; .out == 10)' "$LIFETIME"
+}
+
+@test "cost-mirror: a pre-fix lifetime.json (old LIFETIME_VERSION, poisoned doubled counters) is rebuilt clean, not carried forward" {
+    mkdir -p "$COST_MIRROR_STATE_DIR"
+    LIFETIME="$COST_MIRROR_STATE_DIR/lifetime.json"
+    printf '{"v":2,"sessions":{"deadsess|main|claude-opus-5":{"in":0,"out":99999999,"cr":0,"w5":0,"w1":0,"project":"ghost","mtime":1,"tp":"/nope.jsonl","sessionId":"deadsess"}}}' \
+        > "$LIFETIME"
+    mk_transcript
+    sh -c 'printf "{\"transcript_path\":\"%s\"}" "'"$TP"'" | python3 '"$MIRROR" > /dev/null
+    jq -e '.v == 3' "$LIFETIME"
+    # the old-version poisoned row is gone -- not merged, not carried forward
+    jq -e 'any(.sessions | keys[]; . == "deadsess|main|claude-opus-5") | not' "$LIFETIME"
+}
+
+# ── cost-mirror: measurement fixes (de-dup / nested subagents / per-role) ──
+
+@test "cost-mirror: message.id de-dup — three rows sharing one id count once, output takes the max" {
+    # Real shape: one API response is written as one row per content block,
+    # each repeating in/cache-r in full while output_tokens is cumulative
+    # (e.g. the real 3,3,3,3,3,571 sample named in the bug report).
+    TP="$BATS_TEST_TMPDIR/proj-dedup/sess.jsonl"
+    mkdir -p "$BATS_TEST_TMPDIR/proj-dedup"
+    {
+        printf '{"message":{"id":"msg_1","model":"claude-opus-5","usage":{"input_tokens":50,"output_tokens":3,"cache_read_input_tokens":100}}}\n'
+        printf '{"message":{"id":"msg_1","model":"claude-opus-5","usage":{"input_tokens":50,"output_tokens":3,"cache_read_input_tokens":100}}}\n'
+        printf '{"message":{"id":"msg_1","model":"claude-opus-5","usage":{"input_tokens":50,"output_tokens":571,"cache_read_input_tokens":100}}}\n'
+    } > "$TP"
+    run python3 "$MIRROR" --report "$TP"
+    [ "$status" -eq 0 ]
+    MAIN_LINE=$(echo "$output" | grep '^main')
+    read -r -a F <<< "$MAIN_LINE"
+    [ "${F[2]}" = "50" ]    # in — counted once, not 3x150
+    [ "${F[3]}" = "571" ]   # out — max/last, not summed (3+3+571=577)
+    [ "${F[4]}" = "100" ]   # cache-r — counted once, not 3x300
+}
+
+@test "cost-mirror: de-dup persists across an incremental scan boundary landing inside a message.id group" {
+    # The hook scans incrementally; a group can straddle two separate
+    # invocations (more content blocks appended after the first scan). The
+    # dedup ring lives in fstate, not a local, so it must survive that.
+    TP="$BATS_TEST_TMPDIR/proj-dedup-inc/sess.jsonl"
+    mkdir -p "$BATS_TEST_TMPDIR/proj-dedup-inc"
+    printf '{"message":{"id":"msg_1","model":"claude-opus-5","usage":{"input_tokens":50,"output_tokens":3,"cache_read_input_tokens":100}}}\n' > "$TP"
+    sh -c 'printf "{\"transcript_path\":\"%s\"}" "'"$TP"'" | python3 '"$MIRROR" > /dev/null
+    printf '{"message":{"id":"msg_1","model":"claude-opus-5","usage":{"input_tokens":50,"output_tokens":571,"cache_read_input_tokens":100}}}\n' >> "$TP"
+    run sh -c 'printf "{\"transcript_path\":\"%s\"}" "'"$TP"'" | python3 '"$MIRROR"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"main: 50 in · 571 out · 100 cache-r (opus-5)"* ]]
+}
+
+@test "cost-mirror: a row with no message.id is never deduped, counted in full (existing fixtures rely on this)" {
+    mk_transcript
+    run python3 "$MIRROR" --report "$TP"
+    [ "$status" -eq 0 ]
+    MAIN_LINE=$(echo "$output" | grep '^main')
+    read -r -a F <<< "$MAIN_LINE"
+    [ "${F[3]}" = "10" ]
+}
+
+@test "cost-mirror: nested workflow subagent transcripts (subagents/workflows/<wf>/agent-*.jsonl) are scanned" {
+    TP="$BATS_TEST_TMPDIR/proj-nested/sess.jsonl"
+    mkdir -p "$BATS_TEST_TMPDIR/proj-nested/sess/subagents/workflows/wf1"
+    printf '{"message":{"model":"claude-opus-5","usage":{"output_tokens":10}}}\n' > "$TP"
+    printf '{"message":{"model":"claude-haiku-4-5-20251001","usage":{"output_tokens":40}}}\n' \
+        > "$BATS_TEST_TMPDIR/proj-nested/sess/subagents/workflows/wf1/agent-x.jsonl"
+    run python3 "$MIRROR" --report "$TP"
+    [ "$status" -eq 0 ]
+    WORKER_LINE=$(echo "$output" | grep '^worker ')
+    [ -n "$WORKER_LINE" ]
+    read -r -a F <<< "$WORKER_LINE"
+    [ "${F[3]}" = "40" ]
+}
+
+@test "cost-mirror: subagent role label prefers customAgentType over agentType (named-spawn sidecar)" {
+    # NAMED spawns put the spawn's *name* in agentType and the true role in
+    # customAgentType -- using agentType alone would mislabel this as
+    # "worker:final-check" instead of "worker:verifier".
+    TP="$BATS_TEST_TMPDIR/proj-role/sess.jsonl"
+    mkdir -p "$BATS_TEST_TMPDIR/proj-role/sess/subagents"
+    printf '{"message":{"model":"claude-opus-5","usage":{"output_tokens":10}}}\n' > "$TP"
+    printf '{"message":{"model":"claude-sonnet-5","usage":{"output_tokens":20}}}\n' \
+        > "$BATS_TEST_TMPDIR/proj-role/sess/subagents/agent-v1.jsonl"
+    printf '{"agentType":"final-check","customAgentType":"verifier"}' \
+        > "$BATS_TEST_TMPDIR/proj-role/sess/subagents/agent-v1.meta.json"
+    run python3 "$MIRROR" --report "$TP"
+    [ "$status" -eq 0 ]
+    ROLE_LINE=$(echo "$output" | grep '^worker:verifier')
+    [ -n "$ROLE_LINE" ]
+    [[ "$output" != *"worker:final-check"* ]]
+}
+
+@test "cost-mirror: a subagent with no sidecar, or an unreadable one, falls back to bare worker" {
+    TP="$BATS_TEST_TMPDIR/proj-nosidecar/sess.jsonl"
+    mkdir -p "$BATS_TEST_TMPDIR/proj-nosidecar/sess/subagents"
+    printf '{"message":{"model":"claude-opus-5","usage":{"output_tokens":10}}}\n' > "$TP"
+    # no sidecar at all for agent-n1
+    printf '{"message":{"model":"claude-haiku-4-5-20251001","usage":{"output_tokens":5}}}\n' \
+        > "$BATS_TEST_TMPDIR/proj-nosidecar/sess/subagents/agent-n1.jsonl"
+    # a co-located but unreadable/malformed sidecar for agent-n2
+    printf '{"message":{"model":"claude-haiku-4-5-20251001","usage":{"output_tokens":9}}}\n' \
+        > "$BATS_TEST_TMPDIR/proj-nosidecar/sess/subagents/agent-n2.jsonl"
+    printf 'NOT JSON' > "$BATS_TEST_TMPDIR/proj-nosidecar/sess/subagents/agent-n2.meta.json"
+    run python3 "$MIRROR" --report "$TP"
+    [ "$status" -eq 0 ]
+    WORKER_LINE=$(echo "$output" | grep '^worker ')
+    [ -n "$WORKER_LINE" ]
+    read -r -a F <<< "$WORKER_LINE"
+    [ "${F[3]}" = "14" ]  # both n1 (5) and n2 (9) folded into bare "worker"
+    [[ "$output" != *"worker:"* ]]
+}
+
+@test "cost-mirror: hook 'workers:' clause folds in per-role worker:<role> rows, not just bare worker" {
+    TP="$BATS_TEST_TMPDIR/proj-rolehook/sess.jsonl"
+    mkdir -p "$BATS_TEST_TMPDIR/proj-rolehook/sess/subagents"
+    printf '{"message":{"model":"claude-opus-5","usage":{"output_tokens":10}}}\n' > "$TP"
+    printf '{"message":{"model":"claude-haiku-4-5-20251001","usage":{"output_tokens":7,"cache_read_input_tokens":70}}}\n' \
+        > "$BATS_TEST_TMPDIR/proj-rolehook/sess/subagents/agent-e1.jsonl"
+    printf '{"customAgentType":"executor"}' \
+        > "$BATS_TEST_TMPDIR/proj-rolehook/sess/subagents/agent-e1.meta.json"
+    run sh -c 'printf "{\"transcript_path\":\"%s\"}" "'"$TP"'" | python3 '"$MIRROR"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"workers: 7 out · 70 cache-r (haiku-4-5-20251001)"* ]]
+}
+
+@test "cost-mirror: delegation savings include worker:<role> rows, not just bare worker (consumer fix)" {
+    # Before the fix, session_delegation_savings filtered on
+    # key.startswith("worker|"), which "worker:scout|..." never matches --
+    # this session would have silently reported $0.00 saved.
+    TP="$BATS_TEST_TMPDIR/proj-rolesave/sess.jsonl"
+    mkdir -p "$BATS_TEST_TMPDIR/proj-rolesave/sess/subagents"
+    printf '{"timestamp":"2026-07-29T00:00:00Z","message":{"model":"claude-opus-5","usage":{"output_tokens":1000000}}}\n' > "$TP"
+    printf '{"timestamp":"2026-07-29T00:01:00Z","message":{"model":"claude-haiku-4-5-20251001","usage":{"output_tokens":1000000}}}\n' \
+        > "$BATS_TEST_TMPDIR/proj-rolesave/sess/subagents/agent-s1.jsonl"
+    printf '{"customAgentType":"scout"}' \
+        > "$BATS_TEST_TMPDIR/proj-rolesave/sess/subagents/agent-s1.meta.json"
+    run python3 "$MIRROR" --report "$TP"
+    [ "$status" -eq 0 ]
+    SAVE_LINE=$(echo "$output" | grep '^worker:scout')
+    [ -n "$SAVE_LINE" ]
+    read -r -a F <<< "$SAVE_LINE"
+    # haiku out=1e6 @ $5/MTok actual=$5.00; repriced at opus-5's $25/MTok
+    # (this session's one epoch, clamped to the whole timeline) = $25;
+    # saved = $20 -- non-zero, proving the consumer fix took effect.
+    [ "${F[6]}" = '$5.00' ]
+    [ "${F[7]}" = '$25' ]
+    [ "${F[8]}" = '$20' ]
+}
+
+@test "cost-mirror: render_report widens the side column and lists every distinct side, main first" {
+    TP="$BATS_TEST_TMPDIR/proj-sides/sess.jsonl"
+    mkdir -p "$BATS_TEST_TMPDIR/proj-sides/sess/subagents"
+    printf '{"message":{"model":"claude-opus-5","usage":{"output_tokens":10}}}\n' > "$TP"
+    printf '{"message":{"model":"claude-haiku-4-5-20251001","usage":{"output_tokens":5}}}\n' \
+        > "$BATS_TEST_TMPDIR/proj-sides/sess/subagents/agent-a1.jsonl"
+    printf '{"message":{"model":"claude-sonnet-5","usage":{"output_tokens":6}}}\n' \
+        > "$BATS_TEST_TMPDIR/proj-sides/sess/subagents/agent-b1.jsonl"
+    printf '{"customAgentType":"verifier"}' \
+        > "$BATS_TEST_TMPDIR/proj-sides/sess/subagents/agent-b1.meta.json"
+    run python3 "$MIRROR" --report "$TP"
+    [ "$status" -eq 0 ]
+    ROWS=$(echo "$output" | grep -E '^(main|worker)' | awk '{print $1}')
+    [ "$(echo "$ROWS" | head -1)" = "main" ]
+    echo "$ROWS" | grep -qx "worker"
+    echo "$ROWS" | grep -qx "worker:verifier"
 }
 
 @test "cost-mirror: pricing math — known token counts across two models produce the exact dollar clause" {
@@ -585,7 +753,7 @@ state_dir_checksum() {
     export COST_MIRROR_PROJECTS_DIR="$ALLDIR"
 
     mkdir -p "$COST_MIRROR_STATE_DIR"
-    printf '{"v":3,"files":{"%s/proj-c/stale.jsonl":{"off":999,"agg":{"main|claude-fable-5":{"in":0,"out":9999999,"cr":0,"w5":0,"w1":0}}}}}' \
+    printf '{"v":4,"files":{"%s/proj-c/stale.jsonl":{"off":999,"agg":{"main|claude-fable-5":{"in":0,"out":9999999,"cr":0,"w5":0,"w1":0}}}}}' \
         "$ALLDIR" > "$COST_MIRROR_STATE_DIR/all-sessions.json"
 
     run python3 "$MIRROR" --report --all

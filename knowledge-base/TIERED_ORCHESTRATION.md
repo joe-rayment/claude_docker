@@ -38,7 +38,7 @@ The SessionStart status echo prints the live binding every session
 | **orchestrator** | (the main session — no agent file) | settings `.model` (written by `/tier`; moved live only by `/model`) | executor, verifier, scout | decompose, delegate, synthesize, decide |
 | **executor** | `config/agents/executor.md` | frontmatter `model:` = **concrete id** (worker rung, written by tier-set/tier-reconcile) | `scout` only | one implementation slice, end to end |
 | **scout** (leaf) | `config/agents/scout.md` | frontmatter `model:` = **concrete id** (recon rung, written by tier-set/tier-reconcile) | — | fan-out recon: find/usages/summaries |
-| **verifier** (leaf) | `config/agents/verifier.md` | `model: inherit` (= orchestrator) | — | independent check of one worker claim |
+| **verifier** (leaf) | `config/agents/verifier.md` | `model: inherit` (= orchestrator) | — | independent check of one evidence surface |
 | **oracle** | `config/agents/oracle.md` | `model: inherit` (= orchestrator) | — | user-invoked checkpoint consult |
 
 **Invariant: the orchestrator is the most capable model of the three, and
@@ -716,9 +716,23 @@ no stake — never by the worker grading itself.
   worker claims are not "done".
 - Research claims → checked against **primary sources**; code → against
   **tests/build/an independent read**.
-- Spawn **one verifier per finding** so intermediate checks stay out of the
-  orchestrator's context; the verifier returns a verdict
-  (`CONFIRMED`/`REFUTED`/`INCONCLUSIVE`), not a transcript.
+- Spawn **one verifier per evidence surface, not per finding** — every claim
+  from one worker's slice that the same files, the same diff, and the same
+  test run settle, bundled into one spawn. Isolation is a property of the
+  spawn boundary, not the claim count: eight claims folded into one verifier
+  still return exactly ONE verdict block to the orchestrator — strictly
+  less context than eight separate returns. Measured on this container:
+  $0.198/sub-claim bundled across 58 sub-claims in 8 spawns, vs. $0.32-0.55
+  for a solo per-claim check — unbundling as the old wording prescribed
+  would have cost 1.6-2.8x more. Never bundle claims from DIFFERENT
+  workers, and never bundle a claim that depends on another claim's fix.
+- The verdict set is `CONFIRMED`/`REFUTED`/`PARTIAL`/`INCONCLUSIVE` — the
+  verifier returns a per-claim **Ledger** line plus the rollup verdict, not
+  a transcript. `PARTIAL` (some numbered claims hold, others don't or
+  couldn't be settled) is a first-class verdict, not a soft CONFIRMED:
+  anything short of CONFIRMED blocks "done" until the caller either
+  requeues the verdict's Carry-forward list into the next slice spec or
+  waives it in writing.
 - **Proportionate:** skip only on trivial/self-evident results; require it
   wherever a wrong-but-plausible result would propagate.
 
