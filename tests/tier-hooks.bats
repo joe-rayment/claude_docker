@@ -789,6 +789,91 @@ mk_pricing_transcript() {
     [[ "$output" == *"main: 50 in · 571 out · 100 cache-r (opus-5)"* ]]
 }
 
+@test "cost-mirror: de-dup ring eviction no longer re-doubles in/cache-r/cache-w (bd-zjb) — n=8 intervening ids" {
+    # DEDUP_RING is 8: a message.id whose two rows are separated by >=8
+    # OTHER distinct ids used to fall off the live ring silently, and its
+    # later row was then indistinguishable from an untracked id's genuine
+    # first row -- counted in full a SECOND time. n=7 intervening ids stays
+    # inside the ring (no eviction: correct baseline, asserted first); n=8
+    # crosses it. Before the bd-zjb fix, the n=8 case below reported
+    # in=2000000 (doubled) at $10 -- confirmed by reverting the fix locally
+    # and re-running this exact test, which failed on both assertions; see
+    # the slice report for that before/after. After the fix it reports
+    # in=1000000 at $5.00, matching n=7 on the dollar figure exactly (output
+    # keeps a small, accepted, dollar-negligible residual — see
+    # DEDUP_EVICTED_RING's comment in cost-mirror.py — which is why this
+    # test does not also assert an exact "out" value).
+    TP7="$BATS_TEST_TMPDIR/proj-ring7/sess.jsonl"
+    mkdir -p "$BATS_TEST_TMPDIR/proj-ring7"
+    {
+        printf '{"message":{"id":"msg_A","model":"claude-opus-5","usage":{"input_tokens":1000000,"output_tokens":10}}}\n'
+        for i in 0 1 2 3 4 5 6; do
+            printf '{"message":{"id":"msg_F%s","model":"claude-opus-5","usage":{"input_tokens":0,"output_tokens":0}}}\n' "$i"
+        done
+        printf '{"message":{"id":"msg_A","model":"claude-opus-5","usage":{"input_tokens":1000000,"output_tokens":20}}}\n'
+    } > "$TP7"
+    run python3 "$MIRROR" --report "$TP7"
+    [ "$status" -eq 0 ]
+    MAIN_LINE=$(echo "$output" | grep '^main')
+    read -r -a F7 <<< "$MAIN_LINE"
+    [ "${F7[2]}" = "1000000" ]  # in — 7 intervening ids: ring not evicted
+    [ "${F7[6]}" = '$5.00' ]
+
+    TP8="$BATS_TEST_TMPDIR/proj-ring8/sess.jsonl"
+    mkdir -p "$BATS_TEST_TMPDIR/proj-ring8"
+    {
+        printf '{"message":{"id":"msg_A","model":"claude-opus-5","usage":{"input_tokens":1000000,"output_tokens":10}}}\n'
+        for i in 0 1 2 3 4 5 6 7; do
+            printf '{"message":{"id":"msg_F%s","model":"claude-opus-5","usage":{"input_tokens":0,"output_tokens":0}}}\n' "$i"
+        done
+        printf '{"message":{"id":"msg_A","model":"claude-opus-5","usage":{"input_tokens":1000000,"output_tokens":20}}}\n'
+    } > "$TP8"
+    run python3 "$MIRROR" --report "$TP8"
+    [ "$status" -eq 0 ]
+    MAIN_LINE=$(echo "$output" | grep '^main')
+    read -r -a F8 <<< "$MAIN_LINE"
+    [ "${F8[2]}" = "1000000" ]  # in — 8 intervening ids: must NOT double to 2000000
+    [ "${F8[6]}" = '$5.00' ]    # actual $ — must NOT double to $10
+}
+
+@test "cost-mirror: cross-file duplication — a message.id shared between a main-transcript sidechain row and a co-located subagent file is counted ONCE (bd-6vy, session-scoped dedup)" {
+    # Inverted from the prior "IS counted twice today (documented
+    # structural limitation, bd-zjb)" pin: the dedup ring used to live in
+    # per-FILE fstate (scan_session gave each scanned file, main transcript
+    # included, its own independent files_state[path] entry), so there was
+    # no cross-file correlation by message.id at all. If the SAME response
+    # was logged in two places (here: an isSidechain:true row inline in the
+    # main transcript, and a full row in a co-located
+    # subagents/agent-x.jsonl sharing that row's message.id), each file's
+    # independent ring saw it as that file's own first (and only) row for
+    # the id and counted it in full -- so the total came out at double the
+    # true response. Before bd-6vy this test asserted exactly that doubled
+    # total (in=600000/out=200/cache-r=100000, 2x the single response's true
+    # 300000/100/50000) as a known limitation, confirmed empirically for
+    # bd-zjb -- not observed firing in any real transcript on the machines
+    # checked then (0 isSidechain rows in any top-level transcript on disk),
+    # only shown reachable in principle. bd-6vy promotes the dedup ring from
+    # per-file to per-session (see scan_session/scan_file's dedup_state and
+    # the module docstring's "De-dup promoted to per-SESSION" section): one
+    # ring, homed in the main transcript's own fstate, shared by every file
+    # scan_session scans for that session, so the second row (whichever file
+    # it lands in) is now recognised as a repeat of the first and correctly
+    # suppressed -- the total below asserts the TRUE undoubled values.
+    TP="$BATS_TEST_TMPDIR/proj-crossfile/sess.jsonl"
+    mkdir -p "$BATS_TEST_TMPDIR/proj-crossfile/sess/subagents"
+    printf '{"isSidechain":true,"message":{"id":"msg_shared","model":"claude-haiku-4-5-20251001","usage":{"input_tokens":300000,"output_tokens":100,"cache_read_input_tokens":50000}}}\n' \
+        > "$TP"
+    printf '{"message":{"id":"msg_shared","model":"claude-haiku-4-5-20251001","usage":{"input_tokens":300000,"output_tokens":100,"cache_read_input_tokens":50000}}}\n' \
+        > "$BATS_TEST_TMPDIR/proj-crossfile/sess/subagents/agent-x.jsonl"
+    run python3 "$MIRROR" --report "$TP"
+    [ "$status" -eq 0 ]
+    WORKER_LINE=$(echo "$output" | grep '^worker ')
+    read -r -a F <<< "$WORKER_LINE"
+    [ "${F[2]}" = "300000" ]   # in  — the single response's true value, not 2x
+    [ "${F[3]}" = "100" ]      # out — the single response's true value, not 2x
+    [ "${F[4]}" = "50000" ]    # cache-r — the single response's true value, not 2x
+}
+
 @test "cost-mirror: a row with no message.id is never deduped, counted in full (existing fixtures rely on this)" {
     mk_transcript
     run python3 "$MIRROR" --report "$TP"
@@ -810,6 +895,104 @@ mk_pricing_transcript() {
     [ -n "$WORKER_LINE" ]
     read -r -a F <<< "$WORKER_LINE"
     [ "${F[3]}" = "40" ]
+}
+
+@test "cost-mirror: end-to-end regression — dedup + flat subagent + nested workflow subagent sum to a known exact dollar total (bd-zjb)" {
+    # Pins the arithmetic the bd-zjb inflation investigation could NOT fault:
+    # a message.id group split across 3 rows (dedup must count input once and
+    # take the group's max/final output, not sum every row), a flat
+    # subagents/*.jsonl worker, and a subagents/workflows/<wf>/*.jsonl nested
+    # worker, all priced and summed to one hand-computed TOTAL. If a future
+    # change reintroduces per-row (rather than per-message.id) counting, or
+    # double-scans a file, or drops the recursive workflow glob, this total
+    # moves and the test fails on an unambiguous exact figure rather than a
+    # fuzzy "looks about right".
+    #
+    # main (claude-opus-5, $5 in / $25 out per MTok): one response split into
+    # 3 rows sharing message.id "msg_A" -- input repeats 200000 on every row
+    # (dedup: counted ONCE, not x3), output is cumulative 4000, 4000, 44000
+    # (dedup: counted as the group's max/final 44000, not summed to 52000).
+    #   cost = (200000*5 + 44000*25) / 1e6                       = $2.10
+    # worker:executor (claude-haiku-4-5-20251001, $1 in / $5 out per MTok):
+    # one flat subagents/agent-w1.jsonl row, no message.id (standalone, never
+    # deduped) -- input 500000, output 100000.
+    #   cost = (500000*1 + 100000*5) / 1e6                       = $1.00
+    # worker (bare -- no sidecar, claude-fable-5, $10 in / $50 out per MTok):
+    # one NESTED subagents/workflows/wf1/agent-w2.jsonl row -- input 10000,
+    # output 2000. Bare "worker", not "worker:executor", proves this row is
+    # attributed separately from the flat subagent above, not folded into it.
+    #   cost = (10000*10 + 2000*50) / 1e6                        = $0.20
+    # TOTAL actual $                                              = $3.30
+    TP="$BATS_TEST_TMPDIR/proj-e2e/sess.jsonl"
+    mkdir -p "$BATS_TEST_TMPDIR/proj-e2e/sess/subagents/workflows/wf1"
+    {
+        printf '{"message":{"id":"msg_A","model":"claude-opus-5","usage":{"input_tokens":200000,"output_tokens":4000}}}\n'
+        printf '{"message":{"id":"msg_A","model":"claude-opus-5","usage":{"input_tokens":200000,"output_tokens":4000}}}\n'
+        printf '{"message":{"id":"msg_A","model":"claude-opus-5","usage":{"input_tokens":200000,"output_tokens":44000}}}\n'
+    } > "$TP"
+    printf '{"message":{"model":"claude-haiku-4-5-20251001","usage":{"input_tokens":500000,"output_tokens":100000}}}\n' \
+        > "$BATS_TEST_TMPDIR/proj-e2e/sess/subagents/agent-w1.jsonl"
+    printf '{"agentType":"executor"}' \
+        > "$BATS_TEST_TMPDIR/proj-e2e/sess/subagents/agent-w1.meta.json"
+    printf '{"message":{"model":"claude-fable-5","usage":{"input_tokens":10000,"output_tokens":2000}}}\n' \
+        > "$BATS_TEST_TMPDIR/proj-e2e/sess/subagents/workflows/wf1/agent-w2.jsonl"
+
+    run python3 "$MIRROR" --report "$TP"
+    [ "$status" -eq 0 ]
+
+    MAIN_LINE=$(echo "$output" | grep '^main')
+    read -r -a M <<< "$MAIN_LINE"
+    [ "${M[2]}" = "200000" ]   # in — deduped to one copy, not 600000
+    [ "${M[3]}" = "44000" ]    # out — group max/final, not summed to 52000
+    [ "${M[6]}" = '$2.10' ]
+
+    EXEC_LINE=$(echo "$output" | grep '^worker:executor')
+    read -r -a E <<< "$EXEC_LINE"
+    [ "${E[6]}" = '$1.00' ]
+
+    BARE_LINE=$(echo "$output" | grep '^worker ')
+    read -r -a B <<< "$BARE_LINE"
+    [ "${B[6]}" = '$0.20' ]
+
+    TOTAL_LINE=$(echo "$output" | grep '^TOTAL')
+    read -r -a T <<< "$TOTAL_LINE"
+    [ "${T[5]}" = '$3.30' ]
+}
+
+@test "cost-mirror: PRICING_TABLE prefix order resolves opus/sonnet-5/sonnet/unknown unambiguously (unit-level, not by eye)" {
+    # bd-zjb criterion 3: prefix matching is ordered (first match wins), so a
+    # mis-ordered or overly broad prefix could silently misprice a whole
+    # family. Checked directly against rates_for(), not by eyeballing the
+    # table: a real opus id resolves to the flat opus rate; a generic sonnet
+    # id (sonnet-4-family) must NOT match the specific "claude-sonnet-5"
+    # entry and so must be date-independent; a "claude-sonnet-5..." id MUST
+    # route through the specific entry's _sonnet5_rates() callable rather
+    # than falling through to the generic "claude-sonnet-" rate (checked by
+    # cross-calling _sonnet5_rates() directly, so this stays a valid check on
+    # either side of the 2026-09-01 intro-pricing cutoff -- see the dedicated
+    # cutoff test above for the callable's own date-boundary correctness);
+    # and a model matching no prefix at all falls through to None rather than
+    # guessing.
+    run python3 -c "
+import importlib.util
+spec = importlib.util.spec_from_file_location('cost_mirror_under_test', '$MIRROR')
+cm = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(cm)
+
+def rate_pair(model):
+    r = cm.rates_for(model)
+    return (r['in'], r['out']) if r else None
+
+assert rate_pair('claude-opus-4-6-20260101') == (5.0, 25.0), 'opus family mispriced'
+assert rate_pair('claude-sonnet-4-5-20250929') == (3.0, 15.0), 'generic sonnet must not hit the sonnet-5 entry'
+assert rate_pair('claude-sonnet-5-20260101') == cm._sonnet5_rates(), 'sonnet-5 must route through the specific entry, not the generic fallback'
+assert rate_pair('claude-haiku-4-5-20251001') == (1.0, 5.0), 'haiku family mispriced'
+assert rate_pair('claude-mythos-5') == (10.0, 50.0), 'mythos family mispriced'
+assert cm.rates_for('claude-totally-unknown-model-9') is None, 'unknown model must fall through to None, not guess'
+print('ALL PREFIX ORDER CASES OK')
+"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"ALL PREFIX ORDER CASES OK"* ]]
 }
 
 @test "cost-mirror: subagent role label prefers customAgentType over agentType (named-spawn sidecar)" {
@@ -903,6 +1086,122 @@ mk_pricing_transcript() {
     [ "$(echo "$ROWS" | head -1)" = "main" ]
     echo "$ROWS" | grep -qx "worker"
     echo "$ROWS" | grep -qx "worker:verifier"
+}
+
+@test "cost-mirror: render_report sorts rows within a side by actual dollar cost, not token volume (bd-cro)" {
+    # fable ($10/$50 per MTok) at LOW volume must outrank haiku ($1/$5 per
+    # MTok) at HIGHER volume once cost, not volume, drives the order -- this
+    # is exactly the case the old -(out + cr) key got backwards.
+    #   fable-5: out=100000 -> $5.00  (volume 100000)
+    #   haiku:   out=500000 -> $2.50  (volume 500000 -- MORE than fable's)
+    #   opus-5:  out=60000  -> $1.50  (volume 60000)
+    # old volume order:  haiku(500k) > fable(100k) > opus(60k)
+    # new cost order:    fable($5.00) > haiku($2.50) > opus($1.50)
+    TP="$BATS_TEST_TMPDIR/proj-costsort/sess.jsonl"
+    mkdir -p "$BATS_TEST_TMPDIR/proj-costsort"
+    {
+        printf '{"message":{"model":"claude-fable-5","usage":{"output_tokens":100000}}}\n'
+        printf '{"message":{"model":"claude-haiku-4-5-20251001","usage":{"output_tokens":500000}}}\n'
+        printf '{"message":{"model":"claude-opus-5","usage":{"output_tokens":60000}}}\n'
+    } > "$TP"
+    run python3 "$MIRROR" --report "$TP"
+    [ "$status" -eq 0 ]
+    ORDER=$(echo "$output" | grep '^main' | awk '{print $2}' | tr '\n' ' ')
+    [ "$ORDER" = "fable-5 haiku-4-5-20251001 opus-5 " ]
+}
+
+@test "cost-mirror: unpriced models sort to the bottom of their side regardless of volume, tiebroken by model id (bd-cro)" {
+    # claude-alpha-1 is unpriced but carries a MASSIVE volume -- proving the
+    # old -(out+cr) key would have put it first, while the new cost key
+    # (cost() == 0.0 for an unpriced model, already the minimum any row can
+    # sort to) correctly puts it last, tied with the other unpriced row
+    # claude-zeta-9 and broken alphabetically by model id.
+    TP="$BATS_TEST_TMPDIR/proj-unpriced/sess.jsonl"
+    mkdir -p "$BATS_TEST_TMPDIR/proj-unpriced"
+    {
+        printf '{"message":{"model":"claude-haiku-4-5-20251001","usage":{"output_tokens":200000}}}\n'
+        printf '{"message":{"model":"claude-alpha-1","usage":{"output_tokens":999999999}}}\n'
+        printf '{"message":{"model":"claude-zeta-9","usage":{"output_tokens":1}}}\n'
+    } > "$TP"
+    run python3 "$MIRROR" --report "$TP"
+    [ "$status" -eq 0 ]
+    ORDER=$(echo "$output" | grep '^main' | awk '{print $2}' | tr '\n' ' ')
+    [ "$ORDER" = "haiku-4-5-20251001 alpha-1? zeta-9? " ]
+}
+
+@test "cost-mirror --report: row order is deterministic across repeated runs on identical input (bd-cro)" {
+    TP="$BATS_TEST_TMPDIR/proj-determinism/sess.jsonl"
+    mkdir -p "$BATS_TEST_TMPDIR/proj-determinism"
+    {
+        printf '{"message":{"model":"claude-fable-5","usage":{"output_tokens":100000}}}\n'
+        printf '{"message":{"model":"claude-haiku-4-5-20251001","usage":{"output_tokens":500000}}}\n'
+        printf '{"message":{"model":"claude-opus-5","usage":{"output_tokens":60000}}}\n'
+        printf '{"message":{"model":"claude-alpha-1","usage":{"output_tokens":999999999}}}\n'
+        printf '{"message":{"model":"claude-zeta-9","usage":{"output_tokens":1}}}\n'
+    } > "$TP"
+    run python3 "$MIRROR" --report "$TP"
+    [ "$status" -eq 0 ]
+    FIRST="$output"
+    run python3 "$MIRROR" --report "$TP"
+    [ "$status" -eq 0 ]
+    SECOND="$output"
+    diff <(echo "$FIRST") <(echo "$SECOND")
+    [ "$FIRST" = "$SECOND" ]
+}
+
+@test "cost-mirror: side grouping still wins over cost -- main is listed before a far pricier worker row (bd-cro)" {
+    TP="$BATS_TEST_TMPDIR/proj-grouping/sess.jsonl"
+    mkdir -p "$BATS_TEST_TMPDIR/proj-grouping/sess/subagents"
+    printf '{"message":{"model":"claude-haiku-4-5-20251001","usage":{"output_tokens":1000}}}\n' > "$TP"
+    printf '{"message":{"model":"claude-fable-5","usage":{"output_tokens":1000000}}}\n' \
+        > "$BATS_TEST_TMPDIR/proj-grouping/sess/subagents/agent-w1.jsonl"
+    run python3 "$MIRROR" --report "$TP"
+    [ "$status" -eq 0 ]
+    SIDES=$(echo "$output" | grep -E '^(main|worker)' | awk '{print $1}' | tr '\n' ' ')
+    [ "$SIDES" = "main worker " ]
+}
+
+@test "cost-mirror: a model-in-name spawn (new naming convention) still labels as bare worker:<role>, not fragmented (bd-8ty)" {
+    # bd-8ty's convention: name = "<role>-<model-slug>[-<topic>]", e.g.
+    # "executor-sonnet-5-cost" -- a REAL sidecar shape seen live in this
+    # container. agentType carries the name, customAgentType the true role;
+    # _agent_label must still resolve "executor", not "executor-sonnet-5-cost".
+    TP="$BATS_TEST_TMPDIR/proj-namedconv/sess.jsonl"
+    mkdir -p "$BATS_TEST_TMPDIR/proj-namedconv/sess/subagents"
+    printf '{"message":{"model":"claude-opus-5","usage":{"output_tokens":10}}}\n' > "$TP"
+    printf '{"message":{"model":"claude-sonnet-5","usage":{"output_tokens":40000}}}\n' \
+        > "$BATS_TEST_TMPDIR/proj-namedconv/sess/subagents/agent-x1.jsonl"
+    printf '{"agentType":"executor-sonnet-5-cost","name":"executor-sonnet-5-cost","customAgentType":"executor"}' \
+        > "$BATS_TEST_TMPDIR/proj-namedconv/sess/subagents/agent-x1.meta.json"
+    run python3 "$MIRROR" --report "$TP"
+    [ "$status" -eq 0 ]
+    ROLE_LINE=$(echo "$output" | grep '^worker:executor')
+    [ -n "$ROLE_LINE" ]
+    [[ "$output" != *"worker:executor-sonnet-5-cost"* ]]
+}
+
+@test "cost-mirror: a model:inherit role (verifier/oracle) shows the resolved model, never the literal 'inherit' (bd-8ty)" {
+    # Mirrors a REAL live sidecar this container produced:
+    # {"agentType":"verifier-opus-5-resume","customAgentType":"verifier"}.
+    # message.model in the transcript is always the API-resolved id, never
+    # the frontmatter's "inherit" -- no code change was needed for this;
+    # this pins that fact.
+    # NOTE: the fixture dir is deliberately NOT named "*inherit*" -- render_report's
+    # header line prints the transcript path verbatim, so that substring would
+    # leak into $output and produce a false positive on the check below.
+    TP="$BATS_TEST_TMPDIR/proj-modelrole/sess.jsonl"
+    mkdir -p "$BATS_TEST_TMPDIR/proj-modelrole/sess/subagents"
+    printf '{"message":{"model":"claude-opus-5","usage":{"output_tokens":10}}}\n' > "$TP"
+    printf '{"message":{"model":"claude-opus-5","usage":{"output_tokens":50000}}}\n' \
+        > "$BATS_TEST_TMPDIR/proj-modelrole/sess/subagents/agent-v1.jsonl"
+    printf '{"agentType":"verifier-opus-5-resume","name":"verifier-opus-5-resume","customAgentType":"verifier"}' \
+        > "$BATS_TEST_TMPDIR/proj-modelrole/sess/subagents/agent-v1.meta.json"
+    run python3 "$MIRROR" --report "$TP"
+    [ "$status" -eq 0 ]
+    ROLE_LINE=$(echo "$output" | grep '^worker:verifier')
+    [ -n "$ROLE_LINE" ]
+    [[ "$ROLE_LINE" == *"opus-5"* ]]
+    [[ "$output" != *"inherit"* ]]
 }
 
 @test "cost-mirror: pricing math — known token counts across two models produce the exact dollar clause" {

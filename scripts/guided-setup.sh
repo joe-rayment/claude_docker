@@ -285,20 +285,26 @@ show_menu() {
                     # Embedded Dolt — no server. Health check; auto-repair if broken.
                     if ! (cd /workspace && bd status) &>/dev/null 2>&1; then
                         echo -e "${C_YELLOW}→${C_RESET} Repairing Beads database..."
-                        if (cd /workspace && bd doctor --fix --yes) &>/dev/null 2>&1; then
-                            if (cd /workspace && bd status) &>/dev/null 2>&1; then
-                                echo -e "${C_GREEN}✓${C_RESET} Beads database repaired"
-                                echo ""
-                            else
-                                echo -e "${C_RED}✗${C_RESET} Repair incomplete — try: ${C_BOLD}bd doctor --fix${C_RESET}"
-                                echo ""
-                            fi
+                        # bd doctor --fix --yes is unsupported in embedded Dolt mode
+                        # (confirmed no-op). The working repair is bd init + bd import
+                        # — same recipe as entrypoint.sh's ensure_beads() self-heal
+                        # and the prefix detection in prompt_beads_init() above.
+                        # See knowledge-base/BEADS_TROUBLESHOOTING.md.
+                        local repair_prefix repair_remote_url
+                        repair_remote_url=$(git -C /workspace remote get-url origin 2>/dev/null || true)
+                        [ -n "$repair_remote_url" ] && repair_prefix=$(basename "$repair_remote_url" .git 2>/dev/null || true)
+                        [ -z "$repair_prefix" ] && repair_prefix="${CLAUDE_PROJECT_NAME:-$(basename /workspace)}"
+                        (cd /workspace && bd init --prefix "$repair_prefix" --quiet --non-interactive) &>/dev/null 2>&1 || true
+                        (cd /workspace && bd import) &>/dev/null 2>&1 || true
+                        if (cd /workspace && bd status) &>/dev/null 2>&1; then
+                            echo -e "${C_GREEN}✓${C_RESET} Beads database repaired"
+                            echo ""
                         else
-                            echo -e "${C_RED}✗${C_RESET} Repair failed — try: ${C_BOLD}bd doctor --fix${C_RESET}"
+                            echo -e "${C_RED}✗${C_RESET} Repair incomplete — see ${C_BOLD}knowledge-base/BEADS_TROUBLESHOOTING.md${C_RESET} (if 'already initialized', rm -rf .beads/embeddeddolt first, then retry)"
                             echo ""
                         fi
                     fi
-                    (cd /workspace && bd status 2>&1) || echo -e "${C_RED}Beads error. Try: bd doctor --fix${C_RESET}"
+                    (cd /workspace && bd status 2>&1) || echo -e "${C_RED}Beads error. See knowledge-base/BEADS_TROUBLESHOOTING.md${C_RESET}"
                     echo ""
                     # Show open issues list if any exist
                     local open_count

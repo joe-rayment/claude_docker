@@ -26,8 +26,10 @@ bd show <issue-id>
 bd update <issue-id> --status in_progress
 bd update <issue-id> --status done
 
-# Sync: bd exports to .beads/issues.jsonl; commit and push with git
-git add .beads/issues.jsonl && git commit -m "..." && git push
+# Sync: bd exports to .beads/issues.jsonl; commit locally as normal.
+# Push only when you explicitly want to sync to the remote right now
+# (see CLAUDE.md "Session Completion" — push is opt-in, not automatic).
+git add .beads/issues.jsonl && git commit -m "..."   # add "&& git push" only when you mean to push now
 ```
 
 ### Working with Issues

@@ -191,7 +191,7 @@ Container configs (zshrc, Claude settings, Helix, etc.) sync from the image on s
 
 ### Beads Task Tracking
 
-The container runs [Beads](https://github.com/gastownhall/beads) (`bd`) in embedded Dolt mode (no SQL server) for persistent agent task tracking. The live database is `/workspace/.beads/embeddeddolt/` (gitignored); `.beads/issues.jsonl` is a git-tracked export used to rebuild it. A broken database self-heals at container start, or run `bd doctor --fix --yes`.
+The container runs [Beads](https://github.com/gastownhall/beads) (`bd`) in embedded Dolt mode (no SQL server) for persistent agent task tracking. The live database is `/workspace/.beads/embeddeddolt/` (gitignored); `.beads/issues.jsonl` is a git-tracked export used to rebuild it. A broken database self-heals at container start; for manual repair see `knowledge-base/BEADS_TROUBLESHOOTING.md`.
 
 ### Working Inside a Larger Repo (Teardown / Resume)
 

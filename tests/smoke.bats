@@ -294,9 +294,15 @@ setup() {
     rm -rf "$tmpdir"
 }
 
-@test "beads database is healthy (bd doctor)" {
+@test "beads database is healthy (bd status)" {
     [ -d /workspace/.beads ] || skip "no beads workspace"
-    bd doctor >/dev/null 2>&1 || bd doctor --fix --yes
+    # bd doctor is unsupported in embedded Dolt mode — it always exits 0
+    # printing "not yet supported", even for --fix --yes, so it can't assert
+    # health. bd status against the live DB is the real signal; repair (bd
+    # init --prefix <p> --quiet --non-interactive && bd import) is exercised
+    # by "bd init creates a working embedded-dolt workspace" below and by
+    # tests/beads-resume.bats, not against the live DB here.
+    (cd /workspace && bd status) >/dev/null 2>&1
 }
 
 @test "bd init creates a working embedded-dolt workspace" {

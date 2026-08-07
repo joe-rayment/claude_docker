@@ -204,66 +204,132 @@ fi
 # git-tracked issues.jsonl as needed.
 #
 # Beads agent memory — single entry point covering three scenarios:
-#   (A) fresh project, no .beads/  → bd init + bd hooks install
-#   (B) cloned project, .beads/ JSONL present but Dolt DB missing in this volume
-#       → bd doctor --fix --yes
-#   (C) healthy (.beads/ + populated Dolt DB) → no-op, silent
+#   (A) fresh project, no .beads/ at all        → bd init + bd hooks install
+#   (B) .beads/issues.jsonl carries issues but the live Dolt DB reports zero
+#       (a teardown/resume snapshot restore may drop in only issues.jsonl —
+#       no config.yaml/embeddeddolt/metadata.json come with it)
+#       → bd init --prefix (idempotent: refuses safely with a non-zero exit
+#         if a Dolt DB already exists here, never reinitializes or touches
+#         issues.jsonl — see `bd help init-safety`), then bd import (upsert
+#         from issues.jsonl). NOT bd doctor --fix --yes: that subcommand is
+#         unsupported in embedded Dolt mode and is a confirmed silent no-op.
+#   (C) healthy (DB already reports issues, or is a legitimately empty
+#       already-initialized project) → no-op, silent
 detect_beads_prefix() {
+    local dir="${1:-/workspace}"
     local prefix remote
-    remote=$(git -C /workspace remote get-url origin 2>/dev/null || true)
+    remote=$(git -C "$dir" remote get-url origin 2>/dev/null || true)
     if [ -n "$remote" ]; then
         prefix=$(basename "$remote" .git 2>/dev/null || true)
     fi
     [ -z "${prefix:-}" ] && prefix="${CLAUDE_PROJECT_NAME:-}"
-    [ -z "${prefix:-}" ] && prefix=$(basename "$(git -C /workspace rev-parse --show-toplevel 2>/dev/null || echo /workspace)")
+    [ -z "${prefix:-}" ] && prefix=$(basename "$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null || echo "$dir")")
     echo "$prefix"
 }
 
 # Seed starter agent memories on a freshly-initialized beads DB. Called only
 # from the fresh-init path (A), so it runs once per project.
 seed_beads_memories() {
-    (cd /workspace && bd remember "NEVER assign beads to a user -- they are for Claude Code only. Anything that requires a user input should be handled in a question in chat.") 2>/dev/null \
+    local dir="${1:-/workspace}"
+    (cd "$dir" && bd remember "NEVER assign beads to a user -- they are for Claude Code only. Anything that requires a user input should be handled in a question in chat.") 2>/dev/null \
         || dev-log error "bd remember seed failed during entrypoint" "starter memory not stored" 2>/dev/null || true
-    (cd /workspace && bd remember "Code changes must be tested in realistic settings, including running the actual program and taking screenshots.") 2>/dev/null \
+    (cd "$dir" && bd remember "Code changes must be tested in realistic settings, including running the actual program and taking screenshots.") 2>/dev/null \
         || dev-log error "bd remember seed failed during entrypoint" "starter memory not stored" 2>/dev/null || true
 }
 
+# $1 (optional): project directory, defaults to /workspace. Parameterized so
+# tests can exercise the real function body against a throwaway directory
+# instead of /workspace (whose Dolt DB is the live, non-disposable one).
 ensure_beads() {
+    local dir="${1:-/workspace}"
     command -v bd &>/dev/null || return 0
     command -v dolt &>/dev/null || return 0
-    [ -d "/workspace/.git" ] || return 0
+    [ -d "$dir/.git" ] || return 0
 
-    if [ ! -d "/workspace/.beads" ]; then
+    if [ ! -d "$dir/.beads" ]; then
         # (A) fresh — initialize
         local prefix
-        prefix=$(detect_beads_prefix)
-        if ! (cd /workspace && bd init --prefix "$prefix" --quiet) 2>/dev/null; then
+        prefix=$(detect_beads_prefix "$dir")
+        if ! (cd "$dir" && bd init --prefix "$prefix" --quiet) 2>/dev/null; then
             dev-log error "bd init failed during entrypoint" "prefix=$prefix; beads unavailable in this project" 2>/dev/null || true
         fi
-        if [ -d "/workspace/.beads" ]; then
-            (cd /workspace && bd hooks install) 2>/dev/null \
+        if [ -d "$dir/.beads" ]; then
+            (cd "$dir" && bd hooks install) 2>/dev/null \
                 || dev-log error "bd hooks install failed during entrypoint" "git hooks not wired; run 'bd hooks install' manually" 2>/dev/null || true
-            seed_beads_memories
+            seed_beads_memories "$dir"
         fi
         return 0
     fi
 
-    # (B) or (C): .beads/ exists — heal only if bd status is broken. Without
-    # metadata.json we can't know what to heal, so skip. Embedded mode needs no
-    # server, so we probe bd directly rather than a Dolt port.
-    [ -f "/workspace/.beads/metadata.json" ] || return 0
-    (cd /workspace && bd status) &>/dev/null && return 0  # (C) healthy
+    # (B) or (C): .beads/ exists. Trigger repair on the thing that actually
+    # matters — issues.jsonl carries data but the live DB reports none — NOT
+    # on metadata.json presence (that file is unrelated project-identity
+    # metadata — dolt backend/project_id — not an issue count or health
+    # signal, and a snapshot restore may legitimately omit it). An empty or
+    # missing issues.jsonl alongside an empty DB is just a fresh,
+    # legitimately-empty project: no-op.
+    [ -s "$dir/.beads/issues.jsonl" ] || return 0
+    local total
+    total=$( (cd "$dir" && bd status --json) 2>/dev/null | jq -r '.summary.total_issues // 0' 2>/dev/null)
+    [ -z "$total" ] && total=0
+    [ "$total" != "0" ] && return 0  # (C) healthy — DB already has issues
 
-    # (B) repair
-    (cd /workspace && bd doctor --fix --yes) &>/dev/null || true
-    if (cd /workspace && bd status) &>/dev/null; then
-        dev-log run "bd doctor --fix --yes" pass "Auto-repaired Beads database on startup" 2>/dev/null || true
+    # (B) repair: (re)establish the Dolt workspace, then pull issues.jsonl
+    # in. Both calls are safe to run unconditionally, even against a DB that
+    # turns out to already be healthy:
+    #   - plain `bd init` (never --reinit-local/--force) refuses with a
+    #     non-zero exit if a Dolt DB already exists here; it never silently
+    #     reinitializes or touches issues.jsonl.
+    #   - `bd import` upserts; if the DB already matches the JSONL it exits
+    #     non-zero ("nothing to commit"), a harmless, expected no-op.
+    local prefix
+    prefix=$(detect_beads_prefix "$dir")
+    (cd "$dir" && bd init --prefix "$prefix" --quiet --non-interactive) 2>/dev/null || true
+    (cd "$dir" && bd import) 2>/dev/null || true
+
+    total=$( (cd "$dir" && bd status --json) 2>/dev/null | jq -r '.summary.total_issues // 0' 2>/dev/null)
+    [ -z "$total" ] && total=0
+    if [ "$total" != "0" ]; then
+        dev-log run "bd init + bd import" pass "Rebuilt Beads database from issues.jsonl on startup ($total issues)" 2>/dev/null || true
     else
-        dev-log error "Beads auto-repair failed on startup" 2>/dev/null || true
+        dev-log error "Beads auto-rebuild from issues.jsonl failed on startup" 2>/dev/null || true
     fi
 }
 
 ensure_beads
+
+# Beads hygiene: silence the two warnings `bd` prints on every invocation.
+#   - "permissions 0755 (recommended: 0700)" — the Dolt DB shouldn't be
+#     group/world-readable.
+#   - "beads.role not configured (GH#2950)" — bd falls back to a URL
+#     heuristic without it, and nags until it's set explicitly.
+# Idempotent and safe to run on every start regardless of which ensure_beads()
+# branch ran (fresh init, repaired, or already-healthy): only touches the
+# .beads/ directory's mode bits and a local (non-git-tracked) git config key,
+# never issues.jsonl or the Dolt DB itself.
+#
+# Role choice: "maintainer" vs "contributor" are not interchangeable — bd
+# init's own non-interactive default is "maintainer" (direct push access to
+# origin); "contributor" is an opt-in OSS fork workflow (`bd init
+# --contributor`, auto-sets sync.remote=upstream) for someone syncing a fork
+# against an upstream they can't push to. Template projects are worked on
+# directly against their own git remote's refs/dolt/data, so "maintainer" is
+# the correct default here — matches what fresh (case A) `bd init` already
+# picks on its own; this just makes it hold for case B/C repos too (cloned or
+# already-initialized projects, where bd init never runs). Never overwrites
+# an explicit role a user already configured.
+ensure_beads_hygiene() {
+    [ -d "/workspace/.beads" ] || return 0
+    chmod 700 /workspace/.beads 2>/dev/null || true
+    command -v bd &>/dev/null || return 0
+    # -e (not -d): a worktree checkout or submodule has .git as a *file*
+    # (gitdir: pointer), not a directory. -e accepts both shapes.
+    [ -e "/workspace/.git" ] || return 0
+    if [ -z "$(git -C /workspace config --get beads.role 2>/dev/null)" ]; then
+        git -C /workspace config beads.role maintainer 2>/dev/null || true
+    fi
+}
+ensure_beads_hygiene
 
 # Register Claude Code hooks for beads awareness (SessionStart, PreCompact).
 # Idempotent — merges into existing settings.json without overwriting other entries.

@@ -232,3 +232,620 @@ run_guard() {
     run_guard '{ bd create x -a joe; }'
     [ "$status" -eq 2 ]
 }
+
+# --- Hard rule: the reserved 'human' label routes a bead to a person ----------
+# (beads_claude_docker-v5p: bd human list surfaces "issues with 'human' label"
+# to a person -- attaching it is an assignee in disguise.)
+
+@test "bd-guard: 'human' label via --labels/-l/--add-label/--set-labels is hard-blocked" {
+    run_guard 'bd create "Pick a region" --labels human'
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"'human' label"* ]]
+    run_guard 'bd create "x" --labels bug,human,urgent'
+    [ "$status" -eq 2 ]
+    run_guard 'bd update wp9 --add-label human'
+    [ "$status" -eq 2 ]
+    run_guard 'bd update wp9 -l human'
+    [ "$status" -eq 2 ]
+    run_guard 'bd update wp9 --set-labels human'
+    [ "$status" -eq 2 ]
+}
+
+@test "bd-guard: 'human' label via bd tag / bd label add is hard-blocked" {
+    run_guard 'bd tag bd-42 human'
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"'human' label"* ]]
+    run_guard 'bd label add bd-42 human'
+    [ "$status" -eq 2 ]
+    run_guard 'bd label add bd-42 bd-43 human'
+    [ "$status" -eq 2 ]
+}
+
+@test "bd-guard: human-label hard rule ignores BD_GUARD_ALLOW override" {
+    run bash -c 'jq -n --arg c "bd tag bd-42 human" "{tool_input:{command:\$c}}" | BD_GUARD_ALLOW=1 '"$GUARD"' 2>&1'
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"'human' label"* ]]
+}
+
+@test "bd-guard: ordinary labels and un-flagging (--remove-label human) pass" {
+    run_guard 'bd create x --labels bug,urgent'
+    [ "$status" -eq 0 ]
+    run_guard 'bd tag bd-42 needs-review'
+    [ "$status" -eq 0 ]
+    run_guard 'bd update wp9 --remove-label human'
+    [ "$status" -eq 0 ]
+    run_guard 'bd create x --all'
+    [ "$status" -eq 0 ]
+}
+
+# --- Hard rule: 'bd gate create' defaulting to (or set to) a human gate -------
+# (bd gate create --blocks <id> defaults --type to "human", which requires
+# manual 'bd gate resolve' -- a blocked-on-a-person dependency, same severity
+# as a human assignee.)
+
+@test "bd-guard: 'bd gate create' with no --type (defaults to human) is hard-blocked" {
+    run_guard 'bd gate create --blocks bd-42'
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"only a person can close"* ]]
+}
+
+@test "bd-guard: 'bd gate create --type=human' (explicit, both spellings) is hard-blocked" {
+    run_guard 'bd gate create --type=human --blocks bd-42 --reason "Need design review"'
+    [ "$status" -eq 2 ]
+    run_guard 'bd gate create -t human --blocks bd-42'
+    [ "$status" -eq 2 ]
+}
+
+@test "bd-guard: 'bd gate create' with an automated type passes" {
+    run_guard 'bd gate create --type=timer --blocks bd-42 --timeout=2h'
+    [ "$status" -eq 0 ]
+    run_guard 'bd gate create --type=gh:run --blocks bd-42 --await-id=42'
+    [ "$status" -eq 0 ]
+    run_guard 'bd gate create --type=gh:pr --blocks bd-42 --await-id=42'
+    [ "$status" -eq 0 ]
+}
+
+@test "bd-guard: gate hard rule ignores BD_GUARD_ALLOW override" {
+    run bash -c 'jq -n --arg c "bd gate create --blocks bd-42" "{tool_input:{command:\$c}}" | BD_GUARD_ALLOW=1 '"$GUARD"' 2>&1'
+    [ "$status" -eq 2 ]
+}
+
+@test "bd-guard: non-create gate subcommands (list/resolve) pass untouched" {
+    run_guard 'bd gate list'
+    [ "$status" -eq 0 ]
+    run_guard 'bd gate resolve bd-42'
+    [ "$status" -eq 0 ]
+}
+
+# --- 'bd dep add' cannot express a human dependency and stays unguarded -------
+# (Every value bd dep add accepts is an issue ID or external:<project>:<cap>
+# reference, never a person -- deliberately not added to the guarded verb
+# list. Confirmed by reading 'bd dep add --help'.)
+
+@test "bd-guard: 'bd dep add' is not a bd-guard verb and passes through" {
+    run_guard 'bd dep add bd-42 bd-41'
+    [ "$status" -eq 0 ]
+    run_guard 'bd dep add bd-42 --blocked-by bd-41'
+    [ "$status" -eq 0 ]
+}
+
+# ============================================================================
+# Shell-wrapper / file-indirection evasions (beads_claude_docker-vgr)
+#
+# bd-guard is a string matcher: bash -c "PAYLOAD" / eval "PAYLOAD" hide `bd`
+# behind a quote character, never at the `;&|(){` command position every rule
+# above anchors on. scan_cmd (scripts/bd-guard.sh) extracts the payload and
+# RECURSES the same rule engine on it (bounded by MAX_UNWRAP_DEPTH=5), rather
+# than duplicating rule logic against a second grammar. Full scope table with
+# rationale is in the bead and the executor's report; short form:
+#   bash -c/sh -c/zsh -c "PAYLOAD" (+ path-prefixed)  -> BLOCKED (recurse)
+#   eval "PAYLOAD" / eval 'PAYLOAD' / eval PAYLOAD     -> BLOCKED (recurse)
+#   nested wrapping (bash -c "eval '...'")             -> BLOCKED (cascades)
+#   echo x | xargs bd create -a joe (bare xargs)       -> BLOCKED (strip-word)
+#   xargs own flags / stdin-substituted value           -> OUT-OF-SCOPE
+#   printf "bd ..." | sh (payload as interpreter STDIN) -> OUT-OF-SCOPE
+#   --body-file/--design-file/-f/--graph/--stdin        -> OUT-OF-SCOPE
+#   nesting deeper than MAX_UNWRAP_DEPTH                -> OUT-OF-SCOPE (bounded)
+#
+# CORRECTION (beads_claude_docker-vgr round 2): the "bash -c/sh -c/zsh -c
+# 'PAYLOAD' -> BLOCKED (recurse)" line above, stated with NO qualification,
+# was FALSE for several real, verifier-confirmed shapes -- all fixed in this
+# round, all covered by the new tests below:
+#   - a flag between the interpreter word and -c (`bash -x -c "..."`,
+#     `bash -c -x "..."`, `bash --norc -c "..."`) was not recognized at all
+#     -- the candidate regex required the literal token `-c` immediately
+#     after the interpreter word.
+#   - a COMBINED short-flag cluster (`bash -lc "..."`, `-ec`) was likewise
+#     not recognized for the same reason.
+#   - an ESCAPED inner double-quote in the payload (`bash -c "bd create x -d
+#     \"n\" -a joe"`) silently TRUNCATED the captured payload at the escape,
+#     dropping everything after it (including the actual violation) from
+#     recursion entirely -- `"[^"]*"` has no escape awareness.
+#   - a DECOY quoted string ending in the same "interpreter -flags-
+#     open-quote" header as a real wrapper later in the same command
+#     (`echo "; bash -c " ; bash -c "bd gate create --blocks bd-1"`) let
+#     grep -oE's leftmost, non-overlapping match consume THROUGH the real
+#     wrapper's own opening quote, so the real payload was never found as an
+#     independent candidate at all.
+# All four are now closed (flag-cluster + escape-aware capture; iterative
+# "unswallow" retry for the decoy case, gated on a header/full-match count
+# mismatch so the common no-wrapper or cleanly-non-overlapping case pays
+# nothing extra). A companion bug in `bd tag`'s label extraction (grabbed
+# only the FIRST token after the id, silently ignoring a violation planted
+# further along, e.g. `bd tag bd-1 "x" human`) was fixed alongside since the
+# escape-aware capture alone wasn't sufficient to close that specific
+# reported bypass. Total-work is additionally bounded independently of
+# MAX_UNWRAP_DEPTH by MAX_SCAN_NODES (scripts/bd-guard.sh) -- depth alone
+# does not bound the O(branch^depth) cost of several wrapper candidates at
+# several levels; see the perf tests below.
+# ============================================================================
+
+# --- BLOCKED: bash -c / sh -c / zsh -c with the payload in a quoted string ---
+
+@test "bd-guard: bash -c \"PAYLOAD\" (double-quoted) with a human assignee is blocked" {
+    run_guard 'bash -c "bd create x -a joe"'
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"NEVER assigned to a human"* ]]
+}
+
+@test "bd-guard: sh -c and zsh -c with a single-quoted payload are blocked" {
+    run_guard "sh -c 'bd create x -a joe'"
+    [ "$status" -eq 2 ]
+    run_guard "zsh -c 'bd create x -a joe'"
+    [ "$status" -eq 2 ]
+}
+
+@test "bd-guard: a path-prefixed wrapper (/bin/sh -c, /usr/bin/env-style bash -c) is blocked" {
+    run_guard '/bin/sh -c "bd create x -a joe"'
+    [ "$status" -eq 2 ]
+    run_guard '/usr/bin/bash -c "bd create x -a joe"'
+    [ "$status" -eq 2 ]
+}
+
+@test "bd-guard: bash -c with a benign payload (no violation) still passes" {
+    run_guard 'bash -c "bd create \"x\" --assignee claude"'
+    [ "$status" -eq 0 ]
+}
+
+# --- BLOCKED: eval with the payload in a quoted string, and bare eval --------
+
+@test "bd-guard: eval \"PAYLOAD\" (double-quoted) with a human assignee is blocked" {
+    run_guard 'eval "bd create x -a joe"'
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"NEVER assigned to a human"* ]]
+}
+
+@test "bd-guard: eval 'PAYLOAD' (single-quoted) with a human assignee is blocked" {
+    run_guard "eval 'bd create x -a joe'"
+    [ "$status" -eq 2 ]
+}
+
+@test "bd-guard: bare eval PAYLOAD (unquoted) with a human assignee is blocked" {
+    run_guard 'eval bd create x -a joe'
+    [ "$status" -eq 2 ]
+}
+
+@test "bd-guard: eval with a benign payload (no violation) still passes" {
+    run_guard 'eval "bd create x --assignee claude"'
+    [ "$status" -eq 0 ]
+}
+
+# --- BLOCKED: nested/double wrapping ------------------------------------------
+
+@test "bd-guard: nested wrapping bash -c \"eval '...'\" is blocked" {
+    run_guard 'bash -c "eval '"'"'bd create x -a joe'"'"'"'
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"NEVER assigned to a human"* ]]
+}
+
+@test "bd-guard: nested wrapping through the human-label and soft rules also fires" {
+    run_guard 'bash -c "bd tag bd-42 human"'
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"'human' label"* ]]
+    run_guard 'bash -c "bd create '"'"'Ask the user which DB to use'"'"'"'
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"ask it in your reply NOW"* ]]
+}
+
+# --- BLOCKED: bare xargs passes its own argv straight through ----------------
+
+@test "bd-guard: echo x | xargs bd create -a joe (bare xargs) is blocked" {
+    run_guard 'echo x | xargs bd create x -a joe'
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"NEVER assigned to a human"* ]]
+}
+
+# --- BD_GUARD_ALLOW propagation through a wrapper (soft rule only) -----------
+
+@test "bd-guard: outer BD_GUARD_ALLOW=1 prefix unlocks a soft rule INSIDE a wrapper" {
+    run_guard 'BD_GUARD_ALLOW=1 bash -c "bd create '"'"'Ask the user which DB to use'"'"'"'
+    [ "$status" -eq 0 ]
+}
+
+@test "bd-guard: outer BD_GUARD_ALLOW=1 prefix does NOT unlock a hard rule inside a wrapper" {
+    run_guard 'BD_GUARD_ALLOW=1 bash -c "bd create x -a joe"'
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"NEVER assigned to a human"* ]]
+}
+
+# --- Depth bound: recursion terminates instead of spinning -------------------
+# Chained bare `eval` (no quoting needed, so this isn't an artifact of quote-
+# nesting limits) -- each layer costs exactly one recursion to strip. 5 layers
+# is within MAX_UNWRAP_DEPTH (5) and fully unwraps; 6 exceeds it and the
+# violation past the bound is never reached -- documents the bound exists and
+# fails open (allow), never blocks, when it's hit.
+@test "bd-guard: wrapper nesting within the depth bound (5 eval layers) is blocked" {
+    run_guard 'eval eval eval eval eval bd create x -a joe'
+    [ "$status" -eq 2 ]
+}
+
+@test "bd-guard: wrapper nesting beyond the depth bound (6 eval layers) is allowed" {
+    run_guard 'eval eval eval eval eval eval bd create x -a joe'
+    [ "$status" -eq 0 ]
+}
+
+# --- Fail-open under a broken environment, now that wrapper-unwrap adds ------
+# --- new grep/sed calls (bead acceptance #2: env -i, missing jq) -------------
+
+@test "bd-guard: env -i (fully stripped environment) still blocks a real violation" {
+    run env -i PATH="$PATH" bash -c 'jq -n --arg c "bd create x -a joe" "{tool_input:{command:\$c}}" | '"$GUARD"' 2>&1'
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"NEVER assigned to a human"* ]]
+}
+
+@test "bd-guard: jq unresolvable on PATH fails open (allow) instead of crashing" {
+    run bash -c 'PATH=/nonexistent jq -n --arg c "bd create x -a joe" "{tool_input:{command:\$c}}" 2>/dev/null | '"$GUARD"' 2>&1'
+    [ "$status" -eq 0 ]
+}
+
+# --- OUT-OF-SCOPE (documented, pinned): xargs' own flags / stdin-substituted -
+# --- values are not parsed -- the value is never textually present ----------
+
+@test "OUT-OF-SCOPE (pinned): xargs -I{} substituting a piped-in value is not caught" {
+    run_guard 'echo joe | xargs -I{} bd create x -a {}'
+    [ "$status" -eq 0 ]
+}
+
+# --- OUT-OF-SCOPE (documented, pinned): payload as interpreter STDIN data, --
+# --- not argv -- printf/echo/cat piped into sh/bash. The text is technically
+# --- present in the command string, but treating "anything piped into an
+# --- interpreter" as unwrappable is the sandbox line this fix does not cross
+# --- (the bead's DESIGN section: "without pretending to be a sandbox").
+@test "OUT-OF-SCOPE (pinned): printf PAYLOAD | sh (stdin data, not argv) is not caught" {
+    run_guard 'printf %s "bd create x -a joe" | sh'
+    [ "$status" -eq 0 ]
+}
+
+# --- OUT-OF-SCOPE (documented, pinned): file indirection ---------------------
+# --body-file/--design-file read the description/design from a file;
+# -f/--graph batch-create issues (including assignee/labels) from a
+# markdown/JSON file. Declared out of scope rather than half-covered:
+#   - format mismatch: detecting an assignee/human-label INSIDE the file
+#     needs a markdown/JSON issue-format parser (the "Assignee:" key /
+#     --graph node fields), not a reuse of this shell-token rule engine --
+#     a materially different, second rule engine, not "recurse the existing
+#     scan".
+#   - TOCTOU: the file may not exist yet at hook time, or its content may
+#     change between the hook's read and bd's own read.
+#   - --stdin (alias for --body-file -) is unscannable even in principle --
+#     the hook has no access to the run's future stdin stream.
+#   - new file-I/O fail-open surface (size, encoding, symlinks, permissions)
+#     disproportionate to this slice.
+@test "OUT-OF-SCOPE (pinned): --body-file pointing at a file with a human assignee is not caught" {
+    f="$BATS_TEST_TMPDIR/body.md"
+    printf 'Assignee: joe\nPlease review and decide.\n' > "$f"
+    run_guard "bd create x --body-file $f"
+    [ "$status" -eq 0 ]
+}
+
+@test "OUT-OF-SCOPE (pinned): --design-file / -f pointing at a file with a violation is not caught" {
+    f="$BATS_TEST_TMPDIR/design.md"
+    printf 'ask the user which region to deploy to\n' > "$f"
+    run_guard "bd create x --design-file $f"
+    [ "$status" -eq 0 ]
+    g="$BATS_TEST_TMPDIR/batch.md"
+    printf '## Issue\nAssignee: joe\n' > "$g"
+    run_guard "bd create -f $g"
+    [ "$status" -eq 0 ]
+}
+
+# ============================================================================
+# Quote-aware masking (beads_claude_docker-vgr, closing slice)
+#
+# The scanner above was not quote-aware: it read prose INSIDE a quoted flag
+# value as if it were real command syntax, so filing a bead whose own text
+# quoted a prohibited flag (e.g. -d "example: bd create x -a joe") HARD-
+# BLOCKED, with no override -- the bead's unmet acceptance criterion. The
+# same gap let a wrapper-shaped example inside such a value (-d "... (bash -c
+# '...') ..." ) get extracted as if it were a real wrapper.
+#
+# scripts/bd-guard.sh now computes masked_cmd: the CONTENT of quoted values
+# of -d/--description, --title, --notes, --design, --acceptance, -r/--reason
+# is blanked (quote characters kept, interior emptied) before every
+# STRUCTURAL rule (assignee, labels, gate --type, bare `bd human`, segments,
+# wrapper-candidate filtering) -- never before the prose soft rules, which
+# must keep reading exactly that text (that IS their job). Bare -t is
+# deliberately NOT masked: confirmed against bd 1.0.4 (`bd create --help` /
+# `bd gate create --help`) that -t is ALWAYS --type, never a --title short
+# form (--title has none) -- masking it would let a quoted `-t "human"` slip
+# the gate rule.
+# ============================================================================
+
+# --- The unmet acceptance: a prohibited flag quoted in -d must be fileable --
+
+@test "bd-guard: a prohibited flag quoted inside -d/--description is DATA, not a violation" {
+    run_guard 'bd create "Doc example" -d "example: bd create x -a joe"'
+    [ "$status" -eq 0 ]
+}
+
+@test "bd-guard: a parenthesized wrapper example quoted inside -d is DATA, not a violation" {
+    run_guard 'bd create x -d "example: (bash -c '"'"'bd create x -a joe'"'"')"'
+    [ "$status" -eq 0 ]
+}
+
+# --- Quote-awareness is not a universal bypass: real syntax still blocks ----
+
+@test "bd-guard: a real bash -c wrapper with a real human assignee still blocks (not a bypass)" {
+    run_guard 'bash -c "bd create x -a joe"'
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"NEVER assigned to a human"* ]]
+}
+
+@test "bd-guard: a real -a joe in genuine command position still blocks (not a bypass)" {
+    run_guard 'bd create x -a joe'
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"NEVER assigned to a human"* ]]
+}
+
+@test "bd-guard: masking the prose -a inside -d does not hide a REAL -a alongside it" {
+    run_guard 'bd create x -d "example uses -a alice" -a joe'
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"NEVER assigned to a human"* ]]
+}
+
+@test "bd-guard: a genuinely wrapped soft-rule violation still blocks (masking is context-scoped, not payload-eating)" {
+    # Regression pin: extracting the bash -c payload from the MASKED string
+    # instead of the raw one would blank this real wrapper's own -d value
+    # before recursion ever saw "ask Joe to decide" -- silently turning a
+    # today-blocks case into an allow. The wrapper-candidate filter keeps
+    # the raw (unmasked) payload for recursion and uses masked_cmd only to
+    # decide whether the match is a genuine wrapper at all.
+    run_guard 'bash -c "bd create x -d '"'"'ask Joe to decide'"'"'"'
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"ask it in your reply NOW"* ]]
+}
+
+# --- Same root cause, other hard rules (gate/human/label), fixed alongside --
+
+@test "bd-guard: a 'bd gate create' example quoted inside -d is DATA, not a second invocation" {
+    run_guard 'bd create x -d "example: bd gate create --blocks bd-1"'
+    [ "$status" -eq 0 ]
+}
+
+@test "bd-guard: a bare 'bd human <id>' example quoted inside -d is DATA, not a violation" {
+    run_guard 'bd create x -d "example: bd human bd-1"'
+    [ "$status" -eq 0 ]
+}
+
+@test "bd-guard: a human-label example quoted inside -d (tag / --labels) is DATA, not a violation" {
+    run_guard 'bd create x -d "example: bd tag bd-1 human"'
+    [ "$status" -eq 0 ]
+    run_guard 'bd create x -d "example: bd create x --labels human"'
+    [ "$status" -eq 0 ]
+}
+
+# --- The rest of the masked-field list: --title, --notes, --design, --------
+# --- --acceptance, -r/--reason (gate create's free-text field) -------------
+
+@test "bd-guard: a prohibited flag quoted inside --title is DATA, not a violation" {
+    run_guard 'bd create x --title "example: bd create x -a joe"'
+    [ "$status" -eq 0 ]
+}
+
+@test "bd-guard: a prohibited flag quoted inside --notes is DATA, not a violation" {
+    run_guard 'bd create x --notes "example: bd create x -a joe"'
+    [ "$status" -eq 0 ]
+}
+
+@test "bd-guard: a prohibited flag quoted inside --design / --acceptance is DATA, not a violation" {
+    run_guard 'bd create x --design "example: bd create x -a joe"'
+    [ "$status" -eq 0 ]
+    run_guard 'bd create x --acceptance "example: bd create x -a joe"'
+    [ "$status" -eq 0 ]
+}
+
+@test "bd-guard: a prohibited flag quoted inside gate create's -r/--reason is DATA, not a violation" {
+    run_guard 'bd gate create --blocks bd-42 --type=timer -r "example: bd create x -a joe"'
+    [ "$status" -eq 0 ]
+    run_guard 'bd gate create --blocks bd-42 --type=timer --reason "example: bd create x -a joe"'
+    [ "$status" -eq 0 ]
+}
+
+# --- Bare -t is deliberately NOT masked: it is always --type, never --title -
+
+@test "bd-guard: bare -t is never treated as free text -- a quoted gate type is still read as real" {
+    run_guard 'bd gate create -t "human" --blocks bd-42'
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"only a person can close"* ]]
+}
+
+# --- Unbalanced/odd quoting: fails open, never crashes ----------------------
+
+@test "bd-guard: an unterminated quote in -d with no violation fails open (allowed, no crash)" {
+    run_guard 'bd create x -d "this never closes'
+    [ "$status" -eq 0 ]
+}
+
+@test "bd-guard: an unterminated quote in -d that DOES contain a real-looking flag stays blocked (conservative, documented direction)" {
+    # Masking requires a matching close quote and simply doesn't fire here --
+    # the text falls back to the pre-quote-aware scan instead of a bespoke
+    # "give up and allow" path, so this can only ever move toward blocking,
+    # never toward a new bypass. An unterminated command couldn't run as
+    # intended in a real shell anyway, so the block is harmless.
+    run_guard 'bd create x -d "oops -a joe'
+    [ "$status" -eq 2 ]
+}
+
+# ============================================================================
+# Round 2: verifier-found bypasses in the wrapper-candidate extraction and
+# the tag-label extraction (beads_claude_docker-vgr closing slice, round 2)
+#
+# All six of these were CONFIRMED LIVE (exit 0 = allowed) against the round-1
+# script despite all round-1 tests passing. See the CORRECTION note above the
+# shell-wrapper section for the four distinct root causes and the fixes.
+# ============================================================================
+
+# --- Flag between the interpreter word and -c, either order, or combined ----
+
+@test "bd-guard: bash -x -c \"PAYLOAD\" (flag BEFORE -c) is blocked" {
+    run_guard 'bash -x -c "bd gate create --blocks bd-1"'
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"only a person can close"* ]]
+}
+
+@test "bd-guard: bash -c -x \"PAYLOAD\" (flag AFTER -c) is blocked" {
+    # Confirmed empirically against real bash first (bash -c -x "echo hi"
+    # DOES execute "echo hi", with xtrace on) -- bash's own option parser
+    # does not require -c to be positionally last, so neither does this.
+    run_guard 'bash -c -x "bd gate create --blocks bd-1"'
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"only a person can close"* ]]
+}
+
+@test "bd-guard: bash -lc \"PAYLOAD\" (combined short-flag cluster) is blocked" {
+    run_guard 'bash -lc "bd create x -a joe"'
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"NEVER assigned to a human"* ]]
+}
+
+@test "bd-guard: bash --norc -c \"PAYLOAD\" (long flag before -c) is blocked" {
+    run_guard 'bash --norc -c "bd create x -a joe"'
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"NEVER assigned to a human"* ]]
+}
+
+@test "bd-guard: a flag cluster with no violation still passes (no new false positive)" {
+    run_guard 'bash -x -c "bd create x --assignee claude"'
+    [ "$status" -eq 0 ]
+}
+
+# --- Escaped inner double-quote no longer truncates the captured payload ----
+
+@test "bd-guard: bash -c with an escaped inner quote before the real violation is blocked" {
+    run_guard 'bash -c "bd create x -d \"n\" -a joe"'
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"NEVER assigned to a human"* ]]
+}
+
+@test "bd-guard: eval \"PAYLOAD\" with an escaped inner quote before the real violation is blocked" {
+    run_guard 'eval "bd create x -d \"n\" -a joe"'
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"NEVER assigned to a human"* ]]
+}
+
+@test "bd-guard: bd tag behind a wrapper with an escaped inner quote is blocked (tag extraction, not just escaping)" {
+    # Two stacked root causes: the escape-truncation bug above, AND bd
+    # tag's own extraction grabbing only the FIRST token after the id
+    # ("x") and silently ignoring "human" two tokens further along.
+    run_guard 'bash -c "bd tag bd-1 \"x\" human"'
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"'human' label"* ]]
+}
+
+@test "bd-guard: sh -c with an escaped inner quote in a labels list is blocked" {
+    run_guard 'sh -c "bd create x --labels \"a\",human"'
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"'human' label"* ]]
+}
+
+# --- bd tag: every token after the id is checked, not just the first -------
+
+@test "bd-guard: bd tag with a violation planted past the first token is blocked (direct, no wrapper)" {
+    run_guard 'bd tag bd-1 "x" human'
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"'human' label"* ]]
+}
+
+@test "bd-guard: bd tag with a single genuine label still passes (no new false positive)" {
+    run_guard 'bd tag bd-1 needs-review'
+    [ "$status" -eq 0 ]
+}
+
+# --- Decoy quoted string swallowing a later real wrapper's opening quote ---
+
+@test "bd-guard: a decoy quoted 'bash -c \"' header does not swallow a real wrapper later in the command" {
+    run_guard 'echo "; bash -c " ; bash -c "bd gate create --blocks bd-1"'
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"only a person can close"* ]]
+}
+
+@test "bd-guard: the same command without the decoy (control) still blocks" {
+    run_guard 'echo hi ; bash -c "bd gate create --blocks bd-1"'
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"only a person can close"* ]]
+}
+
+@test "bd-guard: an actual decoy-shaped string with no real wrapper after it still passes" {
+    run_guard 'echo "; bash -c " ; echo done'
+    [ "$status" -eq 0 ]
+}
+
+@test "bd-guard: several genuinely separate sibling wrappers (no swallowing) all still work" {
+    run_guard 'bash -c "bd create a --assignee claude" ; bash -c "bd create b -a joe" ; bash -c "bd create c --assignee claude"'
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"NEVER assigned to a human"* ]]
+}
+
+# --- Total-work node budget: bounds cost independently of unwrap depth -----
+# (MAX_SCAN_NODES in scripts/bd-guard.sh; see the bead for the O(branch^depth)
+# construction that made the unbounded version take double-digit seconds.)
+
+@test "bd-guard: a wide-but-shallow branching command still terminates and stays fast" {
+    # Two levels of real nesting, several siblings per level -- exercises
+    # the node budget without needing a giant fixture in the test itself.
+    local inner='bash -c "bd create x --assignee claude" ; bash -c "bd create x --assignee claude" ; bash -c "bd create x --assignee claude"'
+    local mid="bash -c '$inner' ; bash -c '$inner' ; bash -c '$inner'"
+    run_guard "$mid"
+    [ "$status" -eq 0 ]
+}
+
+# --- Own adversarial follow-up: the SAME decoy-swallow trick via eval ------
+# (found during this round's own required adversarial pass, AFTER the
+# bash/sh/zsh -c fix above -- eval "PAYLOAD" was not covered by the first
+# pass of the unswallow fix, only bash/sh/zsh -c was, even though it goes
+# through the identical grep -oE leftmost-match mechanism.)
+
+@test "bd-guard: a decoy quoted 'eval \"' header does not swallow a real eval wrapper later in the command" {
+    run_guard 'echo "; eval " ; eval "bd gate create --blocks bd-1"'
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"only a person can close"* ]]
+}
+
+# --- MAX_UNSWALLOW_ITERS: a bound, not a promise -- same pattern as the -----
+# --- MAX_UNWRAP_DEPTH tests above (own adversarial follow-up: chaining -----
+# --- decoys is a second way to run past a fixed iteration count) -----------
+# Recovering a real payload behind N chained decoys costs N+1 iterations of
+# the unswallow retry (scripts/bd-guard.sh); MAX_UNSWALLOW_ITERS=10 means up
+# to 9 chained decoys are still fully unswallowed, and 10 or more exceed the
+# bound -- fail-open (allowed), never itself a block reason, exactly like
+# running past MAX_UNWRAP_DEPTH.
+
+@test "bd-guard: 9 chained decoys (within MAX_UNSWALLOW_ITERS) still blocks" {
+    decoys=""
+    for i in 1 2 3 4 5 6 7 8 9; do decoys="$decoys"'echo "; bash -c " ; '; done
+    run_guard "${decoys}bash -c \"bd gate create --blocks bd-1\""
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"only a person can close"* ]]
+}
+
+@test "bd-guard: 10 chained decoys (beyond MAX_UNSWALLOW_ITERS) is allowed -- documented bound" {
+    decoys=""
+    for i in 1 2 3 4 5 6 7 8 9 10; do decoys="$decoys"'echo "; bash -c " ; '; done
+    run_guard "${decoys}bash -c \"bd gate create --blocks bd-1\""
+    [ "$status" -eq 0 ]
+}
+
+@test "bd-guard: eval with a benign payload after a decoy-shaped string still passes" {
+    run_guard 'echo "; eval " ; echo done'
+    [ "$status" -eq 0 ]
+}

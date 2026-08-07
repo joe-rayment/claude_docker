@@ -119,8 +119,10 @@ Spawn-time enforcement (all fail open, `tests/tier-hooks.bats`): `tier-gate` inj
 
 Beads runs in **embedded Dolt mode** (no server); the full command reference and session-close protocol arrive via the `bd prime` SessionStart hook — refer to that block. Container specifics:
 
-- `bd-guard` (PreToolUse) mechanically enforces the no-human-beads rule: human assignees are hard-blocked; user-directed bead text is redirected to chat. `BD_GUARD_ALLOW=1` only for genuine false positives, never to park user work.
-- The Dolt DB at `.beads/embeddeddolt/` (gitignored) is the source of truth; `.beads/issues.jsonl` is a passive git-tracked export. Repair with `bd doctor --fix --yes`. Use `bd update` flags, never `bd edit` (blocks on `$EDITOR`). Reference bead ids in commit messages.
+- **Beads are Claude Code's own task memory — never a human's, in any form.** Two failure shapes are equally forbidden, not just the obvious one: (1) **direct assignment** — a human assignee, or bead text that hands work to the user ("review this", "decide X", "run Y"); (2) **indirect routing** — a `blocked` status, a dependency, a `bd gate create` (defaults to `--type=human`), or the `human` label used so a person, rather than Claude, is the one who must act to unblock the bead. A dependency or a human-gated block is still an assignment to a person wearing a different hat.
+- The chat path, with its precondition intact: when Claude has genuinely **exhausted its own options** and still needs a human decision, it asks **in chat, at the moment the question arises** — it never banks the question as tracked work. Reaching for chat before investigating is the opposite failure and equally wrong.
+- `bd-guard` (PreToolUse) mechanically enforces this: human assignees, the `human` label, and a default/`human`-type gate are hard-blocked with no override; user-directed bead text is soft-blocked with a redirect to chat. `BD_GUARD_ALLOW=1` overrides the text check only, for genuine false positives (the phrase is quoted content or code, not real pending user work) — never to park user work in a bead.
+- The Dolt DB at `.beads/embeddeddolt/` (gitignored) is the source of truth; `.beads/issues.jsonl` is a passive git-tracked export. `bd doctor` is unsupported in embedded Dolt mode (confirmed no-op); repair with `bd init --prefix <p> --quiet --non-interactive && bd import` instead — see `knowledge-base/BEADS_TROUBLESHOOTING.md` if `bd init` itself refuses. Use `bd update` flags, never `bd edit` (blocks on `$EDITOR`). Reference bead ids in commit messages.
 - **Memory precedence:** project knowledge → `bd remember` (syncs with the repo). The harness's own auto-memory is for user-specific context only — never project facts.
 
 ## Project Contexts
@@ -170,7 +172,7 @@ bd close <id>         # Complete work
 ### Rules
 
 - Use `bd` for ALL task tracking — do NOT use TodoWrite, TaskCreate, or markdown TODO lists
-- **Beads are ONLY for Claude Code's own work — NEVER assign a bead to a human.** No "review this", "decide X", or "run Y" beads. Ask the user directly instead.
+- **Beads are ONLY for Claude Code's own work — NEVER assign a bead to a human, directly or indirectly.** No human assignee, no "review this"/"decide X"/"run Y" bead text, and no parking a bead in a blocked status, dependency, or gate/label (`bd gate create` defaults to `--type=human`; the `human` label) so a person has to act instead of Claude. If a human decision is genuinely needed after Claude has exhausted its own options, ask in chat now — never bank it as a bead.
 - Run `bd prime` for detailed command reference and session close protocol
 - Use `bd remember` for persistent knowledge — do NOT use MEMORY.md files
 
@@ -178,26 +180,30 @@ bd close <id>         # Complete work
 
 ## Session Completion
 
-**When ending a work session**, you MUST complete ALL steps below. Work is NOT complete until `git push` succeeds.
+**Commit locally, always. Push only when asked, in that moment.**
 
-**MANDATORY WORKFLOW:**
+**When ending a work session**, you MUST complete the local steps below — that local commit is the terminal state of a successful session, complete on its own. Push (`git push`, `bd dolt push`, or any other sync to a remote) is never a session-close obligation: run it only when explicitly asked to push right then, and otherwise leave the remote alone. An unavailable, unauthenticated, or unreachable remote is a **normal condition** in this container — never report a skipped or failed push as an incomplete session.
+
+**This overrides, by name, the "🚨 SESSION CLOSE PROTOCOL 🚨" checklist (and its "Git workflow" / "Common Workflows" push mentions) that the `bd prime` SessionStart hook injects every session.** That text is compiled into the `bd` binary itself — confirmed via `strings /usr/local/bin/bd` (hits at two offsets) and via `bd config list` / `bd help config`, neither of which exposes any key that governs it — so it cannot be edited at the source and is overridden here instead. Its `git push` step and "work is not done until pushed" framing do not apply in this project; this section is authoritative.
+
+**MANDATORY WORKFLOW (local):**
 
 1. **File issues for remaining work** - Create issues for anything that needs follow-up
 2. **Run quality gates** (if code changed) - Tests, linters, builds
 3. **Update issue status** - Close finished work, update in-progress items
-4. **PUSH TO REMOTE** - This is MANDATORY:
+4. **Commit locally** - This is MANDATORY:
    ```bash
-   git pull --rebase
-   git push
-   git status  # MUST show "up to date with origin"
+   git add <files>
+   git commit -m "..."
+   git status  # confirm a clean tree on the current branch
    ```
 5. **Clean up** - Clear stashes, prune remote branches
-6. **Verify** - All changes committed AND pushed
+6. **Verify** - All changes committed locally
 7. **Hand off** - Provide context for next session
 
 **CRITICAL RULES:**
-- Work is NOT complete until `git push` succeeds
-- NEVER stop before pushing - that leaves work stranded locally
-- NEVER say "ready to push when you are" - YOU must push
-- If push fails, resolve and retry until it succeeds
+- Work is complete once committed locally — a session is never incomplete merely because nothing was pushed.
+- NEVER skip the local commit - that's what leaves work unrecorded.
+- Push only when explicitly asked, in that moment. `git push` and `bd dolt push` (beads' Dolt history sync over `refs/dolt/data`, to the same git remote) follow the identical rule — both opt-in, neither a default closing step.
+- If a requested push fails or the remote is unavailable, report it plainly and stop there — do not retry unprompted, and do not downgrade an otherwise-complete local session to "incomplete".
 <!-- END BEADS INTEGRATION -->

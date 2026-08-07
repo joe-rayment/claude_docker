@@ -103,6 +103,61 @@ if ! command -v git &> /dev/null; then
     exit 1
 fi
 
+# Helper: pull a torn-down project's most recent beads snapshot back in.
+# Called from bootstrap_repo(), and parameterized ($1 project dir, $2 project
+# name) so it can also be exercised directly under test.
+#
+# Automatic and unprompted when the project side has no .beads/issues.jsonl of
+# its own yet — that's unambiguous (nothing here to lose), and "resume this
+# same project" is the whole point of the snapshot. The entrypoint's
+# ensure_beads() rebuilds the Dolt DB from the restored JSONL on first
+# container start (case B: issues.jsonl present, live DB reports zero issues
+# → bd init --prefix then bd import; NOT bd doctor --fix --yes, which is
+# unsupported in embedded Dolt mode).
+#
+# If the project already has its own issues.jsonl (e.g. a fresh git clone
+# that came with a git-tracked one), blindly overwriting it with a possibly
+# older snapshot would be destructive-feeling, so that case keeps a
+# confirmation — defaulting to NOT overwriting when unattended (non-
+# interactive shell), never to a silent yes.
+restore_beads_snapshot() {
+    local project_dir="$1" project_name="$2"
+    local state_root latest_snapshot
+    state_root="$HOME/.claude-dev-state/$project_name"
+    [ -d "$state_root" ] || return 0
+    latest_snapshot=$(ls -1 "$state_root" 2>/dev/null | sort -r | head -1)
+    [ -n "$latest_snapshot" ] && [ -f "$state_root/$latest_snapshot/issues.jsonl" ] || return 0
+
+    local _do_restore=true
+    if [ -f "$project_dir/.beads/issues.jsonl" ]; then
+        echo ""
+        echo -e "${C_YELLOW}⚲${C_RESET}  Found previous beads snapshot from ${C_BOLD}$latest_snapshot${C_RESET}, but this project already has beads data."
+        if [ -t 0 ]; then
+            echo -n "   Overwrite with the snapshot? [y/N] "
+            read -r _reply
+            [[ "$_reply" =~ ^[Yy]$ ]] || _do_restore=false
+        else
+            echo -e "   ${C_YELLOW}Non-interactive session — keeping existing beads data, skipping restore.${C_RESET}"
+            _do_restore=false
+        fi
+    fi
+    $_do_restore || return 0
+
+    echo ""
+    echo -e "${C_YELLOW}⚲${C_RESET}  Restoring beads snapshot from ${C_BOLD}$latest_snapshot${C_RESET}"
+    mkdir -p "$project_dir/.beads"
+    cp "$state_root/$latest_snapshot/issues.jsonl" "$project_dir/.beads/" 2>/dev/null || true
+    [ -f "$state_root/$latest_snapshot/metadata.json" ] && \
+        cp "$state_root/$latest_snapshot/metadata.json" "$project_dir/.beads/" 2>/dev/null || true
+    # bd init requires a .git/ in the workspace; create one so the entrypoint
+    # can rebuild Dolt from the restored JSONL. This re-creates the nested
+    # .git/ that --teardown removed — same trade-off as the initial dev session.
+    if ! git -C "$project_dir" rev-parse --git-dir >/dev/null 2>&1; then
+        git -C "$project_dir" init --quiet 2>/dev/null || true
+    fi
+    echo -e "${C_GREEN}✓${C_RESET} Beads snapshot restored — Dolt DB rebuilds on first container start"
+}
+
 # Helper: first-time bootstrap — clone the upstream repo. Project identity
 # variables (PROJECT_NAME, CONTAINER_NAME, VOLUME_NAME, IMAGE_TAG, HOST_HOME)
 # are populated by derive_project_vars before this runs.
@@ -160,33 +215,8 @@ bootstrap_repo() {
     # Create drops directory on host for file sharing
     mkdir -p "$HOME/claude-drops"
 
-    # Resume: if a previous teardown left a beads snapshot for this project, offer to restore.
-    # The entrypoint's ensure_beads() will rebuild the Dolt DB from the restored JSONL on
-    # first container start (case B: .beads/ present, Dolt empty → bd doctor --fix --yes).
-    local state_root latest_snapshot
-    state_root="$HOME/.claude-dev-state/$PROJECT_NAME"
-    if [ -d "$state_root" ]; then
-        latest_snapshot=$(ls -1 "$state_root" 2>/dev/null | sort -r | head -1)
-        if [ -n "$latest_snapshot" ] && [ -f "$state_root/$latest_snapshot/issues.jsonl" ]; then
-            echo ""
-            echo -e "${C_YELLOW}⚲${C_RESET}  Found previous beads snapshot from ${C_BOLD}$latest_snapshot${C_RESET}"
-            echo -n "   Restore beads state for this project? [Y/n] "
-            read -r _reply
-            if [[ ! "$_reply" =~ ^[Nn]$ ]]; then
-                mkdir -p "$SCRIPT_DIR/.beads"
-                cp "$state_root/$latest_snapshot/issues.jsonl" "$SCRIPT_DIR/.beads/" 2>/dev/null || true
-                [ -f "$state_root/$latest_snapshot/metadata.json" ] && \
-                    cp "$state_root/$latest_snapshot/metadata.json" "$SCRIPT_DIR/.beads/" 2>/dev/null || true
-                # bd init requires a .git/ in the workspace; create one so the entrypoint
-                # can rebuild Dolt from the restored JSONL. This re-creates the nested
-                # .git/ that --teardown removed — same trade-off as the initial dev session.
-                if ! git -C "$SCRIPT_DIR" rev-parse --git-dir >/dev/null 2>&1; then
-                    git -C "$SCRIPT_DIR" init --quiet 2>/dev/null || true
-                fi
-                echo -e "${C_GREEN}✓${C_RESET} Beads snapshot restored — Dolt DB rebuilds on first container start"
-            fi
-        fi
-    fi
+    # Resume: pull a previous teardown's beads snapshot back in.
+    restore_beads_snapshot "$SCRIPT_DIR" "$PROJECT_NAME"
 
     echo ""
     echo -e "${C_GREEN}✓ Bootstrap complete${C_RESET} — continuing with first launch..."
@@ -634,10 +664,13 @@ cmd_teardown() {
     timestamp=$(date +%Y%m%d-%H%M%S)
     backup_dir="$HOME/.claude-dev-state/$PROJECT_NAME/$timestamp"
 
-    # Flush latest beads state to JSONL while container is still alive
+    # Flush latest beads state to JSONL while container is still alive. `bd export`
+    # with no -o writes to stdout only and never touches the file — the -o flag here
+    # is load-bearing, not cosmetic; without it this step is a silent no-op and the
+    # backup below relies entirely on bd's throttled (up to 60s lag) auto-export.
     if [ -d "$SCRIPT_DIR/.beads" ] && is_running; then
         echo -e "${C_YELLOW}→${C_RESET} Flushing beads state to JSONL..."
-        docker exec "$CONTAINER_NAME" sh -c 'cd /workspace && bd export 2>/dev/null' || true
+        docker exec "$CONTAINER_NAME" sh -c 'cd /workspace && bd export -o .beads/issues.jsonl --quiet 2>/dev/null' || true
     fi
 
     # Back up beads JSONL + metadata (Dolt DB lives in the volume and rebuilds from JSONL)

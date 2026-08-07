@@ -110,12 +110,11 @@ if command -v bd &>/dev/null && command -v dolt &>/dev/null; then
         # Beads is configured (embedded Dolt — no server to start). Check status.
         bead_count=$(cd /workspace && bd list --format count 2>/dev/null)
         bead_count="${bead_count:-0}"  # empty means 0 issues
-        # If bead_count is non-numeric, the database may be missing — try auto-repair
-        if ! [ "$bead_count" -ge 0 ] 2>/dev/null; then
-            (cd /workspace && bd doctor --fix --yes) &>/dev/null 2>&1 || true
-            bead_count=$(cd /workspace && bd list --format count 2>/dev/null)
-            bead_count="${bead_count:-0}"
-        fi
+        # bd doctor --fix --yes is unsupported in embedded Dolt mode (confirmed
+        # no-op) so it is not used here. entrypoint.sh's ensure_beads() already
+        # self-heals a broken/empty DB at container start; a count still
+        # non-numeric here means that didn't resolve it, so surface the error
+        # below rather than retrying the same repair inline.
         if [ "$bead_count" -gt 0 ] 2>/dev/null; then
             echo -e "  ${C_GREEN}[✓]${C_RESET} Beads: ${bead_count} issues tracked"
             BEADS_OK=true
@@ -123,7 +122,7 @@ if command -v bd &>/dev/null && command -v dolt &>/dev/null; then
             echo -e "  ${C_GREEN}[✓]${C_RESET} Beads: Initialized"
             BEADS_OK=true
         else
-            echo -e "  ${C_YELLOW}[!]${C_RESET} Beads: Database error — run ${C_BOLD}menu${C_RESET} option 3 to repair"
+            echo -e "  ${C_YELLOW}[!]${C_RESET} Beads: Database error — run ${C_BOLD}menu${C_RESET} option 3 to repair, or see ${C_BOLD}knowledge-base/BEADS_TROUBLESHOOTING.md${C_RESET}"
             BEADS_OK=false
         fi
     else

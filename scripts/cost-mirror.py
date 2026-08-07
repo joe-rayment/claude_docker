@@ -44,6 +44,70 @@ lifetime.json (LIFETIME_VERSION 2 -> 3): both persisted stores held
 counts inflated by the bug and had no record of which message.id
 contributed what, so there was no way to retroactively fix them in place.
 
+De-dup ring eviction (bd-zjb, added 2026-08-06): the dedup ring above is
+capped at DEDUP_RING (8) entries per file, on the assumption that a group's
+rows are contiguous enough that 8 OTHER distinct message.ids never
+intervene between two rows of the same group. Nothing enforced that
+assumption: once >=8 other ids arrived, the ring silently evicted the
+earlier entry, and that mid's next row was then indistinguishable from an
+untracked id's genuine first row -- counted in full a second time, doubling
+in/cache-r/cache-w for that response (reproduced with a synthetic fixture:
+8 intervening ids inflates a session from $5.00 to $10; 7 does not — see
+tests/tier-hooks.bats). Evicted mids now move into a second, larger,
+separately-bounded set (fstate["dd_evicted"], capped at DEDUP_EVICTED_RING)
+that _dedup_seen also checks — a hit there still suppresses re-adding
+in/cache-r/cache-w, at the cost of no longer knowing that mid's prior
+running-max output (a small, bounded imprecision confined to output alone;
+see _DEDUP_EVICTED and scan_file). This did NOT bump STATE_VERSION: unlike
+the fix above, an old fstate simply has no "dd_evicted" key yet, which
+`.setdefault` treats as empty and starts populating correctly from the next
+scan onward — there is no stored-but-wrongly-shaped data to invalidate, only
+(unrecoverable, same as any bug before its fix) already-summed historical
+totals from any eviction that already happened.
+
+De-dup promoted to per-SESSION (bd-6vy, added 2026-08-07): the ring above
+was scoped per FILE (files_state[path] in scan_session, one independent
+"dd"/"dd_evicted" pair per scanned file), so a message.id appearing in TWO
+files of the same session -- e.g. an isSidechain:true row inline in the
+main transcript AND a full row in a co-located subagents/agent-x.jsonl,
+both carrying the same response's message.id -- was invisible to each
+other's ring and got counted in full in each file, doubling in/cache-r/
+cache-w for that one response. scan_session now creates ONE dedup ring per
+session, homed in the main transcript's own fstate entry
+(files_state[tp]) -- tp already uniquely keys one session within
+files_state in both hook mode (one files_state per session) and --report
+--all (one flat files_state shared across every session on disk, see
+run_report_all), so reusing it as the dedup home needs no new bound of its
+own: same DEDUP_RING/DEDUP_EVICTED_RING caps as before, just counting
+message.ids from every file in the session instead of one file at a time.
+scan_file takes an explicit dedup_state argument now (defaulting to its
+own fstate for any hypothetical single-file caller); scan_session passes
+the SAME main-transcript fstate as dedup_state to every file it scans --
+main transcript included -- so first-seen-wins regardless of which file a
+mid's first row happens to land in. This did NOT bump STATE_VERSION either
+by the same reasoning as bd-zjb above: a subagent file's fstate simply
+stops accumulating its own "dd"/"dd_evicted" going forward (nothing reads
+those keys off a non-main path), and any already-scanned "dd"/"dd_evicted"
+sitting on an old subagent-path entry is just inert dead weight, never
+consulted again.
+Two accepted corners, both already the file's stated failure posture
+(bounded imprecision over unbounded growth or a crash) rather than new
+ones: (1) fstate.clear() on a truncated/rotated file (see scan_file) wipes
+whichever fstate it's called on. A truncated SUBAGENT file wipes only that
+file's own off/agg/bagg; the session ring (on the main transcript's
+fstate) is untouched, so the subagent's re-scanned rows now look like
+already-seen mids and get suppressed -- a bounded undercount, where the
+old per-file design would have recounted them correctly. A truncated MAIN
+transcript wipes the ring itself, so the session degrades to this same
+bug's pre-fix behaviour until the ring repopulates. (2) the shared ring's
+DEDUP_RING(8)/DEDUP_EVICTED_RING(512) capacity is now spent across ALL of
+a session's files rather than one, so a main-transcript mid can push a
+subagent group's live-ring entry out (impossible when rings were
+per-file) one incremental boundary earlier than before; the failure mode
+is exactly the already-accepted dd_evicted output-only imprecision above,
+not a new one, so the existing bounds are left unchanged rather than
+enlarged.
+
 Nested subagents (added 2026-07-31): workflow-spawned agents land one
 directory deeper than a plain subagent spawn — subagents/workflows/
 <wf_id>/agent-*.jsonl — which the old single-level subagents/*.jsonl glob
@@ -68,6 +132,63 @@ literal string "worker" (summarise_tokens, session_delegation_savings,
 render_report) now treats "not main" as the worker test instead, so a
 per-role row is never silently dropped from the "workers:" hook clause,
 the delegation-savings sum, or the report table.
+
+Cost-sorted rows (bd-cro, added 2026-08-06): render_report's per-side rows
+used to sort by -(out + cr) -- token VOLUME, descending. Volume is a poor
+stand-in for money: a large haiku row would rank above a small fable row
+despite costing a fraction as much, which is backwards for a report whose
+whole point is "where did the spend go". Rows within each side now sort by
+the row's own REAL DOLLAR COST (the exact figure the "actual $" column
+shows, via cost() computed once per row and reused for both the sort key
+and the column -- never recomputed), descending, tiebroken by model id
+ascending so the output is byte-identical across repeated runs on identical
+input regardless of dict insertion order (proven directly in
+tests/tier-hooks.bats: two --report runs on the same transcript diffed to
+nothing). This was one of two candidate definitions of "most expensive":
+real dollars spent (usage-dependent, changes as spend accrues) vs. unit-
+PRICE rank (fable > opus > sonnet > haiku, stable regardless of usage).
+Dollars spent is what this implements, because a cost report's job is to
+say what actually cost money, not what a model's list price ranks as. Side
+grouping ("main" first, then each worker/worker:<role> alphabetically --
+see "Per-role attribution" above) is UNCHANGED, and cost sort applies only
+WITHIN a side: a flat cost-ordered table was considered and rejected, since
+it would bury e.g. a cheap "main" row under a pile of pricier worker rows
+and lose exactly the structural "where did this happen" read the side
+column exists to give. Unpriced/off-ladder models (rates_for() -> None,
+cost() -> 0.0) need no special-casing: $0.00 is already the minimum any row
+can sort to under descending-cost order, so they fall out at the BOTTOM of
+their side on their own, already marked separately by the label's trailing
+"?".
+
+Model-in-name spawns (bd-8ty, added 2026-08-06): the live subagent panel
+can now name a spawn "<role>-<model-slug>" (e.g. "executor-sonnet-5",
+"scout-haiku-4-5" -- see the naming convention in
+config/claude-user-memory.md) so the bound tier is visible without cross-
+referencing this report. This lands the slug in the SAME place a plain
+`name` always has -- the sidecar's agentType -- with the true role still in
+customAgentType (e.g. {"agentType": "executor-sonnet-5", "customAgentType":
+"executor"}), which _agent_label already reads in preference to agentType;
+verified directly against LIVE sidecars this convention already produced in
+this container ({"agentType": "verifier-opus-5-resume", "customAgentType":
+"verifier", ...}) and pinned in tests/tier-hooks.bats, a model-bearing name
+does NOT fragment or undercount its role -- it still folds into plain
+"worker:<role>". The model itself is deliberately NOT duplicated into the
+side label: column 2 ("model") already carries it per row (see scan_file's
+per-"side|model" aggregation key), so repeating it in the label would be
+redundant, and the side column's width (18, sized for "worker:<role>")
+would truncate a role+model string like "worker:executor:sonnet-5" and lose
+information the model column shows in full. Where the two surfaces
+disagree, the live panel wins (per the bead) -- it does, by construction,
+since the panel name is a separate string entirely and this table's column
+layout is untouched by it. Separately: verifier/oracle are bound `model:
+inherit` in their frontmatter, but the "model" this table shows is never
+that config string -- it's message.model off the actual transcript row,
+i.e. the concrete model the API resolved "inherit" to at runtime (e.g.
+"claude-opus-5" when the session's orchestrator runs Opus) -- so a
+worker:verifier/worker:oracle row already displays the real resolved model
+and never the literal word "inherit", with no code change needed here
+(verified against this container's own live worker:verifier row, and
+pinned in tests/tier-hooks.bats).
 
 Delegation-only savings: "saved" means spend that would not have happened
 without delegating to a cheaper WORKER model — never spend saved by running
@@ -261,9 +382,36 @@ COUNTER_KEYS = ("in", "out", "cr", "w5", "w1")
 
 # De-dup ring size for scan_file's per-message.id state (see _dedup_seen/
 # _dedup_note below): duplicate rows sharing a message.id are contiguous in
-# a transcript, so a short ring is enough to survive an incremental scan
-# boundary landing inside a group without growing state unboundedly.
+# the OVERWHELMING common case, so a short ring is enough to survive an
+# incremental scan boundary landing inside a group without growing state
+# unboundedly.
 DEDUP_RING = 8
+
+# bd-zjb (2026-08-06): DEDUP_RING bounds the LIVE ring -- the one
+# _dedup_seen can still return a numeric running-max output from -- but a
+# mid can fall off that ring while its group is still open (>=DEDUP_RING
+# OTHER distinct ids arriving between two rows of the same group; reproduced
+# with a synthetic fixture, see tests/tier-hooks.bats). Before this fix,
+# eviction was SILENT: the next row for that mid looked exactly like an
+# untracked id's first row and got counted in full a second time, doubling
+# in/cache-r/cache-w for that response (output too, to a lesser degree --
+# see scan_file). Evicted ids now move into a second, separately-bounded set
+# (fstate["dd_evicted"]) that _dedup_seen also checks -- see _dedup_note.
+# DEDUP_EVICTED_RING is deliberately much larger than DEDUP_RING: it only
+# holds bare ids (no per-id counters, so it's cheap), and requiring this
+# many MORE distinct ids on top of DEDUP_RING's own 8 before a mid falls out
+# of dd_evicted TOO makes the residual gap vanishingly unlikely in any real
+# transcript, without ever growing persisted state unboundedly with session
+# length (satisfies the same "bounded" constraint DEDUP_RING was chosen
+# for). One bound, shared by the hook's persisted incremental state and
+# --report's throwaway single-scan state alike -- see scan_file.
+DEDUP_EVICTED_RING = 512
+
+# _dedup_seen's sentinel for "mid was seen before, but its live-ring entry
+# was evicted" (see DEDUP_EVICTED_RING above) -- distinct from None (never
+# seen at all) and from a real running-max output value, which is never
+# negative.
+_DEDUP_EVICTED = -1
 
 # Tier-epoch bucketing (see "Delegation-only savings" in the module
 # docstring): main-loop and worker rows are grouped into BUCKET_SECONDS-wide
@@ -389,38 +537,68 @@ def detect_billing_mode():
 
 def _dedup_seen(fstate, mid):
     """The highest output_tokens recorded so far for message.id `mid` in
-    this file's persisted dedup ring, or None if `mid` hasn't been seen —
-    i.e. this is the first row of a new content-block group."""
+    this file's persisted dedup ring; _DEDUP_EVICTED if `mid` WAS seen but
+    its ring entry has since been evicted (see _dedup_note), so its prior
+    running-max output is no longer known; or None if `mid` hasn't been
+    seen at all -- i.e. this is the first row of a new content-block
+    group."""
     for entry in fstate.get("dd", ()):
         if entry[0] == mid:
             return entry[1]
+    if mid in fstate.get("dd_evicted", ()):
+        return _DEDUP_EVICTED
     return None
 
 
 def _dedup_note(fstate, mid, out):
     """Record/update the running-max output_tokens seen for message.id
     `mid`, in a ring capped at DEDUP_RING entries (oldest dropped first --
-    duplicate rows for one message.id are contiguous, so a short ring
-    survives an incremental scan boundary landing inside a group without
-    growing state unboundedly). Persisted as plain lists (not tuples) in
-    fstate so it survives a JSON round-trip through the state file."""
+    duplicate rows for one message.id are contiguous in the OVERWHELMING
+    common case, so a short ring survives an incremental scan boundary
+    landing inside a group without growing state unboundedly). Persisted as
+    plain lists (not tuples) in fstate so it survives a JSON round-trip
+    through the state file.
+
+    bd-zjb: an entry evicted here used to vanish without a trace -- its
+    mid's next row then looked exactly like an untracked id's first row,
+    silently double-counting in/cache-r/cache-w (see DEDUP_EVICTED_RING).
+    Evicted mids are now carried forward into fstate["dd_evicted"] (a set of
+    bare ids, no counters) instead, itself capped at DEDUP_EVICTED_RING for
+    the same "don't grow state unboundedly" reason DEDUP_RING exists."""
     dd = fstate.setdefault("dd", [])
     for entry in dd:
         if entry[0] == mid:
             entry[1] = max(entry[1], out)
             return
     dd.append([mid, out])
+    overflow = dd[:-DEDUP_RING]  # entries about to fall off the live ring
+    if overflow:
+        evicted = fstate.setdefault("dd_evicted", [])
+        for entry in overflow:
+            if entry[0] not in evicted:
+                evicted.append(entry[0])
+        del evicted[:-DEDUP_EVICTED_RING]
     del dd[:-DEDUP_RING]
 
 
-def scan_file(path, assume_worker, fstate, worker_label="worker"):
+def scan_file(path, assume_worker, fstate, worker_label="worker", dedup_state=None):
     """Add tokens from lines appended since the recorded offset.
 
     worker_label is the "side" bucket used for a row that IS a worker row
     (assume_worker=True, or row["isSidechain"] for a sidechain row embedded
     in the main transcript) — bare "worker" by default, or "worker:<role>"
     for a per-role-labelled subagent transcript (see _agent_label /
-    scan_session). It never affects "main" rows."""
+    scan_session). It never affects "main" rows.
+
+    dedup_state is the dict whose "dd"/"dd_evicted" keys _dedup_seen/
+    _dedup_note read and write — bd-6vy: SESSION-scoped (the main
+    transcript's own fstate, shared across every file scan_session scans
+    for that session) rather than necessarily `fstate` itself (this file's
+    own off/agg/bagg bookkeeping), so a message.id landing in two different
+    files of the same session still dedupes. Defaults to `fstate` when
+    omitted, for a hypothetical single-file caller with no session to
+    share a ring with; scan_session always passes one explicitly now."""
+    dedup_state = fstate if dedup_state is None else dedup_state
     try:
         size = os.path.getsize(path)
     except OSError:
@@ -472,13 +650,35 @@ def scan_file(path, assume_worker, fstate, worker_label="worker"):
         # count only the marginal (non-cumulative) increase in out, and
         # zero the rest. A row with no message.id (e.g. hand-crafted test
         # fixtures) is never deduped -- counted in full, as before.
+        #
+        # bd-zjb: _dedup_seen can also report _DEDUP_EVICTED -- mid WAS
+        # seen, but its live-ring entry fell off before this row arrived
+        # (see _dedup_note / DEDUP_EVICTED_RING). That's still a later row
+        # of an already-counted group, so in/cache-r/cache-w must NOT be
+        # re-added here either -- that re-adding was the bug. Its prior
+        # running-max output is gone, though, so this row's own output is
+        # counted in full rather than marginally: a small, bounded overcount
+        # confined to output alone (a minority of real spend -- cache-read
+        # dominates, see the module docstring), traded for eliminating the
+        # unbounded in/cache-r/cache-w overcount this replaces. mid is NOT
+        # re-armed in the live ring here, so a third row of the same group
+        # is still treated as evicted rather than as a fresh first row.
+        #
+        # bd-6vy: dedup_state (not necessarily this file's own fstate) is
+        # SESSION-scoped -- see scan_session -- so a mid first seen in
+        # ANOTHER file of this session (e.g. an isSidechain row in the main
+        # transcript, deduped here against a subagent file's copy of the
+        # same response) is already caught by the seen-is-not-None branches
+        # below, not just a repeat within this one file.
         mid = msg.get("id")
         if mid:
-            seen = _dedup_seen(fstate, mid)
+            seen = _dedup_seen(dedup_state, mid)
             if seen is None:
-                _dedup_note(fstate, mid, delta_out)
+                _dedup_note(dedup_state, mid, delta_out)
+            elif seen == _DEDUP_EVICTED:
+                delta_in = delta_cr = delta_w5 = delta_w1 = 0
             else:
-                _dedup_note(fstate, mid, max(seen, delta_out))
+                _dedup_note(dedup_state, mid, max(seen, delta_out))
                 delta_out = max(0, delta_out - seen)
                 delta_in = delta_cr = delta_w5 = delta_w1 = 0
         ts = _parse_ts(row.get("timestamp"))
@@ -527,12 +727,20 @@ def scan_session(tp, files_state):
 
     Each subagent transcript gets its own per-role "side" label from
     _agent_label (its co-located sidecar), rather than the bare "worker"
-    every subagent row used to share — see the module docstring."""
-    scan_file(tp, False, files_state.setdefault(tp, {}))
+    every subagent row used to share — see the module docstring.
+
+    bd-6vy: every file scanned here shares ONE de-dup ring for the whole
+    session, homed in the main transcript's own files_state[tp] entry (tp
+    uniquely keys this session even in --report --all's flat, cross-
+    session files_state — see the module docstring) — so a message.id
+    appearing in more than one of this session's files (main transcript
+    included) is only ever counted once, not once per file."""
+    main_fstate = files_state.setdefault(tp, {})
+    scan_file(tp, False, main_fstate, dedup_state=main_fstate)
     subdir = os.path.join(os.path.splitext(tp)[0], "subagents")
     pattern = os.path.join(subdir, "**", "*.jsonl")
     for sub in sorted(glob.glob(pattern, recursive=True)):
-        scan_file(sub, True, files_state.setdefault(sub, {}), _agent_label(sub))
+        scan_file(sub, True, files_state.setdefault(sub, {}), _agent_label(sub), dedup_state=main_fstate)
 
 
 def aggregate_total(files_state):
@@ -1304,13 +1512,42 @@ def render_report(tp, total, billing_mode="api", billing_detail="", pricing=None
     # "main" first, then every other side seen (plain "worker" and each
     # "worker:<role>" — see _agent_label), alphabetical among themselves so
     # the table's row order is stable run to run rather than dict order.
+    # This grouping is a different axis from cost (WHERE the spend happened
+    # structurally) and is kept even though rows are now cost-sorted WITHIN
+    # each side (see bd-cro below) — collapsing to one flat cost-ordered
+    # table was considered and rejected, since it would bury e.g. a cheap
+    # "main" row under a pile of pricier worker rows and lose exactly the
+    # structural "where did this happen" read the side column exists to give.
     sides = ["main"] + sorted({k.split("|", 1)[0] for k in total} - {"main"})
     for side in sides:
         rows = [(k.split("|", 1)[1], v) for k, v in total.items() if k.split("|", 1)[0] == side]
-        rows.sort(key=lambda r: -(r[1]["out"] + r[1]["cr"]))
-        for model, c in rows:
-            rates = rates_for(model)
-            actual = cost(c, rates)
+        # bd-cro: order by the row's REAL DOLLAR COST (the exact figure the
+        # "actual $" column below shows), most expensive first — not the old
+        # `-(out + cr)` token-volume key. Volume is a poor stand-in for
+        # money: a large haiku row would rank above a small fable row despite
+        # costing a fraction as much, which is backwards for a report whose
+        # whole point is "where did the spend go". Two candidate definitions
+        # of "most expensive" were considered: real dollars spent (usage-
+        # dependent — order can shift as spend accrues) vs. unit-PRICE rank
+        # (fable > opus > sonnet > haiku — stable regardless of usage). This
+        # implements dollars spent, since a cost report's job is to say what
+        # actually cost money, not what a model's list price ranks as.
+        # rates_for()/cost() are computed ONCE per row here and the result
+        # reused below for the "actual $" column — never recomputed.
+        # Unpriced/off-ladder models (rates_for() -> None, cost() -> 0.0)
+        # need no special-casing: $0.00 is already the minimum any row can
+        # sort to under descending-cost order, so they fall out at the
+        # BOTTOM of their side on their own, already marked separately by
+        # the label's trailing "?" below. Ties (unpriced rows among
+        # themselves, or any genuine equal-cost rows) break on model id
+        # ascending, so output is byte-identical across repeated runs on the
+        # same input regardless of dict/insertion order (see
+        # tests/tier-hooks.bats: two --report runs on one transcript diffed
+        # to nothing).
+        priced = [(model, c, rates_for(model)) for model, c in rows]
+        priced = [(model, c, rates, cost(c, rates)) for model, c, rates in priced]
+        priced.sort(key=lambda row: (-row[3], row[0]))
+        for model, c, rates, actual in priced:
             pr = pricing.get(f"{side}|{model}", {"actual": actual, "at_epoch": actual})
             at_top = pr["at_epoch"]
             saved = at_top - actual

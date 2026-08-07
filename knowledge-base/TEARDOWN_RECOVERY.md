@@ -27,12 +27,12 @@ Re-run the bootstrap in the same directory:
 gh api repos/joe-rayment/claude_docker/contents/bootstrap.sh -H "Accept: application/vnd.github.raw" | bash
 ```
 
-It detects the snapshot under `~/.claude-dev-state/<project>/` and offers to restore beads. The embedded Dolt database rebuilds from the restored `issues.jsonl` on first container start — no manual import needed.
+It detects the snapshot under `~/.claude-dev-state/<project>/` and restores it automatically, with no prompt — the project has no `.beads/issues.jsonl` of its own at this point (teardown removed it), so there is nothing to lose. A confirmation appears only in the ambiguous case, when the project already has its own `issues.jsonl` (e.g. a fresh clone that came with one); non-interactively that case defaults to keeping the existing data rather than overwriting. The embedded Dolt database rebuilds from the restored `issues.jsonl` on first container start — no manual import needed.
 
 ## Gotchas
 
 | Symptom | Fix |
 |---------|-----|
 | Snapshot not offered on resume | Check `~/.claude-dev-state/<project>/` exists on the host; restore manually by copying `issues.jsonl` into `/workspace/.beads/` before first start |
-| Beads empty after restore | Run `bd doctor --fix --yes` to force a rebuild from JSONL |
+| Beads empty after restore | Run `bd init --prefix <p> --quiet --non-interactive && bd import` to force a rebuild from JSONL (`bd doctor` is unsupported in embedded mode); if `bd init` refuses ("already initialized"), `rm -rf .beads/embeddeddolt` first — see knowledge-base/BEADS_TROUBLESHOOTING.md |
 | Parent repo still blocks `git add` | A nested `.git/` survived — confirm teardown ran from the template subdir, remove leftover `.git/` manually |
