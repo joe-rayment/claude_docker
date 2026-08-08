@@ -525,6 +525,18 @@ make_reinit_repo() {
 #   flag-VALUE quote/escape concatenation (--labels
 #     hu\man / --labels "hu""man")                        -> OUT-OF-SCOPE (pinned)
 #
+# The row below is the ONLY entry in this table running the opposite
+# direction from every other one: every row above is the guard FAILING TO
+# BLOCK something live (a bypass); this row is the guard BLOCKING something
+# INERT (a false positive, beads_claude_docker-egc -- see KNOWN FALSE
+# POSITIVES in bd-guard.sh for the full decision record, including why the
+# two more-ambitious options were rejected on empirical, not argued,
+# grounds).
+#   multi-line inline text (heredoc-carried or not) whose
+#     embedded EXAMPLE of a bd invocation starts its own
+#     line, e.g. a git commit message documenting bd-guard's
+#     own behavior                                          -> KNOWN FALSE POSITIVE (pinned)
+#
 # CORRECTION (beads_claude_docker-vgr round 2): the "bash -c/sh -c/zsh -c
 # 'PAYLOAD' -> BLOCKED (recurse)" line above, stated with NO qualification,
 # was FALSE for several real, verifier-confirmed shapes -- all fixed in this
@@ -1988,5 +2000,142 @@ done'
     # cannot run `echo` to see that a real shell would evaluate it to
     # exactly `human`, so the rule's exact-match check never fires.
     run_guard 'bd gate create --blocks bd-1 --type "`echo human`"'
+    [ "$status" -eq 0 ]
+}
+
+# =============================================================================
+# KNOWN FALSE POSITIVE (pinned): multi-line inline text mistaken for command
+# position (beads_claude_docker-egc). See the KNOWN FALSE POSITIVES section in
+# scripts/bd-guard.sh for the full decision record and root cause.
+#
+# These run the OPPOSITE direction from every "OUT-OF-SCOPE (pinned)" test
+# above: those assert status 0 on text that genuinely EXECUTES (a bypass this
+# file accepts not catching); the tests below assert status 2 on text that is
+# genuinely INERT (a false positive this file accepts producing instead of
+# fixing). Do not "fix" these by making them pass -- see the bead and the
+# script comment for why the two more-ambitious options were rejected.
+#
+# Non-vacuity (mutation proof, beads_claude_docker-egc): a standalone harness
+# (not part of this suite -- it shells out to a second script, which bats
+# tests do not) modeled the REJECTED "teach the scanner that a quoted
+# heredoc delimiter makes its body inert" option in its naive form: pipe the
+# command through a preprocessor that unconditionally blanks the body of any
+# `<<'DELIM'`/`<<"DELIM"` heredoc -- regex
+# `(<<(['"])(\w+)\2\n)(.*?\n)(\3)(\n|$)` blanked to group 1+5+6 -- with no
+# regard for what consumes it, THEN hands the result to this unmodified
+# script. Result (REAL = this script unmodified, MUTANT = through the naive
+# preprocessor first):
+#   git commit -m "$(cat <<'EOF' ...)"   (test below)     REAL 2  MUTANT 0
+#   git commit -F - <<'EOF' ... EOF      (test below)     REAL 2  MUTANT 0
+#   plain multi-line -m, no heredoc      (test below)     REAL 2  MUTANT 2
+#   bash <<'EOF' ... EOF (live-executing, boundary test)  REAL 2  MUTANT 0
+#   bash <<EOF ... EOF (live-executing, boundary test)    REAL 2  MUTANT 2
+#   git commit -F <file> (workaround control)             REAL 0  MUTANT 0
+# Two of the three KNOWN FALSE POSITIVE tests below (the heredoc-carried
+# ones) flip from BLOCKED to ALLOWED under the mutant, proving they are
+# sensitive to real scanner behavior, not vacuous. The third (plain
+# multi-line -m, no heredoc at all) does NOT flip -- expected, since a
+# heredoc-only fix was never going to reach it either, which is itself part
+# of why option 1 was rejected as incomplete even before considering safety.
+# The actual safety argument is the fourth row: the "bash <<'EOF'" boundary
+# true-positive test ALSO flips from BLOCKED to ALLOWED under the same
+# mutant, empirically reproducing the exact bypass ("a mis-parsed heredoc
+# that swallows live text") the bead warns is worse than the false positive
+# being documented here. The unquoted-delimiter boundary test and the
+# file-based workaround control are unaffected either way, as expected (the
+# mutant's regex only matches quoted delimiters, and the workaround has no
+# heredoc at all).
+# =============================================================================
+
+@test "KNOWN FALSE POSITIVE (pinned): git commit -m \"\$(cat <<'EOF' ...)\" documenting an assignee example is wrongly blocked" {
+    # The heredoc delimiter is quoted, so the shell performs NO expansion on
+    # its body at all -- the body is handed to `cat` as pure data, `cat`
+    # copies it verbatim to its stdout, and $(...) captures that literal text
+    # (including the string "bd create x -a joe") as the -m value. Confirmed
+    # empirically (fake `bd` on PATH, real shell): `bd` is never invoked and
+    # the literal example text lands unchanged in the resulting commit
+    # message. This hook still blocks it: per-line `^` matching (see the
+    # KNOWN FALSE POSITIVES comment) treats "bd create x -a joe" as sitting
+    # at command position because it starts its own line, and the assignee
+    # extraction then reads the whole command for -a/--assignee, unscoped.
+    run_guard 'git commit -m "$(cat <<'"'"'EOF'"'"'
+docs: bd-guard example
+
+Example that must stay blocked:
+bd create x -a joe
+EOF
+)"'
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"NEVER assigned to a human"* ]]
+}
+
+@test "KNOWN FALSE POSITIVE (pinned): git commit -F - <<'EOF' ... EOF documenting an assignee example is wrongly blocked" {
+    # Same class, simpler shape: the heredoc feeds git's own stdin directly
+    # (no \$(...) substitution, no -m/-d/-r flag in sight at all), so the
+    # masked_cmd fallback (option 3's target) never even runs on this text --
+    # direct evidence that narrowing it cannot fix this class.
+    run_guard 'git commit -F - <<'"'"'EOF'"'"'
+docs: bd-guard example
+
+Example that must stay blocked:
+bd create x -a joe
+EOF'
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"NEVER assigned to a human"* ]]
+}
+
+@test "KNOWN FALSE POSITIVE (pinned): a plain multi-line -m value with NO heredoc anywhere is wrongly blocked too" {
+    # Proves the false-positive class is wider than heredocs: a single
+    # double-quoted -m argument whose content simply spans three lines (no
+    # <<, no \$(...)) reproduces the identical block, because masked_cmd's
+    # sed-based masking cannot see a quoted span that crosses a line
+    # boundary in the first place -- so "teach the scanner about heredocs"
+    # would not even fully close this class on its own.
+    run_guard 'git commit -m "docs: bd-guard example
+
+bd create x -a joe
+"'
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"NEVER assigned to a human"* ]]
+}
+
+# --- Boundary true positives: the SAME per-line mechanism above must still --
+# --- catch a heredoc that genuinely executes -- these are not regression ---
+# --- risk for option 2 (nothing changed), but pin the boundary so a FUTURE -
+# --- attempt at option 1 has an immediate, obvious failure signal instead --
+# --- of silently reopening a live bypass. -----------------------------------
+
+@test "bd-guard: bash <<'EOF' ... EOF (quoted delimiter, live-executing heredoc) still blocks" {
+    # Unlike the KNOWN FALSE POSITIVE tests above, this heredoc's consumer is
+    # bash itself: bash reads its own stdin and executes it as a script, so
+    # despite the quoted delimiter (no expansion inside the body), the body
+    # genuinely runs. Confirmed empirically (fake `bd` on PATH, real shell):
+    # `bd create x -a joe` is actually invoked. A "quoted heredoc body is
+    # inert" fix applied unconditionally would wrongly allow this.
+    run_guard 'bash <<'"'"'EOF'"'"'
+bd create x -a joe
+EOF'
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"NEVER assigned to a human"* ]]
+}
+
+@test "bd-guard: bash <<EOF ... EOF (unquoted delimiter, live-executing heredoc) still blocks" {
+    # Sibling of the quoted case above with an unquoted delimiter (both
+    # expansion-active AND live-executing) -- confirms the guard's accidental
+    # per-line catch is unaffected by delimiter quoting either way.
+    run_guard 'bash <<EOF
+bd create x -a joe
+EOF'
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"NEVER assigned to a human"* ]]
+}
+
+@test "bd-guard: the documented workaround (git commit -F <file>) passes -- file content is the existing out-of-scope class" {
+    # The escape hatch named in the KNOWN FALSE POSITIVES comment: writing
+    # the text to a file and passing the file (rather than a heredoc/-m/-F -)
+    # requires no guard change at all, because file CONTENT is already
+    # out-of-scope (see the --body-file/--design-file pins above). This
+    # command string contains no bd invocation of any kind, quoted or not.
+    run_guard 'git commit -F /tmp/bd-guard-egc-workaround-msg.txt'
     [ "$status" -eq 0 ]
 }

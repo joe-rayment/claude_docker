@@ -361,6 +361,115 @@
 # wrapper-argument stripping is closed allowlists, not general argument
 # parsing.
 #
+# KNOWN FALSE POSITIVES (accepted, not bugs — the mirror image of KNOWN
+# LIMITATIONS above: this is the guard BLOCKING something that is actually
+# safe, not failing to block something that isn't. The ten classes above are
+# never REACHED by the recursion/normalization; the one class below IS
+# reached, and mis-scanned). Decided deliberately among three options after
+# this was hit while filing the fix for beads_claude_docker-j72 itself (see
+# beads_claude_docker-egc for the full decision record), pinned in
+# tests/bd-guard.bats:
+#   - multi-line inline text — heredoc-carried or not — whose embedded
+#     EXAMPLE of a bd invocation starts its own line: a `git commit` whose
+#     MESSAGE documented a command-substitution example containing an
+#     assignee flag was hard-blocked, with no override, because the
+#     assignee rule is hard by design. Root cause is two ordinary
+#     mechanisms compounding, neither one heredoc-specific: (1) every
+#     command-position anchor in this file — `(^|[;&|(){])` for the
+#     top-level/assignee checks, `(^|[[:space:]{(])` for the segment-scoped
+#     label-add/gate-create/human checks — includes `^`, and grep/sed
+#     process a multi-line string ONE LINE AT A TIME by default (no -z, no
+#     N), so `^` matches the START OF EVERY LINE, not just the start of the
+#     whole command — deliberate and desired for the general case (it's
+#     exactly what lets the round-4 keyword-strip fix above catch a real
+#     `do\nbd create x -a joe\ndone`, and it is EXACTLY as correct to catch
+#     a real, live-executing `bash <<'EOF'` / `bash <<EOF` heredoc whose
+#     body genuinely runs once bash reads it from its own stdin — confirmed
+#     with a fake `bd` on PATH through a real shell: the body executes
+#     regardless of whether the delimiter is quoted, since quoting only
+#     suppresses expansion WITHIN the heredoc, never whether the consuming
+#     command treats its content as code); (2) this file has no model of
+#     heredoc — or any other multi-line value — syntax at all, so text that
+#     is genuinely inert (literal prose in a commit message or a bead field,
+#     handed to a data-consuming command like `cat`/`tee`/`git commit -F
+#     -`/a plain `VAR=$(...)` assignment rather than an interpreter) gets
+#     the exact same per-line treatment as real multi-line shell syntax the
+#     instant one of its lines happens to start with `bd <verb>`. Once that
+#     anchor fires anywhere in the text, the assignee extraction — unscoped,
+#     not segment-limited like the label/gate/human rules — reads the whole
+#     $masked_cmd for `-a`/`--assignee`, so an inert documentation line like
+#     `bd create x -a joe` inside a heredoc-built commit message trips the
+#     same hard rule a live one would.
+#
+#     Three options were weighed per the bead's own acceptance criteria; two
+#     were rejected on EMPIRICAL grounds, not by argument — this file's own
+#     standing lesson, after two masking regressions in a row (see the
+#     CORRECTED / MIRROR-IMAGE REGRESSION paragraphs above), is to never
+#     settle a quoting question by reasoning alone:
+#       - "teach the scanner that a quoted heredoc delimiter makes its body
+#         inert" (the seemingly-correct fix) is actually UNSOUND, not just
+#         complex: a quoted delimiter (`<<'EOF'`, `<<"EOF"`, `<<\EOF`)
+#         suppresses only shell EXPANSION inside the body, never whether the
+#         body EXECUTES — that depends entirely on what consumes it, an
+#         open-ended classification (bash/sh/zsh/dash/ash/ksh/eval/source vs.
+#         cat/tee/git commit -F -/a plain assignment) layered on top of the
+#         delimiter-parsing itself (`<<-` tab-stripping — cmd_tabs above
+#         already folds tabs to spaces before any rule runs, which destroys
+#         exactly the leading-tab evidence a `<<-` closing-line check would
+#         need; quoted vs. unquoted vs. backslash-quoted delimiters; a
+#         delimiter string reappearing inside the body; multiple/back-to-
+#         back heredocs on one command). Confirmed empirically: `bash
+#         <<'EOF'` with `bd create x -a joe` as its body has a QUOTED
+#         delimiter, yet a fake-`bd`-on-PATH probe through a real shell
+#         shows the body genuinely runs — and this exact shape is ALREADY
+#         correctly blocked today by the accidental per-line mechanism
+#         above. A mutation probe that unconditionally blanks quoted-
+#         heredoc bodies (modeling this option done the naive way) fixes
+#         the two heredoc-carried false positives pinned in
+#         tests/bd-guard.bats but ALSO flips this live-executing case from
+#         blocked to silently allowed — exactly the
+#         "mis-parsed heredoc that swallows live text" the bead ranks worse
+#         than the inconvenience being fixed. A correct version would
+#         additionally need the consumer classification above, a second,
+#         materially different and open-ended parsing problem, not a
+#         refinement of the first.
+#       - "narrow the substitution fall-back so it only applies where a real
+#         expansion context is established" does not even reach the
+#         reported class: that fall-back is the masked_cmd `$`/backtick
+#         raw-scan-instead-of-mask decision (see the CORRECTED / MIRROR-
+#         IMAGE REGRESSION paragraphs above), which only ever engages for a
+#         quoted VALUE of -d/-r/-m/--description/etc. The reproduced false
+#         positive fires with no such flag in sight at all (`git commit -F -
+#         <<'EOF' ... EOF`, piping the heredoc straight in as the commit
+#         body) — masked_cmd never runs on it, so narrowing that fall-back
+#         cannot touch this class. (Confirmed the false-positive class is
+#         wider still: a PLAIN multi-line `-m "..."` argument with no
+#         heredoc anywhere — the quotes opened on one line and closed two
+#         lines later — reproduces the identical block, since masked_cmd's
+#         sed-based masking can't see a quoted span that crosses a line
+#         boundary in the first place. Closing that would mean restructuring
+#         this scanner to operate on a joined multi-line buffer instead of
+#         per line, a still-larger change than heredoc parsing, and one that
+#         would also have to preserve the round-4 multi-line `do`/keyword
+#         catch above.)
+#     Decision: accept as a residual FALSE POSITIVE (leave the behavior) —
+#     the safer of the three per the bead's own instruction to implement
+#     safely rather than ambitiously, and because masking is the highest-
+#     risk mechanism in this file (both prior masking changes, made in the
+#     j72 session, regressed — see above). Workaround, stated explicitly so
+#     it is discoverable: write the text to a FILE and pass the file, e.g. `git
+#     commit -F /path/to/message.txt` instead of `-m "$(cat <<'EOF' ...)"`
+#     or a bare `<<'EOF'` piped into `-F -` — this works today with NO guard
+#     change, because file CONTENT is the already-documented out-of-scope
+#     indirection class (--body-file/--design-file/-f/--graph/--stdin
+#     above). BD_GUARD_ALLOW=1 does NOT help here: the rule that fires
+#     (assignee, and potentially the human-label rule the same way) is HARD
+#     by design and has no override. This also partially undercuts the
+#     beads_claude_docker-vgr acceptance criterion that filing a bead whose
+#     own text quotes a prohibited flag must remain possible: true for plain
+#     prose, false once that prose is ALSO multi-line with the flag-shaped
+#     text starting its own line.
+#
 # Contract: reads the Claude Code hook JSON on stdin; exit 0 = allow,
 # exit 2 = block (stderr is fed back to the model).
 # POSIX sh (dash) clean; uses GNU grep/sed -E (the container's) — `\b` is a GNU
