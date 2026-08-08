@@ -71,6 +71,26 @@ _bd_total() {
     (cd "$PROJ" && bd status --json) 2>/dev/null | jq -r '.summary.total_issues // 0'
 }
 
+# $1 = project dir -> prints its embeddeddolt db subdir. Discovered by
+# listing rather than assumed from --prefix: bd sanitizes prefixes that
+# don't start with a letter, so the two are not always identical.
+_dolt_dir_for() {
+    find "$1/.beads/embeddeddolt" -mindepth 1 -maxdepth 1 -type d | head -1
+}
+
+# Any bd write is followed by a THROTTLED auto-export (default 60s,
+# .beads/export-state.json tracks the last one). Backdate it so the very
+# next bd call in a test is unconditionally past the throttle --
+# deterministic, and avoids a real 60s+ sleep per test. This is what makes
+# beads_claude_docker-2fd's delete-on-empty-table behavior reproducible on
+# demand instead of only intermittently, depending on wall-clock luck.
+_backdate_export_state() {
+    local f="$1/.beads/export-state.json"
+    [ -f "$f" ] || return 0
+    jq '.timestamp = (now - 300 | strftime("%Y-%m-%dT%H:%M:%S.000000000Z"))' "$f" > "$f.tmp" \
+        && mv "$f.tmp" "$f"
+}
+
 @test "sandbox isolation holds: ensure_beads against a throwaway dir reports 0, not 100" {
     git -C "$PROJ" init --quiet
     ensure_beads "$PROJ"
@@ -169,6 +189,168 @@ _bd_total() {
     "$BATS_TEST_TMPDIR/run-restore.sh" "$BATS_TEST_TMPDIR/launcher-functions.sh" "$PROJ" "$project_name" < /dev/null
 
     [ "$(md5sum "$PROJ/.beads/issues.jsonl" | cut -d' ' -f1)" = "$existing_md5" ]
+}
+
+@test "beads_claude_docker-2fd: a zero-importable export that bd itself would delete survives ensure_beads via the safety copy" {
+    git -C "$PROJ" init --quiet
+    ensure_beads "$PROJ"
+    (cd "$PROJ" && bd create "Open issue" --quiet)
+    id2=$(cd "$PROJ" && bd create "In progress issue" --json | jq -r '.id')
+    id3=$(cd "$PROJ" && bd create "Closed issue" --json | jq -r '.id')
+    (cd "$PROJ" && bd update "$id2" --claim --quiet)
+    (cd "$PROJ" && bd close "$id3" --reason "done" --quiet)
+    (cd "$PROJ" && bd export -o .beads/issues.jsonl --quiet)
+
+    # Corrupt the LIVE DB directly with dolt sql (never via bd, which would
+    # heal the fixture instead of building it): empty the issues table so
+    # bd status's own auto-import/auto-export cycle -- not our repair -- is
+    # what's under test.
+    local dbdir; dbdir=$(_dolt_dir_for "$PROJ")
+    ( cd "$dbdir" \
+      && dolt sql -q "delete from issue_snapshots" \
+      && dolt sql -q "delete from events" \
+      && dolt sql -q "delete from comments" \
+      && dolt sql -q "delete from dependencies" \
+      && dolt sql -q "delete from labels" \
+      && dolt sql -q "delete from issues" )
+
+    # A syntactically-valid JSONL line that is not an issue (a memory
+    # record) -- parses cleanly but yields zero importable ISSUE records.
+    printf '{"_type":"memory","content":"unrelated note","id":"mem-1"}\n' > "$PROJ/.beads/issues.jsonl"
+    _backdate_export_state "$PROJ"
+
+    local before_md5
+    before_md5=$(md5sum "$PROJ/.beads/issues.jsonl" | cut -d' ' -f1)
+
+    ensure_beads "$PROJ"
+
+    # HARD CONSTRAINT: issues.jsonl must never be deleted. Nothing was
+    # recoverable in this fixture (DB and export both empty of real
+    # issues), so the only correct outcome is the export preserved
+    # byte-for-byte -- not fabricated, not gone.
+    [ -f "$PROJ/.beads/issues.jsonl" ]
+    local after_md5
+    after_md5=$(md5sum "$PROJ/.beads/issues.jsonl" | cut -d' ' -f1)
+    [ "$before_md5" = "$after_md5" ]
+}
+
+@test "beads_claude_docker-cx8: reachable double-failure (embeddeddolt present, issue_prefix missing) is repaired by removing embeddeddolt and retrying" {
+    git -C "$PROJ" init --quiet
+    ensure_beads "$PROJ"
+    (cd "$PROJ" && bd create "Will be wiped" --quiet)
+    (cd "$PROJ" && bd export -o .beads/issues.jsonl --quiet)
+
+    # Corrupt the LIVE DB directly with dolt sql: drop issue_prefix AND
+    # empty the issues table, so the plain init+import repair pair is
+    # reachable (total 0) and BOTH halves genuinely fail against it (init:
+    # "already initialized"; import: "issue_prefix config is missing").
+    local dbdir; dbdir=$(_dolt_dir_for "$PROJ")
+    ( cd "$dbdir" \
+      && dolt sql -q "delete from config where \`key\`='issue_prefix'" \
+      && dolt sql -q "delete from issue_snapshots" \
+      && dolt sql -q "delete from events" \
+      && dolt sql -q "delete from comments" \
+      && dolt sql -q "delete from dependencies" \
+      && dolt sql -q "delete from labels" \
+      && dolt sql -q "delete from issues" )
+
+    # Syntactically valid but missing the required "title" field -- yields
+    # zero importable issues, same as the 2fd shape above (bd status's own
+    # auto-export can delete this file too; ensure_beads's safety copy
+    # restores it before bd import runs). With issue_prefix already gone
+    # and embeddeddolt/ already present, that restored-but-still-unimportable
+    # file is what lets bd import get far enough to hit the real
+    # issue_prefix failure this bead is about, after bd init has already
+    # refused with "already initialized".
+    printf '{"_type":"issue","id":"cx8fix-xxx","status":"open"}\n' > "$PROJ/.beads/issues.jsonl"
+    _backdate_export_state "$PROJ"
+
+    local before_md5
+    before_md5=$(md5sum "$PROJ/.beads/issues.jsonl" | cut -d' ' -f1)
+
+    ensure_beads "$PROJ"
+
+    # issues.jsonl must never be deleted -- nothing was recoverable in this
+    # fixture either (DB emptied, export has zero importable issues), so it
+    # must survive byte-for-byte.
+    [ -f "$PROJ/.beads/issues.jsonl" ]
+    local after_md5
+    after_md5=$(md5sum "$PROJ/.beads/issues.jsonl" | cut -d' ' -f1)
+    [ "$before_md5" = "$after_md5" ]
+
+    # The write path must actually be fixed, not just "didn't crash": both
+    # embeddeddolt/ (recreated) and a working bd create prove the escalation
+    # ran and succeeded.
+    [ -d "$PROJ/.beads/embeddeddolt" ]
+    (cd "$PROJ" && bd create "post-repair write-path probe" --quiet)
+}
+
+@test "beads_claude_docker-a2s: data-intact but issue_prefix missing is not 'healthy' -- write path fixed and live-ahead data not rolled back" {
+    git -C "$PROJ" init --quiet
+    ensure_beads "$PROJ"
+    (cd "$PROJ" && bd create "Issue present in stale export" --quiet)
+    (cd "$PROJ" && bd export -o .beads/issues.jsonl --quiet)   # export BEFORE the rest -> deliberately stale
+    (cd "$PROJ" && bd create "Issue missing from stale export" --quiet)
+    id3=$(cd "$PROJ" && bd create "Closed issue missing from stale export" --json | jq -r '.id')
+    (cd "$PROJ" && bd close "$id3" --reason "done" --quiet)
+
+    local ground_truth="$BATS_TEST_TMPDIR/a2s-ground-truth.txt"
+    (cd "$PROJ" && bd list --all --flat) > "$ground_truth"
+    [ "$(_bd_total)" = "3" ]
+
+    # Corrupt the write path directly (never via bd, which would heal it):
+    # remove the issue_prefix config row while leaving all 3 real issues
+    # (incl. the closed one) untouched in the live DB, and leave the
+    # on-disk export deliberately stale (1 issue, not 3) -- a live DB
+    # legitimately ahead of its last export.
+    local dbdir; dbdir=$(_dolt_dir_for "$PROJ")
+    ( cd "$dbdir" && dolt sql -q "delete from config where \`key\`='issue_prefix'" )
+    _backdate_export_state "$PROJ"
+
+    # A count-only health check would call this healthy right here: the
+    # table still reports 3. It is not -- the write path is broken.
+    [ "$(_bd_total)" = "3" ]
+    run bash -c "cd '$PROJ' && bd create 'should fail before the fix' --quiet"
+    [ "$status" -ne 0 ]
+
+    ensure_beads "$PROJ"
+
+    # issues.jsonl must never be deleted, and by now it legitimately gets
+    # REWRITTEN (the on-disk copy was stale) -- assert correctness via the
+    # actual issue list (incl. the closed issue), not a byte checksum.
+    [ -s "$PROJ/.beads/issues.jsonl" ]
+    diff "$ground_truth" <(cd "$PROJ" && bd list --all --flat)
+
+    # The write path must actually be fixed, not just the count.
+    (cd "$PROJ" && bd create "post-repair write-path probe" --quiet)
+}
+
+@test "the embeddeddolt-removal escalation never fires on a healthy database" {
+    git -C "$PROJ" init --quiet
+    ensure_beads "$PROJ"
+    (cd "$PROJ" && bd create "Real issue" --quiet)
+    (cd "$PROJ" && bd export -o .beads/issues.jsonl --quiet)
+
+    # A sentinel planted inside embeddeddolt/ is direct, mtime-independent
+    # proof the destructive `rm -rf` never ran: dolt's own commit machinery
+    # touches files it manages, but it will never touch this one.
+    local dbdir; dbdir=$(_dolt_dir_for "$PROJ")
+    touch "$dbdir/SENTINEL_MUST_SURVIVE"
+
+    local before_md5
+    before_md5=$(md5sum "$PROJ/.beads/issues.jsonl" | cut -d' ' -f1)
+
+    ensure_beads "$PROJ"
+    ensure_beads "$PROJ"   # twice, matching the existing idempotency test
+
+    [ -f "$dbdir/SENTINEL_MUST_SURVIVE" ]
+    [ "$(_bd_total)" = "1" ]
+
+    # On the healthy no-op path, ensure_beads only ever copies issues.jsonl
+    # aside and deletes the copy -- the live file must be byte-identical.
+    local after_md5
+    after_md5=$(md5sum "$PROJ/.beads/issues.jsonl" | cut -d' ' -f1)
+    [ "$before_md5" = "$after_md5" ]
 }
 
 @test "ensure_beads's rebuild path never calls read (no prompt possible)" {

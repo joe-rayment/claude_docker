@@ -205,7 +205,11 @@ fi
 #
 # Beads agent memory — single entry point covering three scenarios:
 #   (A) fresh project, no .beads/ at all        → bd init + bd hooks install
-#   (B) .beads/issues.jsonl carries issues but the live Dolt DB reports zero
+#   (B) .beads/issues.jsonl carries issues but the live Dolt DB reports zero,
+#       OR the DB reports issues but its write path is broken (issue_prefix
+#       config missing — bd status's count doesn't read that config, so a
+#       count-only health check can call this "healthy" while bd create/bd
+#       import stay silently broken forever: beads_claude_docker-a2s)
 #       (a teardown/resume snapshot restore may drop in only issues.jsonl —
 #       no config.yaml/embeddeddolt/metadata.json come with it)
 #       → bd init --prefix (idempotent: refuses safely with a non-zero exit
@@ -213,8 +217,28 @@ fi
 #         issues.jsonl — see `bd help init-safety`), then bd import (upsert
 #         from issues.jsonl). NOT bd doctor --fix --yes: that subcommand is
 #         unsupported in embedded Dolt mode and is a confirmed silent no-op.
-#   (C) healthy (DB already reports issues, or is a legitimately empty
-#       already-initialized project) → no-op, silent
+#       If BOTH calls fail with embeddeddolt/ present and issue_prefix still
+#       missing afterward, that's a reachable double-failure
+#       (beads_claude_docker-cx8): remove embeddeddolt/ and retry the same
+#       pair once, exporting the live DB first so a database that's ahead of
+#       a stale on-disk export is never silently rolled back.
+#   (C) healthy (DB already reports issues AND issue_prefix is configured,
+#       or is a legitimately empty already-initialized project) → no-op,
+#       silent
+#
+# Throughout (B), issues.jsonl is copied aside before any bd command touches
+# this dir and restored immediately if a call wipes it out from under us:
+# `bd status --json` — the very first bd call in (B) — silently DELETES a
+# non-empty issues.jsonl when the issues table is empty and the export
+# yields zero importable issue records, whether from a memory-only export,
+# a missing required field (e.g. "title"), or a hard parse error/truncated
+# mid-record line (beads_claude_docker-2fd). Empirically, the delete is
+# gated behind bd's own throttled auto-export (default 60s since the last
+# recorded export in .beads/export-state.json): well within the window bd
+# just logs a warning and leaves the file alone, but once the throttle has
+# elapsed the next such call deletes it regardless of which of the above
+# shapes caused the zero-record result — so this safeguard is unconditional
+# rather than pattern-matched to one shape.
 detect_beads_prefix() {
     local dir="${1:-/workspace}"
     local prefix remote
@@ -235,6 +259,28 @@ seed_beads_memories() {
         || dev-log error "bd remember seed failed during entrypoint" "starter memory not stored" 2>/dev/null || true
     (cd "$dir" && bd remember "Code changes must be tested in realistic settings, including running the actual program and taking screenshots.") 2>/dev/null \
         || dev-log error "bd remember seed failed during entrypoint" "starter memory not stored" 2>/dev/null || true
+}
+
+# Restore issues.jsonl from its pre-repair safety copy if a bd command wiped
+# it out from under us (beads_claude_docker-2fd). No-op when there's no
+# usable copy to restore from, or the live file is already present.
+_beads_restore_export_if_missing() {
+    local dir="$1" safety_copy="$2"
+    [ -n "$safety_copy" ] && [ -s "$safety_copy" ] || return 0
+    [ -s "$dir/.beads/issues.jsonl" ] && return 0
+    cp "$safety_copy" "$dir/.beads/issues.jsonl" 2>/dev/null || true
+}
+
+# Read-only probe for the write path's actual dependency
+# (beads_claude_docker-a2s): `bd status --json`'s issue count does not
+# require issue_prefix to be configured, so a database can report a healthy
+# non-zero count while bd create/bd import are broken ("issue_prefix config
+# is missing"). `bd config get` never mutates anything, and degrades safely
+# (empty stdout, non-zero exit) when there's no database at all yet. Echoes
+# the configured prefix, or an empty string if unset/unreadable.
+_beads_issue_prefix() {
+    local dir="$1"
+    (cd "$dir" && bd config get issue_prefix --json) 2>/dev/null | jq -r '.value // ""' 2>/dev/null || printf ''
 }
 
 # $1 (optional): project directory, defaults to /workspace. Parameterized so
@@ -262,17 +308,42 @@ ensure_beads() {
     fi
 
     # (B) or (C): .beads/ exists. Trigger repair on the thing that actually
-    # matters — issues.jsonl carries data but the live DB reports none — NOT
-    # on metadata.json presence (that file is unrelated project-identity
+    # matters — issues.jsonl carries data but the live DB reports none, or
+    # the write path is broken even though the count looks fine — NOT on
+    # metadata.json presence (that file is unrelated project-identity
     # metadata — dolt backend/project_id — not an issue count or health
     # signal, and a snapshot restore may legitimately omit it). An empty or
     # missing issues.jsonl alongside an empty DB is just a fresh,
     # legitimately-empty project: no-op.
     [ -s "$dir/.beads/issues.jsonl" ] || return 0
+
+    # SAFEGUARD (beads_claude_docker-2fd): snapshot issues.jsonl outside
+    # .beads/ before any bd command below runs. See the comment above
+    # detect_beads_prefix for exactly what this protects against. Every
+    # step past this point restores from the copy immediately if the live
+    # file goes missing, so the export can never end up permanently lost —
+    # even in the "nothing left to rebuild from" case.
+    local safety_copy=""
+    safety_copy=$(mktemp "${TMPDIR:-/tmp}/beads-issues-safety.XXXXXX" 2>/dev/null) || safety_copy=""
+    if [ -n "$safety_copy" ]; then
+        cp "$dir/.beads/issues.jsonl" "$safety_copy" 2>/dev/null || safety_copy=""
+    fi
+
+    # HEALTH (beads_claude_docker-a2s): a non-zero issue count alone is not
+    # "healthy" — require both the count AND the write path's config.
     local total
-    total=$( (cd "$dir" && bd status --json) 2>/dev/null | jq -r '.summary.total_issues // 0' 2>/dev/null)
+    total=$( (cd "$dir" && bd status --json) 2>/dev/null | jq -r '.summary.total_issues // 0' 2>/dev/null || echo 0)
     [ -z "$total" ] && total=0
-    [ "$total" != "0" ] && return 0  # (C) healthy — DB already has issues
+    _beads_restore_export_if_missing "$dir" "$safety_copy"
+
+    local prefix_val
+    prefix_val=$(_beads_issue_prefix "$dir")
+    _beads_restore_export_if_missing "$dir" "$safety_copy"
+
+    if [ "$total" != "0" ] && [ -n "$prefix_val" ]; then
+        rm -f "$safety_copy" 2>/dev/null || true
+        return 0   # (C) healthy — DB has issues AND the write path works
+    fi
 
     # (B) repair: (re)establish the Dolt workspace, then pull issues.jsonl
     # in. Both calls are safe to run unconditionally, even against a DB that
@@ -284,11 +355,69 @@ ensure_beads() {
     #     non-zero ("nothing to commit"), a harmless, expected no-op.
     local prefix
     prefix=$(detect_beads_prefix "$dir")
-    (cd "$dir" && bd init --prefix "$prefix" --quiet --non-interactive) 2>/dev/null || true
-    (cd "$dir" && bd import) 2>/dev/null || true
+    # init_rc/import_rc capture the real exit codes for the escalation guard
+    # below WITHOUT tripping `set -e` (entrypoint.sh runs under it): `bd
+    # init` failing with "already initialized" is the ordinary, expected
+    # case whenever embeddeddolt/ already exists, not an error to abort on,
+    # so the failing command must stay on the LEFT of `||` — never bare on
+    # its own line — or the whole script would exit right here.
+    local init_rc=0 import_rc=0
+    (cd "$dir" && bd init --prefix "$prefix" --quiet --non-interactive) 2>/dev/null || init_rc=$?
+    _beads_restore_export_if_missing "$dir" "$safety_copy"
+    (cd "$dir" && bd import) 2>/dev/null || import_rc=$?
+    _beads_restore_export_if_missing "$dir" "$safety_copy"
 
-    total=$( (cd "$dir" && bd status --json) 2>/dev/null | jq -r '.summary.total_issues // 0' 2>/dev/null)
+    # ESCALATION (beads_claude_docker-cx8): the reachable double-failure.
+    # When embeddeddolt/ already exists but its issue_prefix config row is
+    # gone, `bd init` refuses ("already initialized") and `bd import` also
+    # fails ("issue_prefix config is missing") — both halves above fail.
+    # Recovery needs one more step: remove embeddeddolt/ and retry the same
+    # init+import pair. Guarded narrowly on the exact proven signature so
+    # this can never fire against a DB that is merely healthy (already
+    # returned above) or merely empty-but-correctly-initialized
+    # (prefix_after would be non-empty there, and a legitimately-empty
+    # project's issues.jsonl typically wouldn't even exist to pass the -s
+    # gate above): both calls above must have failed, AND the read-only
+    # probe must confirm issue_prefix is STILL missing after them, AND
+    # embeddeddolt must actually exist to remove.
+    if [ "$init_rc" != "0" ] && [ "$import_rc" != "0" ] && [ -d "$dir/.beads/embeddeddolt" ]; then
+        local prefix_after
+        prefix_after=$(_beads_issue_prefix "$dir")
+        if [ -z "$prefix_after" ]; then
+            dev-log error "ensure_beads: embeddeddolt present but issue_prefix missing after init+import; removing embeddeddolt and rebuilding" 2>/dev/null || true
+
+            # A live DB can legitimately be AHEAD of a stale on-disk
+            # issues.jsonl (bd's own auto-export is throttled, so a recent
+            # `bd create` can be missing from the last export). `bd export`
+            # is read-only and works even in this write-broken state, so
+            # capture the freshest truth before the destructive step below
+            # — and only adopt it if it actually produced data, so a
+            # genuinely-empty DB's 0-issue export can never stomp a
+            # preserved-but-corrupt export (2fd's last-resort copy).
+            local fresh_export
+            fresh_export=$(mktemp "${TMPDIR:-/tmp}/beads-issues-fresh.XXXXXX" 2>/dev/null) || fresh_export=""
+            if [ -n "$fresh_export" ]; then
+                if (cd "$dir" && bd export -o "$fresh_export" --quiet) >/dev/null 2>&1 && [ -s "$fresh_export" ]; then
+                    cp "$fresh_export" "$dir/.beads/issues.jsonl" 2>/dev/null || true
+                    cp "$fresh_export" "$safety_copy" 2>/dev/null || true
+                fi
+                rm -f "$fresh_export" 2>/dev/null || true
+            fi
+
+            rm -rf "$dir/.beads/embeddeddolt" 2>/dev/null || true
+            _beads_restore_export_if_missing "$dir" "$safety_copy"
+            (cd "$dir" && bd init --prefix "$prefix" --quiet --non-interactive) 2>/dev/null || true
+            _beads_restore_export_if_missing "$dir" "$safety_copy"
+            (cd "$dir" && bd import) 2>/dev/null || true
+            _beads_restore_export_if_missing "$dir" "$safety_copy"
+        fi
+    fi
+
+    total=$( (cd "$dir" && bd status --json) 2>/dev/null | jq -r '.summary.total_issues // 0' 2>/dev/null || echo 0)
     [ -z "$total" ] && total=0
+    _beads_restore_export_if_missing "$dir" "$safety_copy"
+    rm -f "$safety_copy" 2>/dev/null || true
+
     if [ "$total" != "0" ]; then
         dev-log run "bd init + bd import" pass "Rebuilt Beads database from issues.jsonl on startup ($total issues)" 2>/dev/null || true
     else
