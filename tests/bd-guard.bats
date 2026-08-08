@@ -1580,3 +1580,206 @@ done'
     run_guard 'command -p bd create x -a joe'
     [ "$status" -eq 0 ]
 }
+
+# --- beads_claude_docker-j72: `bd close`'s documented `done` alias was ------
+# --- missing from the verb alternation (skipping the WHOLE rule engine, not -
+# --- just the close-reason rule), and `bd close`/`bd create` carry several --
+# --- undocumented free-text flag aliases (-m/--message/--resolution/--comment
+# --- /--body) that were unmasked, turning quoted prose that merely MENTIONS
+# --- a prohibited flag into a false-positive block. Probed empirically
+# --- against bd 1.0.4 (ce242a879) in a throwaway sandbox, 2026-08-08 -- see
+# --- the bd-guard.sh comments at the verb alternation and at masked_cmd for
+# --- the full probe writeup. Every ALLOWED-side test below is mutation-proof
+# --- against a pre-edit copy of this script (BD_GUARD_BIN=<pre-edit> flips
+# --- it to BLOCKED); every BLOCKED-side test below is mutation-proof the
+# --- other way (pre-edit ALLOWS it, since `bd done` bypassed the whole engine
+# --- pre-fix). Benign/no-op-safety companions are marked as such and are NOT
+# --- part of the mutation proof (they pass unchanged against both scripts).
+
+@test "bd-guard: bd done <id> -a joe reaches the assignee hard rule (gate no longer skips 'done')" {
+    # bd close/done itself has no --assignee flag (confirmed empirically --
+    # this would never actually succeed against real bd), but the guard's
+    # assignee rule is deliberately verb-blind once the outer gate admits the
+    # command at all, exactly like the existing bare-'--label on update/q'
+    # over-block documented at label_flags_raw -- an occasional harmless
+    # over-block beats a silent bypass. This test is really pinning the
+    # STRUCTURAL fix (the bug's own "any future rule on the close path
+    # inherits the bypass" risk), using the assignee rule as the probe.
+    run_guard 'bd done wp9 -a joe'
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"not an agent identity"* ]]
+}
+
+@test "bd-guard: bd done <id> --reason with residual-work prose is soft-blocked (the reported gap)" {
+    run_guard 'bd done wp9 --reason "the sole residual step is git push, auth-blocked, carried outside the tracker"'
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"follow-up bead"* ]]
+}
+
+@test "bd-guard: bd done <id> --reason with a clean reason passes (benign companion)" {
+    run_guard 'bd done wp9 --reason "Fixed the parser and verified via take-screenshot term"'
+    [ "$status" -eq 0 ]
+}
+
+@test "bd-guard: for ... do bd done \$i --reason <residual prose> ... done still blocks inside a loop" {
+    run_guard 'for i in 1 2; do bd done bd-$i --reason "the sole residual step needs a manual push, carried outside the tracker"; done'
+    [ "$status" -eq 2 ]
+}
+
+@test "bd-guard: BD_GUARD_ALLOW=1 overrides the done-close residual-work soft rule" {
+    run bash -c 'jq -n --arg c "bd done wp9 --reason \"residual step: git push, carried outside the tracker\"" "{tool_input:{command:\$c}}" | BD_GUARD_ALLOW=1 '"$GUARD"' 2>&1'
+    [ "$status" -eq 0 ]
+}
+
+@test "bd-guard: bd close -m \"prose quoting -a joe\" is allowed (hidden -m alias now masked)" {
+    run_guard 'bd close wp9 -m "quoting the prohibited flag -a joe in an example"'
+    [ "$status" -eq 0 ]
+}
+
+@test "bd-guard: bd close --resolution \"prose quoting -a joe\" is allowed (hidden alias now masked)" {
+    run_guard 'bd close wp9 --resolution "quoting the prohibited flag -a joe in an example"'
+    [ "$status" -eq 0 ]
+}
+
+@test "bd-guard: bd close --comment \"prose quoting -a joe\" is allowed (hidden alias now masked)" {
+    run_guard 'bd close wp9 --comment "quoting the prohibited flag -a joe in an example"'
+    [ "$status" -eq 0 ]
+}
+
+@test "bd-guard: bd close --message \"prose quoting -a joe\" is allowed (hidden alias now masked)" {
+    run_guard 'bd close wp9 --message "quoting the prohibited flag -a joe in an example"'
+    [ "$status" -eq 0 ]
+}
+
+@test "bd-guard: bd create -m \"prose quoting -a joe\" is allowed (hidden -m alias now masked)" {
+    run_guard 'bd create x -m "quoting the prohibited flag -a joe in an example"'
+    [ "$status" -eq 0 ]
+}
+
+@test "bd-guard: bd create --body \"prose quoting -a joe\" is allowed (hidden alias now masked)" {
+    run_guard 'bd create x --body "quoting the prohibited flag -a joe in an example"'
+    [ "$status" -eq 0 ]
+}
+
+@test "bd-guard: bd create --message \"prose quoting -a joe\" is allowed (hidden alias now masked)" {
+    run_guard 'bd create x --message "quoting the prohibited flag -a joe in an example"'
+    [ "$status" -eq 0 ]
+}
+
+@test "bd-guard: bd update -m \"prose quoting -a joe\" is allowed (hidden alias now masked)" {
+    run_guard 'bd update wp9 -m "quoting the prohibited flag -a joe in an example"'
+    [ "$status" -eq 0 ]
+}
+
+@test "bd-guard: glued -d\"prose quoting -a joe\" (create, no separator) is allowed (short-flag masking widened)" {
+    run_guard 'bd create x -d"quoting the prohibited flag -a joe in an example"'
+    [ "$status" -eq 0 ]
+}
+
+@test "bd-guard: glued -r\"prose quoting -a joe\" (close, no separator) is allowed (short-flag masking widened)" {
+    run_guard 'bd close wp9 -r"quoting the prohibited flag -a joe in an example"'
+    [ "$status" -eq 0 ]
+}
+
+@test "bd-guard: single-quoted --resolution 'prose quoting -a joe' is allowed (both quote styles masked)" {
+    run_guard "bd close wp9 --resolution 'quoting the prohibited flag -a joe in an example'"
+    [ "$status" -eq 0 ]
+}
+
+# --- P0-style safety net: the widened masking must not swallow a REAL -------
+# --- violation sitting outside the masked field, and must not interfere with
+# --- the unrelated gate --type hard rule. --------------------------------
+
+@test "bd-guard: bd close -m \"clean\" -a joe still blocks on the real, unmasked assignee" {
+    run_guard 'bd close wp9 -m "clean reason" -a joe'
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"not an agent identity"* ]]
+}
+
+@test "bd-guard: masking -m does not interfere with the gate --type hard rule" {
+    run_guard 'bd gate create --blocks bd-1 -m "some prose" --type=human'
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"only a person can close"* ]]
+}
+
+@test "bd-guard: a wrapper-SHAPED example inside the new -m field is not mistaken for a real wrapper" {
+    # Same evasion class as the pinned 'quote-aware masking' tests for -d/-r
+    # (vgr closing slice): a bash -c '...' EXAMPLE sitting inside a now-masked
+    # field's quoted value must not be extracted as a genuine wrapper
+    # candidate and recursed into -- before this fix -m wasn't masked at all,
+    # so this exact string was BLOCKED (the embedded 'bd create x -a joe'
+    # really did get recursed on and hit the assignee rule); now that -m is
+    # masked the wrapper candidate's own head is no longer found in
+    # masked_cmd, so the candidate is discarded before recursion.
+    run_guard "bd close wp9 -m \"see (bash -c 'bd create x -a joe') for the evasion shape\""
+    [ "$status" -eq 0 ]
+}
+
+@test "bd-guard: bd list --label human stays allowed ('list' stays outside the verb gate)" {
+    run_guard 'bd list --label human'
+    [ "$status" -eq 0 ]
+}
+
+@test "bd-guard: ordinary shell (timeout 5 npm test) is unaffected by the widened lists" {
+    run_guard 'timeout 5 npm test'
+    [ "$status" -eq 0 ]
+}
+
+# --- Regression fix (beads_claude_docker-j72): masking must not blank a ----
+# --- LIVE $(...)/backtick substitution inside a masked flag's value --------
+# A double-quoted flag value is not inert: bash actually executes $(...) and
+# backtick substitution found inside double quotes before bd ever sees the
+# result, so masking must leave any span containing either completely
+# unmasked (falling back to the raw-text scan below) instead of blanking it
+# -- blanking hides a REAL nested bd invocation, not inert prose. See the
+# masked_cmd comment in scripts/bd-guard.sh for the full root-cause writeup.
+
+@test "bd-guard: bd create x -m \"\$(bd create y --labels human)\" blocks (live substitution, not masked)" {
+    run_guard 'bd create x -m "$(bd create y --labels human)"'
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"human-facing queue"* ]]
+}
+
+@test "bd-guard: bd create x -d \"\$(bd create y --labels human)\" blocks (pre-existing flag, same class)" {
+    run_guard 'bd create x -d "$(bd create y --labels human)"'
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"human-facing queue"* ]]
+}
+
+@test "bd-guard: bd close wp9 --reason \"\$(bd create y --labels human)\" blocks (live substitution)" {
+    run_guard 'bd close wp9 --reason "$(bd create y --labels human)"'
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"human-facing queue"* ]]
+}
+
+@test "bd-guard: bd create x --notes \"\$(bd create y --labels human)\" blocks (live substitution)" {
+    run_guard 'bd create x --notes "$(bd create y --labels human)"'
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"human-facing queue"* ]]
+}
+
+@test "bd-guard: bd create x -m \"\`bd create y --labels human\`\" blocks (backtick substitution, not masked)" {
+    run_guard 'bd create x -m "`bd create y --labels human`"'
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"human-facing queue"* ]]
+}
+
+# --- Greediness pin: nothing above constrains HOW MUCH of the command a ----
+# --- masked flag's value is allowed to consume -- a mutant that widens -----
+# --- the double-quoted classes to `.*` (greedy, crosses quote boundaries) --
+# --- still passes every test above, since none of them has a SECOND -------
+# --- quoted field after the masked one for a greedy match to swallow into.
+# --- These two do (proved non-vacuous against a synthetic greedy mutant,
+# --- not just the pre-regression copy -- see the bead for the harness).
+
+@test "bd-guard: bd close bd-1 -m \"clean\" -a \"joe\" blocks (greediness pin: -m must not swallow the quoted -a)" {
+    run_guard 'bd close bd-1 -m "clean" -a "joe"'
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"not an agent identity"* ]]
+}
+
+@test "bd-guard: bd create x -m \"clean\" --label \"human\" blocks (greediness pin: -m must not swallow the quoted --label)" {
+    run_guard 'bd create x -m "clean" --label "human"'
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"human-facing queue"* ]]
+}

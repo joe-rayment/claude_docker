@@ -82,16 +82,24 @@
 # case variants for `bd gate create`'s type; and a flag surface at all
 # (`--label`, `--assignee`) on the four positional-only commands (`bd tag`,
 # `bd label add`, `bd label propagate`, `bd assign`), which really do take
-# only positional arguments as documented. Two adjacent gaps were found and
-# are DELIBERATELY left untouched here, since neither is a label/assignee/
-# gate/human routing mechanism and both live on a verb outside this rule
-# block's scope: `bd close` has a `done` alias that IS shown in `bd close
-# --help`'s own Aliases line (unlike --label, not even a --help-vs-reality
-# gap) but is absent from this file's bd-verb alternation everywhere it's
-# used; and `bd close`/`bd create` separately carry several further hidden
-# aliases for --reason/--description (`-m`, `--resolution`, `--comment`).
-# Recorded in the bead notes for a follow-up rather than folded into this
-# slice.
+# only positional arguments as documented. Two adjacent gaps were found here
+# and were, at the time, DELIBERATELY left untouched, since neither is a
+# label/assignee/gate/human routing mechanism and both live on a verb outside
+# this rule block's scope: `bd close` has a `done` alias that IS shown in `bd
+# close --help`'s own Aliases line (unlike --label, not even a --help-vs-
+# reality gap) but was absent from this file's bd-verb alternation everywhere
+# it's used; and `bd close`/`bd create` separately carry several further
+# hidden aliases for --reason/--description (`-m`, `--resolution`,
+# `--comment`). Both are now CLOSED (beads_claude_docker-j72): see the verb
+# alternation below (now includes `done`, at every site including the
+# close-only residual-work-in-prose rule, which needed its own separate fix
+# since it re-anchors on `close` independently of the gate above) and the
+# masked_cmd flag-list comment further down (now includes `-m`/`--message`/
+# `--resolution`/`--comment`/`--body`, plus one more hidden alias the bug
+# report that opened j72 hadn't named — `--message` on create as well as
+# close, and `-m` on `bd update` too — found only by empirically re-probing
+# rather than stopping at the two spellings already reported, per that bead's
+# own root-lesson warning not to trust even a prior finding as complete).
 #
 # Shell-wrapper unwrapping (beads_claude_docker-vgr): a string matcher never
 # sees `bd` inside `bash -c "bd create ... -a joe"` or `eval '...'` — the
@@ -366,7 +374,7 @@ scan_cmd() {
   # exact bypass that loop was added to close. `\bd create` does not need
   # this: the backslash sits BEFORE "bd", not between "bd" and the
   # following space, so it was already found by the unmodified pattern.
-  printf '%s' "$cmd_tabs" | grep -qE "bd['\"]?[[:space:]]+(create|new|update|assign|close|gate|label|tag|q|human|init)" || return 0
+  printf '%s' "$cmd_tabs" | grep -qE "bd['\"]?[[:space:]]+(create|new|update|assign|close|done|gate|label|tag|q|human|init)" || return 0
 
   # Strip command-position noise that would otherwise hide `bd` from the anchors:
   # at the start of the string or right after a ; && || | ( ) separator, remove a
@@ -561,16 +569,111 @@ scan_cmd() {
   # --title has no short form at all. Masking bare -t would let a quoted
   # `bd gate create -t "human"` slip the hard gate-type rule below.
   #
+  # Hidden free-text flag aliases (beads_claude_docker-j72, probed 2026-08-08
+  # against bd 1.0.4 / ce242a879 in a throwaway sandbox -- never this repo's
+  # own .beads): `bd create`/`bd update` accept `-m` and `--message`, and `bd
+  # create` separately accepts `--body`, as fully working, HONOURED aliases
+  # for --description -- none of the three appear in ANY of those commands'
+  # own --help output. `bd close` accepts `-m`, `--message`, `--resolution`
+  # and `--comment` as HONOURED aliases for --reason, same gap. Every one of
+  # these was confirmed by actually running it against a sandbox project and
+  # reading back `bd show --json` (create: .description; close: .close_reason;
+  # update -m: only .description changed, confirmed via a before/after diff),
+  # not inferred from --help or guessed by naming convention -- e.g. plausible
+  # near-misses `--desc`, `--text`, `--note`, `--result`, `--outcome`, and
+  # hidden aliases for --notes/--design/--acceptance/--title (`-n`, `--note`,
+  # `--ac`, `--criteria`, `--name`, `-T`, …) were ALSO tried and confirmed
+  # REJECTED (`Error: unknown flag`/`unknown shorthand flag`), so this list is
+  # not merely "the two spellings the bug report already named" (the bead's
+  # own root-lesson warning) but the actual empirically-closed set. `-m`/
+  # `--message`/`--comment`/`--resolution` were separately confirmed REJECTED
+  # on every OTHER guarded verb this masking list is blind to the identity of
+  # (`tag`, `label add`, `gate create`, `q`, `init`, bare `human`) -- masking
+  # them here can only ever blank quoted prose that was never going to be a
+  # real flag on those verbs anyway, never hide a real one. `bd edit` (an
+  # entirely separate, undocumented-in-the-guard command discovered during
+  # this probe) is NOT in scope here or anywhere in this file: it exposes no
+  # --assignee/--labels/--type and no inline-text flag at all -- every one of
+  # its flags is a bare boolean field SELECTOR that opens $EDITOR, so it can
+  # express none of this file's hard-rule violations and can't be driven
+  # non-interactively from a Bash tool call in the first place.
+  #
+  # Short-flag glued/`=` spellings (beads_claude_docker-j72): bd's flag parser
+  # honors `-d"text"`/`-dtext` and `-r"text"`/`-rtext` (no separator at all,
+  # standard getopt-style shorthand gluing) exactly as it already does for
+  # `-a` (see the assignee extraction above, `-a(=|[[:space:]]+)?` -- the same
+  # precedent, now applied here too), which the ORIGINAL version of this line
+  # missed: it required a literal `=` or whitespace between the short flag and
+  # the opening quote, so a genuine, bd-honoured `-d"ask Joe to decide"` was
+  # never masked at all. The separator is now OPTIONAL for the short flags
+  # (-d, -r, -m) for exactly this reason. Long flags do NOT get the same
+  # treatment: confirmed empirically that bd's parser REJECTS a glued long
+  # flag (`--descriptionGLUED "x"` -> `Error: unknown flag`), so requiring a
+  # real `=`/whitespace separator for the long-flag alternatives is not a gap,
+  # it's what bd itself enforces -- widening it there would only ever mask
+  # text that could never have been that flag's real value.
+  #
   # Only QUOTED values are masked: an unquoted value is shell-split on
   # whitespace into separate argv tokens by construction, so it can never
   # itself smuggle a space-containing flag like `-a joe` as a single word --
   # that class of evasion doesn't exist, so there is nothing to mask there.
-  # An unterminated quote (no matching close) simply fails to match either
-  # pattern below and is left untouched, falling back to the pre-quote-aware
-  # scan of that text -- fail-open by construction (fixes nothing, but also
-  # invents no new bypass), never a crash.
+  # An unterminated quote (no matching close), OR a double-quoted value that
+  # contains a live `$`/backtick substitution (see the next paragraph), simply
+  # fails to match either double-quoted pattern below and is left untouched,
+  # falling back to the pre-quote-aware scan of that text -- fail-open by
+  # construction (fixes nothing, but also invents no new bypass), never a
+  # crash.
+  #
+  # CORRECTED (beads_claude_docker-j72, regression fix): the paragraph above
+  # used to also claim, more broadly, that masking a quoted value "can never
+  # smuggle a flag" -- true only for the unquoted-splitting case, not as a
+  # general property of quoting. A double-quoted span is not inert data: bash
+  # genuinely EXECUTES `$(...)` command substitution and backtick
+  # substitution found inside double quotes, before `bd` ever sees the
+  # resulting argv -- so blanking such a span doesn't neutralize a payload,
+  # it destroys the evidence one ever ran. This was live, not theoretical:
+  # once -m joined the masked flag list (below), `bd create x -m "$(bd
+  # create y --labels human)"` went from correctly BLOCKED to silently
+  # ALLOWED, because the entire `$(...)` -- including the real, executing
+  # `bd create y --labels human` -- was blanked away before the label rule
+  # further down ever ran, even though that inner command genuinely runs and
+  # genuinely attaches the human label. The gap pre-dates -m: it was already
+  # latent for -d/--description and every other flag in this list, simply
+  # unexercised by the report that first added masking. Fix: the double-
+  # quoted character classes below now exclude `$` and backtick, so ANY span
+  # containing either anywhere is left completely unmasked (never partially
+  # masked around just the substitution, which could itself misparse where
+  # the real closing quote is) and falls back to the same raw-text scan an
+  # unterminated quote already falls back to above -- the fallback that
+  # re-exposes the nested `bd` invocation to the structural rules below. This
+  # trades an occasional false positive (inert prose that happens to contain
+  # a stray `$`/backtick, e.g. "costs $5", stays unmasked and gets raw-
+  # scanned too) for never again hiding a live one -- the same "when in
+  # doubt" direction this file takes everywhere else. Single-quoted values
+  # are deliberately NOT given the same treatment: bash never expands
+  # `$(...)`/backticks/`${...}` inside single quotes at all -- a single-
+  # quoted value is fully inert character-for-character no matter what it
+  # contains -- so masking it wholesale (the single-quote patterns below,
+  # unchanged) remains completely safe. This is also a different gap from the
+  # "command substitution" class in KNOWN LIMITATIONS at the top of this
+  # file: that class is this hook being unable to EVALUATE a dynamically
+  # *built* wrapper payload (e.g. `sh -c "$(echo bd create x -a joe)"`) to
+  # discover text it cannot see without actually running `echo`. This fix
+  # needed no evaluation at all -- `bd create y --labels human` was already
+  # sitting in the command string as literal characters; the bug was this
+  # file masking away text it could already see, not failing to compute text
+  # it couldn't.
+  #
+  # Alternation-order safety: `--reason` sorts before `--resolution`/
+  # `--comment` in the list below with no ambiguity risk -- POSIX/GNU ERE
+  # alternation with `grep -oE`/`sed -E` is leftmost-longest per position, not
+  # first-alternative-wins, the same argument already relied on elsewhere in
+  # this file for `--label` vs `--labels` (see the label_flags_raw comment
+  # further down) -- and none of `--description`/`--body`/`--message` is a
+  # textual prefix of another alternative in this same list either, so no
+  # ordering in this alternation can ever cause a partial, wrong match.
   local masked_cmd
-  masked_cmd=$(printf '%s' "$norm_cmd" | sed -E 's/(^|[[:space:]])(-d|-r|--description|--title|--notes|--design|--acceptance|--reason)(=|[[:space:]]+)"[^"]*"/\1\2\3""/g; s/(^|[[:space:]])(-d|-r|--description|--title|--notes|--design|--acceptance|--reason)(=|[[:space:]]+)'"'"'[^'"'"']*'"'"'/\1\2\3'"''"'/g')
+  masked_cmd=$(printf '%s' "$norm_cmd" | sed -E 's/(^|[[:space:]])(-d|-r|-m)(=|[[:space:]]+)?"[^"$`]*"/\1\2\3""/g; s/(^|[[:space:]])(--description|--title|--notes|--design|--acceptance|--reason|--resolution|--comment|--message|--body)(=|[[:space:]]+)"[^"$`]*"/\1\2\3""/g; s/(^|[[:space:]])(-d|-r|-m)(=|[[:space:]]+)?'"'"'[^'"'"']*'"'"'/\1\2\3'"''"'/g; s/(^|[[:space:]])(--description|--title|--notes|--design|--acceptance|--reason|--resolution|--comment|--message|--body)(=|[[:space:]]+)'"'"'[^'"'"']*'"'"'/\1\2\3'"''"'/g')
 
   # Override resolution (SOFT rule only). An exported env var is honored, and so
   # is a literal `BD_GUARD_ALLOW=1` assignment written as a command prefix — that
@@ -595,7 +698,7 @@ scan_cmd() {
   # command position no longer means there is nothing left to check — it may
   # still be one wrapper layer down, handled by the unwrap step after this
   # block closes.
-  if printf '%s' "$norm_cmd" | grep -qE '(^|[;&|(){])[[:space:]]*bd[[:space:]]+(create|new|update|assign|close|gate|label|tag|q|human|init)([[:space:]]|$)'; then
+  if printf '%s' "$norm_cmd" | grep -qE '(^|[;&|(){])[[:space:]]*bd[[:space:]]+(create|new|update|assign|close|done|gate|label|tag|q|human|init)([[:space:]]|$)'; then
 
   # Rule-section working variables, all scoped to this invocation so a
   # recursive call later in this same function can never leak into them (see
@@ -741,9 +844,39 @@ EOF
 # as a false-start prefix of `--labels` itself: `--labels human` has `s`, not
 # `=`/space, immediately after `--label`, so only the `--labels` alternative
 # can match there.
+# Trailing-punctuation strip widened to a RUN of quote/apostrophe/BACKTICK
+# (beads_claude_docker-j72, regression-fix follow-on): once the masked_cmd fix
+# above stops blanking a `$`/backtick-containing quoted value, raw text like
+# `-m "`bd create y --labels human`"` reaches this extraction with its own
+# ENCLOSING delimiters still attached -- the bare-token branch of the value
+# alternation below (deliberately left AS-IS, see next paragraph) grabs
+# `human`+backtick+`"` as one token, since neither is one of ITS excluded
+# characters. The single-char `s/["']$//` this replaced only ever stripped
+# ONE trailing quote, leaving a stray backtick behind and failing the exact
+# `= "human"` match a few lines down -- silently allowing the attached-human
+# case through. `+$` strips the whole trailing run (both characters, either
+# order) in one pass, no loop needed. Narrowing the EXTRACTION class itself
+# (excluding `"`/backtick from the bare-token branch, matching the masked_cmd
+# fix's shape) was tried first and reverted: it breaks genuine bash quote-
+# concatenation values like `--labels "a",human` (a real single argv word,
+# pinned by the "sh -c with an escaped inner quote in a labels list" test) by
+# making the quoted-value alternative win outright and stop at `"a"`, losing
+# `,human` entirely. Stripping only the FINAL trailing run, after extraction,
+# fixes the attached-delimiter case without touching that concatenation shape
+# (nothing trails a mid-string `"a",human` list, so this strip is a no-op for
+# it). Scoped to label_flags_raw only -- not its sibling bare-token sites
+# (assignee, tag, label add, gate --type) -- because label matching alone
+# needs an EXACT `= "human"` comparison that a stray trailing character
+# defeats; assignee's check is inverted (block anything NOT an allow-listed
+# agent name), so `joe` + a stray backtick still isn't "claude"/"agent"/etc
+# and still blocks with no change needed; tag/label-add/gate --type are not
+# reachable through a backtick at all (their own `bd <verb>` gates require a
+# `[;&|(){]`-class character immediately before `bd`, and backtick isn't one
+# -- a separate, pre-existing, out-of-scope gap, not one this fix touches or
+# worsens).
 label_flags_raw=$(printf '%s' "$masked_cmd" \
   | grep -oE -- '(--labels(=|[[:space:]]+)|--label(=|[[:space:]]+)|--add-label(=|[[:space:]]+)|--set-labels(=|[[:space:]]+)|(^|[[:space:]])-l(=|[[:space:]]+)?)("[^"]*"|'"'"'[^'"'"']*'"'"'|[^[:space:];&|)]+)' \
-  | sed -E 's/^.*(--labels(=|[[:space:]]+)|--label(=|[[:space:]]+)|--add-label(=|[[:space:]]+)|--set-labels(=|[[:space:]]+)|-l(=|[[:space:]]+)?)//; s/^["'"'"']//; s/["'"'"']$//')
+  | sed -E 's/^.*(--labels(=|[[:space:]]+)|--label(=|[[:space:]]+)|--add-label(=|[[:space:]]+)|--set-labels(=|[[:space:]]+)|-l(=|[[:space:]]+)?)//; s/^["'"'"']//; s/["`'"'"']+$//')
 
 while IFS= read -r lbl; do
   lbl=$(printf '%s' "$lbl" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')
@@ -881,7 +1014,7 @@ if printf '%s' "$norm_cmd" | grep -qiE -- '(^|[[:space:]])(-s|--status)(=|[[:spa
   fi
 fi
 
-# --- SOFT RULE (close only): residual work discharged in prose ---------------
+# --- SOFT RULE (close/done only): residual work discharged in prose ---------
 # Observed violation shape (2026-07-17 audit): a close_reason that admits
 # leftover or unverified work in prose ("the sole residual step is 'git
 # push'", "carried outside the tracker", "NOT verified in-container") —
@@ -890,8 +1023,17 @@ fi
 # noun is a pending *step* (not generic "work items"), "unverified" must stand
 # alone (not "unverified-email"), and "not pushed/tested twice" (a feature-
 # behavior spec) is excluded. Reasons that already point at a follow-up bead
-# are exempt.
-if printf '%s' "$norm_cmd" | grep -qE '(^|[;&|(){])[[:space:]]*bd[[:space:]]+close([[:space:]]|$)'; then
+# are exempt. `close|done` (beads_claude_docker-j72): `done` is `bd close`'s
+# own documented alias (`bd close --help` prints "Aliases: close, done", and
+# `bd done <id> ...` really runs close's own logic, confirmed empirically) --
+# matching only `close` here left `bd done <id> --reason "..."` completely
+# unreachable by this rule even after the two verb-alternation gate sites
+# above were widened to admit `done` into the rule block at all: without this
+# anchor also covering `done`, a `bd done` command would clear the precise
+# gate a few dozen lines up, run every OTHER hard rule, and then silently
+# skip past this one soft rule alone, since this `if` re-derives close-ness
+# from scratch rather than reusing the outer gate's match.
+if printf '%s' "$norm_cmd" | grep -qE '(^|[;&|(){])[[:space:]]*bd[[:space:]]+(close|done)([[:space:]]|$)'; then
   residual_re='(residual|outstanding|left.?over|remaining) (step|steps)|carried outside the tracker|not (yet )?(verified|tested|pushed)|unverified([^[:alnum:]-]|$)|auth.?blocked'
   innocuous_re='not (yet )?(verified|tested|pushed) (twice|again|repeatedly|more than once)'
   followup_re='(follow.?up|filed|tracked|moved|captured) (as|in|to)? *(bead|bd[-_ ]|beads_|issue)'
