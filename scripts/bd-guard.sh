@@ -13,12 +13,12 @@
 # are just as much an assignment as --assignee, wearing a different hat. This
 # hook enforces that at the point of creation:
 #   - HARD block (no override): bd create/update/assign with a non-agent
-#     assignee; the `human` label via --labels/--add-label/--set-labels/-l/
-#     `bd tag`/`bd label add`/`bd label propagate`/`bd q -l`; a `bd gate
-#     create` left at its default type or explicit `--type=human` (timer/
-#     gh:run/gh:pr gates are unaffected — they resolve automatically, not via
-#     a person); the bare `bd human <id>` form (its real subcommands --
-#     list/respond/dismiss/stats -- are unaffected).
+#     assignee; the `human` label via --labels/--label/--add-label/
+#     --set-labels/-l/`bd tag`/`bd label add`/`bd label propagate`/`bd q -l`;
+#     a `bd gate create` left at its default type or explicit `--type=human`
+#     (timer/gh:run/gh:pr gates are unaffected — they resolve automatically,
+#     not via a person); the bare `bd human <id>` form (its real subcommands
+#     -- list/respond/dismiss/stats -- are unaffected).
 #   - SOFT block (override with BD_GUARD_ALLOW=1): user-directed phrasing in
 #     the bead text; a bead moved to `blocked` status with text describing a
 #     person's decision (failure shape 2 — indirect routing via status
@@ -57,6 +57,41 @@
 # description text may itself contain `;` or `|` as ordinary punctuation —
 # fine for a "does this phrase appear" substring check, not for scoping a
 # flag extraction.
+#
+# Probed-not-documented flag surface (beads_claude_docker-v5p round 3): round
+# 2 above closed a bypass in the RULE LOGIC; this round closes one in the
+# FLAG LIST itself, and the root cause is different — the label/assignee/
+# gate/human flag spellings below were transcribed from `bd create/update/...
+# --help`, but --help is a description of what bd's authors chose to publish,
+# not of what bd's flag parser actually accepts. Bd 1.0.4 (ce242a879) was
+# probed directly (never against this repo's own .beads — always in a
+# throwaway sandbox project) for every spelling bd's parser honors, not just
+# every spelling --help lists, across all seven subcommands these rules
+# touch: `bd create` accepts an undocumented bare singular `--label` (space-
+# or =-glued, comma-splittable exactly like `--labels`) as a fully working,
+# HONOURED alias — a bead filed with only `--label human` really does end up
+# with the label attached and surfaced by `bd label list`/`bd human list`,
+# confirmed end to end. `bd update` and `bd q` reject the identical spelling
+# (`Error: unknown flag: --label`) — bd's own parser, not this file, draws
+# that line, so the fix below is create-specific in effect even though the
+# pattern match itself stays verb-blind (see the comment at
+# `label_flags_raw` for why that's still safe). Every other spelling tried
+# came back rejected by bd itself, confirmed by running each candidate to
+# completion rather than trusting --help's silence about it: `--assign`/`-A`/
+# `--owner`/case variants for assignee on create/update; `--gate-type`/`-T`/
+# case variants for `bd gate create`'s type; and a flag surface at all
+# (`--label`, `--assignee`) on the four positional-only commands (`bd tag`,
+# `bd label add`, `bd label propagate`, `bd assign`), which really do take
+# only positional arguments as documented. Two adjacent gaps were found and
+# are DELIBERATELY left untouched here, since neither is a label/assignee/
+# gate/human routing mechanism and both live on a verb outside this rule
+# block's scope: `bd close` has a `done` alias that IS shown in `bd close
+# --help`'s own Aliases line (unlike --label, not even a --help-vs-reality
+# gap) but is absent from this file's bd-verb alternation everywhere it's
+# used; and `bd close`/`bd create` separately carry several further hidden
+# aliases for --reason/--description (`-m`, `--resolution`, `--comment`).
+# Recorded in the bead notes for a follow-up rather than folded into this
+# slice.
 #
 # Shell-wrapper unwrapping (beads_claude_docker-vgr): a string matcher never
 # sees `bd` inside `bash -c "bd create ... -a joe"` or `eval '...'` — the
@@ -620,14 +655,22 @@ EOF
 # that exact label is structurally the same act as --assignee joe, just via a
 # different field. Ways to attach it, all extracted the same way as the
 # assignee flags above:
-#   bd create/update ... --labels X | --add-label X | --set-labels X | -l X
+#   bd create ... --labels X | --label X | -l X   (--label: bare singular,
+#                                                   undocumented in `bd
+#                                                   create --help` but a
+#                                                   real, honoured alias —
+#                                                   see round-3 note above
+#                                                   scan_cmd; `bd update`/
+#                                                   `bd q` reject this exact
+#                                                   spelling)
+#   bd update ... --add-label X | --set-labels X
 #   bd q ... -l X | --labels X             (quick-capture's own label flags)
 #   bd tag <id> <label>                    (shorthand for --add-label)
 #   bd label add <id...> <label> [flags]   (flags may trail the label)
 #   bd label propagate <parent-id> <label> [flags]
 # --remove-label is deliberately NOT matched — removing the label un-flags the
 # bead and is never itself a violation. Values are comma-splittable since
-# --labels/--add-label/--set-labels accept comma lists.
+# --labels/--label/--add-label/--set-labels accept comma lists.
 # Captures EVERY token after the id, not just the first (beads_claude_docker-
 # vgr round 2): bd's real CLI takes exactly one label positional for `tag`
 # (confirmed via `bd tag --help`) and would reject a 3rd, but grabbing only
@@ -684,9 +727,23 @@ $seg_val"
 done <<EOF
 $segments
 EOF
+# --label (bare singular, beads_claude_docker-v5p round 3): NOT in `bd create
+# --help` — probed directly against a live bd 1.0.4 sandbox, where it is a
+# real, honoured alias for --labels (space- or =-glued, comma-splittable).
+# Added as a plain extra alternative, matched blind to which bd verb precedes
+# it, same as every other spelling here: `bd update`/`bd q` reject this exact
+# flag (`Error: unknown flag: --label`), so an `update`/`q` command carrying
+# it was never going to succeed regardless of this guard — blocking it early
+# is a harmless over-block, not a false positive against real usage, so no
+# extra scoping is needed to keep it verb-safe. The trailing `(=|[[:space:]]+)`
+# requirement (mandatory, not optional, same as --labels/--add-label/
+# --set-labels above) is also what keeps this alternative from ever matching
+# as a false-start prefix of `--labels` itself: `--labels human` has `s`, not
+# `=`/space, immediately after `--label`, so only the `--labels` alternative
+# can match there.
 label_flags_raw=$(printf '%s' "$masked_cmd" \
-  | grep -oE -- '(--labels(=|[[:space:]]+)|--add-label(=|[[:space:]]+)|--set-labels(=|[[:space:]]+)|(^|[[:space:]])-l(=|[[:space:]]+)?)("[^"]*"|'"'"'[^'"'"']*'"'"'|[^[:space:];&|)]+)' \
-  | sed -E 's/^.*(--labels(=|[[:space:]]+)|--add-label(=|[[:space:]]+)|--set-labels(=|[[:space:]]+)|-l(=|[[:space:]]+)?)//; s/^["'"'"']//; s/["'"'"']$//')
+  | grep -oE -- '(--labels(=|[[:space:]]+)|--label(=|[[:space:]]+)|--add-label(=|[[:space:]]+)|--set-labels(=|[[:space:]]+)|(^|[[:space:]])-l(=|[[:space:]]+)?)("[^"]*"|'"'"'[^'"'"']*'"'"'|[^[:space:];&|)]+)' \
+  | sed -E 's/^.*(--labels(=|[[:space:]]+)|--label(=|[[:space:]]+)|--add-label(=|[[:space:]]+)|--set-labels(=|[[:space:]]+)|-l(=|[[:space:]]+)?)//; s/^["'"'"']//; s/["'"'"']$//')
 
 while IFS= read -r lbl; do
   lbl=$(printf '%s' "$lbl" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')

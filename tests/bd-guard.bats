@@ -19,6 +19,55 @@ run_guard() {
     run bash -c 'jq -n --arg c "$1" "{tool_input:{command:\$c}}" | '"$GUARD"' 2>&1' _ "$1"
 }
 
+# run_guard_in <dir> <command-string>; like run_guard but with the guard's
+# CWD set to <dir> first. Needed for the reinit rule (scripts/bd-guard.sh,
+# ~line 787), which resolves .beads/issues.jsonl and runs `git status
+# --porcelain` relative to the invoking process's CWD, not this test file's
+# own directory -- so a real throwaway git repo per test state is required,
+# not just a command string.
+run_guard_in() {
+    local dir="$1"
+    local cmd="$2"
+    run bash -c 'cd "$1" && jq -n --arg c "$2" "{tool_input:{command:\$c}}" | '"$GUARD"' 2>&1' _ "$dir" "$cmd"
+}
+
+# make_reinit_repo <dir> <state>; builds a throwaway git repo at <dir> with
+# .beads/issues.jsonl in one of three states mirroring the beads_claude_
+# docker-o15 audit's own probe (never run against this repo's real .beads):
+#   uncommitted  -- export present, never committed (git status: untracked)
+#   clean        -- export committed, working tree clean
+#   modified     -- export committed, then edited again without re-committing
+#   absent       -- no .beads/ directory at all
+make_reinit_repo() {
+    local dir="$1"
+    local state="$2"
+    mkdir -p "$dir"
+    git -C "$dir" init -q
+    git -C "$dir" config user.email test@example.com
+    git -C "$dir" config user.name "Test"
+    case "$state" in
+        absent)
+            ;;
+        uncommitted)
+            mkdir -p "$dir/.beads"
+            printf '{"id":"x-1"}\n' > "$dir/.beads/issues.jsonl"
+            ;;
+        clean)
+            mkdir -p "$dir/.beads"
+            printf '{"id":"x-1"}\n' > "$dir/.beads/issues.jsonl"
+            git -C "$dir" add .beads/issues.jsonl
+            git -C "$dir" commit -q -m "export"
+            ;;
+        modified)
+            mkdir -p "$dir/.beads"
+            printf '{"id":"x-1"}\n' > "$dir/.beads/issues.jsonl"
+            git -C "$dir" add .beads/issues.jsonl
+            git -C "$dir" commit -q -m "export"
+            printf '{"id":"x-2"}\n' >> "$dir/.beads/issues.jsonl"
+            ;;
+    esac
+}
+
 @test "bd-guard: human assignee on create is hard-blocked" {
     run_guard 'bd create "Fix parser" -a joe'
     [ "$status" -eq 2 ]
@@ -278,6 +327,50 @@ run_guard() {
     [ "$status" -eq 0 ]
 }
 
+# --- Hard rule: bare singular '--label' is an undocumented but real, --------
+# --- honoured alias for '--labels' on 'bd create' (beads_claude_docker-v5p --
+# --- round 3) ------------------------------------------------------------
+# Not in `bd create --help` -- probed directly against a live bd 1.0.4
+# sandbox (never against this repo's own .beads): `bd create x --label human`
+# really does attach the reserved label (confirmed via `bd label list` and
+# `bd human list` surfacing the bead), exactly as if `--labels human` had
+# been used. `bd update`/`bd q` reject the identical spelling
+# (`Error: unknown flag: --label`), confirmed empirically -- see the
+# scan_cmd header comment and the label_flags_raw comment in bd-guard.sh.
+
+@test "bd-guard: '--label' (undocumented singular alias, create) is hard-blocked" {
+    run_guard 'bd create "Pick a region" --label human'
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"'human' label"* ]]
+}
+
+@test "bd-guard: '--label=human' (glued) and comma-separated '--label bug,human' are hard-blocked" {
+    run_guard 'bd create "x" --label=human'
+    [ "$status" -eq 2 ]
+    run_guard 'bd create "x" --label bug,human'
+    [ "$status" -eq 2 ]
+}
+
+@test "bd-guard: '--label human' on update/q is still blocked (bd itself rejects the flag there -- safe over-block, not a false positive)" {
+    run_guard 'bd update wp9 --label human'
+    [ "$status" -eq 2 ]
+    run_guard 'bd q "quick capture" --label human'
+    [ "$status" -eq 2 ]
+}
+
+@test "bd-guard: '--label' hard rule ignores BD_GUARD_ALLOW override" {
+    run bash -c 'jq -n --arg c "bd create x --label human" "{tool_input:{command:\$c}}" | BD_GUARD_ALLOW=1 '"$GUARD"' 2>&1'
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"'human' label"* ]]
+}
+
+@test "bd-guard: ordinary '--label' usage for a non-reserved value passes (no new false positive)" {
+    run_guard 'bd create "x" --label urgent'
+    [ "$status" -eq 0 ]
+    run_guard 'bd create "x" -d "the --label flag is an alias for --labels"'
+    [ "$status" -eq 0 ]
+}
+
 # --- Hard rule: 'bd gate create' defaulting to (or set to) a human gate -------
 # (bd gate create --blocks <id> defaults --type to "human", which requires
 # manual 'bd gate resolve' -- a blocked-on-a-person dependency, same severity
@@ -314,6 +407,68 @@ run_guard() {
     run_guard 'bd gate list'
     [ "$status" -eq 0 ]
     run_guard 'bd gate resolve bd-42'
+    [ "$status" -eq 0 ]
+}
+
+# --- SOFT RULE: 'bd init --reinit-local/--force/--discard-remote' can --------
+# --- destroy an unbacked .beads/issues.jsonl (beads_claude_docker-o15) -------
+# scripts/bd-guard.sh ~line 787: `bd doctor --fix --yes` committed the REMOVAL
+# of issues.jsonl (91 closed issues) in the real incident this rule exists
+# for. The rule itself was verified working by the o15 audit (three states,
+# reproduced below against a throwaway git repo per test -- never against
+# this repo's own .beads); what was missing was regression coverage, so this
+# section is test-writing only, per the bead: the rule at bd-guard.sh is NOT
+# modified by this slice.
+
+@test "bd-guard: reinit with an uncommitted (never-committed) export is soft-blocked" {
+    local dir="$BATS_TEST_TMPDIR/repo-uncommitted"
+    make_reinit_repo "$dir" uncommitted
+    run_guard_in "$dir" 'bd init --reinit-local --non-interactive'
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"uncommitted changes"* ]]
+}
+
+@test "bd-guard: reinit override (BD_GUARD_ALLOW=1) allows it despite an uncommitted export" {
+    local dir="$BATS_TEST_TMPDIR/repo-uncommitted-allow"
+    make_reinit_repo "$dir" uncommitted
+    run bash -c 'cd "$1" && jq -n --arg c "$2" "{tool_input:{command:\$c}}" | BD_GUARD_ALLOW=1 '"$GUARD"' 2>&1' _ "$dir" 'bd init --reinit-local --non-interactive'
+    [ "$status" -eq 0 ]
+}
+
+@test "bd-guard: reinit with a committed, clean export passes" {
+    local dir="$BATS_TEST_TMPDIR/repo-clean"
+    make_reinit_repo "$dir" clean
+    run_guard_in "$dir" 'bd init --reinit-local --non-interactive'
+    [ "$status" -eq 0 ]
+}
+
+@test "bd-guard: reinit with a committed export that was modified again is soft-blocked" {
+    local dir="$BATS_TEST_TMPDIR/repo-modified"
+    make_reinit_repo "$dir" modified
+    run_guard_in "$dir" 'bd init --reinit-local --non-interactive'
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"uncommitted changes"* ]]
+}
+
+@test "bd-guard: reinit blocks via --force and --discard-remote spellings too, against an uncommitted export" {
+    local dir="$BATS_TEST_TMPDIR/repo-force"
+    make_reinit_repo "$dir" uncommitted
+    run_guard_in "$dir" 'bd init --force --non-interactive'
+    [ "$status" -eq 2 ]
+    local dir2="$BATS_TEST_TMPDIR/repo-discard-remote"
+    make_reinit_repo "$dir2" uncommitted
+    run_guard_in "$dir2" 'bd init --discard-remote --non-interactive'
+    [ "$status" -eq 2 ]
+}
+
+@test "bd-guard: plain 'bd init' (no reinit flag) passes even with an uncommitted export or none at all" {
+    local dir="$BATS_TEST_TMPDIR/repo-plain-init"
+    make_reinit_repo "$dir" uncommitted
+    run_guard_in "$dir" 'bd init --non-interactive'
+    [ "$status" -eq 0 ]
+    local dir2="$BATS_TEST_TMPDIR/repo-no-export"
+    make_reinit_repo "$dir2" absent
+    run_guard_in "$dir2" 'bd init --reinit-local --non-interactive'
     [ "$status" -eq 0 ]
 }
 
