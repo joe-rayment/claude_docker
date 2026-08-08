@@ -157,7 +157,7 @@
 # to construct, not the kind of thing the fixes above address.
 #
 # KNOWN LIMITATIONS (accepted, not bugs — read this before assuming argv-
-# wrapper evasion is fully closed): six residual classes are NOT reached by
+# wrapper evasion is fully closed): seven residual classes are NOT reached by
 # the recursion/normalization above, each pinned in tests/bd-guard.bats so
 # the gap is mechanically true, not just a claim in this comment:
 #   - stdin-fed payloads: `bash <<< "…"`, `echo … | bash`, `bash -s`,
@@ -174,7 +174,43 @@
 #     create x -a joe)` — `$(...)` is evaluated by the real shell before -c
 #     (or the assignment) ever sees the result; this hook recurses on the
 #     literal, unevaluated source text instead, where `bd` is not standing
-#     at command position.
+#     at command position. A second, narrower shape needs no wrapper and no
+#     hidden `bd` at all (beads_claude_docker-j72, doc-correctness pass):
+#     `bd gate create --blocks bd-1 --type "`echo human`"` is a real, fully-
+#     anchored `bd gate create` — the gate-type rule finds it and extracts
+#     its --type value correctly — but the extracted value is the literal,
+#     unevaluated text `` `echo human` ``, which the rule's exact-match check
+#     (`= "human"`) does not consider equal to `human`, even though the real
+#     shell evaluates that backtick to exactly `human` before bd ever runs.
+#     Both shapes share the same root cause (this hook has no shell
+#     evaluator) applied to two different targets: an invocation's IDENTITY
+#     in the first pair of examples, a flag's TRUE VALUE in this one.
+#   - backtick absent from the per-verb command-position anchor (beads_
+#     claude_docker-j72, doc-correctness pass): `bd create x -m "`bd tag
+#     bd-1 human`"` is fully visible, unhidden text — once its value
+#     contains a backtick the -m masking fix above correctly leaves it
+#     UNMASKED, so `bd tag bd-1 human` sits in $masked_cmd as literal
+#     characters, no evaluation required. But unlike the assignee/label-flag
+#     extraction (which greps $masked_cmd for a flag shape anywhere, blind to
+#     position), the tag / label add|propagate / gate create / human / init
+#     rules must first locate WHICH bd invocation's own positional arguments
+#     to read, via a verb-position anchor requiring `bd tag`/`bd gate
+#     create`/etc. to sit at the string start or immediately after one of
+#     `;&|(){` (`tag`) or whitespace/`{`/`(` (the other four, already
+#     segment-scoped) — and backtick is in neither class. A backtick
+#     immediately before `bd` is therefore an invisible command-position
+#     boundary to exactly these five rules: this is NOT the command-
+#     substitution class above (nothing here needs evaluating — the text is
+#     already literal and final) and not the intra-word-quoting-of-`bd`
+#     class below either (that one hides the bare word `bd` from the cheap
+#     prefilter; this one hides a fully-prefiltered `bd`'s own verb from the
+#     structural rule that would otherwise act on it). Previously mis-filed
+#     under the command-substitution bullet above, whose stated mechanism —
+#     "`bd` is not standing at command position" because the real shell
+#     hasn't evaluated `$(...)`/backticks yet — does not describe this case
+#     at all: no evaluation is needed here, and `bd gate create`'s OWN top-
+#     level `--type "`echo human`"` two bullets up is a genuinely different
+#     gap from this one despite both involving a backtick.
 #   - variable indirection: `B=bd; $B create x -a joe` — the literal string
 #     never contains `bd` immediately followed by a verb (the two are split
 #     across an assignment and a variable reference), so even the cheap
@@ -217,20 +253,29 @@
 #     round's explicit "then we stop" scope.
 # Threat model (see also the top of this file's bead): the "attacker" is
 # Claude Code itself drifting toward a shortcut, not a determined adversary
-# — this is a guardrail, not a sandbox. The FIRST FIVE classes above require
+# — this is a guardrail, not a sandbox. The FIRST SIX classes above require
 # knowingly constructing shell syntax specifically to hide intent, which is
 # a materially different act from typing `timeout 10 bd create x -a joe` or
-# `nice bd create x -a joe` without thinking about it. Closing them would
-# mean parsing real shell grammar (quote concatenation, command
+# `nice bd create x -a joe` without thinking about it. Most would mean
+# parsing real shell grammar to close (quote concatenation, command
 # substitution, variable expansion) — a second, much larger rule engine,
 # not an extension of this one — for a threat this hook is not designed to
-# stop. The SIXTH (wrapper-flag arity gaps) is honestly different: an
-# uncommon-but-ordinary flag falling outside a finite, explicit table is not
-# deliberate evasion, it is exactly the kind of accidental shape this hook
-# IS designed to catch — it just doesn't, for that specific flag, until the
-# table is widened. It's listed here rather than silently left out so a
-# reader's picture of coverage stays accurate: wrapper-argument stripping is
-# closed allowlists, not general argument parsing.
+# stop. The backtick-anchor gap above is the exception: mechanically it is
+# a one-character widening of two character classes, not a grammar problem —
+# left alongside the others this round because doing so would also make
+# those same anchors recognize a backtick sitting inside a genuinely INERT
+# single-quoted value (one whose enclosing quotes really are its own, not
+# borrowed from an outer double-quoted wrapper — see the masked_cmd
+# single-quote trade-off above, which this hook cannot locally distinguish
+# from the live case either), and working through that interaction was not
+# this round's scope. The SEVENTH (wrapper-flag arity gaps) is honestly
+# different again: an uncommon-but-ordinary flag falling outside a finite,
+# explicit table is not deliberate evasion, it is exactly the kind of
+# accidental shape this hook IS designed to catch — it just doesn't, for
+# that specific flag, until the table is widened. It's listed here rather
+# than silently left out so a reader's picture of coverage stays accurate:
+# wrapper-argument stripping is closed allowlists, not general argument
+# parsing.
 #
 # Contract: reads the Claude Code hook JSON on stdin; exit 0 = allow,
 # exit 2 = block (stderr is fed back to the model).
@@ -649,20 +694,70 @@ scan_cmd() {
   # trades an occasional false positive (inert prose that happens to contain
   # a stray `$`/backtick, e.g. "costs $5", stays unmasked and gets raw-
   # scanned too) for never again hiding a live one -- the same "when in
-  # doubt" direction this file takes everywhere else. Single-quoted values
-  # are deliberately NOT given the same treatment: bash never expands
-  # `$(...)`/backticks/`${...}` inside single quotes at all -- a single-
-  # quoted value is fully inert character-for-character no matter what it
-  # contains -- so masking it wholesale (the single-quote patterns below,
-  # unchanged) remains completely safe. This is also a different gap from the
-  # "command substitution" class in KNOWN LIMITATIONS at the top of this
-  # file: that class is this hook being unable to EVALUATE a dynamically
-  # *built* wrapper payload (e.g. `sh -c "$(echo bd create x -a joe)"`) to
-  # discover text it cannot see without actually running `echo`. This fix
-  # needed no evaluation at all -- `bd create y --labels human` was already
-  # sitting in the command string as literal characters; the bug was this
-  # file masking away text it could already see, not failing to compute text
-  # it couldn't.
+  # doubt" direction this file takes everywhere else.
+  #
+  # MIRROR-IMAGE REGRESSION (beads_claude_docker-j72, round 2): the paragraph
+  # above originally stopped here and left the single-quoted classes below
+  # masking unconditionally, on the claim that single-quoted values are
+  # "deliberately NOT given the same treatment: bash never expands
+  # `$(...)`/backticks/`${...}` inside single quotes at all -- fully inert
+  # character-for-character no matter what it contains." That is true only
+  # of a `'...'` span where the single quotes are the REAL, ACTIVE quote
+  # delimiters as some shell actually parses them -- not an invariant this
+  # file can rely on, because scan_cmd does not parse quoting at all: a
+  # wrapper's payload is extracted as a literal SUBSTRING of the outer
+  # command (see the wrapper-unwrap section below) and re-scanned at the next
+  # recursion depth exactly as if it were freestanding. A `'...'` span that
+  # looks self-contained in isolation may, in the real (outer) command, sit
+  # INSIDE an enclosing double-quoted wrapper -- where double quotes do not
+  # treat `'` as special at all, so those characters are ordinary data, not
+  # quote delimiters, and any `$(...)`/backtick inside is evaluated by the
+  # OUTER shell while it constructs the wrapper's payload string, before `bd`
+  # -- wrapped or not -- ever runs. Live, not theoretical, confirmed with a
+  # fake `bd` on PATH logging argv: `bash -c "bd create x -m 'hi $(bd create
+  # y --labels human)'"` -- the OUTER double quotes make the real shell
+  # evaluate `$(bd create y --labels human)` while parsing bash -c's own
+  # argument, genuinely attaching the human label, regardless of the single
+  # quotes sitting inside that span. scan_cmd masks the same literal text at
+  # every depth with no memory of what enclosed it one level up, so it
+  # cannot tell "these are real quotes, this span is inert" from "these are
+  # just single-quote bytes sitting inside someone else's double quotes" --
+  # unconditional single-quote masking blanked a payload that, one recursion
+  # level up, had already executed. This closes both the immediate
+  # regression (once -m joined the masked list, above) and an identical,
+  # wider gap that PRE-DATES -m on -d/--description and every other flag
+  # already in this list: `bash -c "bd create x -d 'hi $(bd create y -a
+  # joe)'"` was already silently allowed before -m ever existed here, simply
+  # unexercised until this fix's own probe went looking.
+  #
+  # Fix: the single-quoted character classes below now exclude `$` and
+  # backtick symmetrically with the double-quoted ones above, so a single-
+  # quoted span containing either also falls back to the raw-text scan
+  # instead of being blanked -- same mechanism, same fallback, same
+  # "occasional false positive beats hiding a live substitution" direction.
+  # Trade-off, stated the same way as the double-quoted one above: a single-
+  # quoted value that really is inert -- no enclosing double quotes anywhere
+  # above it, e.g. a bare, unwrapped `bd create x -d 'run $(date) first'`
+  # typed directly -- also stops being masked once it contains `$`/backtick,
+  # and falls back to the raw scan too. This is only an observable false
+  # positive if that same raw text ALSO matches a hard/soft rule below (a
+  # real flag shape, or user-directed phrasing); ordinary prose with a stray
+  # `$`/backtick and nothing else rule-shaped -- "costs $5" from the double-
+  # quoted fix above, or this paragraph's own "run $(date) first" -- scans
+  # clean either way and stays allowed. scan_cmd has no way to tell
+  # "genuinely inert" from "inert only because no enclosing double quotes
+  # happen to exist this time," so, per this file's standing principle, it
+  # no longer tries.
+  #
+  # This is also a different gap from the "command substitution" class in
+  # KNOWN LIMITATIONS at the top of this file: that class is this hook being
+  # unable to EVALUATE a dynamically *built* wrapper payload (e.g. `sh -c
+  # "$(echo bd create x -a joe)"`) to discover text it cannot see without
+  # actually running `echo`. Neither the double-quoted fix above nor this
+  # single-quoted one needed any evaluation at all -- `bd create y --labels
+  # human` was already sitting in the command string as literal characters
+  # in both regressions; the bug was this file masking away text it could
+  # already see, not failing to compute text it couldn't.
   #
   # Alternation-order safety: `--reason` sorts before `--resolution`/
   # `--comment` in the list below with no ambiguity risk -- POSIX/GNU ERE
@@ -673,7 +768,7 @@ scan_cmd() {
   # textual prefix of another alternative in this same list either, so no
   # ordering in this alternation can ever cause a partial, wrong match.
   local masked_cmd
-  masked_cmd=$(printf '%s' "$norm_cmd" | sed -E 's/(^|[[:space:]])(-d|-r|-m)(=|[[:space:]]+)?"[^"$`]*"/\1\2\3""/g; s/(^|[[:space:]])(--description|--title|--notes|--design|--acceptance|--reason|--resolution|--comment|--message|--body)(=|[[:space:]]+)"[^"$`]*"/\1\2\3""/g; s/(^|[[:space:]])(-d|-r|-m)(=|[[:space:]]+)?'"'"'[^'"'"']*'"'"'/\1\2\3'"''"'/g; s/(^|[[:space:]])(--description|--title|--notes|--design|--acceptance|--reason|--resolution|--comment|--message|--body)(=|[[:space:]]+)'"'"'[^'"'"']*'"'"'/\1\2\3'"''"'/g')
+  masked_cmd=$(printf '%s' "$norm_cmd" | sed -E 's/(^|[[:space:]])(-d|-r|-m)(=|[[:space:]]+)?"[^"$`]*"/\1\2\3""/g; s/(^|[[:space:]])(--description|--title|--notes|--design|--acceptance|--reason|--resolution|--comment|--message|--body)(=|[[:space:]]+)"[^"$`]*"/\1\2\3""/g; s/(^|[[:space:]])(-d|-r|-m)(=|[[:space:]]+)?'"'"'[^'"'"'$\`]*'"'"'/\1\2\3'"''"'/g; s/(^|[[:space:]])(--description|--title|--notes|--design|--acceptance|--reason|--resolution|--comment|--message|--body)(=|[[:space:]]+)'"'"'[^'"'"'$\`]*'"'"'/\1\2\3'"''"'/g')
 
   # Override resolution (SOFT rule only). An exported env var is honored, and so
   # is a literal `BD_GUARD_ALLOW=1` assignment written as a command prefix — that

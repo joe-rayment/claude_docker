@@ -1783,3 +1783,125 @@ done'
     [ "$status" -eq 2 ]
     [[ "$output" == *"human-facing queue"* ]]
 }
+
+# =============================================================================
+# Mirror-image regression fix (beads_claude_docker-j72, round 2): masked_cmd's
+# single-quote classes masked unconditionally, on the assumption that a
+# `'...'` span is always inert. Not true once reached by recursing into a
+# wrapper's payload extracted from an ENCLOSING double-quoted string: there
+# the `'` characters are ordinary data, not real quote delimiters, and any
+# $(...)/backtick inside is evaluated by the real outer shell before the
+# wrapper payload is even constructed. Six shapes below were confirmed LIVE
+# (fake `bd` on PATH logging argv, run through a real shell) to genuinely
+# execute the inner `bd create y --labels human` while this hook allowed the
+# outer command; the -d variants pin a seventh, wider, PRE-EXISTING gap that
+# predates -m joining the masked list. See the masked_cmd comment in
+# scripts/bd-guard.sh for the full root-cause writeup and the documented
+# false-positive trade-off (a genuinely inert single-quoted value containing
+# `$`/backtick, e.g. "run $(date) first", also falls back to the raw scan).
+# =============================================================================
+
+@test "bd-guard: bash -c \"bd create x -m '...\$(bd create y --labels human)...'\" blocks (single-quote regression)" {
+    run_guard 'bash -c "bd create x -m '"'"'hi $(bd create y --labels human)'"'"'"'
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"human-facing queue"* ]]
+}
+
+@test "bd-guard: bash -c \"bd create x -d '...\$(bd create y --labels human)...'\" blocks (pre-existing -d shape, same class)" {
+    run_guard 'bash -c "bd create x -d '"'"'hi $(bd create y --labels human)'"'"'"'
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"human-facing queue"* ]]
+}
+
+@test "bd-guard: sh -c \"bd create x -m '...\$(bd create y --labels human)...'\" blocks (single-quote regression)" {
+    run_guard 'sh -c "bd create x -m '"'"'hi $(bd create y --labels human)'"'"'"'
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"human-facing queue"* ]]
+}
+
+@test "bd-guard: sh -c \"bd create x -d '...\$(bd create y --labels human)...'\" blocks (pre-existing -d shape, same class)" {
+    run_guard 'sh -c "bd create x -d '"'"'hi $(bd create y --labels human)'"'"'"'
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"human-facing queue"* ]]
+}
+
+@test "bd-guard: eval \"bd create x -m '...\$(bd create y --labels human)...'\" blocks (single-quote regression)" {
+    run_guard 'eval "bd create x -m '"'"'hi $(bd create y --labels human)'"'"'"'
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"human-facing queue"* ]]
+}
+
+@test "bd-guard: eval \"bd create x -d '...\$(bd create y --labels human)...'\" blocks (pre-existing -d shape, same class)" {
+    run_guard 'eval "bd create x -d '"'"'hi $(bd create y --labels human)'"'"'"'
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"human-facing queue"* ]]
+}
+
+@test "bd-guard: X=\"bd create x -m '...\$(bd create y --labels human)...'\" blocks (regression live at the assignment itself)" {
+    run_guard 'X="bd create x -m '"'"'hi $(bd create y --labels human)'"'"'"'
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"human-facing queue"* ]]
+}
+
+@test "bd-guard: X=\"bd create x -d '...\$(bd create y --labels human)...'\" blocks (pre-existing -d shape, same class)" {
+    run_guard 'X="bd create x -d '"'"'hi $(bd create y --labels human)'"'"'"'
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"human-facing queue"* ]]
+}
+
+@test "bd-guard: bash -c \"bd create x -m '\`bd create y --labels human\`'\" blocks (single-quoted backtick substitution)" {
+    # Backtick sibling of the $(...) pins above -- proves BOTH characters
+    # excluded from the single-quote class are independently load-bearing,
+    # not just $.
+    run_guard 'bash -c "bd create x -m '"'"'`bd create y --labels human`'"'"'"'
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"human-facing queue"* ]]
+}
+
+# --- Single-quote greediness pin (symmetry with the double-quoted pins -----
+# --- two sections up): those pin both live substitution and greediness for
+# --- the double-quoted classes; the single-quoted classes had neither pin
+# --- until this round. These two confirm the new `[^'$\`]*` class still
+# --- stops at the FIRST unescaped closing quote -- not widened to something
+# --- greedy like `.*` -- for the ordinary, no-$/backtick case that is still
+# --- masked unconditionally.
+
+@test "bd-guard: bd close bd-1 -m 'clean' -a 'joe' blocks (single-quote greediness pin: -m must not swallow the quoted -a)" {
+    run_guard "bd close bd-1 -m 'clean' -a 'joe'"
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"not an agent identity"* ]]
+}
+
+@test "bd-guard: bd create x -m 'clean' --label 'human' blocks (single-quote greediness pin: -m must not swallow the quoted --label)" {
+    run_guard "bd create x -m 'clean' --label 'human'"
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"human-facing queue"* ]]
+}
+
+# --- Documentation-correctness pins (claim 11, beads_claude_docker-j72): ---
+# --- these two are genuinely OUT OF SCOPE (see the two new KNOWN
+# --- LIMITATIONS bullets in scripts/bd-guard.sh), pinned here so the gap
+# --- stays mechanically true rather than just a comment's claim. Neither is
+# --- a new hole opened by the fix above -- both are confirmed identical at
+# --- HEAD, HEAD~1 and HEAD~2 of this round, i.e. genuinely pre-existing.
+
+@test "OUT-OF-SCOPE (pinned): backtick absent from the tag verb-position anchor is not caught" {
+    # bd create x -m "`bd tag bd-1 human`" -- the -m masking fix correctly
+    # leaves this UNMASKED (its value contains a backtick), so the text is
+    # fully visible in $masked_cmd, no evaluation needed -- but the `tag`
+    # rule's own verb-position anchor (`;&|(){`) does not include backtick,
+    # so it never recognizes "bd tag" as sitting at a real command position
+    # here and never inspects its arguments.
+    run_guard 'bd create x -m "`bd tag bd-1 human`"'
+    [ "$status" -eq 0 ]
+}
+
+@test "OUT-OF-SCOPE (pinned): a backtick-substituted --type value is not evaluated" {
+    # bd gate create --blocks bd-1 --type "`echo human`" -- `bd gate create`
+    # is fully anchored and found; the --type value is correctly extracted
+    # as the literal text `echo human` (backticks included) -- but this hook
+    # cannot run `echo` to see that a real shell would evaluate it to
+    # exactly `human`, so the rule's exact-match check never fires.
+    run_guard 'bd gate create --blocks bd-1 --type "`echo human`"'
+    [ "$status" -eq 0 ]
+}
