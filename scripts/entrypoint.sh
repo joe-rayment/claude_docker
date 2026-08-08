@@ -275,12 +275,35 @@ _beads_restore_export_if_missing() {
 # (beads_claude_docker-a2s): `bd status --json`'s issue count does not
 # require issue_prefix to be configured, so a database can report a healthy
 # non-zero count while bd create/bd import are broken ("issue_prefix config
-# is missing"). `bd config get` never mutates anything, and degrades safely
-# (empty stdout, non-zero exit) when there's no database at all yet. Echoes
-# the configured prefix, or an empty string if unset/unreadable.
+# is missing"). NOTE: despite the name, `bd config get` is NOT actually
+# side-effect-free -- like any other bd read, it can trigger the same
+# throttled auto-export that deletes issues.jsonl on a zero-importable
+# export (2fd). It's only safe to call here because every call site below
+# follows it with _beads_restore_export_if_missing.
+#
+# Distinguishes FAILURE from EMPTY: a broken/missing jq must never be read
+# as "no prefix configured", or a jq failure on a HEALTHY project forges
+# the exact signature the embeddeddolt-removal escalation looks for. Echoes
+# the configured prefix; "" only when bd and jq both ran and confirmed no
+# prefix is set; the sentinel __unknown__ when `bd config get` exits
+# non-zero or jq fails to parse its output (missing/broken jq, or bd
+# emitting something jq can't read) -- never conflated with a
+# confirmed-empty result.
 _beads_issue_prefix() {
     local dir="$1"
-    (cd "$dir" && bd config get issue_prefix --json) 2>/dev/null | jq -r '.value // ""' 2>/dev/null || printf ''
+    local raw="" bd_rc=0
+    raw=$( (cd "$dir" && bd config get issue_prefix --json) 2>/dev/null ) || bd_rc=$?
+    if [ "$bd_rc" != "0" ]; then
+        printf '__unknown__'
+        return 0
+    fi
+    local value="" jq_rc=0
+    value=$(printf '%s' "$raw" | jq -r '.value // ""' 2>/dev/null) || jq_rc=$?
+    if [ "$jq_rc" != "0" ]; then
+        printf '__unknown__'
+        return 0
+    fi
+    printf '%s' "$value"
 }
 
 # $1 (optional): project directory, defaults to /workspace. Parameterized so
@@ -290,6 +313,7 @@ ensure_beads() {
     local dir="${1:-/workspace}"
     command -v bd &>/dev/null || return 0
     command -v dolt &>/dev/null || return 0
+    command -v jq &>/dev/null || return 0
     [ -d "$dir/.git" ] || return 0
 
     if [ ! -d "$dir/.beads" ]; then
@@ -317,16 +341,31 @@ ensure_beads() {
     # legitimately-empty project: no-op.
     [ -s "$dir/.beads/issues.jsonl" ] || return 0
 
-    # SAFEGUARD (beads_claude_docker-2fd): snapshot issues.jsonl outside
-    # .beads/ before any bd command below runs. See the comment above
-    # detect_beads_prefix for exactly what this protects against. Every
-    # step past this point restores from the copy immediately if the live
-    # file goes missing, so the export can never end up permanently lost —
-    # even in the "nothing left to rebuild from" case.
+    # SAFEGUARD (beads_claude_docker-2fd): snapshot issues.jsonl before any
+    # bd command below runs -- preferably outside .beads/ (mktemp), falling
+    # back to a name inside .beads/ if mktemp is unusable (e.g. a full or
+    # read-only TMPDIR). See the comment above detect_beads_prefix for
+    # exactly what this protects against. Every step past this point
+    # restores from the copy immediately if the live file goes missing, so
+    # the export can never end up permanently lost — even in the "nothing
+    # left to rebuild from" case. If NEITHER copy can be made, every
+    # _beads_restore_export_if_missing call below would silently no-op, so
+    # bail out here, unrepaired, rather than run bd commands that can
+    # delete the only copy of the history with nothing left to restore it
+    # from.
     local safety_copy=""
     safety_copy=$(mktemp "${TMPDIR:-/tmp}/beads-issues-safety.XXXXXX" 2>/dev/null) || safety_copy=""
     if [ -n "$safety_copy" ]; then
         cp "$dir/.beads/issues.jsonl" "$safety_copy" 2>/dev/null || safety_copy=""
+    fi
+    if [ -z "$safety_copy" ]; then
+        local fallback_copy="$dir/.beads/issues.jsonl.bak"
+        if cp "$dir/.beads/issues.jsonl" "$fallback_copy" 2>/dev/null; then
+            safety_copy="$fallback_copy"
+        else
+            dev-log error "ensure_beads: cannot create a safety copy of issues.jsonl (mktemp and .beads/ fallback both failed); skipping repair to avoid unprotected data loss" 2>/dev/null || true
+            return 0
+        fi
     fi
 
     # HEALTH (beads_claude_docker-a2s): a non-zero issue count alone is not
@@ -383,6 +422,10 @@ ensure_beads() {
     if [ "$init_rc" != "0" ] && [ "$import_rc" != "0" ] && [ -d "$dir/.beads/embeddeddolt" ]; then
         local prefix_after
         prefix_after=$(_beads_issue_prefix "$dir")
+        # "" here means KNOWN-empty (bd and jq both ran and confirmed no
+        # prefix); the __unknown__ sentinel (non-empty) deliberately fails
+        # this check too, so a broken/missing jq can never forge the
+        # all-clear for this destructive step.
         if [ -z "$prefix_after" ]; then
             dev-log error "ensure_beads: embeddeddolt present but issue_prefix missing after init+import; removing embeddeddolt and rebuilding" 2>/dev/null || true
 

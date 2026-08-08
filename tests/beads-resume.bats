@@ -370,7 +370,13 @@ _backdate_export_state() {
     [ -f "$built" ] || skip "no built copy present"
     grep -q 'total_issues // 0' "$built"
     # bd doctor is still named in the explanatory comment (documenting what's
-    # NOT used and why) -- assert it is no longer CALLED, i.e. doesn't appear
-    # as a command inside a (...) subshell invocation like the old code did.
-    ! grep -qE '\(cd "\$dir" && bd doctor' "$built"
+    # NOT used and why) -- assert it is no longer CALLED anywhere in real
+    # code, not just absent in one specific old invocation shape. A literal
+    # '(cd "$dir" && bd doctor' pattern is too narrow: the stale pre-fix
+    # copy's call is `(cd /workspace && bd doctor --fix --yes)` -- hardcoded
+    # /workspace, never $dir -- so that pattern never matches it regardless
+    # of whether the call is still present. Strip comment lines (anything
+    # whose first non-blank character is #) and check for ANY remaining
+    # mention of the command, so any invocation syntax is caught.
+    ! grep -vE '^[[:space:]]*#' "$built" | grep -q 'bd doctor'
 }
