@@ -337,15 +337,27 @@ run_guard() {
 # above anchors on. scan_cmd (scripts/bd-guard.sh) extracts the payload and
 # RECURSES the same rule engine on it (bounded by MAX_UNWRAP_DEPTH=5), rather
 # than duplicating rule logic against a second grammar. Full scope table with
-# rationale is in the bead and the executor's report; short form:
-#   bash -c/sh -c/zsh -c "PAYLOAD" (+ path-prefixed)  -> BLOCKED (recurse)
+# rationale is in the bead and the executor's report; short form (updated in
+# round 3 -- see the CORRECTION block below this one for what changed):
+#   bash/sh/zsh/dash/ash/ksh -c "PAYLOAD" (+ path-prefixed,
+#     + path-prefixed `env sh -c "..."`)                -> BLOCKED (recurse)
 #   eval "PAYLOAD" / eval 'PAYLOAD' / eval PAYLOAD     -> BLOCKED (recurse)
 #   nested wrapping (bash -c "eval '...'")             -> BLOCKED (cascades)
 #   echo x | xargs bd create -a joe (bare xargs)       -> BLOCKED (strip-word)
+#   timeout/stdbuf/setsid/nice/ionice/script/chrt/
+#     taskset wrapping bd, with or without their own
+#     flag/duration argument                            -> BLOCKED (strip-word)
+#   \bd / 'bd' / "bd" (backslash-escaped or self-quoted) -> BLOCKED (normalize)
 #   xargs own flags / stdin-substituted value           -> OUT-OF-SCOPE
 #   printf "bd ..." | sh (payload as interpreter STDIN) -> OUT-OF-SCOPE
 #   --body-file/--design-file/-f/--graph/--stdin        -> OUT-OF-SCOPE
 #   nesting deeper than MAX_UNWRAP_DEPTH                -> OUT-OF-SCOPE (bounded)
+#   stdin-fed payloads (bash <<<, echo|bash, bash -s,
+#     source /dev/stdin)                                 -> OUT-OF-SCOPE (pinned)
+#   single-quote concatenation truncation                -> OUT-OF-SCOPE (pinned)
+#   command substitution ($(...) in a -c payload or a
+#     VAR=$(...) assignment)                              -> OUT-OF-SCOPE (pinned)
+#   variable indirection (B=bd; $B create ...)            -> OUT-OF-SCOPE (pinned)
 #
 # CORRECTION (beads_claude_docker-vgr round 2): the "bash -c/sh -c/zsh -c
 # 'PAYLOAD' -> BLOCKED (recurse)" line above, stated with NO qualification,
@@ -378,6 +390,51 @@ run_guard() {
 # MAX_UNWRAP_DEPTH by MAX_SCAN_NODES (scripts/bd-guard.sh) -- depth alone
 # does not bound the O(branch^depth) cost of several wrapper candidates at
 # several levels; see the perf tests below.
+#
+# CORRECTION (bd-guard hardening slice, round 3): an independent check found
+# four more accidental-shape gaps -- plain typos an agent could plausibly
+# make, not the contrived multi-decoy constructions the round-2 bounds
+# guard against -- plus one unrelated perf hole in the same audit:
+#   - leading wrapper words outside the original short list (`timeout 10 bd
+#     create x -a joe`, `nice bd create x -a joe`, `stdbuf -o0`/`ionice -c3`
+#     wrapping bd) were not stripped at all -- ALLOWED.
+#   - `bd` itself disguised by a no-op backslash-escape or self-quoting
+#     (`\bd create x -a joe`, `'bd' create x -a joe`, `"bd" create x -a
+#     joe`) never matched the literal `bd` anchors -- ALLOWED.
+#   - the interpreter-detection alternation only recognized `bash|sh|zsh`,
+#     required a BARE (non-path) `env` to already be stripped by the
+#     wrapper-word pass, and required every flag-cluster token to start
+#     with `-` -- so `/usr/bin/env sh -c "..."` (path-prefixed env),
+#     `dash -c "..."` (dash IS /bin/sh in this image), and `bash -O extglob
+#     -c "..."` (a flag cluster with a non-dash option ARGUMENT) all slipped
+#     through -- ALLOWED.
+#   - separately, the per-candidate wrapper-extraction loops (the `head=
+#     $(sed ...); grep -qF ...` containment check run once per raw regex
+#     match) spawned a `sed`+`grep` pair PER CANDIDATE before SCAN_NODE_COUNT
+#     ever got a chance to bound anything, since recursion (where the
+#     counter increments) only happens AFTER that whole loop finishes --
+#     8000 sibling candidates in one command measured ~50s wall clock.
+# All four are fixed: the wrapper-word strip loop gained an atomic
+# word+optional-flag-cluster+optional-numeric-suffix alternative for
+# timeout/stdbuf/setsid/nice/ionice/script/chrt/taskset (positive character
+# classes only, so it can never itself match the literal token `bd` the way
+# a truly generic "strip any leading word" rule could -- deliberately
+# rejected for exactly that reason, see scripts/bd-guard.sh); a
+# backslash/quote-`bd` normalization step in the same fixed-point loop;
+# `dash|ash|ksh` added to the interpreter alternation, a path-prefixed
+# `env` accepted ahead of the interpreter word, and the flag-cluster token
+# widened to any non-whitespace/separator/quote/`<`/`>` run (the `<`/`>`
+# exclusion specifically preserves the stdin-fed `bash <<< "..."` pin below
+# -- without it, `<<<` would itself match as a cluster token and turn a
+# documented OUT-OF-SCOPE case into a false block); and a
+# MAX_WRAPPER_CANDIDATES cap piped in between each `grep -oE` extraction and
+# its per-candidate filter loop (a plain `head -n`, not a counter threaded
+# through the loop -- the loop runs inside a piped subshell, where writes to
+# a script-global counter would be silently lost the moment that subshell
+# exits). None of this closes stdin-fed payloads, single-quote
+# concatenation, command substitution, or variable indirection -- see KNOWN
+# LIMITATIONS in scripts/bd-guard.sh's header and the OUT-OF-SCOPE (pinned)
+# tests below for those, and why they're accepted rather than fixed.
 # ============================================================================
 
 # --- BLOCKED: bash -c / sh -c / zsh -c with the payload in a quoted string ---
@@ -847,5 +904,463 @@ run_guard() {
 
 @test "bd-guard: eval with a benign payload after a decoy-shaped string still passes" {
     run_guard 'echo "; eval " ; echo done'
+    [ "$status" -eq 0 ]
+}
+
+# ============================================================================
+# Round 3 hardening (bd-guard hardening slice): leading wrapper words beyond
+# the original short list, backslash/quote-escaped `bd`, a narrower-than-
+# reality interpreter alternation, and unbounded per-candidate extraction
+# cost. See the CORRECTION (round 3) block above and scripts/bd-guard.sh's
+# KNOWN LIMITATIONS section for the full rationale.
+# ============================================================================
+
+# --- Item A: leading wrapper words (timeout/stdbuf/setsid/nice/ionice/ -------
+# --- script/chrt/taskset), bare and with their own flag/duration argument ---
+
+@test "bd-guard: timeout N bd ... (bare numeric duration argument) is blocked" {
+    run_guard 'timeout 10 bd create x -a joe'
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"NEVER assigned to a human"* ]]
+}
+
+@test "bd-guard: nice bd ... (bare, no argument) is blocked" {
+    run_guard 'nice bd create x -a joe'
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"NEVER assigned to a human"* ]]
+}
+
+@test "bd-guard: setsid bd ... (bare) is blocked" {
+    run_guard 'setsid bd create x -a joe'
+    [ "$status" -eq 2 ]
+}
+
+@test "bd-guard: stdbuf -o0 bd ... (glued flag argument) is blocked" {
+    run_guard 'stdbuf -o0 bd create x -a joe'
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"NEVER assigned to a human"* ]]
+}
+
+@test "bd-guard: ionice -c3 bd ... (glued flag argument) is blocked" {
+    run_guard 'ionice -c3 bd create x -a joe'
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"NEVER assigned to a human"* ]]
+}
+
+@test "bd-guard: nice -n 10 / chrt -f 50 / taskset -c 0 (flag + separate value) are blocked" {
+    run_guard 'nice -n 10 bd create x -a joe'
+    [ "$status" -eq 2 ]
+    run_guard 'chrt -f 50 bd create x -a joe'
+    [ "$status" -eq 2 ]
+    run_guard 'taskset -c 0 bd create x -a joe'
+    [ "$status" -eq 2 ]
+}
+
+@test "bd-guard: script bd ... (bare) is blocked" {
+    run_guard 'script bd create x -a joe'
+    [ "$status" -eq 2 ]
+}
+
+@test "bd-guard: these new wrapper words with a benign payload still pass (no new false positive)" {
+    run_guard 'timeout 10 bd create x --assignee claude'
+    [ "$status" -eq 0 ]
+    run_guard 'stdbuf -o0 bd create x --assignee claude'
+    [ "$status" -eq 0 ]
+}
+
+@test "bd-guard: xargs -I{} (own flags) stays OUT-OF-SCOPE despite the wider wrapper handling" {
+    # Regression pin for the rejected "generic strip any leading word" design:
+    # a fully generic rule would strip xargs' OWN -I{} flag the same way it
+    # strips a new wrapper word's flag, turning this documented, pinned
+    # ALLOW into a false block. The word+arg grammar added in this round is
+    # scoped to exactly the 8 new words, never to xargs.
+    run_guard 'echo joe | xargs -I{} bd create x -a {}'
+    [ "$status" -eq 0 ]
+}
+
+# --- Item B: backslash-escaped or self-quoted `bd` --------------------------
+
+@test "bd-guard: backslash-escaped \\\\bd is blocked (shell no-op escape)" {
+    run_guard '\bd create x -a joe'
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"NEVER assigned to a human"* ]]
+}
+
+@test "bd-guard: single-quoted 'bd' is blocked (self-quoting is a shell no-op)" {
+    run_guard "'bd' create x -a joe"
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"NEVER assigned to a human"* ]]
+}
+
+@test "bd-guard: double-quoted \"bd\" is blocked (self-quoting is a shell no-op)" {
+    run_guard '"bd" create x -a joe'
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"NEVER assigned to a human"* ]]
+}
+
+@test "bd-guard: escaped/quoted bd composes with a leading wrapper word" {
+    run_guard 'command \bd create x -a joe'
+    [ "$status" -eq 2 ]
+    run_guard "env 'bd' create x -a joe"
+    [ "$status" -eq 2 ]
+}
+
+@test "bd-guard: escaped/quoted bd example quoted inside -d stays DATA, not a violation" {
+    # \bd / 'bd' / "bd" normalization is scoped to genuine command position
+    # (start of string or right after a separator) -- text after -d "..." is
+    # neither, so this must stay masked/allowed exactly like the existing
+    # quote-aware-masking tests above.
+    run_guard 'bd create x -d "example: \bd create x -a joe"'
+    [ "$status" -eq 0 ]
+}
+
+# --- Item C: interpreter alternation -- path-prefixed env, dash/ash/ksh, ----
+# --- flag cluster with a non-dash option argument ---------------------------
+
+@test "bd-guard: /usr/bin/env sh -c \"PAYLOAD\" (path-prefixed env) is blocked" {
+    run_guard '/usr/bin/env sh -c "bd create x -a joe"'
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"NEVER assigned to a human"* ]]
+}
+
+@test "bd-guard: dash -c / ash -c / ksh -c are blocked (dash is /bin/sh in this image)" {
+    run_guard "dash -c 'bd create x -a joe'"
+    [ "$status" -eq 2 ]
+    run_guard "ash -c 'bd create x -a joe'"
+    [ "$status" -eq 2 ]
+    run_guard "ksh -c 'bd create x -a joe'"
+    [ "$status" -eq 2 ]
+}
+
+@test "bd-guard: bash -O extglob -c \"PAYLOAD\" (flag cluster with a non-dash option argument) is blocked" {
+    run_guard 'bash -O extglob -c "bd create x -a joe"'
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"NEVER assigned to a human"* ]]
+}
+
+@test "bd-guard: the widened interpreter alternation with a benign payload still passes" {
+    run_guard '/usr/bin/env sh -c "bd create x --assignee claude"'
+    [ "$status" -eq 0 ]
+    run_guard 'bash -O extglob -c "bd create x --assignee claude"'
+    [ "$status" -eq 0 ]
+}
+
+@test "bd-guard: bare env sh -c (no path) still works (unaffected by the path-prefixed addition)" {
+    run_guard 'env sh -c "bd create x -a joe"'
+    [ "$status" -eq 2 ]
+}
+
+# --- Item D: per-candidate extraction cost is bounded independently of ------
+# --- SCAN_NODE_COUNT (MAX_WRAPPER_CANDIDATES) --------------------------------
+
+@test "bd-guard: several hundred sibling wrapper candidates still terminate correctly" {
+    # Exceeds MAX_WRAPPER_CANDIDATES (64): exercises the head-n cap directly,
+    # not just the (already-tested) SCAN_NODE_COUNT recursion bound. The real
+    # violation sits in the FIRST candidate, so this also proves the cap
+    # doesn't throw away the very candidates a real command would care about.
+    local siblings="bash -c \"bd create x -a joe\" ; "
+    local i
+    for i in $(seq 1 300); do siblings="${siblings}bash -c \"bd create x --assignee claude\" ; "; done
+    run_guard "$siblings"
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"NEVER assigned to a human"* ]]
+}
+
+@test "bd-guard: sibling candidates beyond MAX_WRAPPER_CANDIDATES fail open -- documented bound" {
+    # Mirrors the MAX_UNWRAP_DEPTH / MAX_UNSWALLOW_ITERS bound-not-promise
+    # tests above: a violation planted well past the cap is not found via
+    # this path. Fail-open, never itself a block reason.
+    local siblings=""
+    local i
+    for i in $(seq 1 100); do siblings="${siblings}bash -c \"bd create x --assignee claude\" ; "; done
+    siblings="${siblings}bash -c \"bd create x -a joe\" ; "
+    for i in $(seq 1 100); do siblings="${siblings}bash -c \"bd create x --assignee claude\" ; "; done
+    run_guard "$siblings"
+    [ "$status" -eq 0 ]
+}
+
+# ============================================================================
+# OUT-OF-SCOPE (pinned): residual argv-wrapper classes named in KNOWN
+# LIMITATIONS (scripts/bd-guard.sh header) and the round-3 CORRECTION block
+# above. Each requires deliberately constructing shell syntax specifically to
+# hide intent -- not the kind of accidental typo items A-D above cover -- so
+# they stay unfixed per this file's threat model. Pinned here so the
+# documented non-coverage is mechanically true.
+# ============================================================================
+
+@test "OUT-OF-SCOPE (pinned): bash <<< \"PAYLOAD\" (herestring, stdin not argv) is not caught" {
+    run_guard 'bash <<< "bd create x -a joe"'
+    [ "$status" -eq 0 ]
+}
+
+@test "OUT-OF-SCOPE (pinned): echo PAYLOAD | bash (piped stdin, not argv) is not caught" {
+    run_guard 'echo "bd create x -a joe" | bash'
+    [ "$status" -eq 0 ]
+}
+
+@test "OUT-OF-SCOPE (pinned): bash -s <<< \"PAYLOAD\" / echo PAYLOAD | bash -s (explicit stdin mode) is not caught" {
+    run_guard 'bash -s <<< "bd create x -a joe"'
+    [ "$status" -eq 0 ]
+    run_guard 'echo "bd create x -a joe" | bash -s'
+    [ "$status" -eq 0 ]
+}
+
+@test "OUT-OF-SCOPE (pinned): source /dev/stdin <<< \"PAYLOAD\" is not caught" {
+    run_guard 'source /dev/stdin <<< "bd create x -a joe"'
+    [ "$status" -eq 0 ]
+}
+
+@test "OUT-OF-SCOPE (pinned): single-quote concatenation truncates the captured payload" {
+    # bash -c 'bd create x -d '\''n'\'' -a joe' -- real bash concatenates the
+    # three quoted segments into one argv word (`bd create x -d 'n' -a
+    # joe`); this hook's payload regex has no such grammar and stops at the
+    # first embedded quote boundary, silently dropping "-a joe" from
+    # recursion before the real violation is ever seen.
+    run_guard "bash -c 'bd create x -d '\\''n'\\'' -a joe'"
+    [ "$status" -eq 0 ]
+}
+
+@test "OUT-OF-SCOPE (pinned): command substitution in a -c payload is not caught" {
+    # sh -c "$(echo bd create x -a joe)" -- a real shell evaluates $(...)
+    # BEFORE -c ever sees the result; this hook recurses on the literal,
+    # unevaluated source text, where `bd` is an argument to `echo`, not
+    # standing at command position.
+    run_guard 'sh -c "$(echo bd create x -a joe)"'
+    [ "$status" -eq 0 ]
+}
+
+@test "OUT-OF-SCOPE (pinned): command substitution in a VAR=\$(...) assignment is not caught" {
+    run_guard 'X=$(bd create x -a joe)'
+    [ "$status" -eq 0 ]
+}
+
+@test "OUT-OF-SCOPE (pinned): variable indirection (B=bd; \$B ...) is not caught" {
+    # The literal command text never contains `bd` immediately followed by a
+    # verb (create/update/...) -- the two are split across an assignment and
+    # a separate variable reference -- so even the cheap verb-prefilter this
+    # hook starts every scan with never engages.
+    run_guard 'B=bd; $B create x -a joe'
+    [ "$status" -eq 0 ]
+}
+
+# =============================================================================
+# Hardening round 4 (third independent verifier pass, final round): shell
+# reserved words at command position (P0), and wrapper words that take their
+# own separate-token arguments beyond the round-3 numeric-only grammar (P1).
+# =============================================================================
+
+# --- P0: `bd` after a shell reserved word was invisible to EVERY rule below --
+# --- (do/then/else/elif/!, per the reported bypass) --------------------------
+
+@test "bd-guard: for ... do bd update ... done (loop body) is blocked" {
+    run_guard 'for i in 1 2; do bd update bd-$i -a joe; done'
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"NEVER assigned to a human"* ]]
+}
+
+@test "bd-guard: for ... do bd tag ... human ... done is blocked" {
+    run_guard 'for i in 1 2; do bd tag bd-$i human; done'
+    [ "$status" -eq 2 ]
+}
+
+@test "bd-guard: for ... do bd gate create ... done is blocked" {
+    run_guard 'for i in 1 2; do bd gate create --blocks bd-$i; done'
+    [ "$status" -eq 2 ]
+}
+
+@test "bd-guard: for ... do bd human ... done is blocked" {
+    run_guard 'for i in 1 2; do bd human bd-$i; done'
+    [ "$status" -eq 2 ]
+}
+
+@test "bd-guard: if ... then bd create --labels human ... fi is blocked" {
+    run_guard 'if true; then bd create x --labels human; fi'
+    [ "$status" -eq 2 ]
+}
+
+@test "bd-guard: if ... then : ; else bd create ... -a joe ... fi is blocked" {
+    run_guard 'if false; then :; else bd create x -a joe; fi'
+    [ "$status" -eq 2 ]
+}
+
+@test "bd-guard: until ... do bd create ... -a joe ... done is blocked" {
+    run_guard 'until false; do bd create x -a joe; done'
+    [ "$status" -eq 2 ]
+}
+
+@test "bd-guard: if [ ... ]; then bd assign ... joe ... fi is blocked" {
+    run_guard 'if [ -f f ]; then bd assign bd-1 joe; fi'
+    [ "$status" -eq 2 ]
+}
+
+@test "bd-guard: ! bd create ... -a joe (negation) is blocked" {
+    run_guard '! bd create x -a joe'
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"NEVER assigned to a human"* ]]
+}
+
+# --- P0, own self-attack follow-up: `bd` as the CONDITION itself, not just --
+# --- the loop/if BODY -- if/while/until directly precede `bd`, not do/then --
+
+@test "bd-guard: if bd update ... -a joe; then ... fi (bd in the condition) is blocked" {
+    run_guard 'if bd update bd-1 -a joe; then :; fi'
+    [ "$status" -eq 2 ]
+}
+
+@test "bd-guard: while bd update ... -a joe; do ... done (bd in the condition) is blocked" {
+    run_guard 'while bd update bd-1 -a joe; do :; done'
+    [ "$status" -eq 2 ]
+}
+
+@test "bd-guard: until bd update ... -a joe; do ... done (bd in the condition) is blocked" {
+    run_guard 'until bd update bd-1 -a joe; do :; done'
+    [ "$status" -eq 2 ]
+}
+
+# --- P0 controls: coverage that already worked before round 4 must still ---
+
+@test "bd-guard: do :; done; bd create ... -a joe (real bd reached via the later ;) still blocks" {
+    run_guard 'do :; done; bd create x -a joe'
+    [ "$status" -eq 2 ]
+}
+
+@test "bd-guard: multi-line for/do/bd/done (bd on its own line) still blocks" {
+    run_guard 'for i in 1 2
+do
+  bd update bd-$i -a joe
+done'
+    [ "$status" -eq 2 ]
+}
+
+# --- P0: benign bd now visible inside loop/conditional bodies for the FIRST -
+# --- time must NOT become a new false positive ------------------------------
+
+@test "bd-guard: for ... do bd update --claim ... done (benign, no violation) passes" {
+    run_guard 'for i in 1 2; do bd update bd-$i --claim; done'
+    [ "$status" -eq 0 ]
+}
+
+@test "bd-guard: while read ... do bd update --claim ... done (benign) passes" {
+    run_guard 'cat ids | while read -r id; do bd update $id --claim; done'
+    [ "$status" -eq 0 ]
+}
+
+@test "bd-guard: for ... do bd create --assignee claude ... done (benign) passes" {
+    run_guard 'for i in 1 2; do bd create "task $i" --assignee claude; done'
+    [ "$status" -eq 0 ]
+}
+
+@test "bd-guard: for ... do bd close with a clean reason ... done (benign) passes" {
+    run_guard 'for i in 1 2; do bd close bd-$i --reason "Fixed and verified via take-screenshot term"; done'
+    [ "$status" -eq 0 ]
+}
+
+@test "bd-guard: reserved-word stripping inside a masked -d value does not defeat masking" {
+    # "do " sits right after a `;` INSIDE the quoted -d value; the keyword
+    # strip runs on the pre-mask buffer and removes it, but masked_cmd still
+    # blanks the whole quoted span regardless (quote characters untouched),
+    # so this must stay exactly as allowed as it was before round 4.
+    run_guard 'bd create x -d "step 1; do not use -a joe as in the example" --assignee claude'
+    [ "$status" -eq 0 ]
+}
+
+@test "bd-guard: a title mentioning ; then bd ... in prose (benign, real assignee is claude) passes" {
+    run_guard 'bd create "Fix retry; then bd auto-resumes correctly" --assignee claude'
+    [ "$status" -eq 0 ]
+}
+
+# --- P1: wrapper words that take their own separate-token arguments ---------
+# --- beyond the round-3 "flags-then-one-trailing-number" grammar ------------
+
+@test "bd-guard: timeout -k 5 10 bd ... (flag+value then a second, separate numeric) is blocked" {
+    run_guard 'timeout -k 5 10 bd create x -a joe'
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"NEVER assigned to a human"* ]]
+}
+
+@test "bd-guard: timeout 10 -- bd ... (bare numeric BEFORE a dash token) is blocked" {
+    run_guard 'timeout 10 -- bd create x -a joe'
+    [ "$status" -eq 2 ]
+}
+
+@test "bd-guard: env -u FOO bd ... (env's own value-taking flag) is blocked" {
+    run_guard 'env -u FOO bd create x -a joe'
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"NEVER assigned to a human"* ]]
+}
+
+@test "bd-guard: env -i bd ... (env's own bare flag) is blocked" {
+    run_guard 'env -i bd create x -a joe'
+    [ "$status" -eq 2 ]
+}
+
+@test "bd-guard: sudo -u agent bd ... (sudo's own value-taking flag) is blocked" {
+    run_guard 'sudo -u agent bd create x -a joe'
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"NEVER assigned to a human"* ]]
+}
+
+@test "bd-guard: time -p bd ... (time's only real flag) is blocked" {
+    run_guard 'time -p bd create x -a joe'
+    [ "$status" -eq 2 ]
+}
+
+@test "bd-guard: env/sudo/time bare forms and a few more common flags still work, no new FP" {
+    run_guard 'env -0 bd create x --assignee claude'
+    [ "$status" -eq 0 ]
+    run_guard 'sudo -A bd create x --assignee claude'
+    [ "$status" -eq 0 ]
+    run_guard 'sudo -u agent bd create x --assignee claude'
+    [ "$status" -eq 0 ]
+    run_guard 'timeout -k 5 10 bd create x --assignee claude'
+    [ "$status" -eq 0 ]
+}
+
+@test "bd-guard: xargs pins are unaffected by the round-4 wrapper-argument grammar" {
+    run_guard 'echo x | xargs bd create x -a joe'
+    [ "$status" -eq 2 ]
+    run_guard 'echo joe | xargs -I{} bd create x -a {}'
+    [ "$status" -eq 0 ]
+}
+
+# --- OUT-OF-SCOPE (pinned): intra-word quoting/escaping of `bd` itself ------
+# --- -- contrived shapes no agent types by accident, deliberately not fixed -
+
+@test "OUT-OF-SCOPE (pinned): b\\d create ... (backslash INSIDE the word) is not caught" {
+    run_guard 'b\d create x -a joe'
+    [ "$status" -eq 0 ]
+}
+
+@test "OUT-OF-SCOPE (pinned): 'b'd create ... (only half the word quoted) is not caught" {
+    run_guard "'b'd create x -a joe"
+    [ "$status" -eq 0 ]
+}
+
+@test "OUT-OF-SCOPE (pinned): bd'' create ... (empty-string concatenation) is not caught" {
+    run_guard "bd'' create x -a joe"
+    [ "$status" -eq 0 ]
+}
+
+@test "OUT-OF-SCOPE (pinned): bash -c \$'bd create ...' (ANSI-C quoting) is not caught" {
+    run_guard $'bash -c $\'bd create x -a joe\''
+    [ "$status" -eq 0 ]
+}
+
+# --- RESIDUAL (documented, pinned): a flag outside the env/sudo/time arity --
+# --- table, or any flag at all for command/builtin/nohup/exec/xargs, -------
+# --- still leaves bd hidden -- see KNOWN LIMITATIONS in bd-guard.sh --------
+
+@test "RESIDUAL (pinned): sudo -E --preserve-env=PATH bd ... (long-form-only value flag) is not caught" {
+    run_guard 'sudo -E --preserve-env=PATH bd create x -a joe'
+    [ "$status" -eq 0 ]
+}
+
+@test "RESIDUAL (pinned): env -S '...' bd ... (flag outside the env table) is not caught" {
+    run_guard 'env -S "-a joe" bd create x -a joe'
+    [ "$status" -eq 0 ]
+}
+
+@test "RESIDUAL (pinned): command -p bd ... (command gets no flag grammar at all) is not caught" {
+    run_guard 'command -p bd create x -a joe'
     [ "$status" -eq 0 ]
 }
