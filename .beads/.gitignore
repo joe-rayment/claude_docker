@@ -34,6 +34,13 @@ redirect
 export-state/
 export-state.json
 
+# entrypoint.sh's ensure_beads() safety-copy/fresh-capture fallbacks (used
+# when mktemp is unusable): transient, must never be committable if a crash
+# leaves one behind mid-run. issues.jsonl.fresh* also covers its jq-split
+# derivatives (issues.jsonl.fresh.issues, issues.jsonl.fresh.memories).
+issues.jsonl.bak
+issues.jsonl.fresh*
+
 # Ephemeral store (SQLite - wisps/molecules, intentionally not versioned)
 ephemeral.sqlite3
 ephemeral.sqlite3-journal

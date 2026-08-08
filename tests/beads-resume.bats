@@ -71,6 +71,12 @@ _bd_total() {
     (cd "$PROJ" && bd status --json) 2>/dev/null | jq -r '.summary.total_issues // 0'
 }
 
+# Count persistent memories ('bd remember'), excluding the schema_version
+# key that's always present in `bd memories --json` output.
+_bd_mem_count() {
+    (cd "$PROJ" && bd memories --json) 2>/dev/null | jq '[keys[] | select(. != "schema_version")] | length'
+}
+
 # $1 = project dir -> prints its embeddeddolt db subdir. Discovered by
 # listing rather than assumed from --prefix: bd sanitizes prefixes that
 # don't start with a letter, so the two are not always identical.
@@ -283,6 +289,138 @@ _backdate_export_state() {
     # ran and succeeded.
     [ -d "$PROJ/.beads/embeddeddolt" ]
     (cd "$PROJ" && bd create "post-repair write-path probe" --quiet)
+
+    # The 2 starter memories (seeded by the initial ensure_beads case-A
+    # call) live only in the Dolt DB -- never in issues.jsonl or a default
+    # `bd export` -- so they were still present, untouched, right up until
+    # the escalation's `rm -rf embeddeddolt`. They must survive the
+    # removal-and-rebuild, not silently vanish with it.
+    [ "$(_bd_mem_count)" = "2" ]
+}
+
+# THIRD DATA-LOSS PATH: the cx8 escalation's own capture-before-`rm -rf`
+# step (fresh_export) had no fallback when its mktemp failed (unlike
+# safety_copy a few lines above it) and a failed `bd export` was never
+# treated as fatal -- so the destructive `rm -rf .beads/embeddeddolt` ran
+# unconditionally, gated only on prefix_after, and the DB was rebuilt from
+# whatever stale issues.jsonl happened to already be on disk. Same
+# live-ahead fixture as a2s (issue_prefix dropped, issues table intact and
+# ahead of a deliberately stale on-disk export), but here the failure mode
+# under test is the CAPTURE step itself, not the health check.
+@test "escalation capture with a read-only TMPDIR: live-ahead issues and memories both survive (was: stale export wins, data lost)" {
+    git -C "$PROJ" init --quiet
+    ensure_beads "$PROJ"   # case A: seeds prefix + 2 starter memories
+    (cd "$PROJ" && bd create "Issue present in stale export" --quiet)
+    (cd "$PROJ" && bd export -o .beads/issues.jsonl --quiet)   # deliberately stale
+    (cd "$PROJ" && bd create "Issue missing from stale export" --quiet)
+    id3=$(cd "$PROJ" && bd create "Closed issue missing from stale export" --json | jq -r '.id')
+    (cd "$PROJ" && bd close "$id3" --reason "done" --quiet)
+
+    local ground_truth="$BATS_TEST_TMPDIR/ro-tmpdir-ground-truth.txt"
+    (cd "$PROJ" && bd list --all --flat) > "$ground_truth"
+    [ "$(_bd_total)" = "3" ]
+    [ "$(_bd_mem_count)" = "2" ]
+
+    # Corrupt the write path only (drop issue_prefix); issues table stays
+    # intact and legitimately ahead of the on-disk export.
+    local dbdir; dbdir=$(_dolt_dir_for "$PROJ")
+    ( cd "$dbdir" && dolt sql -q "delete from config where \`key\`='issue_prefix'" )
+    # Deliberately do NOT backdate export-state.json here (unlike the 2fd/
+    # cx8/a2s fixtures above): the create/close calls just above already
+    # refreshed its timestamp, so bd's own throttled auto-export stays
+    # dormant for the rest of this test. Backdating would let that
+    # auto-export silently refresh issues.jsonl on disk before ensure_beads
+    # ever reaches the escalation, masking the exact staleness this test
+    # exists to exercise -- confirmed empirically while building this repro.
+
+    local before_md5
+    before_md5=$(md5sum "$PROJ/.beads/issues.jsonl" | cut -d' ' -f1)
+
+    # A read-only TMPDIR for this one call only: mktemp fails, so the fix's
+    # tier-2 fallback (a fixed name inside .beads/, which IS writable here)
+    # is what's under test.
+    local ro_tmpdir="$BATS_TEST_TMPDIR/ro-tmp"
+    mkdir -p "$ro_tmpdir"
+    chmod 0500 "$ro_tmpdir"
+    TMPDIR="$ro_tmpdir" ensure_beads "$PROJ"
+    chmod 0700 "$ro_tmpdir"   # restore before bats tries to clean up its own tmpdir
+
+    [ "$(_bd_total)" = "3" ]
+    diff "$ground_truth" <(cd "$PROJ" && bd list --all --flat)
+    [ "$(_bd_mem_count)" = "2" ]
+    (cd "$PROJ" && bd create "post-repair write-path probe" --quiet)
+    # before_md5 is intentionally unused for the final assertion: with a
+    # working tier-2 fallback the file legitimately gets REWRITTEN (the
+    # on-disk copy was stale) -- correctness is asserted via the issue
+    # list above, matching a2s's existing pattern.
+    [ -n "$before_md5" ]
+
+    # This is the one test that exercises the tier-2 fallback (mktemp is
+    # what's read-only here, so the capture and its jq split all land
+    # inside .beads/) -- confirm the transient capture and both split
+    # derivatives are cleaned up, not left behind as committable cruft.
+    [ ! -e "$PROJ/.beads/issues.jsonl.fresh" ]
+    [ ! -e "$PROJ/.beads/issues.jsonl.fresh.issues" ]
+    [ ! -e "$PROJ/.beads/issues.jsonl.fresh.memories" ]
+}
+
+@test "escalation capture when bd export itself fails: destructive rebuild is skipped, DB stays broken-but-intact (no data lost)" {
+    git -C "$PROJ" init --quiet
+    ensure_beads "$PROJ"
+    (cd "$PROJ" && bd create "Issue present in stale export" --quiet)
+    (cd "$PROJ" && bd export -o .beads/issues.jsonl --quiet)
+    (cd "$PROJ" && bd create "Issue missing from stale export" --quiet)
+    id3=$(cd "$PROJ" && bd create "Closed issue missing from stale export" --json | jq -r '.id')
+    (cd "$PROJ" && bd close "$id3" --reason "done" --quiet)
+    [ "$(_bd_total)" = "3" ]
+    [ "$(_bd_mem_count)" = "2" ]
+
+    local dbdir; dbdir=$(_dolt_dir_for "$PROJ")
+    # Sentinel proves the rm -rf never ran: mtime-independent, and dolt's
+    # own commit machinery will never touch a file it doesn't manage.
+    touch "$dbdir/SENTINEL_MUST_SURVIVE"
+    ( cd "$dbdir" && dolt sql -q "delete from config where \`key\`='issue_prefix'" )
+    # Same reasoning as the read-only-TMPDIR test above: no backdating.
+
+    local before_md5
+    before_md5=$(md5sum "$PROJ/.beads/issues.jsonl" | cut -d' ' -f1)
+
+    # PATH-shim `bd` so ONLY `bd export` fails (both the mktemp-path and
+    # the .beads/-fallback attempts); every other subcommand reaches the
+    # real binary untouched -- proves the fatal gate fires even with a
+    # perfectly writable TMPDIR, whenever `bd export` itself is what fails.
+    local shimdir="$BATS_TEST_TMPDIR/bd-export-fail-shim"
+    mkdir -p "$shimdir"
+    local real_bd; real_bd=$(command -v bd)
+    cat > "$shimdir/bd" <<SHIMEOF
+#!/bin/bash
+if [ "\$1" = "export" ]; then
+    exit 1
+fi
+exec "$real_bd" "\$@"
+SHIMEOF
+    chmod +x "$shimdir/bd"
+
+    PATH="$shimdir:$PATH" ensure_beads "$PROJ"
+
+    # Capture failed everywhere -> destruction must be skipped entirely:
+    # issues.jsonl untouched, embeddeddolt/ (and the sentinel inside it)
+    # survives un-rm'd. The live DB itself was never wiped, so its true
+    # count still reads correctly even though the write path (issue_prefix)
+    # stays broken until a future successful run.
+    [ "$(md5sum "$PROJ/.beads/issues.jsonl" | cut -d' ' -f1)" = "$before_md5" ]
+    [ -f "$dbdir/SENTINEL_MUST_SURVIVE" ]
+    [ "$(_bd_total)" = "3" ]
+    [ "$(_bd_mem_count)" = "2" ]
+    run bash -c "cd '$PROJ' && bd create 'should still fail, write path unrepaired' --quiet"
+    [ "$status" -ne 0 ]
+
+    # A later run with a working bd export must self-heal completely --
+    # the broken-but-intact state is recoverable, not a dead end.
+    ensure_beads "$PROJ"
+    [ "$(_bd_total)" = "3" ]
+    [ "$(_bd_mem_count)" = "2" ]
+    (cd "$PROJ" && bd create "post-repair write-path probe" --quiet)
 }
 
 @test "beads_claude_docker-a2s: data-intact but issue_prefix missing is not 'healthy' -- write path fixed and live-ahead data not rolled back" {
@@ -323,6 +461,12 @@ _backdate_export_state() {
 
     # The write path must actually be fixed, not just the count.
     (cd "$PROJ" && bd create "post-repair write-path probe" --quiet)
+
+    # This shape reaches the same embeddeddolt-removal escalation as cx8
+    # (bd init refuses "already initialized", bd import fails on the
+    # missing issue_prefix) -- so the 2 starter memories were just as much
+    # at risk here as in cx8, and must survive too.
+    [ "$(_bd_mem_count)" = "2" ]
 }
 
 @test "the embeddeddolt-removal escalation never fires on a healthy database" {

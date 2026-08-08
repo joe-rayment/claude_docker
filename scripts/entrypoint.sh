@@ -353,10 +353,14 @@ ensure_beads() {
     # bail out here, unrepaired, rather than run bd commands that can
     # delete the only copy of the history with nothing left to restore it
     # from.
-    local safety_copy=""
-    safety_copy=$(mktemp "${TMPDIR:-/tmp}/beads-issues-safety.XXXXXX" 2>/dev/null) || safety_copy=""
-    if [ -n "$safety_copy" ]; then
-        cp "$dir/.beads/issues.jsonl" "$safety_copy" 2>/dev/null || safety_copy=""
+    local safety_copy="" safety_tmp=""
+    safety_tmp=$(mktemp "${TMPDIR:-/tmp}/beads-issues-safety.XXXXXX" 2>/dev/null) || safety_tmp=""
+    if [ -n "$safety_tmp" ]; then
+        if cp "$dir/.beads/issues.jsonl" "$safety_tmp" 2>/dev/null; then
+            safety_copy="$safety_tmp"
+        else
+            rm -f "$safety_tmp" 2>/dev/null || true
+        fi
     fi
     if [ -z "$safety_copy" ]; then
         local fallback_copy="$dir/.beads/issues.jsonl.bak"
@@ -380,7 +384,12 @@ ensure_beads() {
     _beads_restore_export_if_missing "$dir" "$safety_copy"
 
     if [ "$total" != "0" ] && [ -n "$prefix_val" ]; then
-        rm -f "$safety_copy" 2>/dev/null || true
+        # Only discard the safety net once the live file is confirmed
+        # present -- if some earlier restore attempt silently failed and
+        # left issues.jsonl missing/empty, this is the last copy.
+        if [ -s "$dir/.beads/issues.jsonl" ]; then
+            rm -f "$safety_copy" 2>/dev/null || true
+        fi
         return 0   # (C) healthy — DB has issues AND the write path works
     fi
 
@@ -427,39 +436,126 @@ ensure_beads() {
         # this check too, so a broken/missing jq can never forge the
         # all-clear for this destructive step.
         if [ -z "$prefix_after" ]; then
-            dev-log error "ensure_beads: embeddeddolt present but issue_prefix missing after init+import; removing embeddeddolt and rebuilding" 2>/dev/null || true
-
             # A live DB can legitimately be AHEAD of a stale on-disk
             # issues.jsonl (bd's own auto-export is throttled, so a recent
-            # `bd create` can be missing from the last export). `bd export`
-            # is read-only and works even in this write-broken state, so
-            # capture the freshest truth before the destructive step below
-            # — and only adopt it if it actually produced data, so a
-            # genuinely-empty DB's 0-issue export can never stomp a
-            # preserved-but-corrupt export (2fd's last-resort copy).
-            local fresh_export
+            # `bd create` can be missing from the last export), and it is
+            # the ONLY place `bd remember` memories exist -- neither
+            # issues.jsonl nor bd's own default export ever carries them
+            # (confirmed via export-state.json's "memories":0 even with
+            # memories present; `bd export` excludes them by design since
+            # they may hold sensitive agent context). The `rm -rf` below
+            # is the single point that can destroy both forever, so —
+            # same "unrepaired beats unprotected" invariant as the
+            # safety_copy bail-out above, applied to this destructive step
+            # — it may only run once the capture has demonstrably
+            # succeeded. A failed capture skips the destruction entirely
+            # and leaves the DB broken-but-intact rather than rebuilding
+            # from stale/absent data.
+            #
+            # Two-tier fallback identical in shape to safety_copy: mktemp
+            # first (outside .beads/), then a fixed name inside .beads/ if
+            # mktemp is unusable (full/read-only TMPDIR) -- the SAME
+            # fallback also triggers if mktemp succeeds but `bd export`
+            # itself fails or yields nothing, not only if mktemp fails.
+            # `bd export` is read-only and works even in this
+            # write-broken state (verified against a fixture with
+            # issue_prefix missing). --include-memories pulls issues and
+            # memories into one atomic snapshot; jq then splits them so
+            # memories are NEVER written into issues.jsonl/safety_copy —
+            # that file is git-tracked, so adopting the combined export
+            # wholesale would leak memory content into git history.
+            local fresh_export="" fresh_ok=0
             fresh_export=$(mktemp "${TMPDIR:-/tmp}/beads-issues-fresh.XXXXXX" 2>/dev/null) || fresh_export=""
             if [ -n "$fresh_export" ]; then
-                if (cd "$dir" && bd export -o "$fresh_export" --quiet) >/dev/null 2>&1 && [ -s "$fresh_export" ]; then
-                    cp "$fresh_export" "$dir/.beads/issues.jsonl" 2>/dev/null || true
-                    cp "$fresh_export" "$safety_copy" 2>/dev/null || true
+                if (cd "$dir" && bd export --include-memories -o "$fresh_export" --quiet) >/dev/null 2>&1 && [ -s "$fresh_export" ]; then
+                    fresh_ok=1
+                else
+                    rm -f "$fresh_export" 2>/dev/null || true
+                    fresh_export=""
                 fi
-                rm -f "$fresh_export" 2>/dev/null || true
+            fi
+            if [ "$fresh_ok" != "1" ]; then
+                local fallback_fresh="$dir/.beads/issues.jsonl.fresh"
+                if (cd "$dir" && bd export --include-memories -o "$fallback_fresh" --quiet) >/dev/null 2>&1 && [ -s "$fallback_fresh" ]; then
+                    fresh_export="$fallback_fresh"
+                    fresh_ok=1
+                else
+                    rm -f "$fallback_fresh" 2>/dev/null || true
+                    fresh_export=""
+                fi
             fi
 
-            rm -rf "$dir/.beads/embeddeddolt" 2>/dev/null || true
-            _beads_restore_export_if_missing "$dir" "$safety_copy"
-            (cd "$dir" && bd init --prefix "$prefix" --quiet --non-interactive) 2>/dev/null || true
-            _beads_restore_export_if_missing "$dir" "$safety_copy"
-            (cd "$dir" && bd import) 2>/dev/null || true
-            _beads_restore_export_if_missing "$dir" "$safety_copy"
+            if [ "$fresh_ok" != "1" ]; then
+                dev-log error "ensure_beads: cannot capture live DB state before embeddeddolt removal (mktemp and .beads/ fallback both failed, or bd export produced no data); skipping embeddeddolt rebuild -- any bd remember memories and any issues ahead of the last export stay at risk in the broken-but-intact DB rather than being rolled back to a stale one" 2>/dev/null || true
+            else
+                # Split the atomic capture: issues (candidate for
+                # issues.jsonl/safety_copy adoption) vs memories (restored
+                # straight into the rebuilt DB after import, never written
+                # to a tracked file). Treat a jq failure as a capture
+                # failure too -- a partial/unusable split must not
+                # masquerade as success.
+                local fresh_issues="${fresh_export}.issues" fresh_memories="${fresh_export}.memories"
+                local split_ok=0
+                if jq -c 'select(._type != "memory")' "$fresh_export" > "$fresh_issues" 2>/dev/null \
+                    && jq -c 'select(._type == "memory")' "$fresh_export" > "$fresh_memories" 2>/dev/null; then
+                    split_ok=1
+                fi
+
+                # Adopt the issues split only if the split is trustworthy
+                # AND (when there's anything to adopt) both copies land
+                # safely. A split that succeeded but yielded zero issue
+                # lines is a legitimate "nothing to adopt" result (matches
+                # the original -s guard: never let a genuinely-empty
+                # result stomp a preserved-corrupt file); an adoption cp
+                # failing partway is NOT that case and must block
+                # destruction like any other capture failure.
+                local adopt_ok=1
+                if [ "$split_ok" != "1" ]; then
+                    adopt_ok=0
+                elif [ -s "$fresh_issues" ]; then
+                    cp "$fresh_issues" "$dir/.beads/issues.jsonl" 2>/dev/null \
+                        && cp "$fresh_issues" "$safety_copy" 2>/dev/null \
+                        || adopt_ok=0
+                fi
+
+                if [ "$adopt_ok" != "1" ]; then
+                    dev-log error "ensure_beads: captured live DB state but could not adopt it (jq split or copy failed); skipping embeddeddolt rebuild to avoid rolling back to a stale export" 2>/dev/null || true
+                    rm -f "$fresh_export" "$fresh_issues" "$fresh_memories" 2>/dev/null || true
+                else
+                    dev-log error "ensure_beads: embeddeddolt present but issue_prefix missing after init+import; removing embeddeddolt and rebuilding" 2>/dev/null || true
+
+                    rm -rf "$dir/.beads/embeddeddolt" 2>/dev/null || true
+                    _beads_restore_export_if_missing "$dir" "$safety_copy"
+                    (cd "$dir" && bd init --prefix "$prefix" --quiet --non-interactive) 2>/dev/null || true
+                    _beads_restore_export_if_missing "$dir" "$safety_copy"
+                    (cd "$dir" && bd import) 2>/dev/null || true
+                    _beads_restore_export_if_missing "$dir" "$safety_copy"
+
+                    # Restore memories directly into the rebuilt DB (never
+                    # via issues.jsonl). On failure, preserve the capture
+                    # instead of deleting it -- at that point it is the
+                    # only remaining copy.
+                    if [ -s "$fresh_memories" ]; then
+                        if (cd "$dir" && bd import "$fresh_memories") 2>/dev/null; then
+                            rm -f "$fresh_memories" 2>/dev/null || true
+                        else
+                            dev-log error "ensure_beads: memory restore failed after embeddeddolt rebuild; captured memories preserved at $fresh_memories -- import manually with 'bd import $fresh_memories'" 2>/dev/null || true
+                        fi
+                    else
+                        rm -f "$fresh_memories" 2>/dev/null || true
+                    fi
+                    rm -f "$fresh_export" "$fresh_issues" 2>/dev/null || true
+                fi
+            fi
         fi
     fi
 
     total=$( (cd "$dir" && bd status --json) 2>/dev/null | jq -r '.summary.total_issues // 0' 2>/dev/null || echo 0)
     [ -z "$total" ] && total=0
     _beads_restore_export_if_missing "$dir" "$safety_copy"
-    rm -f "$safety_copy" 2>/dev/null || true
+    if [ -s "$dir/.beads/issues.jsonl" ]; then
+        rm -f "$safety_copy" 2>/dev/null || true
+    fi
 
     if [ "$total" != "0" ]; then
         dev-log run "bd init + bd import" pass "Rebuilt Beads database from issues.jsonl on startup ($total issues)" 2>/dev/null || true
