@@ -551,7 +551,35 @@ run_guard() {
 }
 
 @test "bd-guard: jq unresolvable on PATH fails open (allow) instead of crashing" {
-    run bash -c 'PATH=/nonexistent jq -n --arg c "bd create x -a joe" "{tool_input:{command:\$c}}" 2>/dev/null | '"$GUARD"' 2>&1'
+    # Build the input JSON FIRST, while jq is still on the normal PATH. The
+    # old version of this test prefixed PATH=/nonexistent onto the jq call
+    # that BUILDS the input -- so jq itself never ran, the guard received
+    # EMPTY stdin, and the observed exit 0 came from the (separately tested,
+    # above) empty-stdin path, never from the guard's own missing-jq
+    # handling at bd-guard.sh:202 at all. This version restricts PATH only
+    # around the GUARD's own invocation, after the real input already exists.
+    local input="$BATS_TEST_TMPDIR/input.json"
+    jq -n --arg c 'bd create x -a joe' '{tool_input:{command:$c}}' > "$input"
+
+    # A PATH shim with everything the guard needs to run its rule engine
+    # EXCEPT jq: bash (the #!/usr/bin/env bash shebang resolves it via
+    # PATH -- /usr/bin/env itself is invoked by the absolute path baked into
+    # the shebang, but env then does its own PATH lookup for "bash"), plus
+    # sh/grep/sed/head/tr/cat, which scan_cmd's rule engine calls. This
+    # makes the test self-checking in both directions: if jq leaked into the
+    # shim, the real violation in the payload would reach the assignee rule
+    # and exit 2 (test fails); if the shim were missing something else the
+    # guard needs (e.g. bash itself), the process would fail to start rather
+    # than exit 0 (test fails). Exit 0 here can only come from the guard's
+    # own missing-jq fail-open.
+    local shim="$BATS_TEST_TMPDIR/shim"
+    mkdir -p "$shim"
+    local tool
+    for tool in bash sh grep sed head tr cat; do
+        ln -s "$(command -v "$tool")" "$shim/$tool"
+    done
+
+    run bash -c 'PATH="$1" "$2" < "$3"' _ "$shim" "$GUARD" "$input"
     [ "$status" -eq 0 ]
 }
 
@@ -857,12 +885,45 @@ run_guard() {
 # (MAX_SCAN_NODES in scripts/bd-guard.sh; see the bead for the O(branch^depth)
 # construction that made the unbounded version take double-digit seconds.)
 
-@test "bd-guard: a wide-but-shallow branching command still terminates and stays fast" {
-    # Two levels of real nesting, several siblings per level -- exercises
-    # the node budget without needing a giant fixture in the test itself.
+@test "bd-guard: a wide-but-shallow branching command still terminates correctly" {
+    # Two levels of real nesting, several siblings per level, all benign --
+    # a correctness control (no false positive from ordinary nested
+    # wrapping), NOT proof the node budget itself did anything: at ~13
+    # scan_cmd calls this stays far under MAX_SCAN_NODES (200), so it would
+    # pass identically with the budget at 1, at 200, or removed outright.
+    # The "a violation planted past the budget is not found" pin -- the
+    # actual bound-not-promise property, mirroring the depth/unswallow/
+    # candidate-cap tests elsewhere in this file -- is the next test.
     local inner='bash -c "bd create x --assignee claude" ; bash -c "bd create x --assignee claude" ; bash -c "bd create x --assignee claude"'
     local mid="bash -c '$inner' ; bash -c '$inner' ; bash -c '$inner'"
     run_guard "$mid"
+    [ "$status" -eq 0 ]
+}
+
+@test "bd-guard: a violation planted past MAX_SCAN_NODES fails open -- documented bound" {
+    # Mirrors the MAX_UNWRAP_DEPTH / MAX_UNSWALLOW_ITERS / MAX_WRAPPER_
+    # CANDIDATES bound-not-promise tests elsewhere in this file: MAX_SCAN_
+    # NODES was the only one of the four bounds with no "a violation planted
+    # beyond the bound is not found" pin -- the wide-but-shallow test above
+    # is a correctness control only (see its comment), never a proof the
+    # 200-node cap does anything, since it plants no violation for a budget
+    # to hide. 60 mid-level wrappers x 4 inner wrappers each = 1 (root) + 60
+    # (mids) + 240 (inners) = 301 scan_cmd calls, comfortably over the
+    # 200-node cap (exhausted partway through the 40th mid); each level
+    # stays well under MAX_WRAPPER_CANDIDATES (64) so this exercises the
+    # node budget specifically, not the candidate cap. The real violation
+    # sits in the very LAST inner wrapper of the very LAST mid wrapper,
+    # reached only after the budget is already spent -- fail-open, never
+    # itself a block reason, same contract as every other bound in this
+    # file.
+    local benign_inner='bash -c "bd create x --assignee claude"'
+    local benign_mid="$benign_inner ; $benign_inner ; $benign_inner ; $benign_inner"
+    local last_mid="$benign_inner ; $benign_inner ; $benign_inner ; bash -c \"bd create x -a joe\""
+    local mids=""
+    local i
+    for i in $(seq 1 59); do mids="${mids}bash -c '${benign_mid}' ; "; done
+    mids="${mids}bash -c '${last_mid}'"
+    run_guard "$mids"
     [ "$status" -eq 0 ]
 }
 
