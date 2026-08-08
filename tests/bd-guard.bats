@@ -497,7 +497,12 @@ make_reinit_repo() {
 #   bash/sh/zsh/dash/ash/ksh -c "PAYLOAD" (+ path-prefixed,
 #     + path-prefixed `env sh -c "..."`)                -> BLOCKED (recurse)
 #   eval "PAYLOAD" / eval 'PAYLOAD' / eval PAYLOAD     -> BLOCKED (recurse)
-#   nested wrapping (bash -c "eval '...'")             -> BLOCKED (cascades)
+#   nested wrapping, inner quote DIFFERENT type than
+#     outer's or otherwise unescaped (bash -c "eval
+#     '...'")                                           -> BLOCKED (cascades)
+#   nested wrapping, inner quote escapes the SAME type
+#     as its wrapper (bash -c "bash -c \"...\"" and
+#     siblings -- see KNOWN LIMITATIONS in bd-guard.sh)  -> OUT-OF-SCOPE (pinned)
 #   echo x | xargs bd create -a joe (bare xargs)       -> BLOCKED (strip-word)
 #   timeout/stdbuf/setsid/nice/ionice/script/chrt/
 #     taskset wrapping bd, with or without their own
@@ -510,9 +515,15 @@ make_reinit_repo() {
 #   stdin-fed payloads (bash <<<, echo|bash, bash -s,
 #     source /dev/stdin)                                 -> OUT-OF-SCOPE (pinned)
 #   single-quote concatenation truncation                -> OUT-OF-SCOPE (pinned)
-#   command substitution ($(...) in a -c payload or a
-#     VAR=$(...) assignment)                              -> OUT-OF-SCOPE (pinned)
+#   command substitution ($(...) in a -c payload, or in
+#     a --type value)                                     -> OUT-OF-SCOPE (pinned)
+#   env-assignment strip swallowing an adjacent $(
+#     (VAR=$(...) assignment -- a DIFFERENT mechanism
+#     than the command-substitution line above; see
+#     KNOWN LIMITATIONS in bd-guard.sh)                    -> OUT-OF-SCOPE (pinned)
 #   variable indirection (B=bd; $B create ...)            -> OUT-OF-SCOPE (pinned)
+#   flag-VALUE quote/escape concatenation (--labels
+#     hu\man / --labels "hu""man")                        -> OUT-OF-SCOPE (pinned)
 #
 # CORRECTION (beads_claude_docker-vgr round 2): the "bash -c/sh -c/zsh -c
 # 'PAYLOAD' -> BLOCKED (recurse)" line above, stated with NO qualification,
@@ -1336,6 +1347,44 @@ make_reinit_repo() {
     [ "$status" -eq 0 ]
 }
 
+# --- OUT-OF-SCOPE (pinned): nested wrapping through an escaped or same- ----
+# --- type inner quote (beads_claude_docker-j72, doc-correctness pass, -----
+# --- round 2). The nested-wrapping BLOCKED test above (`bash -c "eval ------
+# --- '...'"`) genuinely cascades because its inner payload's quotes are a -
+# --- DIFFERENT type than the outer's; none of these do -- the inner ------
+# --- payload here escapes a SAME-type quote against its own wrapper, ------
+# --- which the payload-dequote step (bd-guard.sh, where the bash/sh/zsh -c
+# --- and eval candidates are built) does not unescape, so the recursed ----
+# --- depth+1 text keeps its literal backslash-quote characters and fails --
+# --- the next level's wrapper-candidate match. Confirmed live (fake `bd` --
+# --- on PATH): every payload below genuinely executes despite the guard --
+# --- allowing it. ------------------------------------------------------
+
+@test "OUT-OF-SCOPE (pinned): bash -c \"bash -c \\\"...\\\"\" (escaped same-type nesting) is not caught" {
+    run_guard 'bash -c "bash -c \"bd create x -a joe\""'
+    [ "$status" -eq 0 ]
+}
+
+@test "OUT-OF-SCOPE (pinned): eval \"bash -c \\\"...\\\"\" (escaped same-type nesting) is not caught" {
+    run_guard 'eval "bash -c \"bd create x -a joe\""'
+    [ "$status" -eq 0 ]
+}
+
+@test "OUT-OF-SCOPE (pinned): bash -c \"eval \\\"...\\\"\" (escaped same-type nesting) is not caught" {
+    run_guard 'bash -c "eval \"bd create x -a joe\""'
+    [ "$status" -eq 0 ]
+}
+
+@test "OUT-OF-SCOPE (pinned): sh -c \"sh -c \\\"...\\\"\" (escaped same-type nesting) is not caught" {
+    run_guard 'sh -c "sh -c \"bd create x -a joe\""'
+    [ "$status" -eq 0 ]
+}
+
+@test "OUT-OF-SCOPE (pinned): bash -c \"cd /tmp && bash -c \\\"...\\\"\" (escaped nesting with a leading segment) is not caught" {
+    run_guard 'bash -c "cd /tmp && bash -c \"bd create x -a joe\""'
+    [ "$status" -eq 0 ]
+}
+
 @test "OUT-OF-SCOPE (pinned): command substitution in a -c payload is not caught" {
     # sh -c "$(echo bd create x -a joe)" -- a real shell evaluates $(...)
     # BEFORE -c ever sees the result; this hook recurses on the literal,
@@ -1345,9 +1394,28 @@ make_reinit_repo() {
     [ "$status" -eq 0 ]
 }
 
-@test "OUT-OF-SCOPE (pinned): command substitution in a VAR=\$(...) assignment is not caught" {
+@test "OUT-OF-SCOPE (pinned): env-assignment strip swallows an adjacent \$( (beads_claude_docker-j72, doc-correctness pass, round 2)" {
+    # X=$(bd create x -a joe) -- NOT a command-position gap (see the
+    # contrast test right below, which blocks the identical `bd` position).
+    # The real cause is the env-assignment strip (bd-guard.sh, in the
+    # normalization loop): its greedy `NAME=[^space]*` value-match has no
+    # notion of `$(...)` as a nested unit, so it runs to the first
+    # whitespace it finds -- inside the substitution -- and swallows
+    # `X=$(bd ` whole, deleting the literal characters `bd` before any rule
+    # below ever runs.
     run_guard 'X=$(bd create x -a joe)'
     [ "$status" -eq 0 ]
+}
+
+@test "bd-guard: echo \$(bd create x -a joe) IS blocked -- proves command position is not what the assignment case above depends on" {
+    # `bd` sits in the exact same position here (right after the `$(`, and
+    # `(` is one of this file's own command-position anchor characters) as
+    # in the X=$(...) case above, yet this one blocks -- direct evidence
+    # that the env-assignment strip, not command position, is what makes
+    # the assignment case bypass.
+    run_guard 'echo $(bd create x -a joe)'
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"NEVER assigned to a human"* ]]
 }
 
 @test "OUT-OF-SCOPE (pinned): variable indirection (B=bd; \$B ...) is not caught" {
@@ -1559,6 +1627,23 @@ done'
 
 @test "OUT-OF-SCOPE (pinned): bash -c \$'bd create ...' (ANSI-C quoting) is not caught" {
     run_guard $'bash -c $\'bd create x -a joe\''
+    [ "$status" -eq 0 ]
+}
+
+# --- OUT-OF-SCOPE (pinned): flag-VALUE quote/escape concatenation ----------
+# --- (beads_claude_docker-j72, doc-correctness pass, round 2). Unlike the --
+# --- block just above, `bd` itself is in plain sight here -- this is the --
+# --- exact same real-shell quote/escape mechanics applied to a FLAG VALUE -
+# --- (--labels) instead. Confirmed live (fake `bd` on PATH): both really --
+# --- attach the plain `human` label. --------------------------------------
+
+@test "OUT-OF-SCOPE (pinned): --labels hu\\man (mid-word backslash escape) is not caught" {
+    run_guard 'bd create x --labels hu\man'
+    [ "$status" -eq 0 ]
+}
+
+@test "OUT-OF-SCOPE (pinned): --labels \"hu\"\"man\" (adjacent double-quote concatenation) is not caught" {
+    run_guard 'bd create x --labels "hu""man"'
     [ "$status" -eq 0 ]
 }
 

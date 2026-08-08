@@ -108,10 +108,18 @@
 # second, wrapper-shaped grammar, scan_cmd() below extracts the payload and
 # RECURSES on itself (bounded by MAX_UNWRAP_DEPTH), so the same hard/soft
 # rules apply to whatever is actually going to run for every wrapper SHAPE
-# this recursion reaches — including through nested wrapping (`bash -c "eval
-# '...'"`), since each recursive call re-runs the same unwrap step. It does
-# NOT reach every shape a real shell can construct: see KNOWN LIMITATIONS
-# below for the residual classes (stdin-fed payloads, single-quote
+# this recursion reaches — including through SOME nested wrapping, e.g.
+# `bash -c "eval '...'"` (confirmed: BLOCKED), since each recursive call
+# re-runs the same unwrap step. This does NOT extend to every nested-
+# wrapping shape (beads_claude_docker-j72, doc-correctness pass, round 2 —
+# corrects an unqualified claim that used to sit here): it cascades only
+# when the inner payload's quotes differ in type from the outer's, or are
+# otherwise unescaped, the way the `eval '...'` example above is. It does
+# NOT cascade when the inner payload instead escapes a SAME-type quote
+# against its wrapper (`bash -c "bash -c \"bd create x -a joe\""` and
+# siblings) — see KNOWN LIMITATIONS below for the mechanism. Nor does it
+# reach every OTHER shape a real shell can construct: see KNOWN LIMITATIONS
+# below for the remaining residual classes (stdin-fed payloads, single-quote
 # concatenation, command substitution, variable indirection) this recursion
 # never sees, and why. `xargs` is handled without recursion (folded into the
 # wrapper-word strip list below) since it passes its own literal argv
@@ -157,7 +165,7 @@
 # to construct, not the kind of thing the fixes above address.
 #
 # KNOWN LIMITATIONS (accepted, not bugs — read this before assuming argv-
-# wrapper evasion is fully closed): seven residual classes are NOT reached by
+# wrapper evasion is fully closed): ten residual classes are NOT reached by
 # the recursion/normalization above, each pinned in tests/bd-guard.bats so
 # the gap is mechanically true, not just a claim in this comment:
 #   - stdin-fed payloads: `bash <<< "…"`, `echo … | bash`, `bash -s`,
@@ -170,21 +178,75 @@
 #     word; this hook's payload-extraction regex has no such grammar, so it
 #     stops at the FIRST embedded `'…'\'''` boundary and silently truncates
 #     the recursed payload before the real violation.
-#   - command substitution: `sh -c "$(echo bd create x -a joe)"`, `X=$(bd
-#     create x -a joe)` — `$(...)` is evaluated by the real shell before -c
-#     (or the assignment) ever sees the result; this hook recurses on the
-#     literal, unevaluated source text instead, where `bd` is not standing
-#     at command position. A second, narrower shape needs no wrapper and no
-#     hidden `bd` at all (beads_claude_docker-j72, doc-correctness pass):
-#     `bd gate create --blocks bd-1 --type "`echo human`"` is a real, fully-
-#     anchored `bd gate create` — the gate-type rule finds it and extracts
-#     its --type value correctly — but the extracted value is the literal,
-#     unevaluated text `` `echo human` ``, which the rule's exact-match check
-#     (`= "human"`) does not consider equal to `human`, even though the real
-#     shell evaluates that backtick to exactly `human` before bd ever runs.
-#     Both shapes share the same root cause (this hook has no shell
-#     evaluator) applied to two different targets: an invocation's IDENTITY
-#     in the first pair of examples, a flag's TRUE VALUE in this one.
+#   - nested wrapping through an escaped or same-type inner quote (beads_
+#     claude_docker-j72, doc-correctness pass, round 2 — also corrects the
+#     unqualified "including through nested wrapping" claim that used to sit
+#     in the header comment above, and the equally unqualified nested-
+#     wrapping line in tests/bd-guard.bats's own wrapper scope table): the
+#     recursion described in the header cascades through nested wrapping
+#     only when the inner payload's quotes are a DIFFERENT type than the
+#     outer's, or otherwise unescaped — `bash -c "eval '...'"` genuinely
+#     cascades (confirmed: BLOCKED) because its single-quoted inner payload
+#     needs no escaping inside the double-quoted outer one. It does NOT
+#     cascade when the inner payload instead escapes a SAME-type quote
+#     against its wrapper: `bash -c "bash -c \"bd create x -a joe\""`, `eval
+#     "bash -c \"bd create x -a joe\""`, `bash -c "eval \"bd create x -a
+#     joe\""`, `sh -c "sh -c \"bd create x -a joe\""`, and `bash -c "cd /tmp
+#     && bash -c \"bd create x -a joe\""` are all real, confirmed bypasses —
+#     a fake `bd` on PATH confirms the inner payload genuinely runs in every
+#     case. The escape-aware payload CAPTURE in the candidate regex (where
+#     candidates is built, below) correctly finds the outer span despite the
+#     internal `\"` pairs, but the dequote step right after it strips only
+#     the outermost quote pair (`s/^"(.*)"$/\1/`, mirrored at the bash/sh/zsh
+#     -c unswallow retry and both eval sites) and never unescapes `\"` to
+#     `"` — so the recursed depth+1 payload keeps its literal backslash-
+#     quote characters (`bash -c \"bd create x -a joe\"`) instead of clean
+#     text. One recursion level deeper, that payload's own wrapper-candidate
+#     match needs the byte right after the interpreter's flag cluster to be
+#     a BARE `"` or `'` — the flag-cluster character class itself excludes
+#     both quote characters — so the literal `\` sitting there instead fails
+#     the match outright, and the inner `bd create x -a joe` is never
+#     extracted as a candidate at all.
+#   - command substitution: `sh -c "$(echo bd create x -a joe)"` — `$(...)`
+#     is evaluated by the real shell before -c ever sees the result; this
+#     hook recurses on the literal, unevaluated source text instead, where
+#     `bd` is an argument to `echo`, not a wrapper's own payload. A second,
+#     narrower shape needs no wrapper and no hidden `bd` at all (beads_
+#     claude_docker-j72, doc-correctness pass): `bd gate create --blocks
+#     bd-1 --type "`echo human`"` is a real, fully-anchored `bd gate
+#     create` — the gate-type rule finds it and extracts its --type value
+#     correctly — but the extracted value is the literal, unevaluated text
+#     `` `echo human` ``, which the rule's exact-match check (`= "human"`)
+#     does not consider equal to `human`, even though the real shell
+#     evaluates that backtick to exactly `human` before bd ever runs. Both
+#     shapes share the same root cause (this hook has no shell evaluator)
+#     applied to two different targets: an invocation's IDENTITY in the
+#     first example, a flag's TRUE VALUE in this one. (A third example used
+#     to sit in this same bullet — `X=$(bd create x -a joe)` — under this
+#     same "no shell evaluator" explanation; it does NOT share that root
+#     cause, and is now filed separately below with its own, corrected
+#     mechanism.)
+#   - env-assignment strip swallowing an adjacent `$(` (beads_claude_docker-
+#     j72, doc-correctness pass, round 2 — corrects a mis-attribution:
+#     `X=$(bd create x -a joe)` used to be filed under "command
+#     substitution" above with the same "`bd` is not standing at command
+#     position" explanation given for that bullet's own examples): `X=$(bd
+#     create x -a joe)` bypasses, but not because `bd` fails to stand at
+#     command position — `echo $(bd create x -a joe)` puts `bd` in the exact
+#     same position (immediately after the `$(`, and `(` is itself one of
+#     this file's own command-position anchor characters, `[;&|(){]`) and IS
+#     blocked, which is direct evidence that command position is not what
+#     differs between the two commands. The real cause is the env-assignment
+#     strip that normalizes away a leading `FOO=` prefix
+#     (`[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*`, where the normalization loop
+#     is defined below): it has no notion of `$(...)` as a nested unit with
+#     its own internal whitespace, so its greedy value-match simply runs to
+#     the first whitespace it finds — which is INSIDE the substitution —
+#     consuming `X=$(bd ` as one swallowed token before any anchor or rule
+#     below ever runs. The literal characters `bd` are DELETED by this
+#     normalization pass, not skipped over because of where they sit — an
+#     ordinary regex-greediness bug in a normalization rule, not a case of
+#     this hook lacking a shell evaluator.
 #   - backtick absent from the per-verb command-position anchor (beads_
 #     claude_docker-j72, doc-correctness pass): `bd create x -m "`bd tag
 #     bd-1 human`"` is fully visible, unhidden text — once its value
@@ -231,6 +293,28 @@
 #     `'bd'`/`"bd"` normalization, both of which require `bd` to appear as a
 #     COMPLETE, cleanly-delimited token — these deliberately construct a
 #     token boundary the normalizer doesn't recognize as one.
+#   - flag-VALUE quote/escape concatenation (beads_claude_docker-j72, doc-
+#     correctness pass, round 2): the bullet just above is about quoting/
+#     escaping `bd` itself; the exact same real-shell mechanics apply on the
+#     VALUE side of a flag this hook DOES structurally check, and that is
+#     not covered by that bullet at all. `bd create x --labels hu\man` and
+#     `bd create x --labels "hu""man"` both bypass, and both really attach
+#     the plain `human` label (confirmed live, fake `bd` on PATH): a real
+#     shell strips the mid-word backslash in the first (a no-op escape) and
+#     concatenates the two adjacent double-quoted segments in the second,
+#     either way producing the argv word `human`. The label extraction
+#     (where label_flags_raw is built, below) has no such grammar — it
+#     captures the literal token as written (`hu\man`, or `hu""man` once its
+#     own quote-stripping runs) — and the hard rule's comparison right after
+#     it is an EXACT match against `human`, so neither literal token reads
+#     as equal to the string it evaluates to. This is deliberately narrower
+#     than it could be: the assignee rule shares the same bare-token
+#     extraction shape but is NOT vulnerable the same way, because its check
+#     is INVERTED (block anything NOT an allow-listed agent name) — a stray
+#     backslash or quote pair in an assignee value still isn't
+#     "claude"/"agent"/etc and still blocks with no change needed, the same
+#     asymmetry already noted in the label_flags_raw comment for why a
+#     trailing backtick doesn't threaten the assignee rule either.
 #   - wrapper-flag arity-table gaps (bd-guard hardening slice, round 4): the
 #     round-4 fix (below, where the normalization loop is defined) gives
 #     `env`/`sudo` an explicit bare-flag/value-flag table and `time` its
@@ -253,7 +337,7 @@
 #     round's explicit "then we stop" scope.
 # Threat model (see also the top of this file's bead): the "attacker" is
 # Claude Code itself drifting toward a shortcut, not a determined adversary
-# — this is a guardrail, not a sandbox. The FIRST SIX classes above require
+# — this is a guardrail, not a sandbox. The FIRST NINE classes above require
 # knowingly constructing shell syntax specifically to hide intent, which is
 # a materially different act from typing `timeout 10 bd create x -a joe` or
 # `nice bd create x -a joe` without thinking about it. Most would mean
@@ -268,7 +352,7 @@
 # borrowed from an outer double-quoted wrapper — see the masked_cmd
 # single-quote trade-off above, which this hook cannot locally distinguish
 # from the live case either), and working through that interaction was not
-# this round's scope. The SEVENTH (wrapper-flag arity gaps) is honestly
+# this round's scope. The TENTH (wrapper-flag arity gaps) is honestly
 # different again: an uncommon-but-ordinary flag falling outside a finite,
 # explicit table is not deliberate evasion, it is exactly the kind of
 # accidental shape this hook IS designed to catch — it just doesn't, for
