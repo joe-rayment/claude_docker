@@ -352,6 +352,118 @@ setup() {
     grep -q 'claude-user-memory.md /home/agent/.claude/CLAUDE.md' /usr/local/bin/entrypoint.sh
 }
 
+@test "entrypoint's cleanup() trap terminates cleanly under a real SIGTERM instead of recursing into itself" {
+    # beads_claude_docker-kk2: cleanup() { kill -- -$$; } with no `exit` used
+    # to re-enter itself -- the self-inflicted group-wide kill reached the
+    # still-armed trap, recursing without bound until an 8MB-stack overflow
+    # crashed bash (rc=139) after 1-11s of CPU-spinning, confirmed via a
+    # canary placed right after the kill that never printed once across
+    # ~2388 nested re-entries. A real setsid + real SIGTERM, not
+    # sourced-and-simulated: bats sources past `set -e` and can't observe a
+    # real process's exit status/signal that way regardless. Extracts the
+    # ACTUAL header text (through the trap line) from entrypoint.sh, renames
+    # its real cleanup() via `declare -f` (not a hand-retyped copy) so a
+    # counter can wrap it without changing its behavior, launches it in its
+    # own session so a group-wide kill can't reach this test's own process
+    # tree, and drives a real single-PID SIGTERM -- the delivery mode
+    # confirmed production-faithful, since docker-init/tini here forwards to
+    # the entrypoint's single child PID, not its process group (whole-group
+    # delivery was also driven manually, 6/6 clean, but isn't duplicated
+    # here: it exercises the identical cleanup() body, differing only in a
+    # kernel/tini delivery detail the code itself never branches on).
+    #
+    # SCOPE NOTE, recorded not fixed: this only covers the pre-exec setup
+    # window. entrypoint.sh ends in `exec "$@"`, and traps do not survive
+    # exec -- once that line replaces the process with the long-lived zsh, a
+    # later `docker stop` reaches zsh directly and cleanup() can never run
+    # again. The fix is correct for what it covers; it does not make this
+    # trap responsible for container shutdown in general, and nobody should
+    # later assume it does.
+    #
+    # QUIET-DISABLE NOTE, recorded not fixed: the `ep_end` lookup below skips
+    # if the exact literal `trap cleanup SIGTERM SIGINT` line isn't found.
+    # It cannot fire today (that line matches verbatim), but a future
+    # reformatting of that one line -- reflowed, re-ordered, whitespace
+    # changed -- would silently disable this entire test rather than fail
+    # it. Flagged here rather than hardened, since a more robust locator
+    # is a separate, deliberate change, not a side effect of this bead. The
+    # `/usr/local/bin/entrypoint.sh` fallback just below is NOT the same
+    # risk: that copy is stale and predates this fix, so if the workspace
+    # copy is ever missing, this test goes loudly red against the old
+    # buggy cleanup() rather than quietly passing against nothing.
+    local src=/workspace/scripts/entrypoint.sh
+    [ -f "$src" ] || src=/usr/local/bin/entrypoint.sh
+    local ep_end
+    ep_end=$(grep -n '^trap cleanup SIGTERM SIGINT$' "$src" | head -1 | cut -d: -f1)
+    [ -n "$ep_end" ] || skip "entrypoint predates the cleanup/trap header"
+    sed -n "1,${ep_end}p" "$src" > "$BATS_TEST_TMPDIR/real-header.sh"
+
+    local tracefile="$BATS_TEST_TMPDIR/trace.log"
+    : > "$tracefile"
+    cat > "$BATS_TEST_TMPDIR/probe.sh" <<EOF
+#!/bin/bash
+source "$BATS_TEST_TMPDIR/real-header.sh"
+orig_def=\$(declare -f cleanup)
+renamed_def="_real_cleanup\${orig_def#cleanup}"
+eval "\$renamed_def"
+cleanup() { printf 'TRAP\n' >> "$tracefile"; _real_cleanup; printf 'AFTER_KILL\n' >> "$tracefile"; }
+trap cleanup SIGTERM SIGINT
+sleep 100 &
+echo "CHILD_PID=\$!" >> "$tracefile"
+( sleep 2 )
+echo SCRIPT_END >> "$tracefile"
+EOF
+    chmod +x "$BATS_TEST_TMPDIR/probe.sh"
+
+    setsid bash "$BATS_TEST_TMPDIR/probe.sh" > "$BATS_TEST_TMPDIR/probe.out" 2>&1 &
+    local hpid=$!
+    sleep 1
+    kill -TERM "$hpid"
+
+    local died=0
+    for _ in $(seq 1 100); do
+        kill -0 "$hpid" 2>/dev/null || { died=1; break; }
+        sleep 0.1
+    done
+    if [ "$died" != "1" ]; then
+        # FAIL here, not skip: a future regression that makes the entrypoint
+        # HANG rather than crash -- a spin that never gets far enough to
+        # overflow the stack, or a handler that blocks outright -- is the
+        # near neighbour of the bug this test guards, and a skip on that
+        # shape would report green on exactly the failure this test exists
+        # to catch. The 10s budget is not a guess: observed wall time is
+        # ~2.4-2.6s normally, stretching to ~5.8-6.3s under 22 concurrent
+        # CPU burners on an 11-core box in verification -- 10s is comfortable
+        # headroom above contention, so reaching it means the process is
+        # genuinely stuck, not that the machine was busy.
+        cat "$tracefile"
+        echo "FAIL: harness pid $hpid was still alive 10s after SIGTERM -- it hung instead of terminating" >&2
+        kill -9 "$hpid" 2>/dev/null || true
+        false
+    fi
+
+    local rc=0
+    wait "$hpid" 2>/dev/null || rc=$?
+
+    local child_pid
+    child_pid=$(grep -o 'CHILD_PID=[0-9]*' "$tracefile" | head -1 | cut -d= -f2)
+
+    cat "$tracefile"
+    # A conventional SIGTERM exit status, not the 139 (SIGSEGV) the
+    # recursion produced.
+    [ "$rc" -eq 143 ]
+    # The trap fires exactly once -- no runaway re-entry.
+    [ "$(grep -c '^TRAP$' "$tracefile")" -eq 1 ]
+    # The trap's ORIGINAL purpose survives the fix: the real sleeping child
+    # is still taken down by the group-wide kill, not merely orphaned.
+    [ -n "$child_pid" ]
+    ! kill -0 "$child_pid" 2>/dev/null
+
+    kill -9 "$hpid" 2>/dev/null || true
+    [ -n "$child_pid" ] && { kill -9 "$child_pid" 2>/dev/null || true; }
+    true
+}
+
 @test "claude-settings.json injects the per-prompt tier dispatch line" {
     jq -e '[.hooks.UserPromptSubmit[].hooks[].command] | any(contains("dispatch: recon"))' /etc/claude-dev/configs/claude-settings.json
 }

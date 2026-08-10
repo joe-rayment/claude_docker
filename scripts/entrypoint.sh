@@ -1,7 +1,28 @@
 #!/bin/bash
 set -e
 
-cleanup() { kill -- -$$ 2>/dev/null; }
+# FIX (beads_claude_docker-kk2): `kill -- -$$` sends SIGTERM to this
+# process's own group, which includes the shell itself -- and with the trap
+# below still armed, that self-inflicted signal re-enters cleanup() instead
+# of terminating the shell, which sends the group signal again, recursing
+# without bound. Driven for real via setsid + a real sleeping child + real
+# SIGTERM (both delivered to this single PID -- confirmed docker-init/tini's
+# production-faithful mode -- and delivered to the whole group): baseline
+# reproduced ~2146-2392 nested re-entries every time, 0 of which ever
+# completed past the `kill` line (a canary placed immediately after it never
+# printed once), ending in a SIGSEGV stack-overflow crash (rc=139) after
+# 0.6-2.8s of CPU-spinning. Appending an explicit `exit` after the kill was
+# considered and driven too: dead on arrival, for the same reason the canary
+# never printed -- that line is never reached, since re-entry happens AT the
+# kill, before this function's own body can proceed any further. Resetting
+# the trap FIRST, so the self-inflicted signal falls through to the default
+# terminate action instead of re-entering this handler, is what actually
+# works: driven the same way, 6/6 clean runs, both delivery modes -- exactly
+# one trap invocation, a conventional exit status (143 = 128+SIGTERM, not
+# 139), and the real sleeping child still reaped by the group kill before
+# the shell itself terminates, so the trap's original purpose (take child
+# processes down with the shell) is preserved, not traded away for the fix.
+cleanup() { trap - SIGTERM SIGINT; kill -- -$$ 2>/dev/null; }
 trap cleanup SIGTERM SIGINT
 
 # Import IntelliShell defaults on first run
