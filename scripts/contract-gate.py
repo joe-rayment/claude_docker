@@ -71,6 +71,15 @@ BASH_SPLIT_RE = re.compile(r"&&|\|\||\||;|\n")
 BD_CLOSE_RE = re.compile(r"^(?:\S*/)?bd\s+close\b")
 CLASS_NO_CONTRACT_RE = re.compile(r"CLASS:\s*no-contract", re.IGNORECASE)
 
+# Anchored at the start of a line (optional leading whitespace) on purpose:
+# a bare substring match false-positives whenever notes merely MENTION the
+# phrase without recording it -- e.g. this hook's own RED-AT proof, which
+# quotes the frozen test's case names ("...contract + VERIFIED: PASS: fully
+# silent") verbatim mid-sentence. A real recorded verdict, written via
+# `bd update --append-notes "VERIFIED: PASS ..."`, always starts its own
+# line because bd joins appended notes with a newline separator.
+VERIFIED_PASS_RE = re.compile(r"^\s*VERIFIED:\s*PASS\b", re.MULTILINE)
+
 
 def mode_file():
     return os.path.expanduser(MODE_FILE)
@@ -182,7 +191,7 @@ def main():
         return  # explicitly exempt: allowed silently
 
     has_contract = bool(acceptance)
-    has_pass = "VERIFIED: PASS" in notes
+    has_pass = bool(VERIFIED_PASS_RE.search(notes))
 
     if has_contract and has_pass:
         return  # contract present and verified: allow silently
