@@ -139,3 +139,98 @@ if bad:
 PYEOF
     [ "$status" -eq 0 ]
 }
+
+# ── beads_claude_docker-ifd: land the protocol in docs/dispatch/KB ─────────
+#
+# These cases (h)-(l) are ADDED by beads_claude_docker-ifd, not edits to the
+# seven above — legitimate per this file's own freeze-window rule: -bmm's
+# freeze window ran RED-AT -> its verification, which is complete and
+# closed, so this file's frozen status reset and -ifd opened its own
+# freeze window at ITS OWN RED-AT. (a)-(g) above are untouched.
+
+CLAUDE_MD=/workspace/CLAUDE.md
+USER_MEMORY=/workspace/config/claude-user-memory.md
+KB_ACCEPTANCE=/workspace/knowledge-base/ACCEPTANCE_CONTRACTS.md
+KB_README=/workspace/knowledge-base/README.md
+TIER_PRIME=/workspace/scripts/tier-prime.sh
+
+# (h) CLAUDE.md's Verification section documents the acceptance contract
+# (CHECK/PASS-IF/FROZEN) and names all five checks C1-C5.
+@test "(h) CLAUDE.md Verification section documents the acceptance contract and C1-C5" {
+    sed -n '/^## Verification$/,/^## /p' "$CLAUDE_MD" > "$BATS_TEST_TMPDIR/verif-section.md"
+    [ -s "$BATS_TEST_TMPDIR/verif-section.md" ]
+    for token in CHECK PASS-IF FROZEN C1 C2 C3 C4 C5; do
+        run grep -F "$token" "$BATS_TEST_TMPDIR/verif-section.md"
+        [ "$status" -eq 0 ]
+    done
+}
+
+# (i) config/claude-user-memory.md's verifier dispatch row no longer
+# promises a verifier-authored Repro/Root-cause/Fix-plan, and no longer
+# uses the old CONFIRMED/PARTIAL/REFUTED verdict vocabulary anywhere.
+@test "(i) config/claude-user-memory.md drops Repro/Root-cause/Fix-plan and CONFIRMED/PARTIAL/REFUTED" {
+    run grep -F "Repro, Root cause and Fix plan" "$USER_MEMORY"
+    [ "$status" -ne 0 ]
+
+    for verdict in CONFIRMED PARTIAL REFUTED; do
+        run grep -Fw "$verdict" "$USER_MEMORY"
+        [ "$status" -ne 0 ]
+    done
+
+    for verdict in PASS FAIL TAMPERED NO-CONTRACT; do
+        run grep -Fw "$verdict" "$USER_MEMORY"
+        [ "$status" -eq 0 ]
+    done
+}
+
+# (j) knowledge-base/ACCEPTANCE_CONTRACTS.md exists, explicitly documents
+# the freeze window as bounded (not forever) via RED-AT, and is indexed
+# in knowledge-base/README.md.
+@test "(j) knowledge-base/ACCEPTANCE_CONTRACTS.md exists, documents the bounded freeze window, and is indexed" {
+    [ -f "$KB_ACCEPTANCE" ]
+
+    run grep -Fi "freeze" "$KB_ACCEPTANCE"
+    [ "$status" -eq 0 ]
+
+    run grep -F "RED-AT" "$KB_ACCEPTANCE"
+    [ "$status" -eq 0 ]
+
+    run grep -F "not forever" "$KB_ACCEPTANCE"
+    [ "$status" -eq 0 ]
+
+    run grep -F "ACCEPTANCE_CONTRACTS.md" "$KB_README"
+    [ "$status" -eq 0 ]
+}
+
+# (k) verifier.md's description frontmatter drops the old
+# per-claim-bundle/per-worker-output trigger, and no worked example
+# hardcodes a real bead id from another slice.
+@test "(k) verifier.md description drops the old trigger wording; no literal beads_claude_docker- id" {
+    run grep -F "folded into the final answer" "$VERIFIER"
+    [ "$status" -ne 0 ]
+
+    run grep -F "beads_claude_docker-" "$VERIFIER"
+    [ "$status" -ne 0 ]
+}
+
+# (l) scripts/tier-prime.sh --full emits contract-shaped dispatch wording
+# and drops the old 'non-trivial claim->verifier' phrasing entirely.
+@test "(l) tier-prime.sh --full emits contract-shaped dispatch wording, drops 'non-trivial claim->verifier'" {
+    run "$TIER_PRIME" --full
+    [ "$status" -eq 0 ]
+    printf '%s\n' "$output" > "$BATS_TEST_TMPDIR/prime-full.txt"
+
+    run grep -F "non-trivial claim→verifier" "$BATS_TEST_TMPDIR/prime-full.txt"
+    [ "$status" -ne 0 ]
+
+    for token in "acceptance contract" "CHECK" "PASS-IF" "red"; do
+        run grep -F "$token" "$BATS_TEST_TMPDIR/prime-full.txt"
+        [ "$status" -eq 0 ]
+    done
+
+    # the standing-authorization and invariants lines must survive untouched
+    run grep -F "standing authorization" "$BATS_TEST_TMPDIR/prime-full.txt"
+    [ "$status" -eq 0 ]
+    run grep -F "expensive tiers never take the worker seat" "$BATS_TEST_TMPDIR/prime-full.txt"
+    [ "$status" -eq 0 ]
+}

@@ -135,7 +135,7 @@ setup_prime_agents() {
     [[ "$output" == *"tier → orchestrator(settings model)=claude-fable-5[1m]"* ]]
     [[ "$output" == *"recon→scout"* ]]
     [[ "$output" == *"implementation slice→executor"* ]]
-    [[ "$output" == *"non-trivial claim→verifier"* ]]
+    [[ "$output" == *"register a CHECK/PASS-IF acceptance contract"* ]]
     [[ "$output" == *"trivial"*"→inline"* ]]
     [[ "$output" == *'subagent_type: "scout"'* ]]
     [[ "$output" == *"wrong tier"* ]]
