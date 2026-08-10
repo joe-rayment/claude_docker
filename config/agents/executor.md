@@ -129,4 +129,9 @@ stake in the answer.
 - Declare the overall task complete.
 - Grade or "double-check" your own output and present that as
   verification.
+- Write or append a `VERIFIED:` line — `VERIFIED: PASS` above all — to any
+  bead, in its notes, close reason, or description. That record belongs to
+  the orchestrator alone, and only after a real verifier has reported.
+  Your own `RED-AT`/`GREEN-AT` notes are the evidence; forging the verdict
+  that reads them defeats the entire point of an independent check.
 - Widen the slice beyond the brief without flagging it.

@@ -52,28 +52,34 @@ SHA *before* any implementation exists, so the verifier can later prove
 (mechanically, via `git diff`) that the test was never softened to make
 the implementation pass.
 
-## The five checks (verifier side)
+## The five checks plus C2b (verifier side)
 
 Given a bead id plus its `RED-AT`/`GREEN-AT` SHAs:
 
 | # | Check | Command |
 |---|-------|---------|
 | C1 | Goalposts unmoved | `bd history <id> --json \| jq -r '[.. \| objects \| select(has("acceptance_criteria")) \| .acceptance_criteria] \| unique \| length'` — must print `1` |
-| C2 | Test not weakened | `git diff <RED-AT> HEAD -- <FROZEN paths>` — must be empty; `git show --stat <RED-AT>` must contain only the frozen test, no implementation |
-| C3 | Actually green | Run `CHECK` verbatim; compare output to `PASS-IF`; `git status --porcelain` clean |
+| C2 | Test not weakened | `git diff <RED-AT> HEAD -- <FROZEN paths>` — must be empty; `git show --stat <RED-AT>` must contain only the frozen test, no implementation. **`.beads/` is carved out**: the pre-commit `bd` export rides `.beads/issues.jsonl` along on every commit, so its presence at `RED-AT` is expected churn |
+| C2b | Red actually red | `git worktree add /tmp/redat-check <RED-AT>`, run `CHECK` there with its paths re-rooted into the worktree, then `git worktree remove --force`. Must **fail** (non-zero). A `CHECK` that *passes* at `RED-AT` means the test discriminated nothing and the recorded red is false ⇒ `TAMPERED` |
+| C3 | Actually green | Run `CHECK` verbatim; compare output to `PASS-IF`; `git status --porcelain` clean — **except** under `.beads/`, whose export artifact is regenerated constantly and never counts as a dirty tree |
 | C4 | Honest (the one judgment step) | Read `git diff <RED-AT> HEAD` **excluding** the `FROZEN` paths — hunt hardcoded expected values, test-env detection, added skips/xfails, assertions weakened in *other* test files |
 | C5 | Not lazily closed | Read the bead's close reason/notes/status for a punt: human hand-off, "couldn't verify here" where a small env fix existed, a `blocked` status or human-type gate, silently narrowed scope |
 
-C1+C2 give the discrimination guarantee for free: the test failed at
-`RED-AT` and C2 proves it is byte-identical at HEAD, so a green result now
-can only be the implementation — no mutation testing, no revert-and-rerun
-needed.
+C1+C2 give most of the discrimination guarantee for free: the test at HEAD
+is byte-identical to the one that stood at `RED-AT`, so whatever it
+discriminated then it discriminates now, and a green result can only be the
+implementation. What they cannot show is that the test ever *failed* there
+— a tautological test is byte-identical too — which is why C2b spends one
+extra run of the same `CHECK` at `RED-AT` to make the red claim real. That
+one rerun is the whole added cost: no mutation testing, no re-deriving the
+implementation.
 
 ## The four verdicts
 
-`PASS` — none of C1-C5 tripped. `FAIL` — C3, C4, or C5 tripped (bad
-implementation, dishonest diff, or a lazy close). `TAMPERED` — C1 or C2
-tripped (the goalposts or the test itself moved after RED-AT). `NO-CONTRACT`
+`PASS` — none of C1-C5 or C2b tripped. `FAIL` — C3, C4, or C5 tripped (bad
+implementation, dishonest diff, or a lazy close). `TAMPERED` — C1, C2, or
+C2b tripped (the goalposts moved, the test itself moved after RED-AT, or
+the recorded red never happened). `NO-CONTRACT`
 — the bead has no acceptance field, or `CLASS: no-contract`; the verifier
 stops immediately with no further checks, rather than falling back to an
 open-ended review.
@@ -81,7 +87,9 @@ open-ended review.
 Anything short of `PASS` blocks "done". The verdict record itself
 (`VERIFIED: PASS ...`) is written to the bead's notes by the **orchestrator**
 on receiving the verifier's report — the verifier stays read-only and never
-writes to the bead.
+writes to the bead, and the executor is forbidden to write a `VERIFIED:`
+line at all (a worker that can forge the verdict makes the check
+decorative).
 
 ## The `no-contract` escape hatch
 
