@@ -289,6 +289,19 @@ _beads_restore_export_if_missing() {
 # non-zero or jq fails to parse its output (missing/broken jq, or bd
 # emitting something jq can't read) -- never conflated with a
 # confirmed-empty result.
+#
+# HARDENING (beads_claude_docker-9rk): a jq that exits 0 with EMPTY output
+# (e.g. bd itself exits 0 printing nothing, or a broken jq silently no-ops)
+# used to read back as "" -- the same value as a confirmed-empty prefix --
+# forging the all-clear for the destructive rm -rf below. Guard against it
+# structurally rather than by sniffing content: every successful extraction
+# is prefixed with a "v:" sentinel marker that only a real, complete jq run
+# over a "value"-bearing object can produce, so empty-but-"successful"
+# output (no marker at all) is indistinguishable from any other failure and
+# falls through to __unknown__. `has("value")` additionally requires the
+# key to actually exist (not just be null) -- a future bd renaming/dropping
+# that key hits the jq `error` branch (non-zero exit) rather than silently
+# matching `// ""`.
 _beads_issue_prefix() {
     local dir="$1"
     local raw="" bd_rc=0
@@ -298,12 +311,17 @@ _beads_issue_prefix() {
         return 0
     fi
     local value="" jq_rc=0
-    value=$(printf '%s' "$raw" | jq -r '.value // ""' 2>/dev/null) || jq_rc=$?
-    if [ "$jq_rc" != "0" ]; then
+    value=$(printf '%s' "$raw" | jq -r 'if has("value") then "v:" + (.value // "") else error end' 2>/dev/null) || jq_rc=$?
+    if [ "$jq_rc" != "0" ] || [ "${value#v:}" = "$value" ]; then
+        # Second half of the condition is the marker check: if stripping a
+        # leading "v:" changes nothing, no marker was ever emitted (jq
+        # failed silently, or produced no output at all) -- never conflate
+        # that with a confirmed-empty prefix (which reads back as exactly
+        # "v:" -> stripped to "").
         printf '__unknown__'
         return 0
     fi
-    printf '%s' "$value"
+    printf '%s' "${value#v:}"
 }
 
 # $1 (optional): project directory, defaults to /workspace. Parameterized so
@@ -409,7 +427,7 @@ ensure_beads() {
     # case whenever embeddeddolt/ already exists, not an error to abort on,
     # so the failing command must stay on the LEFT of `||` — never bare on
     # its own line — or the whole script would exit right here.
-    local init_rc=0 import_rc=0
+    local init_rc=0 import_rc=0 did_destructive_rebuild=0
     (cd "$dir" && bd init --prefix "$prefix" --quiet --non-interactive) 2>/dev/null || init_rc=$?
     _beads_restore_export_if_missing "$dir" "$safety_copy"
     (cd "$dir" && bd import) 2>/dev/null || import_rc=$?
@@ -522,6 +540,15 @@ ensure_beads() {
                     dev-log error "ensure_beads: captured live DB state but could not adopt it (jq split or copy failed); skipping embeddeddolt rebuild to avoid rolling back to a stale export" 2>/dev/null || true
                     rm -f "$fresh_export" "$fresh_issues" "$fresh_memories" 2>/dev/null || true
                 else
+                    # This is the ONE place that really performs the
+                    # destructive rm -rf + reinit + import (beads_claude_docker-9rk):
+                    # the flag below gates the "Rebuilt" success log at the
+                    # bottom of this function so a run that skipped this
+                    # branch (capture failed, adopt failed, or prefix_after
+                    # turned out non-empty) can never claim credit for a
+                    # rebuild that never happened -- whatever $total reports
+                    # in that case is just the untouched original database.
+                    did_destructive_rebuild=1
                     dev-log error "ensure_beads: embeddeddolt present but issue_prefix missing after init+import; removing embeddeddolt and rebuilding" 2>/dev/null || true
 
                     rm -rf "$dir/.beads/embeddeddolt" 2>/dev/null || true
@@ -557,7 +584,23 @@ ensure_beads() {
         rm -f "$safety_copy" 2>/dev/null || true
     fi
 
-    if [ "$total" != "0" ]; then
+    if [ "$init_rc" != "0" ] && [ "$import_rc" != "0" ] && [ "$did_destructive_rebuild" != "1" ]; then
+        # (beads_claude_docker-9rk) The ordinary init+import pair both
+        # failed AND the destructive escalation never actually ran (skipped
+        # by one of its own guards: prefix_after wasn't confirmed-empty, or
+        # the pre-destruction capture/adopt failed). $total here is just
+        # whatever the untouched, still-broken database already reported --
+        # never word that as a rebuild that happened.
+        if [ "$total" != "0" ]; then
+            # This run (bd init + bd import) genuinely failed and nothing
+            # was repaired -- the reason text says so; the result field
+            # must say so too, or runs.log misreports this exactly the way
+            # the old wording misreported a rebuild.
+            dev-log run "bd init + bd import" fail "Beads database left untouched with its pre-existing $total issue(s); destructive rebuild was skipped (see prior error for why)" 2>/dev/null || true
+        else
+            dev-log error "Beads auto-rebuild from issues.jsonl failed on startup" 2>/dev/null || true
+        fi
+    elif [ "$total" != "0" ]; then
         dev-log run "bd init + bd import" pass "Rebuilt Beads database from issues.jsonl on startup ($total issues)" 2>/dev/null || true
     else
         dev-log error "Beads auto-rebuild from issues.jsonl failed on startup" 2>/dev/null || true

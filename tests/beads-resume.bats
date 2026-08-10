@@ -423,6 +423,105 @@ SHIMEOF
     (cd "$PROJ" && bd create "post-repair write-path probe" --quiet)
 }
 
+@test "beads_claude_docker-9rk: capture-failed escalation does not log a false 'Rebuilt' claim" {
+    # Same fixture shape as "escalation capture when bd export itself
+    # fails" above -- the point here is not the data-safety outcome (that's
+    # already pinned by that test) but the WORDING of the dev-log call: the
+    # destructive rm -rf + reinit + import never ran, so the bottom-of-
+    # function log must not claim "Rebuilt" just because the untouched,
+    # still-broken database happens to report a nonzero pre-existing count.
+    git -C "$PROJ" init --quiet
+    ensure_beads "$PROJ"
+    (cd "$PROJ" && bd create "Issue present in stale export" --quiet)
+    (cd "$PROJ" && bd export -o .beads/issues.jsonl --quiet)
+    (cd "$PROJ" && bd create "Issue missing from stale export" --quiet)
+    id3=$(cd "$PROJ" && bd create "Closed issue missing from stale export" --json | jq -r '.id')
+    (cd "$PROJ" && bd close "$id3" --reason "done" --quiet)
+    [ "$(_bd_total)" = "3" ]
+
+    local dbdir; dbdir=$(_dolt_dir_for "$PROJ")
+    ( cd "$dbdir" && dolt sql -q "delete from config where \`key\`='issue_prefix'" )
+
+    local shimdir="$BATS_TEST_TMPDIR/bd-export-fail-shim-9rk-log"
+    mkdir -p "$shimdir"
+    local real_bd; real_bd=$(command -v bd)
+    cat > "$shimdir/bd" <<SHIMEOF
+#!/bin/bash
+if [ "\$1" = "export" ]; then
+    exit 1
+fi
+exec "$real_bd" "\$@"
+SHIMEOF
+    chmod +x "$shimdir/bd"
+
+    # Override the setup() no-op dev-log stub so this test can inspect what
+    # ensure_beads actually LOGS -- route through a sandboxed copy of the
+    # REAL /usr/local/bin/dev-log (only its hardcoded LOG_DIR patched to a
+    # throwaway dir) rather than a free-text bash-function stub. dev-log's
+    # own cmd_run validates the result field strictly (must be literally
+    # "pass" or "fail") and renders it verbatim as "exit: $result" in
+    # runs.log -- a grep over loose captured argv can't tell "pass" the
+    # word in a sentence from "pass" the result field, but a real rendered
+    # runs.log can. A shell function still wins name resolution over PATH,
+    # so wrap-and-forward to the sandboxed binary by absolute path.
+    local fakelog_dir="$BATS_TEST_TMPDIR/fake-claude-logs"
+    mkdir -p "$fakelog_dir"
+    local devlog_bin="$BATS_TEST_TMPDIR/dev-log-real-logic"
+    sed "s#^LOG_DIR=.*#LOG_DIR=\"$fakelog_dir\"#" /usr/local/bin/dev-log > "$devlog_bin"
+    chmod +x "$devlog_bin"
+    dev-log() { "$devlog_bin" "$@"; }
+
+    PATH="$shimdir:$PATH" ensure_beads "$PROJ"
+
+    # The database's true (untouched) count is still 3 -- confirm the
+    # false-positive precondition is actually live in this fixture.
+    [ "$(_bd_total)" = "3" ]
+    local runslog="$fakelog_dir/runs.log"
+    [ -f "$runslog" ]
+    cat "$runslog"
+    # The run entry must actually have been recorded (never vacuously pass
+    # because dev-log rejected a malformed result and wrote nothing).
+    grep -q 'command: bd init + bd import' "$runslog"
+    grep -q 'reason: Beads database left untouched.*destructive rebuild was skipped' "$runslog"
+    ! grep -q 'reason: Rebuilt Beads database' "$runslog"
+    # The result FIELD as runs.log actually renders it -- not just the
+    # wording -- must say the run failed, never that it passed.
+    grep -q '^exit: fail$' "$runslog"
+    ! grep -q '^exit: pass$' "$runslog"
+}
+
+@test "beads_claude_docker-9rk: a genuine destructive rebuild does log the rebuild claim" {
+    # a2s-shaped fixture: live DB genuinely ahead of a stale on-disk export,
+    # issue_prefix dropped -> both the ordinary init+import pair fail ->
+    # escalation captures the live 3 issues, adopts them, and DOES run the
+    # real rm -rf + reinit + import. total ends up nonzero (3) from NEW work
+    # this call actually performed, so this is the one case that must still
+    # say "Rebuilt".
+    git -C "$PROJ" init --quiet
+    ensure_beads "$PROJ"
+    (cd "$PROJ" && bd create "Issue present in stale export" --quiet)
+    (cd "$PROJ" && bd export -o .beads/issues.jsonl --quiet)
+    (cd "$PROJ" && bd create "Issue missing from stale export" --quiet)
+    id3=$(cd "$PROJ" && bd create "Closed issue missing from stale export" --json | jq -r '.id')
+    (cd "$PROJ" && bd close "$id3" --reason "done" --quiet)
+    [ "$(_bd_total)" = "3" ]
+
+    local dbdir; dbdir=$(_dolt_dir_for "$PROJ")
+    ( cd "$dbdir" && dolt sql -q "delete from config where \`key\`='issue_prefix'" )
+    _backdate_export_state "$PROJ"
+
+    local devlog="$BATS_TEST_TMPDIR/devlog-real-rebuild.txt"
+    : > "$devlog"
+    dev-log() { printf '%s\n' "$*" >> "$devlog"; }
+
+    ensure_beads "$PROJ"
+
+    [ "$(_bd_total)" = "3" ]
+    cat "$devlog"
+    grep -q 'Rebuilt Beads database from issues.jsonl on startup' "$devlog"
+    ! grep -q 'destructive rebuild was skipped' "$devlog"
+}
+
 @test "beads_claude_docker-a2s: data-intact but issue_prefix missing is not 'healthy' -- write path fixed and live-ahead data not rolled back" {
     git -C "$PROJ" init --quiet
     ensure_beads "$PROJ"
@@ -497,6 +596,166 @@ SHIMEOF
     [ "$before_md5" = "$after_md5" ]
 }
 
+@test "beads_claude_docker-9rk: _beads_issue_prefix reads a real prefix and a genuinely-empty-but-present prefix correctly" {
+    git -C "$PROJ" init --quiet
+    ensure_beads "$PROJ"
+
+    local expected_prefix
+    expected_prefix=$(detect_beads_prefix "$PROJ")
+    local got
+    got=$(_beads_issue_prefix "$PROJ")
+    [ -n "$got" ]
+    [ "$got" != "__unknown__" ]
+    [ "$got" = "$expected_prefix" ]
+
+    # Delete the config row directly with dolt sql (real corruption, same
+    # technique as the a2s/cx8 fixtures) -- empirically confirmed this makes
+    # `bd config get issue_prefix --json` return {"value":""} with exit 0, a
+    # genuinely-empty-but-PRESENT "value" key. Must still read back as ""
+    # (confirmed-empty), not the __unknown__ failure sentinel.
+    local dbdir; dbdir=$(_dolt_dir_for "$PROJ")
+    ( cd "$dbdir" && dolt sql -q "delete from config where \`key\`='issue_prefix'" )
+    got=$(_beads_issue_prefix "$PROJ")
+    [ "$got" = "" ]
+}
+
+@test "beads_claude_docker-9rk: a jq that exits 0 with empty output reads as __unknown__, never ''" {
+    git -C "$PROJ" init --quiet
+    ensure_beads "$PROJ"
+
+    # Blanket-shim jq to always exit 0 printing nothing, regardless of
+    # input -- simulates "a jq that exits 0 with empty output" directly
+    # against the probe. Scoped to a command-substitution subshell so the
+    # PATH override can never leak into the rest of this test.
+    local shimdir="$BATS_TEST_TMPDIR/jq-silent-shim"
+    mkdir -p "$shimdir"
+    cat > "$shimdir/jq" <<'SHIMEOF'
+#!/bin/bash
+exit 0
+SHIMEOF
+    chmod +x "$shimdir/jq"
+
+    local got
+    got=$(PATH="$shimdir:$PATH" _beads_issue_prefix "$PROJ")
+    [ "$got" = "__unknown__" ]
+    [ "$got" != "" ]
+}
+
+@test "beads_claude_docker-9rk: a bd response missing the 'value' key (shape drift) reads as __unknown__, never ''" {
+    git -C "$PROJ" init --quiet
+    ensure_beads "$PROJ"
+
+    # Shim `bd` so `bd config get issue_prefix --json` returns valid JSON
+    # that lacks the "value" key entirely (a future bd renaming it) --
+    # every other subcommand reaches the real binary untouched.
+    local shimdir="$BATS_TEST_TMPDIR/bd-shape-drift-shim"
+    mkdir -p "$shimdir"
+    local real_bd; real_bd=$(command -v bd)
+    cat > "$shimdir/bd" <<SHIMEOF
+#!/bin/bash
+if [ "\$1" = "config" ] && [ "\$2" = "get" ] && [ "\$3" = "issue_prefix" ]; then
+    echo '{"key":"issue_prefix","schema_version":1}'
+    exit 0
+fi
+exec "$real_bd" "\$@"
+SHIMEOF
+    chmod +x "$shimdir/bd"
+
+    local got
+    got=$(PATH="$shimdir:$PATH" _beads_issue_prefix "$PROJ")
+    [ "$got" = "__unknown__" ]
+    [ "$got" != "" ]
+}
+
+@test "beads_claude_docker-9rk: a forged empty-prefix probe (bd exits 0 printing nothing) cannot force the destructive embeddeddolt-removal path open" {
+    # cx8-shaped fixture: issue_prefix row AND the issues table both wiped,
+    # so total=0 and the ordinary init+import pair genuinely both fail --
+    # the escalation is reached for real, exactly as in the cx8 test. Only
+    # the PROBE's own read of issue_prefix is additionally forged.
+    git -C "$PROJ" init --quiet
+    ensure_beads "$PROJ"
+    (cd "$PROJ" && bd create "Will be wiped" --quiet)
+    (cd "$PROJ" && bd export -o .beads/issues.jsonl --quiet)
+
+    local dbdir; dbdir=$(_dolt_dir_for "$PROJ")
+    ( cd "$dbdir" \
+      && dolt sql -q "delete from config where \`key\`='issue_prefix'" \
+      && dolt sql -q "delete from issue_snapshots" \
+      && dolt sql -q "delete from events" \
+      && dolt sql -q "delete from comments" \
+      && dolt sql -q "delete from dependencies" \
+      && dolt sql -q "delete from labels" \
+      && dolt sql -q "delete from issues" )
+    printf '{"_type":"issue","id":"cx8fix-xxx","status":"open"}\n' > "$PROJ/.beads/issues.jsonl"
+    _backdate_export_state "$PROJ"
+
+    # Sentinel inside embeddeddolt/ -- direct, mtime-independent proof the
+    # destructive rm -rf never ran.
+    touch "$dbdir/SENTINEL_MUST_SURVIVE"
+
+    local shimdir="$BATS_TEST_TMPDIR/bd-empty-prefix-shim"
+    mkdir -p "$shimdir"
+    local real_bd; real_bd=$(command -v bd)
+    cat > "$shimdir/bd" <<SHIMEOF
+#!/bin/bash
+if [ "\$1" = "config" ] && [ "\$2" = "get" ] && [ "\$3" = "issue_prefix" ]; then
+    exit 0
+fi
+exec "$real_bd" "\$@"
+SHIMEOF
+    chmod +x "$shimdir/bd"
+
+    PATH="$shimdir:$PATH" ensure_beads "$PROJ"
+
+    # Pre-fix, this forged "" would have been read as confirmed-empty and
+    # unlocked the rm -rf; post-fix it must read as __unknown__ so the
+    # destructive path stays closed -- sentinel and embeddeddolt/ survive.
+    [ -f "$dbdir/SENTINEL_MUST_SURVIVE" ]
+    [ -d "$PROJ/.beads/embeddeddolt" ]
+}
+
+@test "beads_claude_docker-9rk: a forged empty-prefix probe (missing value key) cannot force the destructive embeddeddolt-removal path open" {
+    # Same cx8-shaped fixture as above; this time the forgery is shape
+    # drift (a "value"-less bd response) rather than silent-empty output --
+    # exercises the OTHER half of the probe's OR-gated failure check.
+    git -C "$PROJ" init --quiet
+    ensure_beads "$PROJ"
+    (cd "$PROJ" && bd create "Will be wiped" --quiet)
+    (cd "$PROJ" && bd export -o .beads/issues.jsonl --quiet)
+
+    local dbdir; dbdir=$(_dolt_dir_for "$PROJ")
+    ( cd "$dbdir" \
+      && dolt sql -q "delete from config where \`key\`='issue_prefix'" \
+      && dolt sql -q "delete from issue_snapshots" \
+      && dolt sql -q "delete from events" \
+      && dolt sql -q "delete from comments" \
+      && dolt sql -q "delete from dependencies" \
+      && dolt sql -q "delete from labels" \
+      && dolt sql -q "delete from issues" )
+    printf '{"_type":"issue","id":"cx8fix-xxx","status":"open"}\n' > "$PROJ/.beads/issues.jsonl"
+    _backdate_export_state "$PROJ"
+
+    touch "$dbdir/SENTINEL_MUST_SURVIVE"
+
+    local shimdir="$BATS_TEST_TMPDIR/bd-shape-drift-shim-e2e"
+    mkdir -p "$shimdir"
+    local real_bd; real_bd=$(command -v bd)
+    cat > "$shimdir/bd" <<SHIMEOF
+#!/bin/bash
+if [ "\$1" = "config" ] && [ "\$2" = "get" ] && [ "\$3" = "issue_prefix" ]; then
+    echo '{"key":"issue_prefix","schema_version":1}'
+    exit 0
+fi
+exec "$real_bd" "\$@"
+SHIMEOF
+    chmod +x "$shimdir/bd"
+
+    PATH="$shimdir:$PATH" ensure_beads "$PROJ"
+
+    [ -f "$dbdir/SENTINEL_MUST_SURVIVE" ]
+    [ -d "$PROJ/.beads/embeddeddolt" ]
+}
+
 @test "ensure_beads's rebuild path never calls read (no prompt possible)" {
     ! grep -q '^\s*read ' "$BATS_TEST_TMPDIR/entrypoint-functions.sh"
 }
@@ -511,7 +770,18 @@ SHIMEOF
 
 @test "built copy .claude-dev/scripts/entrypoint.sh carries the same ensure_beads fix" {
     local built="$REPO_DIR/.claude-dev/scripts/entrypoint.sh"
+    local src="$ENTRYPOINT_SRC"
     [ -f "$built" ] || skip "no built copy present"
+    # .claude-dev/ is a gitignored nested clone refreshed only by a
+    # host-side rebuild -- it can legitimately lag behind the repo source
+    # in-container. Only assert against it when it's caught up (equal
+    # mtimes count as current: a rebuild using `cp -p` preserves the
+    # source's mtime, and treating that as stale would make this
+    # unreachable forever); a genuinely stale copy skips rather than fails,
+    # so the suite can exit 0 in-container (beads_claude_docker-9rk).
+    if [ "$src" -nt "$built" ]; then
+        skip "built copy is stale ($built older than $src); refresh via host-side rebuild"
+    fi
     grep -q 'total_issues // 0' "$built"
     # bd doctor is still named in the explanatory comment (documenting what's
     # NOT used and why) -- assert it is no longer CALLED anywhere in real
