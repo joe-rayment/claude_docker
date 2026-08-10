@@ -463,8 +463,8 @@ ensure_beads() {
     if ! command -v flock &>/dev/null; then
         dev-log error "ensure_beads: flock unavailable; running beads repair WITHOUT concurrency protection (see beads_claude_docker-8zo for the race this normally guards against)" 2>/dev/null || true
     fi
-    # touch (not the subshell's own `9>` redirection) is what's guarded
-    # against failing: proving the lockfile is creatable HERE, on its own
+    # A discardable `9>` probe (not touch) is what's guarded against
+    # failing: proving the lockfile is OPENABLE FOR WRITE HERE, on its own
     # line with its own `||` per this file's rule for expected failures,
     # means the subshell below can be a plain, un-suffixed compound command
     # -- its exit status still propagates as ensure_beads's own return value
@@ -477,6 +477,28 @@ ensure_beads() {
     # failure -- confirmed empirically, the positive-control harness run
     # (a bare `false` inserted just inside) kept reporting a clean exit
     # with that version.
+    #
+    # REGRESSION (beads_claude_docker-xgm), found by the final closure
+    # audit: the first version of this probe used `touch`, which tests
+    # CREATABILITY, not the OPENABILITY the subshell's own `9>` redirection
+    # actually needs -- and those differ. A pre-existing SAME-USER lockfile
+    # at mode 000 lets `touch` SUCCEED (an owner may set a file's timestamps
+    # without holding write permission on it), so `lockfile` stayed pointed
+    # at that unwritable tier-1 path, neither the TMPDIR tier nor the
+    # `/dev/null` last resort was ever reached, and the subshell's bare
+    # `9>"$lockfile"` then failed with "Permission denied" -- aborting
+    # entrypoint.sh under set -e BEFORE the final `exec "$@"`. Confirmed
+    # directly: an echo placed after the bare `ensure_beads` call at the
+    # bottom of this file never printed. Probing with the SAME kind of
+    # redirection the real acquisition uses (`: 9>"$lockfile"` in a
+    # throwaway, discardable subshell) closes the gap -- open-for-write
+    # success is a strict subset of touch's success (opening needs actual
+    # write permission; touch's timestamp update accepts ownership alone),
+    # so this probe can only degrade to the next tier in MORE cases than
+    # before, never fewer, and every ordinary shape (writable file,
+    # nonexistent-but-creatable path, read-only directory, another user's
+    # file) still resolves exactly as it did. The identical exposure applies
+    # to the TMPDIR tier below, so it gets the same probe.
     #
     # REGRESSION CAUGHT IN VERIFICATION (beads_claude_docker-8zo): an
     # unconditional bail-out here was a real loss of function, not a
@@ -508,14 +530,14 @@ ensure_beads() {
     # descriptor no other invocation shares -- the repair body still runs,
     # unprotected but not silently no-op-disguised-as-protected.
     local lockfile="$dir/.beads/.ensure_beads.lock"
-    if ! touch "$lockfile" 2>/dev/null; then
+    if ! ( : 9>"$lockfile" ) 2>/dev/null; then
         local dir_abs="" dir_hash="" tmp_lockfile=""
         dir_abs=$( (cd "$dir" 2>/dev/null && pwd -P) 2>/dev/null ) || dir_abs="$dir"
         dir_hash=$(printf '%s' "$dir_abs" | cksum 2>/dev/null | cut -d' ' -f1)
         lockfile=""
         if [ -n "$dir_hash" ]; then
             tmp_lockfile="${TMPDIR:-/tmp}/beads-ensure-lock.$dir_hash"
-            touch "$tmp_lockfile" 2>/dev/null && lockfile="$tmp_lockfile"
+            ( : 9>"$tmp_lockfile" ) 2>/dev/null && lockfile="$tmp_lockfile"
         fi
         if [ -z "$lockfile" ]; then
             dev-log error "ensure_beads: cannot create a lock file in $dir/.beads or \${TMPDIR:-/tmp}; running repair WITHOUT concurrency protection" 2>/dev/null || true

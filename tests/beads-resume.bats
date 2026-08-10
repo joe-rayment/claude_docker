@@ -1209,3 +1209,142 @@ SHIMEOF
     [ -f "$dbdir/SENTINEL_MUST_SURVIVE_IF_LOCKED" ]
     [ "$(_bd_total)" = "1" ]
 }
+
+# $1 = project dir -> prints the deterministic tier-2 lock path production
+# would compute for it, given the current $TMPDIR. Mirrors the formula at
+# entrypoint.sh's tier-2 fallback (and the inline computation the tier-2
+# section of the three-tier test above already duplicates).
+_xgm_tier2_lock_path() {
+    local dir_abs dir_hash
+    dir_abs=$( (cd "$1" 2>/dev/null && pwd -P) 2>/dev/null ) || dir_abs="$1"
+    dir_hash=$(printf '%s' "$dir_abs" | cksum 2>/dev/null | cut -d' ' -f1)
+    printf '%s/beads-ensure-lock.%s' "${TMPDIR:-/tmp}" "$dir_hash"
+}
+
+# beads_claude_docker-xgm: a REAL bash subprocess with set -e active is
+# required to observe this -- bats' own `run` still spawns one (that part is
+# fine), but sourcing the extracted functions directly into bats' own test
+# shell, the way the rest of this file's tests do for convenience, is NOT
+# equivalent: it never reproduces entrypoint.sh's own top-level `set -e` +
+# bare, unguarded `ensure_beads` call aborting the REST OF THE SCRIPT before
+# `exec "$@"`. So this test (and the one below) builds a standalone runner
+# script -- sourcing the SAME extracted entrypoint-functions.sh setup()
+# already wrote, structured exactly like entrypoint.sh itself (set -e, a
+# bare ensure_beads call, more code after it standing in for the remainder
+# through exec) -- and drives it with `run bash`, a genuine child process.
+@test "beads_claude_docker-xgm: tier-1 lock probes OPENABILITY, not just creatability -- a same-user mode-000 pre-existing lockfile no longer aborts entrypoint.sh under set -e" {
+    git -C "$PROJ" init --quiet
+    ensure_beads "$PROJ"
+    (cd "$PROJ" && bd create "Issue" --quiet)
+    (cd "$PROJ" && bd export -o .beads/issues.jsonl --quiet)
+    local dbdir; dbdir=$(_dolt_dir_for "$PROJ")
+    ( cd "$dbdir" && dolt sql -q "delete from config where \`key\`='issue_prefix'" )
+    _backdate_export_state "$PROJ"
+    [ "$(_bd_total)" = "1" ]
+
+    # Owner may set a file's timestamps without holding write permission on
+    # it -- `touch` on this file SUCCEEDS despite mode 000, which is exactly
+    # the gap the old creatability-only probe missed.
+    : > "$PROJ/.beads/.ensure_beads.lock"
+    chmod 000 "$PROJ/.beads/.ensure_beads.lock"
+    touch "$PROJ/.beads/.ensure_beads.lock" 2>/dev/null \
+        || skip "precondition not met: touch did not succeed on the mode-000 lockfile in this environment"
+
+    local devlog="$BATS_TEST_TMPDIR/devlog-xgm-tier1.txt"
+    : > "$devlog"
+    cat > "$BATS_TEST_TMPDIR/runner-xgm-tier1.sh" <<EOF
+#!/bin/bash
+set -e
+dev-log() { printf '%s\n' "\$*" >> "$devlog"; }
+source "$BATS_TEST_TMPDIR/entrypoint-functions.sh"
+ensure_beads "$PROJ"
+echo XGM_END
+EOF
+    run bash "$BATS_TEST_TMPDIR/runner-xgm-tier1.sh"
+
+    echo "$output"
+    cat "$devlog"
+    # Before the fix: status 1, no XGM_END, "Permission denied" from the
+    # subshell's own bare `9>"$lockfile"` -- entrypoint.sh would have
+    # aborted here, before its final `exec "$@"`.
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"XGM_END"* ]]
+
+    # The mode-000 tier-1 file was correctly recognized as unopenable and
+    # left alone -- never truncated by a successful `9>` open. Checked
+    # BEFORE the chmod u+w restore below, which would otherwise mask this.
+    [ "$(stat -c '%s %a' "$PROJ/.beads/.ensure_beads.lock")" = "0 0" ]
+    chmod u+w "$PROJ/.beads/.ensure_beads.lock"   # restore so bats can clean up
+
+    # Tier 2 (TMPDIR) is what actually got used.
+    local lock2; lock2=$(_xgm_tier2_lock_path "$PROJ")
+    [ -f "$lock2" ]
+    rm -f "$lock2"
+
+    # Not just "didn't crash" -- the repair actually ran and succeeded: the
+    # write path works again, proven the same way the ordinary tier-1 test
+    # above proves it (a real `bd create`), not by asserting a literal
+    # prefix string (which would depend on this container's own
+    # $CLAUDE_PROJECT_NAME rather than on the fix under test).
+    [ "$(_bd_total)" = "1" ]
+    (cd "$PROJ" && bd create "post-repair write-path probe (xgm tier1)" --quiet)
+    [ "$(_bd_total)" = "2" ]
+}
+
+@test "beads_claude_docker-xgm: tier-2 (TMPDIR) lock gets the same openability probe -- a same-user mode-000 pre-existing tier-2 lockfile falls through to tier 3 instead of aborting" {
+    local t2proj="$BATS_TEST_TMPDIR/proj-xgm-tier2"
+    mkdir -p "$t2proj"
+    git -C "$t2proj" init --quiet
+    ensure_beads "$t2proj"
+    (cd "$t2proj" && bd create "Issue" --quiet)
+    (cd "$t2proj" && bd export -o .beads/issues.jsonl --quiet)
+    local dbdir2; dbdir2=$(_dolt_dir_for "$t2proj")
+    ( cd "$dbdir2" && dolt sql -q "delete from config where \`key\`='issue_prefix'" )
+    _backdate_export_state "$t2proj"
+    [ "$(cd "$t2proj" && bd status --json | jq -r '.summary.total_issues')" = "1" ]
+
+    # Force tier 1 to legitimately fail over (read-only .beads/, the SAME
+    # mechanism the ordinary tier-2 path above uses) -- not the bug shape by
+    # itself. The bug shape is layered on top, at tier 2.
+    chmod a-w "$t2proj/.beads"
+
+    local lock2; lock2=$(_xgm_tier2_lock_path "$t2proj")
+    : > "$lock2"
+    chmod 000 "$lock2"
+    touch "$lock2" 2>/dev/null \
+        || { chmod u+w "$t2proj/.beads"; skip "precondition not met: touch did not succeed on the mode-000 tier-2 lockfile in this environment"; }
+
+    local devlog="$BATS_TEST_TMPDIR/devlog-xgm-tier2.txt"
+    : > "$devlog"
+    cat > "$BATS_TEST_TMPDIR/runner-xgm-tier2.sh" <<EOF
+#!/bin/bash
+set -e
+dev-log() { printf '%s\n' "\$*" >> "$devlog"; }
+source "$BATS_TEST_TMPDIR/entrypoint-functions.sh"
+ensure_beads "$t2proj"
+echo XGM_END
+EOF
+    run bash "$BATS_TEST_TMPDIR/runner-xgm-tier2.sh"
+    chmod u+w "$t2proj/.beads"   # restore so bats can clean up
+
+    echo "$output"
+    cat "$devlog"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"XGM_END"* ]]
+    grep -q 'running repair WITHOUT concurrency protection' "$devlog"
+
+    # The mode-000 tier-2 file was correctly recognized as unopenable and
+    # left alone -- never truncated by a successful `9>` open, and never
+    # even reached by a tier-1 retry (checked below). Checked before
+    # removing it.
+    [ "$(stat -c '%s %a' "$lock2")" = "0 0" ]
+    rm -f "$lock2"
+
+    [ "$(cd "$t2proj" && bd status --json | jq -r '.summary.total_issues')" = "1" ]
+    # Write path works again -- proven with a real `bd create`, not a
+    # literal prefix string (see the tier-1 test above for why).
+    (cd "$t2proj" && bd create "post-repair write-path probe (xgm tier2)" --quiet)
+    [ "$(cd "$t2proj" && bd status --json | jq -r '.summary.total_issues')" = "2" ]
+    # Tier 1 correctly never got a lockfile (dir was read-only throughout).
+    [ ! -f "$t2proj/.beads/.ensure_beads.lock" ]
+}
