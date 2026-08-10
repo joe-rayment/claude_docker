@@ -234,3 +234,96 @@ TIER_PRIME=/workspace/scripts/tier-prime.sh
     run grep -F "expensive tiers never take the worker seat" "$BATS_TEST_TMPDIR/prime-full.txt"
     [ "$status" -eq 0 ]
 }
+
+# ── beads_claude_docker-lhf: C2b, .beads carve-outs, VERIFIED prohibition ──
+#
+# Cases (m)-(p) are ADDED by beads_claude_docker-lhf under its OWN RED-AT,
+# per this file's bounded-freeze-window rule: -ifd's window ran from its
+# RED-AT to its verification and is closed, so the file unfroze and -lhf
+# opened a new window on it. Cases (a)-(l) above are untouched.
+
+# (m) verifier.md defines C2b — materialize RED-AT in a temporary git
+# worktree, run the contract's CHECK there, expect it to FAIL — and the
+# 'no revert-and-rerun' boast, which C2b contradicts, is gone.
+@test "(m) verifier.md defines C2b (worktree at RED-AT, CHECK must fail) and drops 'no revert-and-rerun'" {
+    run grep -F "C2b" "$VERIFIER"
+    [ "$status" -eq 0 ]
+
+    run grep -F "git worktree add" "$VERIFIER"
+    [ "$status" -eq 0 ]
+
+    run grep -F "git worktree remove" "$VERIFIER"
+    [ "$status" -eq 0 ]
+
+    # the C2b section itself must tie the worktree to RED-AT, to running the
+    # contract's CHECK, to a failing result, and to the TAMPERED verdict.
+    sed -n '/\*\*C2b —/,/\*\*C3 —/p' "$VERIFIER" > "$BATS_TEST_TMPDIR/c2b.md"
+    [ -s "$BATS_TEST_TMPDIR/c2b.md" ]
+
+    for token in "RED-AT" "CHECK" "TAMPERED"; do
+        run grep -F "$token" "$BATS_TEST_TMPDIR/c2b.md"
+        [ "$status" -eq 0 ]
+    done
+
+    run grep -Fi "fail" "$BATS_TEST_TMPDIR/c2b.md"
+    [ "$status" -eq 0 ]
+
+    run grep -F "no revert-and-rerun" "$VERIFIER"
+    [ "$status" -ne 0 ]
+
+    run grep -F "revert-and-rerun" "$VERIFIER"
+    [ "$status" -ne 0 ]
+}
+
+# (n) verifier.md carves .beads/ export churn out of C2's RED-AT-contents
+# rule and C3's clean-tree rule — the pre-commit bd export rides every
+# commit, and must not read as TAMPERED or FAIL.
+@test "(n) verifier.md carves .beads/ out of C2 (RED-AT contents) and C3 (clean tree)" {
+    sed -n '/\*\*C2 —/,/\*\*C2b —/p' "$VERIFIER" > "$BATS_TEST_TMPDIR/c2.md"
+    [ -s "$BATS_TEST_TMPDIR/c2.md" ]
+    run grep -F ".beads/" "$BATS_TEST_TMPDIR/c2.md"
+    [ "$status" -eq 0 ]
+
+    sed -n '/\*\*C3 —/,/\*\*C4 —/p' "$VERIFIER" > "$BATS_TEST_TMPDIR/c3.md"
+    [ -s "$BATS_TEST_TMPDIR/c3.md" ]
+    run grep -F ".beads/" "$BATS_TEST_TMPDIR/c3.md"
+    [ "$status" -eq 0 ]
+}
+
+# (o) executor.md's Never list prohibits the executor writing a VERIFIED:
+# line to a bead — that record belongs to the orchestrator, after a real
+# verifier report.
+@test "(o) executor.md's Never list prohibits writing VERIFIED: lines to a bead" {
+    sed -n '/^## Never$/,$p' "$EXECUTOR" > "$BATS_TEST_TMPDIR/never.md"
+    [ -s "$BATS_TEST_TMPDIR/never.md" ]
+
+    run grep -F "VERIFIED:" "$BATS_TEST_TMPDIR/never.md"
+    [ "$status" -eq 0 ]
+
+    run grep -Fi "bead" "$BATS_TEST_TMPDIR/never.md"
+    [ "$status" -eq 0 ]
+}
+
+# (p) the KB doc documents C2b as a row of the checks table, drops the
+# revert-and-rerun claim while keeping the no-mutation-testing one, and
+# agrees with verifier.md on the "five checks plus C2b" naming.
+@test "(p) ACCEPTANCE_CONTRACTS.md documents C2b in the checks table and drops the revert-and-rerun claim" {
+    run grep -F "revert-and-rerun" "$KB_ACCEPTANCE"
+    [ "$status" -ne 0 ]
+
+    run grep -F "no mutation testing" "$KB_ACCEPTANCE"
+    [ "$status" -eq 0 ]
+
+    run grep -E '^\| C2b \|' "$KB_ACCEPTANCE"
+    [ "$status" -eq 0 ]
+
+    run grep -F "git worktree" "$KB_ACCEPTANCE"
+    [ "$status" -eq 0 ]
+
+    # both files name the check set the same way
+    run grep -F "five checks plus C2b" "$KB_ACCEPTANCE"
+    [ "$status" -eq 0 ]
+
+    run grep -F "five checks plus C2b" "$VERIFIER"
+    [ "$status" -eq 0 ]
+}
