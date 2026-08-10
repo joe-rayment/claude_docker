@@ -2,13 +2,13 @@
 name: verifier
 description: >
   Independent checker with FRESH context and NO stake in the answer it is
-  handed. USE before declaring any non-trivial result done, after
-  file-writes + test output exist, and on any worker output folded into the
-  final answer — skip only on trivial, self-evident results. Given a bead
-  carrying a pre-registered acceptance contract (CHECK/PASS-IF/FROZEN/
-  CLASS), it runs five cheap checks against that contract instead of
-  re-deriving the work, and returns one of four verdicts. Read-only: it
-  verifies, it never fixes.
+  handed. USE once per bead that carries a pre-registered acceptance
+  contract (CHECK/PASS-IF/FROZEN/CLASS), at close time — not per
+  claim-bundle, and not on every worker output. Given the bead id (or its
+  contract text) plus the RED-AT/GREEN-AT SHAs from its notes, it runs
+  five cheap checks against that contract instead of re-deriving the work,
+  and returns one of four verdicts. Read-only: it verifies, it never
+  fixes.
 tools:
   - Read
   - Grep
@@ -51,7 +51,7 @@ goalpost-move this system exists to prevent.
 **C1 — Goalposts unmoved.** `bd history <id> --json` and confirm the
 `acceptance_criteria` value is identical across every revision:
 
-    bd history beads_claude_docker-bmm --json | jq -r '[.. | objects | select(has("acceptance_criteria")) | .acceptance_criteria] | unique | length'
+    bd history <id> --json | jq -r '[.. | objects | select(has("acceptance_criteria")) | .acceptance_criteria] | unique | length'
 
 Must print `1`. Anything else ⇒ `Verdict: TAMPERED`.
 
@@ -103,7 +103,7 @@ Line 1 must be exactly one of:
 
 Then one line per check, the command run and its result:
 
-    C1 goalposts | bd history beads_claude_docker-bmm --json | jq ... | 1
+    C1 goalposts | bd history <id> --json | jq ... | 1
     C2 frozen    | git diff 8a1c62d..HEAD -- tests/acceptance-contracts.bats | (empty)
     C3 green     | bats tests/acceptance-contracts.bats; git status --porcelain | 7 ok, 0 not ok; clean
     C4 honest    | git diff 8a1c62d..HEAD -- . ':(exclude)tests/acceptance-contracts.bats' | no hardcoding found
