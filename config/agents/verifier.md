@@ -80,11 +80,17 @@ or it silently re-tests HEAD and always "passes"):
     ( cd /tmp/redat-check && <CHECK, paths re-rooted here> ); echo "exit=$?"
     git worktree remove --force /tmp/redat-check
 
-Expect a non-zero exit — a failing `CHECK` — because that is the red the
-bead's notes claim. Report which case(s) failed there. If the `CHECK`
-**passes** at `RED-AT`, the test discriminated nothing: it was already
-green before any implementation existed, so the recorded red is false ⇒
-`Verdict: TAMPERED`, noting in your report that the test was never red.
+Re-rooting is often not an env-var away: a test that assigns absolute
+`/workspace/...` paths to its own variables ignores anything you export, so
+rewrite those paths inside the checkout
+(`sed -i 's#/workspace/#/tmp/redat-check/#g' <test file>`) — mutating the
+disposable worktree is fine, it is deleted seconds later. Expect a non-zero
+exit — a failing `CHECK` — because that is the red the bead's notes claim. Report which case(s) failed there. If the `CHECK`
+**passes** at `RED-AT`, rule out botched re-rooting first — a run that
+silently read HEAD's files passes for the wrong reason. Once re-rooting is
+confirmed, a passing `CHECK` means the test discriminated nothing: it was
+already green before any implementation existed, so the recorded red is
+false ⇒ `Verdict: TAMPERED`, noting that the test was never red.
 Remove the worktree either way, including when the run errors out. If the
 contract's `CHECK` cannot be run at `RED-AT` for a reason unrelated to the
 test (a tool absent from that commit's environment), say so on the C2b
