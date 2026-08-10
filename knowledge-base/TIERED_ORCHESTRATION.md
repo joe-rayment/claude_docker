@@ -274,9 +274,13 @@ because an ultracode session injects a "use Workflow on every task"
 directive into that turn too. Don't "simplify" these keys away.
 
 **`/advisor` coupling:** `advisorModel` (settings) must be **≥ the
-session's main model** or `/advisor` is rejected. It is pinned to `fable` —
-the one static value valid above every trio this setup uses. If Fable is
-ever unavailable on the plan, `/advisor` fails visibly; swap the value then.
+session's main model** or `/advisor` is rejected. It is pinned to `opus`,
+matching the default `.model`. The pin is static — no `tier-set`/
+`tier-reconcile` code reads or writes `advisorModel` (the only occurrence
+of the key in `scripts/` and `config/` is the settings file itself) — so
+pinning a session's top tier *above* opus (`/tier fable`) leaves the
+advisor below the session model and `/advisor` fails visibly; bump the
+value by hand then, or teach `tier-set` to write it alongside `.model`.
 
 ## Cost monitor (cost-mirror / tier-cost, added 2026-07-28)
 
@@ -762,6 +766,14 @@ reconciler replaces them with concrete ids on first run.
 
 Revision log (each reversible via git on the listed files):
 
+- **2026-08-10 — advisorModel fable→opus:** `config/claude-settings.json`
+  `advisorModel` flipped from `"fable"` to `"opus"` to match the default
+  `.model`; `tests/smoke.bats` ("claude-settings.json pins the advisor at
+  or above the top tier") retargeted to assert `== "opus"`; this doc's
+  `/advisor` coupling paragraph rewritten for the new pin. Rollback =
+  revert those two files; the layer-2 staged copy at
+  `/etc/claude-dev/configs/claude-settings.json` needs a matching `cp` (or
+  an image rebuild) to pick it up.
 - **2026-07-29 — delegation gate (beads arr/0xi/p1r):**
   `scripts/delegation-gate.py` + `tests/delegation-gate.bats` added;
   `config/claude-settings.json` gains the PreToolUse entry;

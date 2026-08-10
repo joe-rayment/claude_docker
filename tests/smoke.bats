@@ -327,8 +327,10 @@ setup() {
 }
 
 @test "claude-settings.json pins the advisor at or above the top tier" {
-    # advisorModel must be >= the session's main model; fable is the ceiling
-    jq -e '.advisorModel == "fable"' /etc/claude-dev/configs/claude-settings.json
+    # advisorModel must be >= the session's main model (settings .model,
+    # which is opus); the pin is static, so a session pinned to a top tier
+    # above opus (/tier fable) would make /advisor reject.
+    jq -e '.advisorModel == "opus"' /etc/claude-dev/configs/claude-settings.json
 }
 
 @test "claude-settings.json disables the auto-turn on ! bash commands" {
