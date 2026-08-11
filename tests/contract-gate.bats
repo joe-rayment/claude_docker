@@ -510,3 +510,198 @@ VERIFIED: PASS — verifier $CORROB_ID"
     [ -z "$output" ]
     [ -z "$stderr" ]
 }
+
+# --- beads_claude_docker-bh6: BRANCH A -- resolve the bare close's target ----
+# via `bd show --current --json` and check THAT bead, instead of only asking
+# for an explicit id.
+# FROZEN from this bead's RED commit too: cases (w)-(z) must not be edited
+# after that commit.
+#
+# The probe recorded in bh6's notes (bd 1.0.4) established the semantics this
+# branch rests on: bd keeps the pointer in `.beads/last-touched`; create,
+# update, show and close all move it identically; `bd show --current --json`
+# returns exactly that bead (it does NOT out-vote the pointer with an
+# unrelated in_progress bead, and with the pointer gone it errors exactly
+# where a bare close errors); reading --current does not move the pointer;
+# and a bare `bd close` was observed closing precisely the bead --current had
+# just named, on the throwaway DB and again on the real tracker.
+#
+# The success shape is a one-element JSON list whose empty fields are OMITTED
+# (no acceptance_criteria/notes keys), so the stubs below answer --current
+# with id/title/status only: the gate must resolve the id and then run its
+# ordinary `bd show <id> --json` to read the contract.
+
+RESOLVED_ID=beads_probe-lasttouched
+
+# stage_current_stub <json-array-for---current>
+# A bd whose `show --current --json` answers with the given array, whose
+# `show <id> --json` answers from FAKE_BD_ACCEPTANCE/FAKE_BD_NOTES like
+# setup()'s, and which logs every invocation to $FAKE_BD_LOG.
+stage_current_stub() {
+    export FAKE_BD_LOG="$BATS_TEST_TMPDIR/bd-invocations"
+    : > "$FAKE_BD_LOG"
+    export FAKE_BD_CURRENT_JSON="$1"
+    cat > "$FAKE_BD_DIR/bd" <<'EOF'
+#!/bin/sh
+echo "$*" >> "$FAKE_BD_LOG"
+case " $* " in
+    *" --current "*)
+        [ -n "$FAKE_BD_CURRENT_EXIT" ] && { printf '%s' "$FAKE_BD_CURRENT_JSON"; exit "$FAKE_BD_CURRENT_EXIT"; }
+        printf '%s' "$FAKE_BD_CURRENT_JSON"
+        exit 0 ;;
+esac
+if [ "$1" = "show" ]; then
+    jq -cn --arg id "$2" --arg acc "${FAKE_BD_ACCEPTANCE:-}" --arg notes "${FAKE_BD_NOTES:-}" \
+        '[{id:$id, acceptance_criteria:$acc, notes:$notes}]'
+    exit 0
+fi
+exit 1
+EOF
+    chmod +x "$FAKE_BD_DIR/bd"
+}
+
+# (w) a bare `bd close` / `bd done` whose --current names an UNCONTRACTED bead
+# is checked against THAT bead: warn mode warns naming it, enforce mode denies
+# naming it -- and neither falls back to the old "explicit bead id" ask.
+# The gate must also stay read-only: it may only ever run `bd show`.
+# [BRANCH A, clause 1]
+@test "(w) bare close resolves --current and checks that bead (uncontracted)" {
+    stage_current_stub "[{\"id\":\"$RESOLVED_ID\",\"title\":\"the last touched bead\",\"status\":\"open\"}]"
+    export FAKE_BD_ACCEPTANCE=""
+    export FAKE_BD_NOTES=""
+
+    export CONTRACT_GATE_MODE=warn
+    run --separate-stderr sh -c 'jq -cn "{tool_name:\"Bash\",session_id:\"s35\",tool_input:{command:\"bd close\"}}" | python3 '"$GATE"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+    [[ "$stderr" == *"$RESOLVED_ID"* ]]
+    [[ "$stderr" == *"acceptance contract"* ]]
+    [[ "$stderr" != *"explicit bead id"* ]]
+
+    # the bare alias, and a bare close carrying only a reason, resolve too
+    run --separate-stderr sh -c 'jq -cn "{tool_name:\"Bash\",session_id:\"s36\",tool_input:{command:\"bd done\"}}" | python3 '"$GATE"
+    [ "$status" -eq 0 ]
+    [[ "$stderr" == *"$RESOLVED_ID"* ]]
+    [[ "$stderr" != *"explicit bead id"* ]]
+
+    export CONTRACT_GATE_MODE=enforce
+    run --separate-stderr sh -c 'jq -cn "{tool_name:\"Bash\",session_id:\"s37\",tool_input:{command:\"bd close --reason wrapped-up\"}}" | python3 '"$GATE"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.hookSpecificOutput.permissionDecision == "deny"'
+    echo "$output" | jq -e --arg id "$RESOLVED_ID" '.hookSpecificOutput.permissionDecisionReason | test($id)'
+    echo "$output" | jq -e '.hookSpecificOutput.permissionDecisionReason | test("explicit bead id") | not'
+
+    # read-only: --current was consulted, and no close/done/update was ever run
+    grep -q -- '--current' "$FAKE_BD_LOG"
+    ! grep -qE '^(close|done|update)\b' "$FAKE_BD_LOG"
+}
+
+# (x) a bare close whose --current names a bead WITH a contract and a
+# corroborated PASS note is allowed silently, in warn and in enforce.
+# [BRANCH A, clause 2]
+@test "(x) bare close resolving to a contracted+corroborated bead is silent" {
+    export CONTRACT_GATE_TRANSCRIPT_ROOT="$BATS_TEST_TMPDIR/store"
+    fake_transcript "$CONTRACT_GATE_TRANSCRIPT_ROOT" "$CORROB_ID" "$RESOLVED_ID" "$PASS_VERDICT"
+    stage_current_stub "[{\"id\":\"$RESOLVED_ID\",\"title\":\"the last touched bead\",\"status\":\"open\"}]"
+    export FAKE_BD_ACCEPTANCE=$'CHECK:   bats tests/contract-gate.bats\nPASS-IF: exit 0'
+    export FAKE_BD_NOTES="RED-AT: abc123
+GREEN-AT: def456
+VERIFIED: PASS — verifier $CORROB_ID"
+
+    for mode in warn enforce; do
+        export CONTRACT_GATE_MODE="$mode"
+        run --separate-stderr sh -c 'jq -cn "{tool_name:\"Bash\",session_id:\"s38\",tool_input:{command:\"bd close\"}}" | python3 '"$GATE"
+        [ "$status" -eq 0 ]
+        [ -z "$output" ]
+        [ -z "$stderr" ]
+    done
+}
+
+# (y) every way --current can fail to name a bead falls back to the EXISTING
+# conservative branch (warn / deny asking for an explicit bead id) -- never a
+# silent allow, and never a check of a phantom bead. Five shapes:
+#   1. non-zero exit with bd's own error JSON (no pointer / pointer names a
+#      deleted bead -- both observed in the probe)
+#   2. --current unsupported by an older bd (unknown flag, non-zero)
+#   3. an empty result list
+#   4. a result whose id is empty
+#   5. THE NAIVE-BD TRAP: a bd that ignores --current and echoes it straight
+#      back as the id. A flag-shaped id is never a bead id, so it must not be
+#      believed (this is also what keeps frozen cases (k)/(k2), whose stub
+#      answers `show --current` with id "--current", passing unchanged).
+# [BRANCH A, clause 3]
+@test "(y) --current failing/unsupported/empty falls back to the conservative branch" {
+    export FAKE_BD_ACCEPTANCE=""
+    export FAKE_BD_NOTES=""
+
+    check_conservative() {
+        export CONTRACT_GATE_MODE=warn
+        run --separate-stderr sh -c 'jq -cn "{tool_name:\"Bash\",session_id:\"s39\",tool_input:{command:\"bd close\"}}" | python3 '"$GATE"
+        [ "$status" -eq 0 ]
+        [ -z "$output" ]
+        [[ "$stderr" == *"explicit bead id"* ]]
+
+        export CONTRACT_GATE_MODE=enforce
+        run --separate-stderr sh -c 'jq -cn "{tool_name:\"Bash\",session_id:\"s40\",tool_input:{command:\"bd close\"}}" | python3 '"$GATE"
+        [ "$status" -eq 0 ]
+        echo "$output" | jq -e '.hookSpecificOutput.permissionDecision == "deny"'
+        echo "$output" | jq -e '.hookSpecificOutput.permissionDecisionReason | test("explicit bead id")'
+    }
+
+    # 1. non-zero + bd's real error JSON
+    stage_current_stub '{"error": "no current issue found (no in-progress, hooked, or recently touched issues)", "schema_version": 1}'
+    export FAKE_BD_CURRENT_EXIT=1
+    check_conservative
+
+    # 2. an older bd that does not know the flag at all
+    unset FAKE_BD_CURRENT_EXIT
+    cat > "$FAKE_BD_DIR/bd" <<'EOF'
+#!/bin/sh
+case " $* " in
+    *" --current "*) echo 'Error: unknown flag: --current' >&2; exit 1 ;;
+esac
+exit 1
+EOF
+    chmod +x "$FAKE_BD_DIR/bd"
+    check_conservative
+
+    # 3. an empty result list
+    stage_current_stub '[]'
+    check_conservative
+
+    # 4. a result with an empty id
+    stage_current_stub '[{"id":"","title":"","status":"open"}]'
+    check_conservative
+
+    # 5. a bd that echoes the flag back as the id
+    stage_current_stub '[{"id":"--current","title":"","status":"open"}]'
+    check_conservative
+}
+
+# (y2) bd missing from PATH entirely on a BARE close also falls back to the
+# conservative ask rather than allowing. This is not a weakening of case (h):
+# (h) is a close of a NAMED bead, where a broken bd has always meant "fail
+# open, silent", and it still does. A bare close is the case where the gate
+# cannot even learn which bead is at stake, and Branch A's contract says an
+# unresolvable --current keeps the conservative branch "rather than allowing".
+@test "(y2) bd missing on a bare close keeps the conservative ask" {
+    export PATH="/usr/bin:/bin"
+    export CONTRACT_GATE_MODE=warn
+    run --separate-stderr sh -c 'jq -cn "{tool_name:\"Bash\",session_id:\"s41\",tool_input:{command:\"bd close\"}}" | python3 '"$GATE"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+    [[ "$stderr" == *"explicit bead id"* ]]
+}
+
+# (z) mode=off still makes NO bd call at all on a bare close: resolving
+# --current must happen after the mode check, not before it.
+@test "(z) mode=off on a bare close invokes bd not at all" {
+    export CONTRACT_GATE_MODE=off
+    export FAKE_BD_MARKER="$BATS_TEST_TMPDIR/bd-was-called"
+    rm -f "$FAKE_BD_MARKER"
+    run --separate-stderr sh -c 'jq -cn "{tool_name:\"Bash\",session_id:\"s42\",tool_input:{command:\"bd close\"}}" | python3 '"$GATE"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+    [ -z "$stderr" ]
+    [ ! -f "$FAKE_BD_MARKER" ]
+}
