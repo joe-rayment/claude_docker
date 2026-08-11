@@ -1348,3 +1348,138 @@ EOF
     # Tier 1 correctly never got a lockfile (dir was read-only throughout).
     [ ! -f "$t2proj/.beads/.ensure_beads.lock" ]
 }
+
+# beads_claude_docker-pef: a FIFO planted at a lock path is worse than the
+# mode-000 shape the two xgm cases above cover. A write-only open of a FIFO
+# with no reader attached BLOCKS in open(2) rather than failing fast, so both
+# the openability probe (`( : 9>"$lockfile" )`) and -- if that path were still
+# selected -- the repair subshell's own `9>"$lockfile"` hang forever: no abort,
+# no log line, and entrypoint.sh never reaches its final `exec "$@"`, so the
+# container start just looks like nothing happened.
+#
+# Harness notes, both cases below:
+#   * `timeout 30` bounds the wall clock INSIDE the test, so a regression
+#     surfaces as an ordinary assertion failure (rc 124) instead of a bats run
+#     that never returns.
+#   * the runner's stdout/stderr go to a FILE, not bats' `run` pipe, and fd 3
+#     (bats' own status descriptor) is closed on the way in: `timeout` kills
+#     only its direct child, so with the bug present a forked subshell is still
+#     parked in open() afterwards, and a descriptor it inherited would keep the
+#     suite waiting on EOF long after the timeout fired.
+#   * that leftover subshell is killed BEFORE the first assertion. Bats test
+#     bodies are errexit: a failed assertion aborts the body, so cleanup placed
+#     after the assertions would never run on the RED path.
+@test "beads_claude_docker-pef: a FIFO at the tier-1 lock path degrades to tier 2 instead of blocking forever in open()" {
+    git -C "$PROJ" init --quiet
+    ensure_beads "$PROJ"
+    (cd "$PROJ" && bd create "Issue" --quiet)
+    (cd "$PROJ" && bd export -o .beads/issues.jsonl --quiet)
+    local dbdir; dbdir=$(_dolt_dir_for "$PROJ")
+    ( cd "$dbdir" && dolt sql -q "delete from config where \`key\`='issue_prefix'" )
+    _backdate_export_state "$PROJ"
+    [ "$(_bd_total)" = "1" ]
+
+    # The ensure_beads calls above already created an ordinary tier-1
+    # lockfile, so it has to go before the FIFO can take its place.
+    local lock1="$PROJ/.beads/.ensure_beads.lock"
+    rm -f "$lock1"
+    mkfifo "$lock1"
+    [ -p "$lock1" ]
+
+    local devlog="$BATS_TEST_TMPDIR/devlog-pef-tier1.txt"
+    : > "$devlog"
+    local runner="$BATS_TEST_TMPDIR/runner-pef-tier1.sh"
+    cat > "$runner" <<EOF
+#!/bin/bash
+set -e
+dev-log() { printf '%s\n' "\$*" >> "$devlog"; }
+source "$BATS_TEST_TMPDIR/entrypoint-functions.sh"
+ensure_beads "$PROJ"
+echo PEF_END
+EOF
+    local out="$BATS_TEST_TMPDIR/out-pef-tier1.txt"
+    local rc=0
+    timeout 30 bash "$runner" >"$out" 2>&1 </dev/null 3>&- || rc=$?
+    pkill -KILL -f 'runner-pef-tier1\.sh' 2>/dev/null || true
+
+    echo "rc=$rc"
+    cat "$out"
+    cat "$devlog"
+    # rc 124 means `timeout` had to kill it: that IS the hang under test.
+    [ "$rc" -eq 0 ]
+    grep -q PEF_END "$out"
+
+    # The FIFO was recognized as unusable and left exactly as planted --
+    # never opened, never replaced by a regular file.
+    [ -p "$lock1" ]
+    rm -f "$lock1"
+
+    # Tier 2 is what actually got used.
+    local lock2; lock2=$(_xgm_tier2_lock_path "$PROJ")
+    [ -f "$lock2" ]
+    rm -f "$lock2"
+
+    # Not just "didn't hang": the repair body really ran to its normal
+    # outcome -- count intact, and the write path works again (a real
+    # `bd create`, the same proof the xgm cases use).
+    [ "$(_bd_total)" = "1" ]
+    (cd "$PROJ" && bd create "post-repair write-path probe (pef tier1)" --quiet)
+    [ "$(_bd_total)" = "2" ]
+}
+
+@test "beads_claude_docker-pef: a FIFO at the tier-2 (TMPDIR) lock path degrades to the /dev/null last resort instead of blocking forever in open()" {
+    local t2proj="$BATS_TEST_TMPDIR/proj-pef-tier2"
+    mkdir -p "$t2proj"
+    git -C "$t2proj" init --quiet
+    ensure_beads "$t2proj"
+    (cd "$t2proj" && bd create "Issue" --quiet)
+    (cd "$t2proj" && bd export -o .beads/issues.jsonl --quiet)
+    local dbdir2; dbdir2=$(_dolt_dir_for "$t2proj")
+    ( cd "$dbdir2" && dolt sql -q "delete from config where \`key\`='issue_prefix'" )
+    _backdate_export_state "$t2proj"
+    [ "$(cd "$t2proj" && bd status --json | jq -r '.summary.total_issues')" = "1" ]
+
+    # Tier 1 fails over legitimately (read-only .beads/, the same mechanism
+    # the xgm tier-2 case uses); the FIFO is layered on top, at tier 2.
+    chmod a-w "$t2proj/.beads"
+    local lock2; lock2=$(_xgm_tier2_lock_path "$t2proj")
+    rm -f "$lock2"
+    mkfifo "$lock2"
+    [ -p "$lock2" ]
+
+    local devlog="$BATS_TEST_TMPDIR/devlog-pef-tier2.txt"
+    : > "$devlog"
+    local runner="$BATS_TEST_TMPDIR/runner-pef-tier2.sh"
+    cat > "$runner" <<EOF
+#!/bin/bash
+set -e
+dev-log() { printf '%s\n' "\$*" >> "$devlog"; }
+source "$BATS_TEST_TMPDIR/entrypoint-functions.sh"
+ensure_beads "$t2proj"
+echo PEF_END
+EOF
+    local out="$BATS_TEST_TMPDIR/out-pef-tier2.txt"
+    local rc=0
+    timeout 30 bash "$runner" >"$out" 2>&1 </dev/null 3>&- || rc=$?
+    chmod u+w "$t2proj/.beads"   # restore so bats can clean up
+    pkill -KILL -f 'runner-pef-tier2\.sh' 2>/dev/null || true
+
+    echo "rc=$rc"
+    cat "$out"
+    cat "$devlog"
+    [ "$rc" -eq 0 ]
+    grep -q PEF_END "$out"
+    # Neither lock tier was usable, so the /dev/null last resort ran the
+    # repair unlocked -- and said so.
+    grep -q 'running repair WITHOUT concurrency protection' "$devlog"
+
+    # The FIFO was left exactly as planted, and tier 1 never got a lockfile
+    # (its directory was read-only throughout).
+    [ -p "$lock2" ]
+    rm -f "$lock2"
+    [ ! -f "$t2proj/.beads/.ensure_beads.lock" ]
+
+    [ "$(cd "$t2proj" && bd status --json | jq -r '.summary.total_issues')" = "1" ]
+    (cd "$t2proj" && bd create "post-repair write-path probe (pef tier2)" --quiet)
+    [ "$(cd "$t2proj" && bd status --json | jq -r '.summary.total_issues')" = "2" ]
+}
