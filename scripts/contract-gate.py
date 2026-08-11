@@ -38,14 +38,15 @@ exemption splitter:
                            checked, and one failing bead is enough to warn
                            (one line per failing bead) or to deny
   bd close                 with no id at all, bd closes the LAST-TOUCHED
-                           issue. `bd show --json` with no id refuses ("at
-                           least one issue ID is required"), so the gate
-                           cannot resolve that bead cheaply and takes the
-                           conservative branch instead: warn (or, in
+                           issue. The gate resolves that bead with `bd show
+                           --current --json` and checks it exactly like a
+                           named one (bead beads_claude_docker-bh6); only
+                           when that resolution fails does it fall back to
+                           the older conservative branch -- warn (or, in
                            enforce mode, deny) asking for an explicit bead
-                           id. That is a deliberate conservative decision,
-                           not a fail-open path -- the fail-open paths
-                           below are strictly the error paths.
+                           id. That fallback is a deliberate conservative
+                           decision, not a fail-open path -- the fail-open
+                           paths below are strictly the error paths.
   bd update <id> --status closed      also `--status=closed`, `-s closed`,
                                       `-s=closed`: a close that never says
                                       "close", checked identically. Any
@@ -118,6 +119,43 @@ fresh containers and headless runs must never be blocked by a store that
 was never there -- and no already-closed bead whose note predates this
 format is retroactively condemned, since the gate only ever runs on a
 close happening now.
+
+Resolving a bare close (bead beads_claude_docker-bh6)
+-----------------------------------------------------
+A bare `bd close` used to be un-checkable: the gate could only ask for an
+explicit id. It is checkable, because bd exposes the very pointer it is
+about to close. Probed empirically on bd 1.0.4 (commands and output
+recorded in bh6's notes):
+
+  * bd keeps the pointer in the gitignored file `.beads/last-touched`,
+    per database, and `bd close --help` says a no-id close targets "the
+    last touched issue (from most recent create, update, show, or close
+    operation)".
+  * `bd show --current --json` returned exactly that pointer after every
+    one of those four operations. Its help ("in-progress, hooked, or last
+    touched") suggests it might out-vote the pointer with an unrelated
+    in-progress bead -- it does not: with bead C in_progress and the
+    pointer on B, --current answered B, and with the pointer file removed
+    while C was still in_progress it errored instead of naming C, exactly
+    where a bare close also errors.
+  * Reading --current does NOT move the pointer, which matters here: this
+    hook runs at PreToolUse, i.e. before the close, so a resolution that
+    re-pointed the pointer would change the very target it reports.
+  * A bare `bd close` was then observed closing precisely the bead
+    --current had just named -- on a throwaway database and again on the
+    real tracker.
+
+So the bare branch resolves the id and checks that bead through the same
+path as a named one. Resolution is believed only when it yields a
+non-empty, non-flag-shaped id: a `bd` that does not know --current (or
+that echoes the flag back as an id) must not make the gate report on a
+phantom bead named "--current". Any other outcome -- non-zero exit,
+unparseable output, empty list, missing/hung bd -- keeps the conservative
+ask. That is deliberately NOT the silent fail-open used for a NAMED bead:
+there the gate knows which bead it failed to check and can let a possibly
+fine close through, whereas here it does not even know what is at stake,
+and Branch A of the contract says an unresolvable --current must fall back
+to the conservative ask "rather than allowing".
 """
 
 import glob
@@ -391,6 +429,36 @@ def bd_show(bead_id):
     return None
 
 
+def resolve_current_bead_id():
+    """The id of the last-touched bead -- the one a bare `bd close` would
+    close -- via `bd show --current --json`, or None when it cannot be
+    trusted (bd missing, non-zero exit, timeout, unparseable output, empty
+    result, empty id, or a flag-shaped id from a bd that does not know the
+    flag). None means: keep the conservative branch."""
+    try:
+        result = subprocess.run(
+            ["bd", "show", "--current", "--json"],
+            capture_output=True,
+            text=True,
+            timeout=BD_SHOW_TIMEOUT_SECONDS,
+        )
+        if result.returncode != 0:
+            return None
+        data = json.loads(result.stdout)
+    except Exception:
+        return None
+    if isinstance(data, list):
+        data = data[0] if data else None
+    if not isinstance(data, dict):
+        return None
+    bead_id = (data.get("id") or "").strip()
+    # A flag-shaped or empty id is never a bead: an older `bd` that ignores
+    # --current and echoes it back must not be believed.
+    if not bead_id or bead_id.startswith("-"):
+        return None
+    return bead_id
+
+
 def emit_deny(reason):
     print(json.dumps({
         "hookSpecificOutput": {
@@ -412,10 +480,11 @@ def emit_warn(bead_id):
 
 
 NO_ID_REASON = (
-    "bd close with no bead id closes the LAST-TOUCHED bead, which this "
-    "gate cannot resolve (`bd show` requires an id), so its acceptance "
-    "contract and 'VERIFIED: PASS' note cannot be checked -- rerun with "
-    "an explicit bead id."
+    "bd close with no bead id closes the LAST-TOUCHED bead, and this gate "
+    "could not resolve which one that is (`bd show --current --json` "
+    "failed, is unsupported, or named nothing), so its acceptance contract "
+    "and 'VERIFIED: PASS' note cannot be checked -- rerun with an explicit "
+    "bead id."
 )
 
 
@@ -502,13 +571,17 @@ def main():
     bead_ids = extract_bead_ids(segment)
 
     if not bead_ids:
-        # Bare close: targets the last-touched bead, which cannot be
-        # resolved. Conservative, deliberately not silent.
-        if mode == "enforce":
-            emit_deny(f"[contract-gate enforce] {NO_ID_REASON}")
-        else:
-            emit_no_id_warn()
-        return
+        # Bare close: targets the last-touched bead. Resolve it and check it
+        # like any named bead; only an untrustworthy resolution falls back to
+        # the conservative ask (deliberately not silent).
+        resolved = resolve_current_bead_id()
+        if resolved is None:
+            if mode == "enforce":
+                emit_deny(f"[contract-gate enforce] {NO_ID_REASON}")
+            else:
+                emit_no_id_warn()
+            return
+        bead_ids = [resolved]
 
     failing = []
     for bead_id in bead_ids:
