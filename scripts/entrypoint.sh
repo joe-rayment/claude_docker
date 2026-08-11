@@ -529,15 +529,43 @@ ensure_beads() {
     # inner flock attempt is skipped entirely rather than "locking" a
     # descriptor no other invocation shares -- the repair body still runs,
     # unprotected but not silently no-op-disguised-as-protected.
+    #
+    # HANG, NOT ABORT (beads_claude_docker-pef): an openability probe is only
+    # as good as its ability to RETURN. A write-only open of a FIFO with no
+    # reader attached does not fail fast -- it BLOCKS in open(2) until a reader
+    # shows up, which for a lock path nobody reads is forever. So a FIFO
+    # pre-placed at either lock path (by a buggy or hostile actor with this
+    # UID; nothing in this repo creates one) parks the probe below, or -- with
+    # the older creatability probe, which never opened the file -- the repair
+    # subshell's own bare `9>"$lockfile"` one screenful down. Either way
+    # ensure_beads never returns, entrypoint.sh never reaches its final
+    # `exec "$@"`, and the container start looks like nothing happened at all:
+    # strictly worse than the loud set -e abort above, which at least names
+    # itself. The `[ -p ... ]` guard is what makes the probe bounded: it is a
+    # pure stat(2), it short-circuits BEFORE the blocking open, and treating a
+    # FIFO as unusable degrades it to the next tier exactly the way a
+    # permission failure already does. Guarding tier selection also covers the
+    # real acquisition below, which is the more dangerous of the two sites and
+    # cannot itself be wrapped in a bounded-time open: fd 9 has to stay open
+    # across the whole repair subshell, so a `timeout` around it would have to
+    # outlive the repair it guards. The remaining TOCTOU (a FIFO swapped in
+    # between this probe and that redirection) is deliberately out of scope --
+    # it needs a same-UID actor racing a container start, and closing it
+    # honestly means an O_NONBLOCK open the shell can't express.
     local lockfile="$dir/.beads/.ensure_beads.lock"
-    if ! ( : 9>"$lockfile" ) 2>/dev/null; then
+    if [ -p "$lockfile" ] || ! ( : 9>"$lockfile" ) 2>/dev/null; then
         local dir_abs="" dir_hash="" tmp_lockfile=""
         dir_abs=$( (cd "$dir" 2>/dev/null && pwd -P) 2>/dev/null ) || dir_abs="$dir"
         dir_hash=$(printf '%s' "$dir_abs" | cksum 2>/dev/null | cut -d' ' -f1)
         lockfile=""
         if [ -n "$dir_hash" ]; then
             tmp_lockfile="${TMPDIR:-/tmp}/beads-ensure-lock.$dir_hash"
-            ( : 9>"$tmp_lockfile" ) 2>/dev/null && lockfile="$tmp_lockfile"
+            # Same `-p` guard as tier 1, and for the same reason: the shared
+            # ${TMPDIR:-/tmp} namespace is if anything the easier of the two
+            # paths to pre-place a FIFO at. Left of `&&`, so a FIFO here is an
+            # expected failure that falls through to the /dev/null last resort
+            # rather than aborting under set -e.
+            [ ! -p "$tmp_lockfile" ] && ( : 9>"$tmp_lockfile" ) 2>/dev/null && lockfile="$tmp_lockfile"
         fi
         if [ -z "$lockfile" ]; then
             dev-log error "ensure_beads: cannot create a lock file in $dir/.beads or \${TMPDIR:-/tmp}; running repair WITHOUT concurrency protection" 2>/dev/null || true
