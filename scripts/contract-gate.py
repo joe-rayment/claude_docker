@@ -79,8 +79,48 @@ The verdict record itself ("VERIFIED: PASS ...") is written by the
 orchestrator via `bd update <id> --append-notes` on receiving the
 verifier's report -- this hook only reads it back; it never writes to a
 bead.
+
+Transcript corroboration (bead beads_claude_docker-4y6)
+-------------------------------------------------------
+A "VERIFIED: PASS" line used to be believed on its face, so anyone who
+could write bead notes could self-certify with one appended line and no
+verifier need ever have run. The note must now read
+
+    VERIFIED: PASS - verifier <agentId>
+
+(any separator/wording; what matters is a plausible agent id token), and
+the gate corroborates that id against the harness's own subagent
+transcript store:
+
+    <root>/<project>/<session>/subagents/agent-<agentId>.jsonl
+
+root = env CONTRACT_GATE_TRANSCRIPT_ROOT, else ~/.claude/projects.
+Corroborated means all three of: the transcript file exists, it
+references this bead id anywhere, and the AGENT's own output carries a
+PASS verdict. That last part reads only `type == "assistant"` records'
+text blocks -- never the raw file -- because every verifier spawn prompt
+recites the four verdicts ("PASS / FAIL / TAMPERED / NO-CONTRACT"), so a
+raw grep for "PASS" would let a FAILing verifier run corroborate a
+wishful note.
+
+NOT a security boundary, and the docs say so: the transcript store is an
+ordinary user-writable path and the executor's scout-only Agent grant is
+a prompt contract, not a harness-enforced one, so a determined agent can
+forge a transcript. What this buys is that self-certification stops being
+one appended line and becomes deliberate multi-step forgery -- tamper-
+resistant against laziness and accident, nothing stronger.
+
+Fail open, deliberately: if the store root is missing, is not a
+directory, or contains no `subagents/` directory anywhere, corroboration
+is not merely failed but *impossible*, and the gate falls back to the old
+text-only behaviour (a bare "VERIFIED: PASS" allows). Other machines,
+fresh containers and headless runs must never be blocked by a store that
+was never there -- and no already-closed bead whose note predates this
+format is retroactively condemned, since the gate only ever runs on a
+close happening now.
 """
 
+import glob
 import json
 import os
 import re
@@ -122,6 +162,132 @@ CLASS_NO_CONTRACT_RE = re.compile(r"CLASS:\s*no-contract", re.IGNORECASE)
 # `bd update --append-notes "VERIFIED: PASS ..."`, always starts its own
 # line because bd joins appended notes with a newline separator.
 VERIFIED_PASS_RE = re.compile(r"^\s*VERIFIED:\s*PASS\b", re.MULTILINE)
+# Same anchor, but capturing the rest of the line: that remainder is where
+# the verifier attribution ("- verifier <agentId>") lives.
+VERIFIED_PASS_LINE_RE = re.compile(r"^\s*VERIFIED:\s*PASS\b(.*)$", re.MULTILINE)
+
+# --- transcript corroboration ----------------------------------------------
+TRANSCRIPT_ROOT_ENV = "CONTRACT_GATE_TRANSCRIPT_ROOT"
+DEFAULT_TRANSCRIPT_ROOT = "~/.claude/projects"
+TRANSCRIPT_READ_LIMIT_BYTES = 32 * 1024 * 1024  # transcripts run to ~2.5 MB
+
+# A candidate agent id: >= 8 chars of [0-9A-Za-z_-], optionally written with
+# the "agent-" filename prefix, and containing a run of >= 8 hex digits.
+# Real ids are either 17 hex chars (a51ceb8cf23d0e21d) or, when the Agent
+# call passed a name, "a<name>-<16 hex>" (averifier-opus-5-resume-90365b...).
+# The hex-run requirement is what keeps ordinary prose words out; every
+# candidate on the line is tried, because keyword-anchored extraction breaks
+# on exactly the named ids that contain the word "verifier" themselves.
+AGENT_ID_TOKEN_RE = re.compile(r"(?:agent-)?[0-9A-Za-z][0-9A-Za-z_-]{7,}")
+HEX_RUN_RE = re.compile(r"[0-9a-f]{8,}")
+
+# The verifier's own verdict, matched against DECODED assistant text only.
+# Line-anchored with a prefix class of spaces/tabs/markdown punctuation --
+# never \s, which would span newlines and turn the anchor into a substring
+# match. Validated against the real transcripts on this machine: it finds
+# "Contract verdict: PASS" and "Verdict: PASS", and does not fire on a
+# "Verdict: PARTIAL"/"FAIL" run or on a prompt reciting the four verdicts.
+VERDICT_PASS_RES = (
+    re.compile(
+        r"(?im)^[ \t>*_#\-]*(?:contract[ \t]+)?\**[ \t]*verdict\**"
+        r"[ \t]*[:\-]?[ \t]*\**[ \t]*PASS(?![-\w])"
+    ),
+    re.compile(r"(?im)^[ \t>*_#\-]*\**[ \t]*VERIFIED:[ \t]*PASS(?![-\w])"),
+)
+
+
+def transcript_root():
+    root = os.environ.get(TRANSCRIPT_ROOT_ENV) or DEFAULT_TRANSCRIPT_ROOT
+    return os.path.expanduser(root)
+
+
+def transcript_store_discoverable():
+    """True only when this machine actually has a subagent transcript store.
+    Absent root, a root that is not a directory, or a tree with no
+    `subagents/` directory anywhere means corroboration is impossible rather
+    than failed -- the caller then falls back to text-only behaviour."""
+    root = transcript_root()
+    if not os.path.isdir(root):
+        return False
+    for depth in ("*/*/subagents", "*/subagents", "subagents", "**/subagents"):
+        for path in glob.iglob(os.path.join(root, depth), recursive=True):
+            if os.path.isdir(path):
+                return True
+    return False
+
+
+def transcript_paths(agent_id):
+    """Every transcript file for this agent id, at any depth under root."""
+    root = transcript_root()
+    name = "agent-%s.jsonl" % agent_id
+    seen, paths = set(), []
+    for pattern in (
+        os.path.join(root, "*", "*", "subagents", name),
+        os.path.join(root, "**", "subagents", name),
+    ):
+        for path in glob.iglob(pattern, recursive=True):
+            if path not in seen and os.path.isfile(path):
+                seen.add(path)
+                paths.append(path)
+    return paths
+
+
+def assistant_text(raw):
+    """The decoded text the AGENT itself emitted: `type == "assistant"`
+    records' text blocks, joined. Unparseable lines are skipped. Reading
+    this instead of the raw JSONL is the whole point -- the spawn prompt
+    (a `type == "user"` record) recites "PASS / FAIL / TAMPERED /
+    NO-CONTRACT" in every real verifier run."""
+    chunks = []
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            record = json.loads(line)
+        except Exception:
+            continue
+        if not isinstance(record, dict) or record.get("type") != "assistant":
+            continue
+        content = (record.get("message") or {}).get("content")
+        if isinstance(content, str):
+            chunks.append(content)
+        elif isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    chunks.append(block.get("text") or "")
+    return "\n".join(chunks)
+
+
+def transcript_corroborates(agent_id, bead_id):
+    """True when some transcript for this agent id both references the bead
+    and records a PASS verdict in the agent's own output."""
+    for path in transcript_paths(agent_id):
+        try:
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                raw = fh.read(TRANSCRIPT_READ_LIMIT_BYTES)
+        except Exception:
+            continue
+        if bead_id not in raw:
+            continue
+        text = assistant_text(raw)
+        if any(pattern.search(text) for pattern in VERDICT_PASS_RES):
+            return True
+    return False
+
+
+def attributed_agent_ids(notes):
+    """Every plausible agent id token appearing on a `VERIFIED: PASS` line."""
+    ids = []
+    for remainder in VERIFIED_PASS_LINE_RE.findall(notes):
+        for token in AGENT_ID_TOKEN_RE.findall(remainder):
+            if not HEX_RUN_RE.search(token):
+                continue
+            if token.startswith("agent-"):
+                token = token[len("agent-"):]
+            if token not in ids:
+                ids.append(token)
+    return ids
 
 
 def mode_file():
@@ -260,22 +426,65 @@ def emit_no_id_warn():
     )
 
 
-def bead_fails_check(bead_id):
-    """True when this bead should trigger the gate. False when it is fine,
-    exempt (CLASS: no-contract), or unknowable (bd failed -- fail open)."""
+# Two distinct failure kinds, so the message can name what is actually
+# missing: MISSING is the original "no contract or no PASS note" case (its
+# wording is unchanged), UNCORROBORATED is a PASS note the transcript store
+# does not back up.
+FAIL_MISSING = "missing"
+FAIL_UNCORROBORATED = "uncorroborated"
+
+
+def corroboration_detail(bead_id, agent_ids):
+    if not agent_ids:
+        return (
+            "the note names no verifier agentId; write it as "
+            "\"VERIFIED: PASS - verifier <agentId>\", naming the subagent "
+            f"whose transcript under {transcript_root()} records the verdict"
+        )
+    return (
+        f"no transcript under {transcript_root()} for agentId "
+        f"{', '.join(agent_ids)} both references {bead_id} and records a "
+        "PASS verdict in the agent's own output"
+    )
+
+
+def emit_corroboration_warn(bead_id, detail):
+    sys.stderr.write(
+        f"[contract-gate warn] bd close {bead_id}: the 'VERIFIED: PASS' "
+        f"note is not corroborated by a verifier transcript -- {detail}. "
+        "(CONTRACT_GATE_MODE=off to silence, =enforce to block.)\n"
+    )
+
+
+def bead_failure(bead_id):
+    """(kind, detail) when this bead should trigger the gate, else None.
+    None also covers fine, exempt (CLASS: no-contract) and unknowable (bd
+    failed -- fail open)."""
     issue = bd_show(bead_id)
     if issue is None:
-        return False  # bd unavailable/failed/unparseable: fail open, silent
+        return None  # bd unavailable/failed/unparseable: fail open, silent
 
     acceptance = (issue.get("acceptance_criteria") or "").strip()
     notes = issue.get("notes") or ""
 
     if acceptance and CLASS_NO_CONTRACT_RE.search(acceptance):
-        return False  # explicitly exempt: allowed silently
+        return None  # explicitly exempt: allowed silently
 
     has_contract = bool(acceptance)
     has_pass = bool(VERIFIED_PASS_RE.search(notes))
-    return not (has_contract and has_pass)
+    if not (has_contract and has_pass):
+        return (FAIL_MISSING, None)
+
+    # A PASS note is present. Believe it on its face only where the
+    # transcript store does not exist to be consulted at all.
+    if not transcript_store_discoverable():
+        return None  # fail open: text-only fallback, exactly as before
+
+    agent_ids = attributed_agent_ids(notes)
+    for agent_id in agent_ids:
+        if transcript_corroborates(agent_id, bead_id):
+            return None
+    return (FAIL_UNCORROBORATED, corroboration_detail(bead_id, agent_ids))
 
 
 def main():
@@ -301,26 +510,47 @@ def main():
             emit_no_id_warn()
         return
 
-    failing = [bead_id for bead_id in bead_ids if bead_fails_check(bead_id)]
+    failing = []
+    for bead_id in bead_ids:
+        failure = bead_failure(bead_id)
+        if failure is not None:
+            failing.append((bead_id, failure[0], failure[1]))
     if not failing:
-        return  # every named bead has a contract and a recorded PASS
+        return  # every named bead has a contract and a corroborated PASS
 
     if mode == "enforce":
         # One decision object, naming every failing bead: any one of them
         # is enough to deny the whole command.
-        emit_deny(
-            f"[contract-gate enforce] bd close {' '.join(failing)}: no "
-            "acceptance contract or no recorded 'VERIFIED: PASS' note. "
-            "Register a CHECK/PASS-IF contract before dispatch and record "
-            "the verifier's PASS via `bd update --append-notes` before "
-            "closing, or set CLASS: no-contract on the acceptance field "
-            "at registration time if this bead has no observable check."
-        )
+        missing = [b for b, kind, _ in failing if kind == FAIL_MISSING]
+        reason = ""
+        if missing:
+            reason = (
+                f"[contract-gate enforce] bd close {' '.join(missing)}: no "
+                "acceptance contract or no recorded 'VERIFIED: PASS' note. "
+                "Register a CHECK/PASS-IF contract before dispatch and record "
+                "the verifier's PASS via `bd update --append-notes` before "
+                "closing, or set CLASS: no-contract on the acceptance field "
+                "at registration time if this bead has no observable check."
+            )
+        for bead_id, kind, detail in failing:
+            if kind != FAIL_UNCORROBORATED:
+                continue
+            if reason:
+                reason += " "
+            reason += (
+                f"[contract-gate enforce] bd close {bead_id}: the "
+                "'VERIFIED: PASS' note is not corroborated by a verifier "
+                f"transcript -- {detail}."
+            )
+        emit_deny(reason)
         return
 
     # mode == "warn": one line per failing bead.
-    for bead_id in failing:
-        emit_warn(bead_id)
+    for bead_id, kind, detail in failing:
+        if kind == FAIL_UNCORROBORATED:
+            emit_corroboration_warn(bead_id, detail)
+        else:
+            emit_warn(bead_id)
 
 
 if __name__ == "__main__":

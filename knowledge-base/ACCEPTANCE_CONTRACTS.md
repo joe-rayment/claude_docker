@@ -91,6 +91,65 @@ writes to the bead, and the executor is forbidden to write a `VERIFIED:`
 line at all (a worker that can forge the verdict makes the check
 decorative).
 
+## The `VERIFIED:` line format, and what corroborating it is worth
+
+The verdict record must name the verifier that produced it:
+
+```
+VERIFIED: PASS — verifier <agentId>[, any further prose]
+```
+
+`<agentId>` is the harness's subagent id, the one in the transcript path
+`~/.claude/projects/<project>/<session>/subagents/agent-<agentId>.jsonl`
+(e.g. `a51ceb8cf23d0e21d`, or `averifier-opus-5-resume-90365b6d61bc8127`
+when the `Agent` call passed a `name`). `contract-gate` treats a
+`VERIFIED: PASS` note as verified only when that id **corroborates**: the
+transcript file exists, it references this bead id, and the agent's *own*
+output — `type == "assistant"` records only, never the raw file — records
+a PASS verdict. The raw file is off-limits on purpose: every verifier
+spawn prompt recites "PASS / FAIL / TAMPERED / NO-CONTRACT", so a raw
+grep would let a *failing* verifier run corroborate a wishful note.
+
+A `VERIFIED: PASS` line with no agentId, or with an id no transcript
+backs, is **not** verified: warn in `warn` mode, deny in `enforce`. Where
+the transcript store cannot be consulted at all — absent, not a
+directory, or no `subagents/` dir anywhere under
+`CONTRACT_GATE_TRANSCRIPT_ROOT` (default `~/.claude/projects`) — the gate
+falls back to the old text-only behaviour and a bare `VERIFIED: PASS`
+allows. Other machines, fresh containers and headless runs must never be
+blocked by a store that was never there.
+
+**This is not a security boundary, and must not be described as one.**
+The transcript store is an ordinary user-writable path, and the
+executor's scout-only `Agent` grant is a prompt contract rather than a
+harness-enforced one, so an agent that *wants* to forge corroboration
+can: write a plausible JSONL file, name its id in the note. What the
+check actually buys is that self-certification stops being one appended
+line of text and becomes deliberate, multi-step forgery. Call it
+tamper-resistant against laziness and accident — never tamper-proof.
+
+## A contract registered on a false premise is retired, never edited
+
+If a contract turns out to prescribe a mechanism that does not exist, or
+pins a baseline that has since moved, **do not edit the acceptance
+field** — editing it is exactly what C1 reads as goalposts moved, i.e.
+`TAMPERED`, and an executor cannot make that edit innocent by explaining
+it. Retire the bead (close it as retired, with the reason recorded) and
+register a **new** bead carrying a corrected contract that cites the
+retired one.
+
+The worked example is bead `beads_claude_docker-mvc`, retired 2026-08-11:
+it prescribed corroborating a `VERIFIED: PASS` note against an actor
+field in `bd history`, and no such field exists — `bd history <id>
+--json` reports `Committer: "root"` for every revision regardless of
+which agent wrote it, and `created_by: "claude"` — while its `PASS-IF`
+additionally pinned a 9-case baseline that later work had already grown
+past. Both defects live in the acceptance field, so both were
+unfixable in place. Its replacement, `beads_claude_docker-4y6`, names
+`mvc` as retired, prescribes the transcript-corroboration mechanism
+above, and states its baseline relatively ("every pre-existing case still
+passes") instead of by count.
+
 ## The `no-contract` escape hatch
 
 `CLASS: no-contract` is for work with no observable check (pure prose
@@ -126,13 +185,15 @@ is never affected by work done under a second bead's contract.
 
 - `off` — silent allow, no `bd` call made at all.
 - `warn` (**default**) — allows the close, but prints a stderr warning if
-  the bead has no acceptance contract or no recorded `VERIFIED: PASS`
-  note. Silent when both are present.
+  the bead has no acceptance contract, no recorded `VERIFIED: PASS` note,
+  or a `VERIFIED: PASS` note no verifier transcript corroborates (see the
+  `VERIFIED:` line format above). Silent when all are in order.
 - `enforce` — same check, but denies the close (via
   `hookSpecificOutput.permissionDecision == "deny"`) instead of warning.
 
 Set via `CONTRACT_GATE_MODE` env var or `~/.claude/contract-gate.mode`; an
 unrecognized value falls back to `warn`, never to `off`. A bead whose
 contract carries `CLASS: no-contract` is exempt in any mode. The hook
-fails open on every error path (missing `bd`, unparseable JSON, timeout) —
-a broken gate can never block a real close.
+fails open on every error path (missing `bd`, unparseable JSON, timeout,
+and an undiscoverable transcript store) — a broken gate can never block a
+real close.
