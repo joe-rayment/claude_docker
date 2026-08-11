@@ -752,6 +752,246 @@ no stake — never by the worker grading itself.
 - **Proportionate:** skip only on trivial/self-evident results; require it
   wherever a wrong-but-plausible result would propagate.
 
+## Complexity Router (lanes)
+
+**When to use:** the tier system answers *which model* does a piece of
+work; the router answers *how much process the prompt gets at all* — and
+whether anything is spawned in the first place. Read this when a trivial
+request just cost a plan, a bead, an executor and a verifier, when the
+express lane is being declared for work that clearly isn't express, or
+when you need to tune the balance against the declaration log rather than
+against vibes.
+
+### The problem
+
+Every prompt used to get the full-court press: top-tier deliberation, a
+dispatch line pushing delegation, plan-before-code, an executor slice, an
+acceptance contract, verifier sign-off, a review cycle. "Change the
+background to blue" cost the same ceremony as "redesign the sync layer".
+The tier machinery made each *unit* of that ceremony cheaper without ever
+asking whether the ceremony was warranted.
+
+A second failure mode compounds the first (user-identified 2026-08-11):
+**scope inflation** — the session and its agents answer a harder question
+than the one asked. They investigate adjacent code nobody asked about,
+return editorial risk flags outside the slice, and that self-generated
+extra surface then *justifies* the heavier route. Weight has to be
+computed from the request **as asked**, and the scope clause has to bind
+the subagents too (`config/agents/{executor,scout,verifier}.md` each carry
+one now) — otherwise inflated worker reports simply re-inflate the
+orchestrator.
+
+### Design: route first, three lanes
+
+The first action on every prompt is a declaration:
+`lane express|standard|deep [--why "…"]`. It is a tiny Bash call, exempt
+from the delegation gate (`lane` is in `EXEMPT_BASH_RE`), and it does
+triple duty — it makes the route **visible** in the transcript so the user
+can redirect immediately, it is the **enforcement key** delegation-gate
+reads, and it is the **measurement** record.
+
+| lane | rubric shape | process it buys |
+|------|--------------|-----------------|
+| **express** | ALL of: ≤1 file (or none); mechanical/cosmetic, or answerable from context or one lookup; no design choice; trivially reversible; no new dependency/interface/contract | inline now, ≈5 tool calls — no plan, no bead, no executor, no verifier; verify with one run/screenshot when observable, else the diff |
+| **standard** | one well-understood slice, low-to-moderate risk, no architectural choice | one-sentence approach, then inline or ONE executor slice; verify by running the result once; no acceptance contract or verifier unless the claim is contested |
+| **deep** | ANY of: ≥3 files or an interface/schema/config contract; multiple approaches with real tradeoffs; ambiguity needing interpretation; hard to reverse; security or data-integrity surface; thoroughness asked for | the full protocol above: plan, beads with CHECK/PASS-IF contracts, executor slices, verifier sign-off |
+
+The lanes **scope the rest of this doc's protocol** rather than sitting
+beside it. "Trust, but verify" above is written as an unqualified mandate
+with a proportionality escape hatch; read through the router, that mandate
+is the **deep lane's** — plus any contested or risk-bearing claim in a
+lighter lane. Express verifies with one observation and no verifier agent;
+standard runs the result once. Same for the acceptance-contract protocol
+(CHECK/PASS-IF/RED-AT/GREEN-AT): deep lane and contested claims, not every
+non-trivial claim.
+
+The table is a **summary, deliberately not the source**. Doctrine sprawl
+was itself one of the bugs found: the old dispatch wording lived in four
+places at once. `lane --prime` is now the single authoritative home for
+the routing text (exactly as `tier-prime` owns the tier trio wording), and
+every other site — the UserPromptSubmit echo, SessionStart, PreCompact,
+`CLAUDE.md` — prints or references it instead of keeping a copy. Run
+`lane --prime` for the binding wording; treat any divergence from it,
+including this table, as the copy being stale.
+
+Three rules do the real work of keeping the light lane both reachable and
+safe:
+
+- **Ties go to the lighter lane, with one-way tripwires.** When the lane
+  is genuinely arguable, take the lighter one — but scope outgrowing the
+  rubric, a first fix attempt failing, hidden ambiguity surfacing, or
+  unexpected test breakage each escalate **exactly one lane**
+  (`lane <heavier> --why "…"`), announced in the reply, and never
+  de-escalated within the same prompt. The no-thrash rule is what makes
+  the optimistic default safe: mis-routing down costs one escalation, not
+  a wrong answer.
+- **Scope discipline is part of the rubric, not a style note.** Classify
+  and answer the request as asked, never its maximal interpretation. An
+  adjacent issue noticed mid-task gets one line at most, never
+  investigation — and noticing one is explicitly **not** a tripwire. Only
+  the asked task's own needs escalate.
+- **Transparency and override.** The lane line is in the transcript;
+  "quick"/"just" bias light, "plan"/"thorough"/"audit" force deep, and an
+  explicit user constraint beats every rubric line.
+
+### Mechanism
+
+`scripts/lane.sh` → `/usr/local/bin/lane` owns the state and the wording;
+`scripts/delegation-gate.py` reads the state; `scripts/tier-prime.sh`
+re-injects the wording. Nothing else in the chain knows the rubric text.
+
+- **State** lives at `$LANE_STATE_DIR` (default `~/.claude/cache/lane`),
+  one `<session_id>.json` per session holding `{lane, prev, why, ts,
+  escalated}`, plus `log.jsonl` and a `last-session` file. Session id
+  resolution has two paths, which is why `last-session` exists: the
+  `--reset` hook takes the id from the **hook JSON on stdin** and records
+  it there, while a plain CLI declaration reads `CLAUDE_CODE_SESSION_ID`
+  and falls back to `last-session` when the env var is absent (grep
+  `resolve_sid`). With neither available, `lane` prints "no session id —
+  lane not recorded" and exits 0 rather than guessing.
+- **`lane --reset` is the first UserPromptSubmit hook**, ahead of
+  tier-reconcile and cost-mirror, so a stale `express` from the previous
+  prompt can never leak into the next one. Reset writes `lane: "unset"`
+  (carrying the previous value in `prev`) and appends **nothing** to
+  `log.jsonl` — the log records declarations only.
+- **delegation-gate express behavior** (grep `KNOWN_LANES`, `get_lane`):
+  under express, main-loop `Edit`/`Write`/`NotebookEdit` are allowed in
+  every mode and the `enforce` read/Bash streak-deny is suspended —
+  denying the one edit an express task consists of would cost more than
+  the edit. The streak is still counted, and past `EXPRESS_WARN_AT` (6)
+  a *different* warn fires, repeating every `EXPRESS_WARN_EVERY` (4):
+  express tasks are small by definition, so a long grind under express is
+  the mis-route signal, and the warn says "escalate or finish" rather than
+  the ordinary "go delegate" nudge, which would tell the session to do the
+  opposite of the lane it declared. The watermark is shared with the
+  delegation nudge so escalating mid-prompt cannot double-warn. Every
+  other value — `standard`, `deep`, `unset`, an unreadable file, a lane
+  name the gate doesn't know — reads as `unset` and yields **exactly** the
+  pre-router behavior: the same never-weaker principle as `get_mode()`'s
+  fallback.
+- **Re-injection.** `tier-prime.sh` calls `lane --prime --short` at
+  SessionStart (a one-liner beside the tier trio) and the full rubric at
+  PreCompact via `--full`, so a compaction cannot silently launder the
+  router out of context the way it once could the delegation protocol. The
+  call is guarded by `command -v` (grep `lane_prime`): on an image built
+  before `lane` existed it prints nothing and the hook still succeeds.
+- **Measurement.** Each declaration appends a row to `log.jsonl` with
+  `escalated: true` when it outranks the same prompt's previous lane. The
+  log is self-bounding — past 5000 lines it is truncated to the newest
+  2500. Everything in `lane` fails open by construction: `jq` and
+  `python3` are both optional, and every branch exits 0.
+
+### Evidence base (researched 2026-08-11)
+
+The design is assembled from what the published routers got right, minus
+the one that failed publicly:
+
+- **RouteLLM** (LMSYS): a learned win-rate router held **95% of
+  strong-model quality at 14–26% of strong-model calls**. **FrugalGPT**:
+  cheapest-first cascade with a scoring judge, **up to 98% cost cut**.
+  **HybridLLM**: an upfront difficulty classifier, **~40% fewer
+  strong-model calls at no quality drop**. Upfront classification beats
+  cascades when the difficulty signals are good, which for coding tasks
+  they are.
+- **Cursor's router** promotes to a pricier model only on a one-sided
+  **75%-confidence uplift** bar over the cheapest capable model — the best
+  anti-over-routing mechanism found, and the ancestor of "ties go to the
+  lighter lane".
+- **GPT-5's router** is the canonical failure: **silent under-routing** of
+  hard prompts to the fast model, unrecoverable because there was no
+  escalation path and no visibility into the route, which forced public
+  walk-backs. Its three lessons are load-bearing here — show the route,
+  allow override, make escalation cheap.
+- **Aider's architect/editor split and Claude Code's `opusplan`** are
+  static two-tier splits: expensive model plans, cheap model edits. That
+  is the tier system this doc already describes; the router adds the lane
+  *below* it, where the right amount of work is none.
+- **Why the classifier is the orchestrator and not a hook.** The main
+  session's model and effort are **fixed per turn** — only `/model`,
+  `--model`, env or settings move them, and a UserPromptSubmit hook can
+  only inject context or block. Community "Claude Code router hooks"
+  (regex-classify the prompt, claim to auto-switch the session model) are
+  therefore overclaiming a lever that does not exist. What a hook *can* do
+  is exactly what ours does: reset state, inject the rubric, and enforce
+  the declaration. Meanwhile the strongest model in the system is already
+  reading the prompt, so having it classify against an **objective
+  task-shape rubric** (files touched, ambiguity, reversibility,
+  orchestration need) costs ~zero and is a far better signal than regex —
+  and, importantly, is not LLM *self-confidence*, which the same research
+  finds unreliable as a difficulty signal.
+
+### Tuning knobs
+
+| knob | where | what it does |
+|------|-------|--------------|
+| **escalation rate** | `log.jsonl` (`"escalated":true` ÷ total rows) | the primary health metric; target **5–15%** |
+| `EXPRESS_WARN_AT` / `EXPRESS_WARN_EVERY` | `scripts/delegation-gate.py` (6 / 4) | how long an express grind runs before the mis-route warn, and how often it repeats |
+| `LANE_STATE_DIR` | env, read by both `lane` and the gate | redirects state — the seam the bats suites use to avoid touching live state |
+| the rubric thresholds themselves | `lane --prime` in `scripts/lane.sh` | e.g. the express file count; the last thing to change, and only against log data |
+
+Read the two failure directions off that rate. **Persistently under 5%**
+means the classifier is routing too heavy: express is never being tried,
+so it never needs correcting — the symptom on the ground is executor
+spawns for one-line edits and plans for questions. **Over 20%** means
+express is too greedy: the symptom is repeated mid-prompt escalations and
+express warns firing at streak 6+, and the fix is tightening a rubric
+threshold, not raising the warn constants (which would only hide it).
+Lazy always-express drift is the risk worth watching most, since it is the
+one that trades quality for cost silently; the express warn, the lane
+distribution, and `bead-auditor` on the standard/deep side are the three
+independent checks against it.
+
+Compute the rate straight off the log:
+
+```bash
+L=~/.claude/cache/lane/log.jsonl
+echo "$(grep -c '"escalated":true' "$L") escalations / $(wc -l < "$L") declarations"
+```
+
+`cost-mirror` reads the same log on two surfaces, so the rate is usually
+already in front of you. The per-prompt line ends with **`lane last-turn:
+<x>`** — "last-turn", not "current", because `lane --reset` runs earlier in
+the same UserPromptSubmit chain, so the state file already reads `unset` by
+the time the cost line renders and the log is the only honest source.
+`tier-cost` grows a **lanes section** beneath the table: per-lane
+declaration counts for this session and all-time, the escalation count, and
+the rate annotated with the target band above. Both fail open — a missing
+log omits the lane surface rather than printing a zero that would read as
+"the router ran and never escalated".
+
+### What is verified, and what isn't
+
+**Script-level chain verified 2026-08-11**, running the working-tree
+copies by path with state redirected away from live:
+
+```bash
+export LANE_STATE_DIR=$(mktemp -d); SID=chain-001
+echo "{\"session_id\":\"$SID\"}" | bash scripts/lane.sh --reset
+CLAUDE_CODE_SESSION_ID=$SID bash scripts/lane.sh express --why "chain check"
+P="{\"session_id\":\"$SID\",\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"/workspace/src/thing.py\"}}"
+printf '%s' "$P" | DELEGATION_GATE_MODE=guard python3 scripts/delegation-gate.py   # allow
+CLAUDE_CODE_SESSION_ID=$SID bash scripts/lane.sh standard --why "escalate"
+printf '%s' "$P" | DELEGATION_GATE_MODE=guard python3 scripts/delegation-gate.py   # deny
+```
+
+Observed: reset wrote `{"lane":"unset","prev":"unset",…}`; the express
+declaration echoed `[lane] express — inline, no ceremony — chain check`
+and the gate produced **no output, exit 0** (allow); after
+`lane standard`, which echoed `(escalated from express)`, the identical
+payload produced the `[delegation-gate guard] Implementation edits are the
+executor's seat…` deny JSON. `log.jsonl` held two rows, the second with
+`"escalated":true`, and the reset added none.
+
+**Live-hook behavior is not verified and cannot be from a running
+session:** hooks execute the **baked** `/usr/local/bin` binaries, so the
+UserPromptSubmit reset, the SessionStart/PreCompact injection, the gate's
+in-session lane awareness and cost-mirror's `lane last-turn:` tag only take
+effect after a host-side image rebuild. (`tier-cost`'s lanes section is the
+exception — it runs the staged binary from a terminal, not a hook, so it
+lands as soon as the staged copy is refreshed.) Until then the chain above (working-tree copies, explicit
+`LANE_STATE_DIR`) is the strongest available check — the same
+staged-artifact staleness trap documented in `CONFIG_SYNC.md`.
+
 ## Rollback
 
 All changes are repo files, reversible via git; and the live state is
@@ -766,6 +1006,22 @@ reconciler replaces them with concrete ids on first run.
 
 Revision log (each reversible via git on the listed files):
 
+- **2026-08-11 — complexity router (lanes):** `scripts/lane.sh` added (state,
+  log, and the single home of the rubric wording) plus `tests/lane.bats`;
+  `scripts/delegation-gate.py` gains lane awareness (express carves out the
+  Edit/Write denial, an unknown lane falls back to guard, the express-grind
+  warn) with cases in `tests/delegation-gate.bats`;
+  `config/claude-settings.json` wires `lane --reset` into UserPromptSubmit
+  ahead of the tier reconciler and sources the dispatch tail from `lane`;
+  `scripts/tier-prime.sh` injects the short rubric at SessionStart and the
+  full one at PreCompact; doctrine edits in `CLAUDE.md`,
+  `config/claude-user-memory.md` and `config/agents/*.md`; this doc gains the
+  Complexity Router chapter; `scripts/cost-mirror.py` joins the declaration
+  log (per-prompt `lane last-turn` tag, `tier-cost` lanes section) with cases
+  in `tests/tier-hooks.bats`; `Dockerfile` stages the new script. Rollback =
+  revert those files and remove the settings entries; every piece fails open
+  if `lane` is absent, so a partial revert degrades to the pre-router
+  behaviour rather than breaking a hook.
 - **2026-08-10 — advisorModel fable→opus:** `config/claude-settings.json`
   `advisorModel` flipped from `"fable"` to `"opus"` to match the default
   `.model`; `tests/smoke.bats` ("claude-settings.json pins the advisor at

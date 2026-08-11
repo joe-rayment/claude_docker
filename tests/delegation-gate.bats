@@ -18,12 +18,21 @@ setup() {
     export TMPDIR="$BATS_TEST_TMPDIR"
     export HOME="$BATS_TEST_TMPDIR/home"
     mkdir -p "$HOME"
+    # scratch router state, so no test can read the real session's lane
+    export LANE_STATE_DIR="$BATS_TEST_TMPDIR/lane-state"
 }
 
 gate() { python3 "$GATE"; }
 
 state_file() {
     echo "$HOME/.claude/cache/delegation-gate/$1.json"
+}
+
+# Write what scripts/lane.sh writes for `lane <lane>`: set_lane <sid> <lane>
+set_lane() {
+    mkdir -p "$LANE_STATE_DIR"
+    printf '{"lane":"%s","prev":"unset","why":"","ts":0,"escalated":false}\n' "$2" \
+        > "$LANE_STATE_DIR/$1.json"
 }
 
 # ── main-loop counting ──────────────────────────────────────────────────────
@@ -400,6 +409,126 @@ state_file() {
     run sh -c 'jq -cn "{tool_name:\"Read\",session_id:\"s7\",agent_id:null,tool_input:{}}" | python3 '"$GATE"
     [ "$status" -eq 0 ]
     [ -z "$output" ]
+}
+
+# ── lanes (complexity router) ───────────────────────────────────────────────
+#
+# express means the task is small by definition, so guard/enforce denials
+# invert: the edit is allowed and a long grind gets its own warn instead of
+# the delegation nudge. Every other lane value — including a name this gate
+# doesn't know and a missing state file — must be byte-identical to the
+# pre-lane behavior.
+
+@test "lane express: guard allows a main-loop Edit to /workspace/src/x.py (no deny, streak still counted)" {
+    export DELEGATION_GATE_MODE=guard
+    set_lane s30 express
+    run sh -c 'jq -cn "{tool_name:\"Edit\",session_id:\"s30\",agent_id:null,tool_input:{file_path:\"/workspace/src/x.py\"}}" | python3 '"$GATE"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+    jq -e '.streak == 1' "$(state_file s30)"
+    jq -e '.denies == 0' "$(state_file s30)"
+}
+
+@test "lane express: enforce allows a Read past DENY_AT and a non-exempt Bash (read/Bash deny suspended)" {
+    export DELEGATION_GATE_MODE=enforce
+    export DELEGATION_GATE_DENY_AT=8
+    set_lane s31 express
+    for i in $(seq 1 8); do
+        run sh -c 'jq -cn "{tool_name:\"Read\",session_id:\"s31\",agent_id:null,tool_input:{}}" | python3 '"$GATE"
+        [ "$status" -eq 0 ]
+    done
+    jq -e '.streak == 8' "$(state_file s31)"
+    jq -e '.denies == 0' "$(state_file s31)"
+    run sh -c 'jq -cn "{tool_name:\"Bash\",session_id:\"s31\",agent_id:null,tool_input:{command:\"cat /etc/passwd\"}}" | python3 '"$GATE"
+    [ "$status" -eq 0 ]
+    jq -e '.streak == 9' "$(state_file s31)"
+    jq -e '.denies == 0' "$(state_file s31)"
+}
+
+@test "lane express: the express warn fires at streak 6 and repeats at 10, and the delegation nudge at WARN_AT=4 is suppressed" {
+    # deliberately left at the default WARN_AT/WARN_EVERY: the silence at
+    # streak 4 is the assertion that express replaces the standard cadence
+    export DELEGATION_GATE_MODE=guard
+    set_lane s32 express
+    for i in $(seq 1 5); do
+        run sh -c 'jq -cn "{tool_name:\"Read\",session_id:\"s32\",agent_id:null,tool_input:{}}" | python3 '"$GATE"
+        [ "$status" -eq 0 ]
+        [ -z "$output" ]
+    done
+    run sh -c 'jq -cn "{tool_name:\"Read\",session_id:\"s32\",agent_id:null,tool_input:{}}" | python3 '"$GATE"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.hookSpecificOutput.permissionDecision == "allow"'
+    echo "$output" | jq -e '.hookSpecificOutput.additionalContext | test("express lane, 6 inline tool calls")'
+    echo "$output" | jq -e '.hookSpecificOutput.additionalContext | test("lane standard --why")'
+    echo "$output" | jq -e '(.hookSpecificOutput.additionalContext | test("consecutive inline tool calls")) == false'
+    for i in $(seq 7 9); do
+        run sh -c 'jq -cn "{tool_name:\"Read\",session_id:\"s32\",agent_id:null,tool_input:{}}" | python3 '"$GATE"
+        [ "$status" -eq 0 ]
+        [ -z "$output" ]
+    done
+    run sh -c 'jq -cn "{tool_name:\"Read\",session_id:\"s32\",agent_id:null,tool_input:{}}" | python3 '"$GATE"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.hookSpecificOutput.additionalContext | test("express lane, 10 inline tool calls")'
+}
+
+@test "lane standard: guard still denies a main-loop Edit naming the executor (today's behavior)" {
+    export DELEGATION_GATE_MODE=guard
+    set_lane s33 standard
+    run sh -c 'jq -cn "{tool_name:\"Edit\",session_id:\"s33\",agent_id:null,tool_input:{file_path:\"/workspace/src/x.py\"}}" | python3 '"$GATE"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.hookSpecificOutput.permissionDecision == "deny"'
+    echo "$output" | jq -e '.hookSpecificOutput.permissionDecisionReason | test("executor")'
+}
+
+@test "lane deep: guard still denies a main-loop Edit" {
+    export DELEGATION_GATE_MODE=guard
+    set_lane s33b deep
+    run sh -c 'jq -cn "{tool_name:\"Edit\",session_id:\"s33b\",agent_id:null,tool_input:{file_path:\"/workspace/src/x.py\"}}" | python3 '"$GATE"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.hookSpecificOutput.permissionDecision == "deny"'
+}
+
+@test "lane unknown value (turbo) behaves exactly like unset: guard denies the Edit" {
+    export DELEGATION_GATE_MODE=guard
+    set_lane s34 turbo
+    run sh -c 'jq -cn "{tool_name:\"Edit\",session_id:\"s34\",agent_id:null,tool_input:{file_path:\"/workspace/src/x.py\"}}" | python3 '"$GATE"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.hookSpecificOutput.permissionDecision == "deny"'
+}
+
+@test "lane state that is unparsable JSON behaves like unset: guard denies the Edit" {
+    export DELEGATION_GATE_MODE=guard
+    mkdir -p "$LANE_STATE_DIR"
+    printf '{"lane":"expr' > "$LANE_STATE_DIR/s34b.json"
+    run sh -c 'jq -cn "{tool_name:\"Edit\",session_id:\"s34b\",agent_id:null,tool_input:{file_path:\"/workspace/src/x.py\"}}" | python3 '"$GATE"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.hookSpecificOutput.permissionDecision == "deny"'
+}
+
+@test "no lane state file at all (state dir never created) behaves like unset: guard denies the Edit" {
+    export DELEGATION_GATE_MODE=guard
+    [ ! -d "$LANE_STATE_DIR" ]
+    run sh -c 'jq -cn "{tool_name:\"Edit\",session_id:\"s35\",agent_id:null,tool_input:{file_path:\"/workspace/src/x.py\"}}" | python3 '"$GATE"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.hookSpecificOutput.permissionDecision == "deny"'
+}
+
+@test "lane express does not change subagent handling: an agent_id call is still skipped entirely" {
+    export DELEGATION_GATE_MODE=guard
+    set_lane s36 express
+    run sh -c 'jq -cn "{tool_name:\"Edit\",session_id:\"s36\",agent_id:\"a1\",agent_type:\"executor\",tool_input:{file_path:\"/workspace/src/x.py\"}}" | python3 '"$GATE"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+    [ ! -f "$(state_file s36)" ]
+}
+
+@test "exempt Bash: a lane declaration does not count toward the streak" {
+    export DELEGATION_GATE_MODE=enforce
+    export DELEGATION_GATE_DENY_AT=1
+    run sh -c 'jq -cn "{tool_name:\"Bash\",session_id:\"s37\",agent_id:null,tool_input:{command:\"lane express --why x\"}}" | python3 '"$GATE"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+    [ ! -f "$(state_file s37)" ]
 }
 
 # ── robustness ───────────────────────────────────────────────────────────────

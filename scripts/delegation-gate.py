@@ -91,6 +91,23 @@ where headless behavior must actually change, use guard/enforce — only a
 deny steers there. This is also why guard denying edits by default is the
 real floor: warn text can be dropped, a deny cannot.
 
+Lane awareness (complexity router, scripts/lane.sh): the orchestrator
+declares a lane per prompt and `lane` records it at
+$LANE_STATE_DIR/<session_id>.json. An express lane means the task is small
+by definition — a single mechanical edit or a one-lookup answer — so the
+guard/enforce denials are exactly backwards there: spawning an executor to
+change one line costs more than the change. Under express, main-loop
+Edit/Write/NotebookEdit are allowed outright (the plans/memory carve-out
+never has to be proven) and enforce's read/Bash streak-deny is suspended;
+the streak is still counted, and a NEW warn (EXPRESS_WARN_AT, repeating
+every EXPRESS_WARN_EVERY, sharing the same warned_at watermark) fires
+instead of the delegation nudge — a long grind under express is the
+mis-routing signal, and telling that session to delegate would contradict
+the lane it declared. Every other lane value — standard, deep, unset,
+unknown, or an unreadable/absent state file — is byte-identical to the
+pre-lane behavior: the same never-weaker principle as get_mode()'s
+unrecognized-value fallback.
+
 Failure posture: fail SILENT AND OPEN. Any error — malformed stdin,
 unreadable state, an unwritable cache dir — exits 0 with no output.
 Exempt from all of this: a short list of housekeeping Bash commands
@@ -106,7 +123,15 @@ import time
 
 STATE_DIR = "~/.claude/cache/delegation-gate"
 MODE_FILE = "~/.claude/delegation-gate.mode"
+LANE_STATE_DIR = "~/.claude/cache/lane"
 GC_AGE_SECONDS = 7 * 24 * 3600
+
+# Lanes a state file may name. Anything else — including the "unset" that
+# `lane --reset` writes at the top of every prompt — leaves the gate at
+# exactly its pre-lane behavior.
+KNOWN_LANES = {"express", "standard", "deep"}
+EXPRESS_WARN_AT = 6
+EXPRESS_WARN_EVERY = 4
 
 # Tools that are unconditionally counted work. Bash is handled separately
 # below since it is only counted when NOT an exempt housekeeping command.
@@ -117,7 +142,8 @@ RECOGNIZED_MODES = {"off", "warn-only", "warn", "guard", "enforce"}
 
 EXEMPT_BASH_RE = re.compile(
     r"^\s*(bd|git (status|log|diff|show|add|commit|push|pull|restore|stash)"
-    r"|bats|dev-log|cost-mirror|tier-|delegation-gate|run-tests|take-screenshot)\b"
+    r"|bats|dev-log|cost-mirror|tier-|lane|delegation-gate|run-tests"
+    r"|take-screenshot)\b"
 )
 
 # Compound-command handling: a single Bash tool call is often several
@@ -183,6 +209,30 @@ def get_mode():
     if mode not in RECOGNIZED_MODES:
         return "guard"  # unset or unrecognized never silently weakens the gate
     return mode
+
+
+def lane_state_dir():
+    return os.path.expanduser(os.environ.get("LANE_STATE_DIR") or LANE_STATE_DIR)
+
+
+def get_lane(session_id):
+    """The lane declared for this session, or "unset" when there is no
+    readable declaration. Anything unexpected — missing dir, absent file,
+    truncated JSON, a lane name this gate doesn't know — reads as "unset",
+    which is the pre-lane behavior and therefore never the weaker one.
+    Session ids are sanitized the same way lane.sh sanitizes them so both
+    sides agree on the filename."""
+    try:
+        sid = re.sub(r"[^A-Za-z0-9._-]", "", session_id)
+        if not sid:
+            return "unset"
+        with open(os.path.join(lane_state_dir(), f"{sid}.json")) as fh:
+            state = json.load(fh)
+        if isinstance(state, dict) and state.get("lane") in KNOWN_LANES:
+            return state["lane"]
+    except Exception:
+        pass
+    return "unset"
 
 
 def _int_env(name, default):
@@ -332,6 +382,20 @@ def emit_warn(streak):
     }))
 
 
+def emit_express_warn(streak):
+    print(json.dumps({
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "allow",
+            "additionalContext": (
+                f"[delegation-gate] express lane, {streak} inline tool calls "
+                "— express tasks are small by definition. Mis-routed? "
+                "Escalate (`lane standard --why …`) or finish now."
+            ),
+        }
+    }))
+
+
 def main():
     payload = json.load(sys.stdin)
     tool_name = payload.get("tool_name")
@@ -377,6 +441,24 @@ def main():
         return
 
     is_edit_tool = tool_name in EDIT_TOOLS
+    express = get_lane(session_id) == "express"
+
+    if express:
+        # The lane already says this is a one-edit, few-lookup task: no
+        # denial in any mode, and its own warn instead of the delegation
+        # nudge (which would tell the session to do the opposite of the
+        # lane it declared). The watermark is shared with that nudge, so
+        # escalating mid-prompt cannot double-warn.
+        if streak >= EXPRESS_WARN_AT and (
+            state["warned_at"] == 0 or streak - state["warned_at"] >= EXPRESS_WARN_EVERY
+        ):
+            state["warned_at"] = streak
+            state["warns"] += 1
+            save_state(state_path, state)
+            emit_express_warn(streak)
+            return
+        save_state(state_path, state)
+        return
 
     if mode in ("guard", "enforce") and is_edit_tool and not is_carved_out(payload, tool_name):
         state["denies"] += 1

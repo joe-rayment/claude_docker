@@ -11,6 +11,13 @@ same ceremony as "redesign the sync layer". The template needs a router: classif
 prompt's real complexity, then apply the right amount of process AND the right model
 tier — with the full treatment reserved for work that deserves it.
 
+A second failure mode compounds the first (user-identified 2026-08-11): **scope
+inflation** — the model and its agents answer a harder question than the one asked.
+They investigate things the user didn't ask about, flag risks that are out of scope,
+and that self-generated extra surface then "justifies" the heavier route. Routing
+weight must be computed from the request AS ASKED, and scope discipline must bind the
+agents, not just the orchestrator's answer style.
+
 ## Evidence base (researched 2026-08-11)
 
 External approaches (URLs in session transcript):
@@ -93,6 +100,14 @@ Tie-break and safety net (this is where we beat the inspirations):
 - **User override always wins**: "quick/just" biases light; "plan/thorough/audit"
   forces deep; `ultrathink` raises effort as today. The lane line makes the route
   visible so the user can redirect immediately.
+- **Scope discipline is part of the rubric, not a style note**: classification is of
+  the request as asked, never the maximal interpretation. Adjacent issues or
+  out-of-scope risks noticed mid-task get one line at most, never investigation —
+  and discovering them is explicitly NOT an escalation tripwire; only the asked
+  task's own needs escalate. The same clause binds subagents: an executor reports
+  deviations from its spec, not opportunities beyond it; a scout returns the facts
+  asked for, not editorial risk flags; a verifier verdicts on the contract, not new
+  concerns.
 
 ### Model dimension — honest economics
 
@@ -134,6 +149,16 @@ community hooks that claim in-place model switching.
     "non-trivial claim".
 11. Economics paragraph ("your inline reads are re-billed every turn") — add the
     express exemption so it stops guilt-tripping one-liners into spawns.
+12. `CLAUDE.md` "Noticed Flaws — Fix or Surface" — currently reads as license to
+    investigate and flag anything noticed. Bound it explicitly: it covers flaws in
+    *Claude's own delivered work product*; pre-existing adjacent issues get a
+    one-line mention at most, no investigation, and never trigger escalation.
+13. Agent role files (`config/agents/executor.md`, `scout.md`, `verifier.md`) carry
+    no scope clause, so subagents wander past their spec and return inflated
+    reports the orchestrator then processes at the top tier. Each gains a binding
+    scope clause (executor: spec deviations only, no opportunities beyond it;
+    scout: asked facts only, no editorial risk flags; verifier: contract verdict
+    only, no new concerns).
 
 Doctrine sprawl is itself a found bug: the dispatch wording currently lives in 4 places
 (user-memory, CLAUDE.md, settings echo, tier-prime). The rubric gets ONE authoritative
@@ -164,10 +189,12 @@ Phase 1 — doctrine + mechanism (the felt fix):
    - standard/deep/unset → exactly today's guard/enforce semantics. Fail-open stays.
 4. `lane` added to delegation-gate's EXEMPT_BASH_RE and bd-guard-safe.
 5. Doctrine edits per the contradictions list: `config/claude-user-memory.md`
-   (dispatch table → lane table + tripwires + override keywords), `CLAUDE.md`
-   (Plan Before Code, Verification, Tiering section gains "Router" subsection, beads
-   override extension), `knowledge-base/TIERED_ORCHESTRATION.md` (new Router chapter
-   with the evidence digest and tuning knobs).
+   (dispatch table → lane table + tripwires + override keywords + scope-discipline
+   clause in the slice-spec convention), `CLAUDE.md` (Plan Before Code, Verification,
+   Noticed Flaws bounding, Tiering section gains "Router" subsection, beads override
+   extension, new "Scope Discipline" rules), `knowledge-base/TIERED_ORCHESTRATION.md`
+   (new Router chapter with the evidence digest and tuning knobs), and scope clauses
+   in `config/agents/{executor,scout,verifier}.md` (item 13).
 6. Tests: `tests/lane.bats` (declare/reset/read/stale-session), delegation-gate lane
    cases in `tests/delegation-gate.bats` (express allows Edit, unset denies, unknown
    lane value falls back to guard — never weaker), tier-hooks regression.

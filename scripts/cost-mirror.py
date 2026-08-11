@@ -268,6 +268,29 @@ and no warns/denies) and degrades exactly like the rest of this script: a
 missing, unreadable, or malformed state file, or a missing session_id,
 yields "" silently — never an exception, never a broken cost line.
 
+Complexity-router lanes (added 2026-08-11): scripts/lane.sh asks the
+orchestrator to classify each prompt into an express/standard/deep lane and
+appends every declaration to ${LANE_STATE_DIR:-~/.claude/cache/lane}/
+log.jsonl ({"lane","prev","why","ts","escalated","session_id"}), with
+<session_id>.json holding the live state. This module joins that log on two
+surfaces. (1) The hook line gains a trailing " | lane last-turn: <x>"
+segment — "last-turn", not "current", because `lane --reset` runs as a
+UserPromptSubmit hook BEFORE cost-mirror does, so the state file already
+reads "unset" by the time this renders; the log is the only honest source
+and what it can report is the lane the PREVIOUS turn took. That is read from
+a bounded tail of the log (LANE_TAIL_LINES/LANE_TAIL_BYTES), never the whole
+file. (2) `--report` grows a "lanes" section beneath the table: per-lane
+declaration counts for the report's session and all-time, plus the
+escalation count and rate (escalated==true rows / total rows) that the
+knowledge base names as the router's primary health metric, annotated with
+its 5–15% target band. Both fail open like everything else here — a missing
+or unreadable log omits the lane surface entirely rather than reporting a
+zero that would read as "the router ran and never escalated"; a malformed
+row is skipped. Neither surface ever creates the lane directory, since a
+single-session report must stay read-only with respect to all state. The
+report section is additionally wrapped in its own try/except (print_lanes),
+because --report is deliberately NOT under __main__'s fail-silent guard.
+
 On-demand report: `cost-mirror --report` (bare, i.e. the `tier-cost` alias)
 now AGGREGATES — it scans every transcript on disk (see "Cross-session"
 below) and is the same thing `--all` did before this changed; `--all`
@@ -432,6 +455,24 @@ SONNET5_INTRO_CUTOFF = date(2026, 9, 1)
 # "Delegation-gate drift segment" section. Keep in sync by hand if
 # delegation-gate.py ever moves its state.
 DELEGATION_GATE_STATE_DIR = "~/.claude/cache/delegation-gate"
+
+# scripts/lane.sh OWNS these; duplicated here (not imported -- lane is a shell
+# script) for the same decoupling reason as DELEGATION_GATE_STATE_DIR above.
+# See the module docstring's "Complexity-router lanes" section.
+LANE_STATE_DIR = "~/.claude/cache/lane"
+LANE_NAMES = ("express", "standard", "deep")
+# Per-prompt tail: the hook only needs THIS session's newest declaration, so
+# it never reads the whole log (bounded at 5000 lines by lane.sh, but still).
+# The byte window is read first and the last complete LANE_TAIL_LINES lines
+# taken from it -- a log row is ~150 bytes, so 64KiB comfortably covers 200.
+LANE_TAIL_LINES = 200
+LANE_TAIL_BYTES = 65536
+# Escalation-rate tuning band from knowledge-base/TIERED_ORCHESTRATION.md's
+# "Complexity Router (lanes)" chapter: 5-15% is healthy, persistently under
+# 5% means the classifier routes too heavy, over 20% means express is greedy.
+LANE_RATE_TARGET_LOW = 5.0
+LANE_RATE_TARGET_HIGH = 15.0
+LANE_RATE_GREEDY = 20.0
 
 
 def _sonnet5_rates(today=None):
@@ -1080,6 +1121,170 @@ def delegation_drift_segment(session_id):
     return "inline: " + " · ".join(parts)
 
 
+def _lane_log_path():
+    """scripts/lane.sh's append-only declaration log. LANE_STATE_DIR is
+    lane's own env override (same variable name, same default), so pointing
+    one at a scratch dir points both."""
+    base = os.environ.get("LANE_STATE_DIR") or os.path.expanduser(LANE_STATE_DIR)
+    return os.path.join(base, "log.jsonl")
+
+
+def _lane_log_rows(tail_lines=None):
+    """Parsed rows from lane's log.jsonl -- {"lane","prev","why","ts",
+    "escalated","session_id"} each -- or None when the log cannot be read at
+    all (missing file, unreadable dir), which every caller treats as "omit
+    the lane surface entirely" rather than as an empty log.
+
+    tail_lines caps the result to the newest N rows and, above
+    LANE_TAIL_BYTES, seeks instead of reading the file whole (the first,
+    possibly partial, line of that window is dropped) -- the per-prompt hook
+    path only ever needs the newest declaration. Passing None reads
+    everything, for the report's all-time counts. Unparseable lines are
+    skipped, never fatal: lane.sh builds its rows with printf, so a
+    half-written tail row is a normal thing to find here."""
+    path = _lane_log_path()
+    try:
+        size = os.path.getsize(path)
+        with open(path, "rb") as fh:
+            if tail_lines is not None and size > LANE_TAIL_BYTES:
+                fh.seek(size - LANE_TAIL_BYTES)
+                fh.readline()  # drop the partial line the seek landed inside
+            raw_lines = fh.read().splitlines()
+    except OSError:
+        return None
+    if tail_lines is not None:
+        raw_lines = raw_lines[-tail_lines:]
+    rows = []
+    for raw in raw_lines:
+        try:
+            row = json.loads(raw)
+        except Exception:
+            continue
+        if isinstance(row, dict):
+            rows.append(row)
+    return rows
+
+
+def lane_segment(session_id):
+    """"lane last-turn: <lane>" for this session's newest declaration, or ""
+    when there is no log to read / no session id.
+
+    "last-turn", not "current", on purpose: `lane --reset` runs as a
+    UserPromptSubmit hook BEFORE this one (see config/claude-settings.json),
+    so by the time cost-mirror renders, the session's state file already says
+    "unset" for the prompt now starting. The log is therefore the only honest
+    source, and what it can report is the lane the PREVIOUS turn was routed
+    into -- which the label says out loud rather than passing off as the lane
+    in force right now.
+
+    A readable log with no row for this session yields "unset" (the session
+    has never declared); an unreadable/missing one yields "" (no lane
+    machinery here to report on)."""
+    if not session_id:
+        return ""
+    try:
+        rows = _lane_log_rows(LANE_TAIL_LINES)
+        if rows is None:
+            return ""
+        for row in reversed(rows):
+            if row.get("session_id") == session_id and row.get("lane"):
+                return f"lane last-turn: {row['lane']}"
+    except Exception:
+        return ""
+    return "lane last-turn: unset"
+
+
+def _lane_report_session_id(tp=None):
+    """Which session the report's "session" column counts declarations for.
+
+    For a single-session view the transcript answers it directly: lane rows
+    carry the UserPromptSubmit payload's session_id, which is the same id
+    _session_id_for reads off the transcript. The aggregate report has no one
+    transcript, so it resolves the CALLER's session the way lane.sh's own
+    resolve_sid does -- CLAUDE_CODE_SESSION_ID, else the last-session file
+    lane --reset writes -- so `tier-cost` run from a live session still shows
+    that session's own lane counts."""
+    if tp:
+        return _session_id_for(tp)
+    sid = os.environ.get("CLAUDE_CODE_SESSION_ID")
+    if sid:
+        return sid
+    base = os.environ.get("LANE_STATE_DIR") or os.path.expanduser(LANE_STATE_DIR)
+    try:
+        with open(os.path.join(base, "last-session")) as fh:
+            return fh.readline().strip()
+    except OSError:
+        return ""
+
+
+def render_lanes(session_id=""):
+    """The report's "lanes" section: per-lane declaration counts for
+    session_id and all-time, plus the escalation count and rate that the
+    knowledge base names as the router's primary health metric.
+
+    Returns "" when there is no log or the log holds no parseable rows --
+    there is then nothing to say, and a report on a machine that never ran
+    the router should not grow an empty table. Read-only: it never creates
+    the lane dir, since a single-session report must touch no state at all.
+
+    Wrapped by its own try/except at the call sites' expense rather than
+    theirs: --report is deliberately NOT under __main__'s fail-silent guard
+    (it must exit nonzero on a real error), so a malformed log must not be
+    allowed to turn `tier-cost` into a traceback."""
+    rows = _lane_log_rows()
+    if not rows:
+        return ""
+    lanes = [r.get("lane") for r in rows if r.get("lane")]
+    mine = [r for r in rows if session_id and r.get("session_id") == session_id]
+    names = list(LANE_NAMES) + sorted(set(lanes) - set(LANE_NAMES))
+
+    def esc(subset):
+        return sum(1 for r in subset if r.get("escalated") is True)
+
+    cols = ("lane", "session", "all-time")
+    widths = (18, 12, 12)
+
+    def fmt_row(values):
+        return "".join(
+            v.ljust(w) if i < 1 else v.rjust(w) for i, (v, w) in enumerate(zip(values, widths))
+        )
+
+    header = fmt_row(cols)
+    scope = f" — session {session_id[:8]}" if session_id else " — no session resolved"
+    lines = ["", f"lanes (complexity router — declaration log){scope}", "", header, "-" * len(header)]
+    for name in names:
+        lines.append(fmt_row((
+            name,
+            str(sum(1 for r in mine if r.get("lane") == name)),
+            str(sum(1 for lane in lanes if lane == name)),
+        )))
+    lines.append("-" * len(header))
+    lines.append(fmt_row(("declarations", str(len(mine)), str(len(rows)))))
+    lines.append(fmt_row(("escalations", str(esc(mine)), str(esc(rows)))))
+
+    def rate(subset):
+        return f"{100.0 * esc(subset) / len(subset):.1f}%" if subset else "n/a"
+
+    lines.append(fmt_row(("escalation rate", rate(mine), rate(rows))))
+    lines.append(
+        f"target {LANE_RATE_TARGET_LOW:.0f}–{LANE_RATE_TARGET_HIGH:.0f}% "
+        f"(<{LANE_RATE_TARGET_LOW:.0f}% classifying heavy? · "
+        f">{LANE_RATE_GREEDY:.0f}% express too greedy?)"
+    )
+    return "\n".join(lines)
+
+
+def print_lanes(tp=None):
+    """Emit render_lanes() beneath a report, swallowing anything it throws --
+    the lane join is an extra, never a reason for `tier-cost` to fail."""
+    try:
+        section = render_lanes(_lane_report_session_id(tp))
+    except Exception:
+        return
+    if section:
+        print(section)
+
+
 def _default_transcript():
     """Best-effort transcript for a bare `--report`. Most robust: the tp the
     hook itself recorded, from the newest cost-mirror state file — that's
@@ -1446,6 +1651,7 @@ def run_report_all(since_days):
         )
     print()
     print(render_report(label, grand_total, billing_mode, billing_detail, pricing))
+    print_lanes()
     return 0
 
 
@@ -1587,6 +1793,7 @@ def _render_single(tp):
     billing_mode, billing_detail = detect_billing_mode()
     pricing = session_epoch_pricing(aggregate_bucket_total(files_state))
     print(render_report(tp, aggregate_total(files_state), billing_mode, billing_detail, pricing))
+    print_lanes(tp)
     return 0
 
 
@@ -1750,6 +1957,9 @@ def main():
         drift = delegation_drift_segment(event.get("session_id"))
         if drift:
             line = f"{line} | {drift}"
+        lane = lane_segment(event.get("session_id"))
+        if lane:
+            line = f"{line} | {lane}"
         print(f"[cost-mirror] this session — {line}")
 
 

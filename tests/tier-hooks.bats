@@ -21,6 +21,20 @@ setup() {
     export TIER_GATE_SETTINGS="$SETTINGS"
     export TIER_GATE_DERIVE="$DERIVE"
     export COST_MIRROR_STATE_DIR="$BATS_TEST_TMPDIR/cm-state"
+    # tier-prime appends the router rubric when `lane` is installed; point
+    # it at a path that cannot exist so the pre-lane assertions below stay
+    # exact regardless of whether the image has lane on PATH. The lane
+    # tests override this explicitly.
+    export TIER_PRIME_LANE="$BATS_TEST_TMPDIR/no-such-lane"
+    # same reason for cost-mirror's lane join: point LANE_STATE_DIR at a dir
+    # that does not exist so no test ever reads (or is perturbed by) the live
+    # ~/.claude/cache/lane/log.jsonl this container is actively writing. The
+    # lane tests below override this explicitly.
+    export LANE_STATE_DIR="$BATS_TEST_TMPDIR/no-such-lane-state"
+    # the aggregate report resolves "which session" from this when no
+    # transcript names one; these suites run INSIDE a live session that sets
+    # it, so clear it and let the lane tests set it where they mean to.
+    unset CLAUDE_CODE_SESSION_ID
     # pin billing mode to "api" so pre-existing assertions are independent of
     # whatever real credentials/env this container happens to run under;
     # billing-mode-specific tests below override this explicitly
@@ -173,6 +187,54 @@ setup_prime_agents() {
     [ "$status" -eq 0 ]
     expected='tier → orchestrator(settings model)=claude-fable-5[1m]  executor=claude-sonnet-5  scout=claude-haiku-4-5-20251001 | verifier+oracle inherit the session model'
     [ "$output" = "$expected" ]
+}
+
+@test "tier-prime: default mode appends the short lane line when lane is installed" {
+    setup_prime_agents
+    export TIER_PRIME_LANE=/workspace/scripts/lane.sh
+    run "$PRIME"
+    [ "$status" -eq 0 ]
+    [[ "${lines[0]}" == "tier → orchestrator(settings model)="* ]]
+    [[ "$output" == *"[lane] route first"* ]]
+    [[ "$output" == *"express: inline, no ceremony"* ]]
+    [[ "$output" != *"Ties go to the LIGHTER lane"* ]]
+}
+
+@test "tier-prime: --full appends the full lane rubric (a compaction must not lose the router)" {
+    setup_prime_agents
+    export TIER_PRIME_LANE=/workspace/scripts/lane.sh
+    run "$PRIME" --full
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"standing authorization"* ]]
+    [[ "$output" == *"[lane] Route first"* ]]
+    [[ "$output" == *"Ties go to the LIGHTER lane"* ]]
+    [[ "$output" == *"the request AS ASKED"* ]]
+}
+
+@test "tier-prime: an absent lane binary changes nothing — output is the pre-lane text in both modes" {
+    setup_prime_agents
+    export TIER_PRIME_LANE="$BATS_TEST_TMPDIR/definitely-not-installed"
+    run "$PRIME"
+    [ "$status" -eq 0 ]
+    expected='tier → orchestrator(settings model)=claude-fable-5[1m]  executor=claude-sonnet-5  scout=claude-haiku-4-5-20251001 | verifier+oracle inherit the session model'
+    [ "$output" = "$expected" ]
+    run "$PRIME" --full
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"standing authorization"* ]]
+    [[ "$output" != *"[lane]"* ]]
+}
+
+@test "config/claude-settings.json: UserPromptSubmit resets the lane before the tier reconciler runs" {
+    jq -e '[.hooks.UserPromptSubmit[].hooks[].command] | any(contains("lane --reset"))' "$SETTINGS_JSON"
+    run jq -r '[.hooks.UserPromptSubmit[].hooks[].command] | map(select(contains("lane --reset") or contains("tier-reconcile"))) | length' "$SETTINGS_JSON"
+    [ "$output" = "2" ]
+    run jq -r '[.hooks.UserPromptSubmit[].hooks[].command] | map(contains("lane --reset")) | index(true)' "$SETTINGS_JSON"
+    [ "$output" = "0" ]
+}
+
+@test "config/claude-settings.json: the dispatch echo sources its tail from lane, keeping the static tail as the pre-lane fallback" {
+    jq -e '[.hooks.UserPromptSubmit[].hooks[].command] | any(contains("lane --prime --short"))' "$SETTINGS_JSON"
+    jq -e '[.hooks.UserPromptSubmit[].hooks[].command] | any(contains("dispatch: recon→scout"))' "$SETTINGS_JSON"
 }
 
 @test "config/claude-settings.json: SessionStart references tier-prime; PreCompact is exactly [bd prime, tier-prime --full] in order" {
@@ -2176,4 +2238,170 @@ dg_state_file() {
     [ "$status" -eq 0 ]
     [[ "$output" == *"[cost-mirror] this session"* ]]
     [[ "$output" != *"inline:"* ]]
+}
+
+# ── cost-mirror: complexity-router lane join ────────────────────────────────
+#
+# scripts/lane.sh appends one row per declaration to
+# $LANE_STATE_DIR/log.jsonl. cost-mirror joins that log on two surfaces: a
+# trailing " | lane last-turn: <x>" segment on the per-prompt hook line, and
+# a "lanes" section beneath --report. The fixture is built by DRIVING lane.sh
+# rather than hand-writing JSON, so these tests pin the format lane actually
+# emits (including a genuine "escalated":true) instead of an assumed one.
+
+LANE=/workspace/scripts/lane.sh
+
+mk_lane_log() {
+    # 4 declarations across 2 sessions, exactly one of them an escalation
+    # (session "sess": express -> deep), plus two unparseable lines — one
+    # mid-log, one as the very last line, so the newest-first scan has to
+    # skip junk before it finds the row it wants.
+    export LANE_STATE_DIR="$BATS_TEST_TMPDIR/lane"
+    CLAUDE_CODE_SESSION_ID=sess bash "$LANE" express --why one > /dev/null
+    CLAUDE_CODE_SESSION_ID=sess bash "$LANE" deep --why two > /dev/null
+    printf 'THIS LINE IS NOT JSON\n' >> "$LANE_STATE_DIR/log.jsonl"
+    CLAUDE_CODE_SESSION_ID=other bash "$LANE" standard --why three > /dev/null
+    CLAUDE_CODE_SESSION_ID=sess bash "$LANE" standard --why four > /dev/null
+    printf '["not","an","object"]\n' >> "$LANE_STATE_DIR/log.jsonl"
+}
+
+# collapse the report's column padding so assertions can name a row's cells
+# without hard-coding ljust/rjust widths
+squash() { echo "$1" | tr -s ' '; }
+
+@test "cost-mirror: hook line carries this session's newest lane, skipping junk and other sessions' rows" {
+    mk_transcript
+    mk_lane_log
+    run sh -c 'printf "{\"transcript_path\":\"%s\",\"session_id\":\"sess\"}" "'"$TP"'" | python3 '"$MIRROR"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"| lane last-turn: standard"* ]]
+}
+
+@test "cost-mirror: a session that has never declared reads lane last-turn: unset" {
+    mk_transcript
+    mk_lane_log
+    run sh -c 'printf "{\"transcript_path\":\"%s\",\"session_id\":\"fresh\"}" "'"$TP"'" | python3 '"$MIRROR"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"| lane last-turn: unset"* ]]
+}
+
+@test "cost-mirror: a missing lane log omits the lane segment rather than reporting unset" {
+    mk_transcript
+    run sh -c 'printf "{\"transcript_path\":\"%s\",\"session_id\":\"sess\"}" "'"$TP"'" | python3 '"$MIRROR"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"[cost-mirror] this session"* ]]
+    [[ "$output" != *"lane last-turn"* ]]
+}
+
+@test "cost-mirror: no session_id in the event omits the lane segment without erroring" {
+    mk_transcript
+    mk_lane_log
+    run sh -c 'printf "{\"transcript_path\":\"%s\"}" "'"$TP"'" | python3 '"$MIRROR"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"[cost-mirror] this session"* ]]
+    [[ "$output" != *"lane last-turn"* ]]
+}
+
+@test "cost-mirror: the lane segment follows the drift segment on one line, both present" {
+    export HOME="$BATS_TEST_TMPDIR/home-lane"
+    mkdir -p "$HOME/.claude/cache/delegation-gate"
+    printf '{"max_streak":4,"warns":1,"denies":0}' > "$HOME/.claude/cache/delegation-gate/sess.json"
+    mk_transcript
+    mk_lane_log
+    run sh -c 'printf "{\"transcript_path\":\"%s\",\"session_id\":\"sess\"}" "'"$TP"'" | python3 '"$MIRROR"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"| inline: max streak 4 · 1 warn | lane last-turn: standard"* ]]
+}
+
+@test "cost-mirror --report: lanes section counts this session's declarations and all-time" {
+    mk_transcript
+    mk_lane_log
+    run python3 "$MIRROR" --report "$TP"
+    [ "$status" -eq 0 ]
+    squashed=$(squash "$output")
+    [[ "$squashed" == *"lanes (complexity router — declaration log) — session sess"* ]]
+    [[ "$squashed" == *"express 1 1"* ]]
+    [[ "$squashed" == *"standard 1 2"* ]]
+    [[ "$squashed" == *"deep 1 1"* ]]
+    [[ "$squashed" == *"declarations 3 4"* ]]
+}
+
+@test "cost-mirror --report: lanes section reports the escalation count and rate against the target band" {
+    mk_transcript
+    mk_lane_log
+    run python3 "$MIRROR" --report "$TP"
+    [ "$status" -eq 0 ]
+    squashed=$(squash "$output")
+    [[ "$squashed" == *"escalations 1 1"* ]]
+    [[ "$squashed" == *"escalation rate 33.3% 25.0%"* ]]
+    [[ "$squashed" == *"target 5–15% (<5% classifying heavy? · >20% express too greedy?)"* ]]
+}
+
+@test "cost-mirror --report: a session with no declarations shows n/a, never a divide-by-zero" {
+    mk_lane_log
+    TP2="$BATS_TEST_TMPDIR/proj2/nolanes.jsonl"
+    mkdir -p "$BATS_TEST_TMPDIR/proj2"
+    printf '{"message":{"model":"claude-opus-5","usage":{"output_tokens":10}}}\n' > "$TP2"
+    run python3 "$MIRROR" --report "$TP2"
+    [ "$status" -eq 0 ]
+    squashed=$(squash "$output")
+    [[ "$squashed" == *"escalation rate n/a 25.0%"* ]]
+    [[ "$squashed" == *"declarations 0 4"* ]]
+}
+
+@test "cost-mirror --report: a missing lane log omits the lanes section entirely" {
+    mk_transcript
+    run python3 "$MIRROR" --report "$TP"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"cost-mirror report —"* ]]
+    [[ "$output" != *"lanes (complexity router"* ]]
+}
+
+@test "cost-mirror --report: a lane log of nothing but junk omits the section and still exits 0" {
+    mk_transcript
+    export LANE_STATE_DIR="$BATS_TEST_TMPDIR/lane-junk"
+    mkdir -p "$LANE_STATE_DIR"
+    printf 'NOT JSON\n{oops\n' > "$LANE_STATE_DIR/log.jsonl"
+    run python3 "$MIRROR" --report "$TP"
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"lanes (complexity router"* ]]
+}
+
+@test "cost-mirror --report: reading the lane log creates no lane state (read-only report)" {
+    mk_transcript
+    run python3 "$MIRROR" --report "$TP"
+    [ "$status" -eq 0 ]
+    [ ! -e "$LANE_STATE_DIR" ]
+}
+
+@test "cost-mirror --report --all: the lanes section resolves the session from CLAUDE_CODE_SESSION_ID" {
+    mk_all_projects
+    mk_lane_log
+    CLAUDE_CODE_SESSION_ID=other run python3 "$MIRROR" --report --all
+    [ "$status" -eq 0 ]
+    squashed=$(squash "$output")
+    [[ "$squashed" == *"— session other"* ]]
+    [[ "$squashed" == *"standard 1 2"* ]]
+    [[ "$squashed" == *"express 0 1"* ]]
+}
+
+@test "cost-mirror --report --all: with no session resolvable the section still reports all-time" {
+    mk_all_projects
+    mk_lane_log
+    run python3 "$MIRROR" --report --all
+    [ "$status" -eq 0 ]
+    squashed=$(squash "$output")
+    [[ "$squashed" == *"— no session resolved"* ]]
+    [[ "$squashed" == *"declarations 0 4"* ]]
+}
+
+@test "cost-mirror --report --all: an absent CLAUDE_CODE_SESSION_ID falls back to lane's last-session file" {
+    mk_all_projects
+    mk_lane_log
+    run python3 "$MIRROR" --report --all
+    [ "$status" -eq 0 ]
+    printf 'sess\n' > "$LANE_STATE_DIR/last-session"
+    run python3 "$MIRROR" --report --all
+    [ "$status" -eq 0 ]
+    [[ "$(squash "$output")" == *"— session sess"* ]]
 }

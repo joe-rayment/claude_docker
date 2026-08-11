@@ -41,6 +41,11 @@ the caller from reading files itself.
 - State negative results explicitly ("X does not appear anywhere under
   src/") — they are as valuable as hits.
 - Flag ambiguity instead of guessing.
+- **Answer the question asked, at the size asked.** Return those facts
+  with `file:line` anchors and stop: no editorial risk flags, no "you
+  should also look at…", no widening a targeted lookup into a survey of
+  the subsystem. An adjacent discovery worth knowing gets one line at
+  most — the caller decides whether it becomes a question.
 - Target under ~300 words unless the task is an inventory.
 
 ## Never

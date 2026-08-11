@@ -46,6 +46,10 @@
         "hooks": [
           {
             "type": "command",
+            "command": "command -v lane >/dev/null 2>&1 && exec lane --reset; exit 0"
+          },
+          {
+            "type": "command",
             "command": "command -v tier-reconcile >/dev/null 2>&1 && tier-reconcile >/dev/null 2>&1; true"
           },
           {
@@ -54,7 +58,7 @@
           },
           {
             "type": "command",
-            "command": "e=$(grep -m1 '^model:' \"$HOME/.claude/agents/executor.md\" 2>/dev/null | sed 's/^model:[[:space:]]*//'); s=$(grep -m1 '^model:' \"$HOME/.claude/agents/scout.md\" 2>/dev/null | sed 's/^model:[[:space:]]*//'); [ -n \"$e\" ] && echo \"[tier] worker=$e recon=${s:-?} \u2014 dispatch: recon\u2192scout \u00b7 slices\u2192executor \u00b7 claims\u2192verifier \u00b7 trivial\u2192inline\"; true"
+            "command": "e=$(grep -m1 '^model:' \"$HOME/.claude/agents/executor.md\" 2>/dev/null | sed 's/^model:[[:space:]]*//'); s=$(grep -m1 '^model:' \"$HOME/.claude/agents/scout.md\" 2>/dev/null | sed 's/^model:[[:space:]]*//'); d=$(command -v lane >/dev/null 2>&1 && lane --prime --short 2>/dev/null); if [ -n \"$d\" ]; then d=\" \u00b7 $d\"; else d=\" \u2014 dispatch: recon\u2192scout \u00b7 slices\u2192executor \u00b7 claims\u2192verifier \u00b7 trivial\u2192inline\"; fi; [ -n \"$e\" ] && echo \"[tier] worker=$e recon=${s:-?}$d\"; true"
           }
         ]
       }

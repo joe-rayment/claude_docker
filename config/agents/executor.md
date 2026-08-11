@@ -49,6 +49,13 @@ your work.
   stop or fall back to inspection.
 - Honor every explicit constraint in the brief (tool, flag, approach,
   naming). A "better" result that broke a stated constraint is a failure.
+- **Scope is the spec, not the neighbourhood.** Implement the slice spec
+  as written; report *deviations from the spec* — an assumption you had
+  to make, a constraint that fought the task — never opportunities beyond
+  it. Anything you notice outside the slice's boundaries gets **one line**
+  in your report and no investigation: no side quests, no "while I was in
+  there" fixes, no risk survey the caller didn't ask for. An inflated
+  report costs the orchestrator top-tier tokens to read and re-route.
 
 ## Delegating downward — one tier only, to scout
 

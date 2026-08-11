@@ -57,9 +57,25 @@ Flags: `-i` ignore case, `-C N` context, `-l` files only, `-t TYPE` ripgrep type
 
 ## Plan Before Code
 
-For any task touching multiple files or with more than one reasonable approach: write the approach down first (plan mode for big tasks, a few sentences in the reply for small ones) and check it against **every explicit requirement in the request** before implementing.
+**The deep lane is the trigger** — an architectural choice, ambiguity needing interpretation, hard-to-reverse effects, or ≥3 files carrying real tradeoffs: write the approach down first (plan mode for big tasks, a few sentences in the reply for small ones) and check it against **every explicit requirement in the request** before implementing. A multi-file *mechanical* change (a rename, a repeated edit with no design choice) is standard, not deep — one sentence of approach, then do it. Express needs no written approach at all.
+
+## Complexity Router — Lanes
+
+**Route before you act.** The first action on every prompt is `lane express|standard|deep [--why "…"]` — a tiny exempt Bash call that declares the route, logs it for measurement, and tells `delegation-gate` how much ceremony this prompt gets. `lane --prime` is the **authoritative wording** (single home, re-injected at SessionStart and PreCompact); the design, evidence and tuning knobs live in `knowledge-base/TIERED_ORCHESTRATION.md`.
+
+- **express** — ALL of: ≤1 file touched (or none); mechanical/cosmetic, or answerable from context or one lookup; no design choice; trivially reversible; no new dependency/interface/contract. → do it inline now: ≈5 tool calls, no plan, no bead, no executor, no verifier, short answer.
+- **standard** — one well-understood slice, low-to-moderate risk, no architectural choice. → one-sentence approach, then inline or ONE executor slice; verify by running the result once.
+- **deep** — ANY of: ≥3 files or an interface/schema/config contract; multiple reasonable approaches with real tradeoffs; ambiguity needing interpretation; hard to reverse (migration, deletion, push, publish); security or data-integrity surface; thoroughness asked for. → the full protocol: plan, beads with acceptance contracts, executor slices, verifier sign-off.
+
+**Ties go to the lighter lane**, with one-way tripwires: scope outgrows the rubric, a fix attempt fails, hidden ambiguity surfaces, tests break unexpectedly → escalate exactly one lane (`lane <heavier> --why "…"`), announce it in the reply, and never de-escalate within the same prompt.
+
+**Scope discipline is part of the rubric, not a style note.** Classify and answer the request **as asked**, never its maximal interpretation. An adjacent issue or out-of-scope risk noticed mid-task gets one line at most, never investigation — and noticing one is explicitly *not* an escalation trigger; only the asked task's own needs escalate. The same clause binds subagents (`config/agents/*.md`).
+
+**User override always wins:** "quick"/"just" bias light; "plan"/"thorough"/"audit" force deep; `ultrathink` raises effort as today. The lane line is visible in the transcript so the user can redirect immediately.
 
 ## Model Tiering & Delegation
+
+Routing precedes dispatch: declare the lane first (**Complexity Router — Lanes** above) — it decides whether any of the roles below are spawned at all, and express means none are.
 
 Tiering is **role-based, never model-based**: agents name roles; the concrete model behind each role is bound per session. Worker roles carry a concrete id in their frontmatter, written by `tier-set`/`tier-reconcile` (never by hand); checker roles use `model: inherit` so the checker is never weaker than the claims it checks. Invariant: **the orchestrator is the most capable of the trio, and the expensive tiers (opus/fable) never take the worker seat.** Full playbook and history: `knowledge-base/TIERED_ORCHESTRATION.md`.
 
@@ -75,7 +91,7 @@ Depth: orchestrator → executor → scout, 3 levels max. Scout/verifier leaf-ne
 
 ### Delegation protocol (operational)
 
-The operational protocol — **standing authorization**, the work-shape dispatch table, and the invariants — ships **globally** via `config/claude-user-memory.md` → `~/.claude/CLAUDE.md` (config sync), so it binds in every project, not just this repo, and applies here with the same force. A per-prompt `[tier]` dispatch line (UserPromptSubmit hook in `config/claude-settings.json`) reinforces it against drift. Repo-specific addendum: a small odd job no role fits may go to any agent with an explicit cheap `model` — `tier-gate` injects the worker tier if `model` is omitted.
+The operational protocol — **standing authorization** (authorization, not obligation: the declared lane decides whether anything is spawned), the lane-first dispatch table, and the invariants — ships **globally** via `config/claude-user-memory.md` → `~/.claude/CLAUDE.md` (config sync), so it binds in every project, not just this repo, and applies here with the same force. A per-prompt `[tier]` line (UserPromptSubmit hook in `config/claude-settings.json`) reinforces it against drift, carrying the route-first one-liner from `lane --prime --short`. Repo-specific addendum: a small odd job no role fits may go to any agent with an explicit cheap `model` — `tier-gate` injects the worker tier if `model` is omitted.
 
 ### Model selection (one lever)
 
@@ -96,11 +112,15 @@ Spawn-time enforcement (all fail open, `tests/tier-hooks.bats`): `tier-gate` inj
 
 **Run code, don't guess — and verify by running the actual application.** Code inspection isn't enough: run the app, hit the endpoint, screenshot the UI (`take-screenshot term "<cmd>"` for CLIs, `take-screenshot url <URL>` for web, `curl` for APIs). Code-based tests are for regression protection, not for verifying current work. Before reporting done: "Did I actually see this working?"
 
+**Verification is lane-scoped — every lane verifies, they differ in how much.** Express: one run or screenshot when the change is observable, else the diff itself — no verifier agent. Standard: run the result once. Deep: the full independent-verifier treatment against a registered acceptance contract.
+
 **The environment must be able to run the program — if it can't, fixing that is part of the task.** Install whatever is missing and continue; never fall back to inspection or an artificial test because a dependency was absent. When a runtime dependency is missing from the image, also add it to the `Dockerfile` so the gap never recurs.
 
 ## Noticed Flaws — Fix or Surface
 
 **If you notice a problem in your own work — a flaw, unhandled edge case, shortcut — fix it before delivering or state it explicitly in the final answer.** Silently shipping a noticed flaw is the worst failure mode; "I'll mention it if asked" is not an option. Before delivering: re-read the original request, check each explicit requirement against the result, confirm you saw it working.
+
+**This rule covers Claude's own delivered work product, and stops there.** A pre-existing problem in adjacent code is not a noticed flaw in your work: mention it in one line if it matters, never investigate it, never fold it into the task, and never treat it as a reason to escalate the lane.
 
 ## Logging
 
@@ -123,6 +143,7 @@ Beads runs in **embedded Dolt mode** (no server); the full command reference and
 - The chat path, with its precondition intact: when Claude has genuinely **exhausted its own options** and still needs a human decision, it asks **in chat, at the moment the question arises** — it never banks the question as tracked work. Reaching for chat before investigating is the opposite failure and equally wrong.
 - `bd-guard` (PreToolUse) mechanically enforces this: human assignees, the `human` label, and a default/`human`-type gate are hard-blocked with no override; user-directed bead text is soft-blocked with a redirect to chat. `BD_GUARD_ALLOW=1` overrides the text check only, for genuine false positives (the phrase is quoted content or code, not real pending user work) — never to park user work in a bead.
 - The Dolt DB at `.beads/embeddeddolt/` (gitignored) is the source of truth; `.beads/issues.jsonl` is a passive git-tracked export. `bd doctor` is unsupported in embedded Dolt mode (confirmed no-op); repair with `bd init --prefix <p> --quiet --non-interactive && bd import` instead — see `knowledge-base/BEADS_TROUBLESHOOTING.md` if `bd init` itself refuses. Use `bd update` flags, never `bd edit` (blocks on `$EDITOR`). Reference bead ids in commit messages.
+- **Bead filing is lane-scoped. This overrides, by name, the `bd prime` line "**Workflow**: Create beads issue BEFORE writing code, mark in_progress when starting"** — that step is a deep-lane rule here, not a universal one. Express files **no** bead: the work is done in the same turn, so there is nothing to track. Standard files one only when follow-up genuinely remains after the slice. Deep keeps the full protocol — a bead per slice, with `CHECK`/`PASS-IF` acceptance contracts on any non-trivial claim. Beads discovered as future work are filed in any lane; the override is about ceremony before a one-line edit, never about dropping real follow-up.
 - **Memory precedence:** project knowledge → `bd remember` (syncs with the repo). The harness's own auto-memory is for user-specific context only — never project facts.
 
 ## Project Contexts

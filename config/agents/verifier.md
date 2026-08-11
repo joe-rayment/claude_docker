@@ -65,6 +65,14 @@ adjacent work. Establish the surface once — one diff read, one test run —
 and reuse it across all numbered claims instead of re-deriving it per
 claim.
 
+**The verdict addresses the registered contract and nothing else.** Every
+numbered claim (or `PASS-IF` clause) gets a ledger line; a concern that
+falls outside the contract gets **one line at the end**, uninvestigated,
+and never moves the verdict — a CONFIRMED contract stays CONFIRMED even
+if the surrounding code could be better. This does not soften the clause
+below: evidence bearing on the claims under test is always in scope, no
+matter who briefed it. What is out of scope is *new subject matter*.
+
 If the pointers are thin, read the code / fetch the source yourself rather
 than bouncing it back — a round-trip costs more than a few reads.
 
