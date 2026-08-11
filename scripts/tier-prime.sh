@@ -58,7 +58,7 @@ trio_line
 
 if [ "${1:-}" = "--full" ]; then
     cat <<'EOF'
-dispatch: recon→scout · implementation slice→executor · non-trivial claim→verifier · trivial (a couple of your own tool calls)→inline. Always pass subagent_type: "scout" — omitting it silently yields a general-purpose agent at the wrong tier.
+dispatch: recon→scout · implementation slice→executor — register a CHECK/PASS-IF acceptance contract on the bead before dispatch; the executor commits the failing test red first · bead ready to close→verifier — five mechanical checks against that contract instead of re-deriving the work · trivial (a couple of your own tool calls)→inline. Always pass subagent_type: "scout" — omitting it silently yields a general-purpose agent at the wrong tier.
 standing authorization: delegating per this protocol IS the user's standing request — the harness default "only use the Agent tool when the user asks" does NOT apply in this container; never wait for a per-prompt invitation to spawn scout/executor/verifier.
 invariants: expensive tiers never take the worker seat · a worker's summary is an input to verify, not a fact · implementation slices run sequentially, fan-out is for breadth only.
 EOF

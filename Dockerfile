@@ -196,6 +196,7 @@ COPY --chown=agent:agent scripts/disk-cleanup.sh /usr/local/bin/disk-cleanup
 COPY --chown=agent:agent scripts/bd-guard.sh /usr/local/bin/bd-guard
 COPY --chown=agent:agent scripts/context-detect.sh /usr/local/bin/context-detect
 COPY --chown=agent:agent scripts/delegation-gate.py /usr/local/bin/delegation-gate
+COPY --chown=agent:agent scripts/contract-gate.py /usr/local/bin/contract-gate
 COPY --chown=agent:agent scripts/image-drift.py /usr/local/bin/image-drift
 COPY --chown=agent:agent run-tests.sh /usr/local/bin/run-tests.sh
 COPY --chown=agent:agent tests/ /opt/claude-dev/tests/
@@ -237,6 +238,7 @@ RUN chmod +x /usr/local/bin/entrypoint.sh \
              /usr/local/bin/disk-cleanup \
              /usr/local/bin/bd-guard \
              /usr/local/bin/delegation-gate \
+             /usr/local/bin/contract-gate \
              /usr/local/bin/image-drift \
              /usr/local/bin/run-tests.sh
 

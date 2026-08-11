@@ -127,6 +127,11 @@
           {
             "type": "command",
             "command": "command -v bd-guard >/dev/null 2>&1 && exec bd-guard; exit 0"
+          },
+          {
+            "type": "command",
+            "command": "command -v contract-gate >/dev/null 2>&1 && exec contract-gate; [ -x \"$HOME/.claude/hooks/contract-gate\" ] && exec \"$HOME/.claude/hooks/contract-gate\"; exit 0",
+            "timeout": 10
           }
         ]
       },
