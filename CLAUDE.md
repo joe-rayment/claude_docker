@@ -55,23 +55,19 @@ Flags: `-i` ignore case, `-C N` context, `-l` files only, `-t TYPE` ripgrep type
 
 **Work on the branch already checked out — including `main` — and never create or switch branches on your own initiative.** This overrides any default "branch first" behavior: committing directly to the current branch is expected here. If a separate branch seems unavoidable, ask in chat first. When the user has put you on a branch, name it in your replies and never switch away without saying so.
 
-## Plan Before Code
-
-**The deep lane is the trigger** — an architectural choice, ambiguity needing interpretation, hard-to-reverse effects, or ≥3 files carrying real tradeoffs: write the approach down first (plan mode for big tasks, a few sentences in the reply for small ones) and check it against **every explicit requirement in the request** before implementing. A multi-file *mechanical* change (a rename, a repeated edit with no design choice) is standard, not deep — one sentence of approach, then do it. Express needs no written approach at all.
-
 ## Complexity Router — Lanes
 
 **Route before you act.** The first action on every prompt is `lane express|standard|deep [--why "…"]` — a tiny exempt Bash call that declares the route, logs it for measurement, and tells `delegation-gate` how much ceremony this prompt gets. `lane --prime` is the **authoritative wording** (single home, re-injected at SessionStart and PreCompact); the design, evidence and tuning knobs live in `knowledge-base/TIERED_ORCHESTRATION.md`.
 
-- **express** — ALL of: ≤1 file touched (or none); mechanical/cosmetic, or answerable from context or one lookup; no design choice; trivially reversible; no new dependency/interface/contract. → do it inline now: ≈5 tool calls, no plan, no bead, no executor, no verifier, short answer.
+- **express** — ALL of: ≤1 file (or none), mechanical/cosmetic or answerable from context/one lookup, no design choice, trivially reversible, no new dependency/interface/contract. → inline now, no plan, no bead, no executor, no verifier.
 - **standard** — one well-understood slice, low-to-moderate risk, no architectural choice. → one-sentence approach, then inline or ONE executor slice; verify by running the result once.
-- **deep** — ANY of: ≥3 files or an interface/schema/config contract; multiple reasonable approaches with real tradeoffs; ambiguity needing interpretation; hard to reverse (migration, deletion, push, publish); security or data-integrity surface; thoroughness asked for. → the full protocol: plan, beads with acceptance contracts, executor slices, verifier sign-off.
+- **deep** — ANY of: ≥3 files or an interface/schema/config contract (a multi-file *mechanical* change — a rename, a repeated edit with no design choice — is standard, not deep), real tradeoffs, ambiguity needing interpretation, hard to reverse, security/data-integrity surface, or thoroughness asked for. → write the approach down first (plan mode for big tasks, a few sentences for small ones) and check it against every explicit requirement before implementing; then beads with acceptance contracts, executor slices, verifier sign-off.
 
-**Ties go to the lighter lane**, with one-way tripwires: scope outgrows the rubric, a fix attempt fails, hidden ambiguity surfaces, tests break unexpectedly → escalate exactly one lane (`lane <heavier> --why "…"`), announce it in the reply, and never de-escalate within the same prompt.
+**Ties go to the lighter lane**; tripwires (scope outgrows the rubric, a fix attempt fails, hidden ambiguity, unexpected breakage) escalate exactly one lane and never de-escalate within the same prompt.
 
-**Scope discipline is part of the rubric, not a style note.** Classify and answer the request **as asked**, never its maximal interpretation. An adjacent issue or out-of-scope risk noticed mid-task gets one line at most, never investigation — and noticing one is explicitly *not* an escalation trigger; only the asked task's own needs escalate. The same clause binds subagents (`config/agents/*.md`).
+**Scope discipline is part of the rubric**: answer the request as asked, never its maximal interpretation — an adjacent issue noticed mid-task gets one line, never investigation, and binds subagents too (`config/agents/*.md`).
 
-**User override always wins:** "quick"/"just" bias light; "plan"/"thorough"/"audit" force deep; `ultrathink` raises effort as today. The lane line is visible in the transcript so the user can redirect immediately.
+**User override always wins:** "quick"/"just" bias light, "plan"/"thorough"/"audit" force deep — visible in the transcript so the user can redirect immediately.
 
 ## Model Tiering & Delegation
 
@@ -79,19 +75,11 @@ Routing precedes dispatch: declare the lane first (**Complexity Router — Lanes
 
 Tiering is **role-based, never model-based**: agents name roles; the concrete model behind each role is bound per session. Worker roles carry a concrete id in their frontmatter, written by `tier-set`/`tier-reconcile` (never by hand); checker roles use `model: inherit` so the checker is never weaker than the claims it checks. Invariant: **the orchestrator is the most capable of the trio, and the expensive tiers (opus/fable) never take the worker seat.** Full playbook and history: `knowledge-base/TIERED_ORCHESTRATION.md`.
 
-| role | binding | delegates to | use for |
-|------|---------|--------------|---------|
-| **orchestrator** (you) | settings `model` (`/model` moves a running session) | executor, verifier, scout | decompose, delegate, review, decide |
-| **executor** | frontmatter (worker tier) | `scout` only | one well-scoped implementation slice |
-| **scout** — leaf, no `Agent` tool | frontmatter (recon tier) | — | fan-out recon: find/usages/summaries |
-| **verifier** — leaf, no `Agent` tool | `inherit` | — | independent check of one evidence surface; verdict short of CONFIRMED blocks "done" |
-| **oracle** — fresh context | `inherit` | — | user-invoked consults only |
-
-Depth: orchestrator → executor → scout, 3 levels max. Scout/verifier leaf-ness is structural (no `Agent` tool); the executor's scout-only limit is a prompt contract. Confirm real nesting via the subagent panel's `(+N)` counts.
+Roles and their bindings: **orchestrator** (you) — settings `model`; **executor** — frontmatter worker tier, delegates to `scout` only; **scout** — frontmatter recon tier, leaf (no `Agent` tool); **verifier** and **oracle** — both `model: inherit`, leaf. Depth: orchestrator → executor → scout, 3 levels max; confirm real nesting via the subagent panel's `(+N)` counts.
 
 ### Delegation protocol (operational)
 
-The operational protocol — **standing authorization** (authorization, not obligation: the declared lane decides whether anything is spawned), the lane-first dispatch table, and the invariants — ships **globally** via `config/claude-user-memory.md` → `~/.claude/CLAUDE.md` (config sync), so it binds in every project, not just this repo, and applies here with the same force. A per-prompt `[tier]` line (UserPromptSubmit hook in `config/claude-settings.json`) reinforces it against drift, carrying the route-first one-liner from `lane --prime --short`. Repo-specific addendum: a small odd job no role fits may go to any agent with an explicit cheap `model` — `tier-gate` injects the worker tier if `model` is omitted.
+The operational protocol — standing authorization, the lane-first dispatch table, and the invariants — ships globally via `config/claude-user-memory.md` → `~/.claude/CLAUDE.md` and binds here with the same force. Repo-specific addendum: a small odd job no role fits may go to any agent with an explicit cheap `model` — `tier-gate` injects the worker tier if `model` is omitted.
 
 ### Model selection (one lever)
 
@@ -102,7 +90,7 @@ The operational protocol — **standing authorization** (authorization, not obli
 - Off-ladder `.model` values are left unmanaged (never clobbered). A model-not-found at spawn time: re-bind with `TIER_PROBE=1 tier-set <top>` (probes and degrades downward). Fable 5 is active — never assume it is unavailable.
 - After an image rebuild, the SessionStart reconciler re-derives everything from `.model` automatically.
 
-Spawn-time enforcement (all fail open, `tests/tier-hooks.bats`): `tier-gate` injects the worker tier into generic spawns that omit `model`; `workflow-lint` denies workflow scripts whose `agent()` calls omit `model:`; `cost-mirror` shows per-prompt spend, now with per-model dollars, estimated tier savings, and a drift clause read from `delegation-gate`'s own state (`tier-cost` prints the full per-model table). An explicit `model` always wins. `delegation-gate` (PreToolUse, fail-open, `tests/delegation-gate.bats`) separately counts consecutive main-loop inline work-tool calls — subagents are never gated. Mode is two-axis, default **`guard`**: `off` (silent allow) · `warn-only`/`warn` (nudges, never denies) · `guard` (Edit/Write/NotebookEdit denied in the main loop unless carved out; reads/Bash never denied) · `enforce` (guard plus reads/Bash denied once streak reaches `DELEGATION_GATE_DENY_AT`, default 8) — set via `DELEGATION_GATE_MODE` or `~/.claude/delegation-gate.mode`; an unrecognized value falls back to `guard`, never a weaker one. The warn note repeats (watermarked, not one-shot): first fires at streak `DELEGATION_GATE_WARN_AT` (default 4), then every `DELEGATION_GATE_WARN_EVERY` (default 8) — 4, 12, 20 …, escalating wording at 2×/6× warn_at — because a warn that fires once per session stops steering a session that ignores it. Edit/Write under guard/enforce is carved out for the orchestrator's own seat — `~/.claude/plans/**` and the harness auto-memory dir — proven from an explicit path or denied; `/tmp` and the scratchpad are deliberately not carved out. Session-close/verification Bash (`bd`, `git` incl. commit/push, `bats`, `run-tests`, `take-screenshot`, …) is exempt throughout. `scripts/tier-prime.sh` owns the tier-reminder wording for both SessionStart and PreCompact, so a compaction re-injects the trio and the dispatch/standing-authorization text rather than losing it.
+Spawn-time enforcement (all fail open, `tests/tier-hooks.bats`): `tier-gate` injects the worker tier into generic spawns that omit `model`, `workflow-lint` denies workflow scripts whose `agent()` calls omit `model:` (an explicit `model` always wins), and `cost-mirror` shows per-prompt spend with per-model dollars and estimated tier savings. `delegation-gate` (PreToolUse, fail-open, `tests/delegation-gate.bats`) separately counts consecutive main-loop inline work-tool calls — subagents are never gated — and denies or warns per its mode, defaulting to `guard`. Modes, thresholds, env vars, and carve-outs: `knowledge-base/TIERED_ORCHESTRATION.md`.
 
 **Oracle is user-invoked only — never spawn it unprompted.** Its leverage is a clean context: refute-first, verdict-first. Choke points where you may note *once* that a consult is available: a plan for a large/risky implementation, a bug surviving two different fix attempts, a one-way-door decision, a significant diff about to be pushed. Before consulting, check `bd` memories and the knowledge-base index; send a distilled brief (goal, constraints, what was tried, the exact question, file pointers — never pasted diffs), then act on the verdict. `advisorModel` must stay ≥ the session's top tier.
 
@@ -139,8 +127,7 @@ Spawn-time enforcement (all fail open, `tests/tier-hooks.bats`): `tier-gate` inj
 
 Beads runs in **embedded Dolt mode** (no server); the full command reference and session-close protocol arrive via the `bd prime` SessionStart hook — refer to that block. Container specifics:
 
-- **Beads are Claude Code's own task memory — never a human's, in any form.** Two failure shapes are equally forbidden, not just the obvious one: (1) **direct assignment** — a human assignee, or bead text that hands work to the user ("review this", "decide X", "run Y"); (2) **indirect routing** — a `blocked` status, a dependency, a `bd gate create` (defaults to `--type=human`), or the `human` label used so a person, rather than Claude, is the one who must act to unblock the bead. A dependency or a human-gated block is still an assignment to a person wearing a different hat.
-- The chat path, with its precondition intact: when Claude has genuinely **exhausted its own options** and still needs a human decision, it asks **in chat, at the moment the question arises** — it never banks the question as tracked work. Reaching for chat before investigating is the opposite failure and equally wrong.
+- **Never assign work to a human, directly or indirectly** — the authoritative rule lives in the global CLAUDE.md Beads section and binds here.
 - `bd-guard` (PreToolUse) mechanically enforces this: human assignees, the `human` label, and a default/`human`-type gate are hard-blocked with no override; user-directed bead text is soft-blocked with a redirect to chat. `BD_GUARD_ALLOW=1` overrides the text check only, for genuine false positives (the phrase is quoted content or code, not real pending user work) — never to park user work in a bead.
 - The Dolt DB at `.beads/embeddeddolt/` (gitignored) is the source of truth; `.beads/issues.jsonl` is a passive git-tracked export. `bd doctor` is unsupported in embedded Dolt mode (confirmed no-op); repair with `bd init --prefix <p> --quiet --non-interactive && bd import` instead — see `knowledge-base/BEADS_TROUBLESHOOTING.md` if `bd init` itself refuses. Use `bd update` flags, never `bd edit` (blocks on `$EDITOR`). Reference bead ids in commit messages.
 - **Bead filing is lane-scoped. This overrides, by name, the `bd prime` line "**Workflow**: Create beads issue BEFORE writing code, mark in_progress when starting"** — that step is a deep-lane rule here, not a universal one. Express files **no** bead: the work is done in the same turn, so there is nothing to track. Standard files one only when follow-up genuinely remains after the slice. Deep keeps the full protocol — a bead per slice, with `CHECK`/`PASS-IF` acceptance contracts on any non-trivial claim. Beads discovered as future work are filed in any lane; the override is about ceremony before a one-line edit, never about dropping real follow-up.
@@ -193,7 +180,7 @@ bd close <id>         # Complete work
 ### Rules
 
 - Use `bd` for ALL task tracking — do NOT use TodoWrite, TaskCreate, or markdown TODO lists
-- **Beads are ONLY for Claude Code's own work — NEVER assign a bead to a human, directly or indirectly.** No human assignee, no "review this"/"decide X"/"run Y" bead text, and no parking a bead in a blocked status, dependency, or gate/label (`bd gate create` defaults to `--type=human`; the `human` label) so a person has to act instead of Claude. If a human decision is genuinely needed after Claude has exhausted its own options, ask in chat now — never bank it as a bead.
+- **Never assign a bead to a human, directly or indirectly** — see the global CLAUDE.md Beads section; if a human decision is genuinely needed after exhausting your own options, ask in chat now.
 - Run `bd prime` for detailed command reference and session close protocol
 - Use `bd remember` for persistent knowledge — do NOT use MEMORY.md files
 
@@ -205,7 +192,7 @@ bd close <id>         # Complete work
 
 **When ending a work session**, you MUST complete the local steps below — that local commit is the terminal state of a successful session, complete on its own. Push (`git push`, `bd dolt push`, or any other sync to a remote) is never a session-close obligation: run it only when explicitly asked to push right then, and otherwise leave the remote alone. An unavailable, unauthenticated, or unreachable remote is a **normal condition** in this container — never report a skipped or failed push as an incomplete session.
 
-**This overrides, by name, the "🚨 SESSION CLOSE PROTOCOL 🚨" checklist (and its "Git workflow" / "Common Workflows" push mentions) that the `bd prime` SessionStart hook injects every session.** That text is compiled into the `bd` binary itself — confirmed via `strings /usr/local/bin/bd` (hits at two offsets) and via `bd config list` / `bd help config`, neither of which exposes any key that governs it — so it cannot be edited at the source and is overridden here instead. Its `git push` step and "work is not done until pushed" framing do not apply in this project; this section is authoritative.
+**This overrides, by name, the "🚨 SESSION CLOSE PROTOCOL 🚨" checklist (and its "Git workflow" / "Common Workflows" push mentions) that the `bd prime` SessionStart hook injects every session** (that text is compiled into the `bd` binary and cannot be edited at source). Its `git push` step and "work is not done until pushed" framing do not apply in this project; this section is authoritative.
 
 **MANDATORY WORKFLOW (local):**
 
@@ -223,8 +210,6 @@ bd close <id>         # Complete work
 7. **Hand off** - Provide context for next session
 
 **CRITICAL RULES:**
-- Work is complete once committed locally — a session is never incomplete merely because nothing was pushed.
-- NEVER skip the local commit - that's what leaves work unrecorded.
-- Push only when explicitly asked, in that moment. `git push` and `bd dolt push` (beads' Dolt history sync over `refs/dolt/data`, to the same git remote) follow the identical rule — both opt-in, neither a default closing step.
-- If a requested push fails or the remote is unavailable, report it plainly and stop there — do not retry unprompted, and do not downgrade an otherwise-complete local session to "incomplete".
+- Work is complete once committed locally — a session is never incomplete merely because nothing was pushed — but NEVER skip the local commit itself, since that's what leaves work unrecorded.
+- Push (`git push` and `bd dolt push` alike) is opt-in only, run in the moment explicitly asked; if a requested push fails or the remote is unavailable, report it plainly, don't retry unprompted, and don't downgrade an otherwise-complete local session to "incomplete".
 <!-- END BEADS INTEGRATION -->

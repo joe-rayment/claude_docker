@@ -625,8 +625,9 @@ git-root-relative plan dir too) or the harness auto-memory dir
 (`~/.claude/projects/*/memory/`) is allowed even mid-streak. Without this,
 `guard`'s "always deny an edit in the main loop" rule would deny the
 orchestrator's *own* plan file and its own memory writes — both of which
-are explicitly the orchestrator's seat per CLAUDE.md's "Plan Before Code"
-and the harness's own auto-memory mechanics, never the executor's. The
+are explicitly the orchestrator's seat per CLAUDE.md's "Complexity Router
+— Lanes" (deep-lane plan-first clause) and the harness's own auto-memory
+mechanics, never the executor's. The
 carve-out must be **proven** from an explicit, resolvable path in
 `tool_input`; a call with no determinable path is NOT carved out (denied)
 — the exception is never the default. `/tmp` and the scratchpad are
@@ -653,6 +654,41 @@ compaction could silently drop the delegation protocol from context for
 the rest of the session. `config/claude-user-memory.md`'s invariants now
 say explicitly that a compaction, a long turn, or a context summary does
 not revoke the standing authorization.
+
+## delegation-gate operational reference
+
+Full text moved here from CLAUDE.md's "Model Tiering & Delegation" (kept
+verbatim because the `DELEGATION_GATE_WARN_AT` env var name specifically
+wasn't otherwise spelled out above, even though its default behavior was):
+
+> Spawn-time enforcement (all fail open, `tests/tier-hooks.bats`):
+> `tier-gate` injects the worker tier into generic spawns that omit
+> `model`; `workflow-lint` denies workflow scripts whose `agent()` calls
+> omit `model:`; `cost-mirror` shows per-prompt spend, now with per-model
+> dollars, estimated tier savings, and a drift clause read from
+> `delegation-gate`'s own state (`tier-cost` prints the full per-model
+> table). An explicit `model` always wins. `delegation-gate` (PreToolUse,
+> fail-open, `tests/delegation-gate.bats`) separately counts consecutive
+> main-loop inline work-tool calls — subagents are never gated. Mode is
+> two-axis, default **`guard`**: `off` (silent allow) · `warn-only`/`warn`
+> (nudges, never denies) · `guard` (Edit/Write/NotebookEdit denied in the
+> main loop unless carved out; reads/Bash never denied) · `enforce` (guard
+> plus reads/Bash denied once streak reaches `DELEGATION_GATE_DENY_AT`,
+> default 8) — set via `DELEGATION_GATE_MODE` or
+> `~/.claude/delegation-gate.mode`; an unrecognized value falls back to
+> `guard`, never a weaker one. The warn note repeats (watermarked, not
+> one-shot): first fires at streak `DELEGATION_GATE_WARN_AT` (default 4),
+> then every `DELEGATION_GATE_WARN_EVERY` (default 8) — 4, 12, 20 …,
+> escalating wording at 2×/6× warn_at — because a warn that fires once per
+> session stops steering a session that ignores it. Edit/Write under
+> guard/enforce is carved out for the orchestrator's own seat —
+> `~/.claude/plans/**` and the harness auto-memory dir — proven from an
+> explicit path or denied; `/tmp` and the scratchpad are deliberately not
+> carved out. Session-close/verification Bash (`bd`, `git` incl.
+> commit/push, `bats`, `run-tests`, `take-screenshot`, …) is exempt
+> throughout. `scripts/tier-prime.sh` owns the tier-reminder wording for
+> both SessionStart and PreCompact, so a compaction re-injects the trio
+> and the dispatch/standing-authorization text rather than losing it.
 
 ## Graceful degradation (probe + fallback)
 
