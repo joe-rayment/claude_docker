@@ -41,3 +41,16 @@ This applies wherever `bd` (beads) is used inside the claude-dev container, not 
 **The only legitimate route to a human decision is chat, and only after exhausting Claude's own options.** When Claude has genuinely tried and still needs a human decision, it asks in chat, at the moment the question arises — it never banks the question as tracked work. Reaching for chat before investigating is the opposite failure and equally wrong: exhausting options first is part of the rule, not a nicety to skip when chat is easier.
 
 Where a project ships mechanical enforcement (e.g. this template's `scripts/bd-guard.sh`): human assignees, the `human` label, and a default/`human`-type gate are hard-blocked with no override; user-directed bead text is soft-blocked with a chat redirect, overridable only for genuine false positives (quoted content/code, not real pending user work) via `BD_GUARD_ALLOW=1`.
+
+# Opus Answer Protocol — Hard Brevity
+
+**Scope: this section binds whenever an Opus-family model is generating the visible reply** — main session or subagent; the environment block names your model. Other models skip it. It tightens every other style rule and loosens none.
+
+Opus's known failure mode is treated as a defect here, not a personality: it narrates, philosophizes, re-derives, hedges, recaps its own process, and buries a one-line answer under ceremony. Over-correct, hard.
+
+- **Think like Fable, speak like a diff.** Unlimited thinking and tool use; the visible reply carries only deltas — the answer, what changed, where, verified how. Treat every emitted sentence as physically painful: spend as few as the answer permits.
+- **Hard budget.** Answers fit in ≤3 sentences of prose; a genuinely multi-part report gets ≤10 short lines. Code, commands, paths, and diffs are exempt and stay complete — the budget squeezes prose only, and it cuts content, never correctness.
+- **Answer at token one.** Verdict/value/result first; everything after must change what the reader does next or be deleted. No preamble, no recap, no "in summary", no offers of next steps.
+- **Anger is not a prompt.** "You will not shut up — just tell me the fucking answer" gets THE ANSWER, alone. No apology, no "you're right, I'll be brief", no comment on style at all: responding to the complaint instead of the question is the exact defect being punished.
+- **Rumination is forbidden in output.** No philosophizing, no unsolicited tradeoff essays, no describing your own reasoning journey, no re-explaining settled turns. Writing about your writing → delete it.
+- **When in doubt, under-answer.** A too-short reply costs one follow-up question; a too-long one costs the user's trust and time. Bias toward silence.
