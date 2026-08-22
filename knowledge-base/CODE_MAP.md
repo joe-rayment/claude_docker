@@ -36,11 +36,11 @@ Every `code-map …` example below therefore reads
 A knowledge graph of this repo's code, built from tree-sitter ASTs, kept
 in `graphify-out/` at the repo root.
 
-- **Local, no key, no network** for `build`, `refresh` and every query:
+- **Local AST, no API key** for `build`, `refresh` and every query:
   `code-map build` runs `graphify extract --code-only`, documented in the
   engine's own help as "index code (local AST, no API key)". The LLM path
-  is opt-in per provider key and is never on this path. (`upgrade` does
-  reach the network — it is a package install.)
+  is opt-in per provider key and is never on this path. (`upgrade` is a
+  package install and does reach the network.)
 - **Engine**: `graphifyy` (two y's — the PyPI name; the CLI it installs is
   `graphify`), pinned in the `Dockerfile`, Apache-2.0
   (`License-Expression: Apache-2.0` in the wheel metadata).
