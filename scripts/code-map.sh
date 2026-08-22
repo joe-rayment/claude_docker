@@ -150,6 +150,17 @@ cmd_build() {
 
     echo "code-map build: $root"
     "$engine" extract "$root" --code-only "$@"
+
+    # `extract` stops at graph.json: GRAPH_REPORT.md and graph.html come from
+    # the clustering pass, and `refresh` only regenerates them when the code
+    # graph actually changed — so without this step `code-map report` errors
+    # right after a first build. --no-label keeps community naming off the
+    # LLM, so this stays local and offline. Non-fatal: the graph is the
+    # artifact that matters, and a clustering failure must not lose it.
+    if ! "$engine" cluster-only "$root" --no-label; then
+        echo "code-map: clustering failed — graph.json is built, but GRAPH_REPORT.md and graph.html may be missing or stale" >&2
+    fi
+
     stamp_commit "$out/graph.json"
     exclude_hygiene "$out"
 }
@@ -203,6 +214,29 @@ cmd_status() {
     if [ "$state" = STALE ]; then
         echo "hint: the graph predates HEAD — run \`code-map refresh\`"
     fi
+}
+
+# The engine resolves its --graph default against the CURRENT directory, so a
+# query run from a subdirectory looks for ./graphify-out/graph.json and finds
+# nothing. Point it at the repo's graph instead. The caller's own arguments are
+# forwarded verbatim and in order — the default is APPENDED, never inserted —
+# and an explicit --graph (either spelling) wins, because we then add none.
+cmd_passthrough() {
+    _sub=$1
+    shift
+    engine=$(resolve_engine)
+
+    for _arg in "$@"; do
+        case "$_arg" in
+            --graph|--graph=*)
+                exec "$engine" "$_sub" "$@"
+                ;;
+        esac
+    done
+
+    root=$(resolve_root)
+    out=$(resolve_out_dir "$root")
+    exec "$engine" "$_sub" "$@" --graph "$out/graph.json"
 }
 
 cmd_report() {
@@ -389,8 +423,7 @@ case "$cmd" in
     refresh) cmd_refresh "$@" ;;
     status)  cmd_status "$@" ;;
     explain|path|query|affected|tree|god-nodes)
-        engine=$(resolve_engine)
-        exec "$engine" "$cmd" "$@"
+        cmd_passthrough "$cmd" "$@"
         ;;
     report)  cmd_report "$@" ;;
     html)    cmd_html "$@" ;;
