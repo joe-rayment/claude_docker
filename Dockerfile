@@ -215,6 +215,8 @@ COPY --chown=agent:agent scripts/image-drift.py /usr/local/bin/image-drift
 COPY --chown=agent:agent scripts/code-map-guard.sh /usr/local/bin/graphify
 # ...and `code-map` is the front end the guard's errors point at
 COPY --chown=agent:agent scripts/code-map.sh /usr/local/bin/code-map
+# the SessionStart hook that keeps the graph current and injects the map block
+COPY --chown=agent:agent scripts/code-map-prime.sh /usr/local/bin/code-map-prime
 COPY --chown=agent:agent run-tests.sh /usr/local/bin/run-tests.sh
 COPY --chown=agent:agent tests/ /opt/claude-dev/tests/
 COPY --chown=agent:agent knowledge-base/ /opt/claude-dev/knowledge-base/
