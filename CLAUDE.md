@@ -24,6 +24,16 @@ csearch sig 'src/**/*.go'         # signatures/structure (funcs, classes, types)
 
 Flags: `-i` ignore case, `-C N` context, `-l` files only, `-t TYPE` ripgrep type, `-m N` max matches/file. No matches exits 0.
 
+## Code Map — Structure Queries Before Grep
+
+**Structure questions go to the map before they go to grep.** What calls X · what breaks if I touch Y · how do A and B connect → `code-map explain <sym>`, `code-map affected <file>`, `code-map path A B`, `code-map query "<q>"`. `csearch` stays first for content: literal strings, TODOs, config values, anything textual.
+
+- The `[code-map]` block at session start advertises the map — node/link counts and `built at <sha8> (fresh|STALE)`. STALE means the graph predates HEAD: `code-map refresh` rebuilds it, `code-map status` re-checks any time.
+- `code-map report` (GRAPH_REPORT.md) and `code-map html` are the human-readable views; `tree` and `god-nodes` show shape.
+- **INFERRED edges are hints, not facts** — confirm one against the code before acting on it.
+- Upgrade the engine **only** via `code-map upgrade [version]` (home-volume override) or a Dockerfile pin bump. `graphify install|uninstall|hook` are blocked in this container: they overwrite assistant config (CLAUDE.md sections, `~/.claude` hooks and skills, per-platform rules).
+- Playbook: `knowledge-base/CODE_MAP.md`.
+
 ## Answer Style — Selective, Answer-First
 
 **Shortness comes from selecting content, not compressing wording.** Decide what the reader actually needs — drop everything else — then write what remains in plain, complete sentences. Terseness of style is not the goal; absence of filler is.

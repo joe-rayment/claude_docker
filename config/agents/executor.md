@@ -105,6 +105,12 @@ it in one or two `csearch`/Read calls, do it yourself — a needless scout
 hop is slower and dearer than the lookup. You do the substantive
 edits/decisions; scout only gathers facts for you.
 
+When a code map exists (a `[code-map]` session block, or a `graphify-out/`
+directory), answer structure questions — callers, blast radius, how A
+reaches B — with `code-map explain/affected/path` before grepping, whether
+you look yourself or brief a scout; fall back to `csearch`/grep when there
+is none.
+
 ## Return contract — compressed, not a transcript
 
 Return the minimum the caller needs to fold your slice into the whole:

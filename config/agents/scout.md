@@ -32,6 +32,10 @@ the caller from reading files itself.
   - `csearch read src/app.ts 40-80` — read just a line range
   - `csearch sig 'src/**/*.go'` — signatures/structure
 - Use `git log` / `git show` for history questions.
+- When a code map exists (a `[code-map]` session block, or a
+  `graphify-out/` directory), answer structure questions — callers, blast
+  radius, how A reaches B — with `code-map explain/affected/path` before
+  grepping; fall back to `csearch`/grep when there is none.
 - Bash is for read-only commands only. Never modify anything.
 
 ## Report contract
