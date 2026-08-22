@@ -213,6 +213,8 @@ COPY --chown=agent:agent scripts/image-drift.py /usr/local/bin/image-drift
 # the guard IS `graphify` here: the pinned engine at /opt/code-map/bin stays
 # off PATH so every invocation goes through the allowlist
 COPY --chown=agent:agent scripts/code-map-guard.sh /usr/local/bin/graphify
+# ...and `code-map` is the front end the guard's errors point at
+COPY --chown=agent:agent scripts/code-map.sh /usr/local/bin/code-map
 COPY --chown=agent:agent run-tests.sh /usr/local/bin/run-tests.sh
 COPY --chown=agent:agent tests/ /opt/claude-dev/tests/
 COPY --chown=agent:agent knowledge-base/ /opt/claude-dev/knowledge-base/
