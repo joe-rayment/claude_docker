@@ -99,6 +99,18 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
 RUN pip3 install --no-cache-dir --break-system-packages poetry uv \
     && npm install -g pnpm@9 yarn@1.22
 
+# Install the code-map graph engine (graphifyy, pinned like every other tool
+# here) into a SYSTEM prefix that is deliberately OFF PATH: the only graphify
+# on PATH is scripts/code-map-guard.sh, staged as /usr/local/bin/graphify
+# below, and it execs this binary. `code-map upgrade` installs a newer engine
+# under ~/.local/lib/code-map, which the guard prefers when it exists — so
+# this is the floor, not the ceiling. a+rX because uv installs as root here
+# and the container runs as agent.
+RUN UV_NO_CACHE=1 UV_TOOL_DIR=/opt/code-map/tools UV_TOOL_BIN_DIR=/opt/code-map/bin \
+        uv tool install graphifyy==0.9.48 \
+    && chmod -R a+rX /opt/code-map \
+    && /opt/code-map/bin/graphify version
+
 # Claude Code: install the native binary to a SYSTEM path (/opt/claude) and symlink
 # into /usr/local/bin. This avoids the /home/agent volume mount masking the binary
 # at container start. Base image ships an npm-installed Claude — remove it so there's
@@ -198,6 +210,9 @@ COPY --chown=agent:agent scripts/context-detect.sh /usr/local/bin/context-detect
 COPY --chown=agent:agent scripts/delegation-gate.py /usr/local/bin/delegation-gate
 COPY --chown=agent:agent scripts/contract-gate.py /usr/local/bin/contract-gate
 COPY --chown=agent:agent scripts/image-drift.py /usr/local/bin/image-drift
+# the guard IS `graphify` here: the pinned engine at /opt/code-map/bin stays
+# off PATH so every invocation goes through the allowlist
+COPY --chown=agent:agent scripts/code-map-guard.sh /usr/local/bin/graphify
 COPY --chown=agent:agent run-tests.sh /usr/local/bin/run-tests.sh
 COPY --chown=agent:agent tests/ /opt/claude-dev/tests/
 COPY --chown=agent:agent knowledge-base/ /opt/claude-dev/knowledge-base/
