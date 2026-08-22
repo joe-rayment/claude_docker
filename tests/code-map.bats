@@ -215,7 +215,6 @@ claude_tree_sum() {
             [ "$status" -eq 2 ]
             [[ "$stderr" == *"code-map"* ]]
             [[ "$stderr" == *"blocked"* ]]
-    [[ "$stderr" == *"blocked"* ]]
         done
     done
 }
@@ -959,4 +958,161 @@ fixture_docs_repo() {
     # which is non-empty and would satisfy a [ -n ] check
     [ "$cd_idx" -ge 0 ]
     [ "$cm_idx" -gt "$cd_idx" ]
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
+# e2e: section (beads_claude_docker-7vz). The seams the earlier sections left
+# to the end: what a FIRST build leaves behind, what a query run from a
+# subdirectory resolves against, and the one prime branch that only exists
+# when a refresh runs long.
+#
+# These are regression cases over behavior the earlier slices already shipped,
+# so — unlike the guard/shim/prime sections — they were BORN GREEN. They are
+# here to keep that behavior from regressing silently, not to have driven it;
+# the honest record is in beads_claude_docker-7vz's notes. Everything above
+# applies unchanged: setup()'s fixture HOME and CODE_MAP_IMAGE_PREFIX, the
+# real engine via install_real_engine, and no network anywhere.
+#
+# FROZEN per beads_claude_docker-7vz's acceptance contract from its RED commit
+# on: if a test here turns out to be wrong, stop and report — do not edit it.
+
+# ── what a first build leaves behind ─────────────────────────────────────────
+
+@test "e2e: a first build leaves a readable report and an html view behind" {
+    install_real_engine
+    repo="$BATS_TEST_TMPDIR/repo"
+    fixture_repo "$repo"
+    cd "$repo"
+
+    # one build, no refresh: `extract --code-only` stops at graph.json, so the
+    # report and the html view exist only because cmd_build runs the
+    # clustering pass itself. Without that step `code-map report` errors on a
+    # freshly built repo — which is what the shim section's report/html test
+    # deliberately left unasserted.
+    run --separate-stderr sh "$SHIM" build
+    [ "$status" -eq 0 ]
+    [ -f "$repo/graphify-out/graph.json" ]
+    [ -f "$repo/graphify-out/GRAPH_REPORT.md" ]
+    [ -f "$repo/graphify-out/graph.html" ]
+
+    run --separate-stderr sh "$SHIM" report
+    [ "$status" -eq 0 ]
+    [ -n "$output" ]
+
+    run --separate-stderr sh "$SHIM" html
+    [ "$status" -eq 0 ]
+    [[ "$output" == "/"* ]]
+    [[ "$output" == *"graphify-out/graph.html"* ]]
+
+    # the clustering pass rewrites graph.json, so the commit stamp has to
+    # survive it — status is the shim's freshness contract, not the engine's
+    run --separate-stderr sh "$SHIM" status
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"state: fresh"* ]]
+}
+
+# ── queries from anywhere in the repo ────────────────────────────────────────
+
+@test "e2e: explain works from a subdirectory via the injected --graph" {
+    install_real_engine
+    repo="$BATS_TEST_TMPDIR/repo"
+    fixture_repo "$repo"
+    cd "$repo"
+
+    run --separate-stderr sh "$SHIM" build
+    [ "$status" -eq 0 ]
+
+    # the engine resolves its --graph default against the CURRENT directory,
+    # so an uninjected query from here would look for ./graphify-out/graph.json
+    mkdir -p "$repo/sub/deeper"
+    cd "$repo/sub/deeper"
+    [ ! -e "./graphify-out/graph.json" ]
+
+    run --separate-stderr sh "$SHIM" explain "helper()"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Node: helper()"* ]]
+    [[ "$output" == *"main()"* ]]
+    [[ "$output" == *"sample.py"* ]]
+}
+
+@test "e2e: an explicit --graph wins and no default is appended" {
+    stub_engine "$OVERRIDE_BIN" "override-stub"
+    repo="$BATS_TEST_TMPDIR/repo"
+    fixture_repo "$repo"
+    cd "$repo"
+
+    # the caller's own --graph must reach the engine exactly once: a second,
+    # appended one would silently override the choice the caller made
+    run --separate-stderr sh "$SHIM" explain "helper()" --graph /tmp/caller-chosen.json
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"override-stub argv: explain helper() --graph /tmp/caller-chosen.json"* ]]
+    [[ "$output" != *"graphify-out/graph.json"* ]]
+
+    run --separate-stderr sh "$SHIM" query "what calls helper" --graph=/tmp/caller-chosen.json
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"override-stub argv: query what calls helper --graph=/tmp/caller-chosen.json"* ]]
+    [[ "$output" != *"graphify-out/graph.json"* ]]
+}
+
+# ── prime's slow-refresh branch ──────────────────────────────────────────────
+
+@test "e2e: a refresh too slow for session start is detached and the block still prints" {
+    [ -n "$(command -v timeout)" ]
+    repo="$BATS_TEST_TMPDIR/repo"
+    fixture_repo "$repo"
+    cd "$repo"
+
+    # a graph must exist for prime to take the refresh branch at all; its
+    # contents never matter — prime reads its counts from `code-map status`
+    mkdir -p "$repo/graphify-out"
+    printf '{}\n' > "$repo/graphify-out/graph.json"
+
+    # a shim that is too slow on purpose. No real engine here: the branch
+    # under test is prime's handling of rc=124, and a stub is the only way to
+    # make "too slow" deterministic rather than machine-dependent.
+    calls="$BATS_TEST_TMPDIR/calls.log"
+    slow="$BATS_TEST_TMPDIR/slow-code-map"
+    cat > "$slow" <<EOF
+#!/bin/sh
+echo "\$1-start" >> "$calls"
+case "\$1" in
+    refresh) sleep 20 ;;
+    status)
+        echo "nodes: 7"
+        echo "links: 9"
+        echo "built_at_commit: 0123456789abcdef0123456789abcdef01234567"
+        echo "state: STALE"
+        ;;
+esac
+EOF
+    chmod +x "$slow"
+
+    export CODE_MAP_BIN="$slow"
+    export CODE_MAP_LOG="$repo/.claude/logs/code-map.log"
+    export CODE_MAP_REFRESH_TIMEOUT=1
+
+    run --separate-stderr sh "$PRIME"
+    [ "$status" -eq 0 ]
+
+    # the whole point of the branch: a session start never waits on the slow
+    # refresh, and the block prints anyway from the graph we already have
+    [ "${#lines[@]}" -eq 2 ]
+    [[ "${lines[0]}" == "[code-map] 7 nodes"* ]]
+    [[ "${lines[0]}" == *"9 edges"* ]]
+    [[ "${lines[0]}" == *"built at 01234567"* ]]
+    [[ "${lines[0]}" == *"(STALE)"* ]]
+    [[ "${lines[1]}" == *"INFERRED"* ]]
+
+    # ...and the refresh is not dropped: rc=124 hands it to a detached retry,
+    # so the stub records a SECOND start after the timed-out first one
+    detached=0
+    for _ in $(seq 1 30); do
+        if [ "$(grep -c '^refresh-start$' "$calls")" -ge 2 ]; then
+            detached=1
+            break
+        fi
+        sleep 1
+    done
+    [ "$detached" -eq 1 ]
+    [ "$(grep -c '^status-start$' "$calls")" -eq 1 ]
 }

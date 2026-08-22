@@ -858,3 +858,26 @@ EOF
     [ "$mode_after" = "$mode_before" ]
     [ "$inode_after" = "$inode_before" ]    # inode preserved (in-place rewrite)
 }
+
+@test "code-map is staged: shim, prime hook, and the guard as the only graphify on PATH" {
+    # Staged-image content — RED until the next host rebuild, green after.
+    # beads_claude_docker-7vz. The behavior of these scripts is covered from
+    # the working tree by tests/code-map.bats; what only the image can prove is
+    # that they are STAGED, and that the graphify a session reaches is the
+    # guard rather than the engine.
+    [ -x /usr/local/bin/code-map ]
+    [ -x /usr/local/bin/code-map-prime ]
+
+    # /usr/local/bin/graphify must be OUR guard, not a stray real engine that
+    # happened to land on PATH: an executable check alone would pass on the
+    # upstream CLI, whose ~20 installers rewrite assistant config. Match a
+    # marker upstream cannot plausibly carry.
+    [ -x /usr/local/bin/graphify ]
+    grep -q 'code-map-guard' /usr/local/bin/graphify
+    grep -q 'is blocked in this container' /usr/local/bin/graphify
+    [ "$(command -v graphify)" = /usr/local/bin/graphify ]
+
+    # ...and the pinned engine ships in its own prefix, deliberately off PATH,
+    # reachable only through the guard or the shim.
+    [ -x /opt/code-map/bin/graphify ]
+}
