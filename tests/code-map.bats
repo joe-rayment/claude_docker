@@ -774,3 +774,189 @@ fixture_commit() {
     [ -f "$HOME/.claude/CLAUDE.md" ]
     [ -f "$HOME/.claude/settings.json" ]
 }
+
+# ═══════════════════════════════════════════════════════════════════════════
+# prime: section (beads_claude_docker-fi7). scripts/code-map-prime.sh is staged
+# as /usr/local/bin/code-map-prime and wired as a SessionStart hook: it keeps
+# the graph current and injects the two-line block that makes the map
+# first-source. A SessionStart hook may never break session start, so every
+# inapplicable case is a SILENT exit 0 — which is exactly why each silent test
+# below also asserts the exit status: a MISSING prime script makes
+# `sh $PRIME` print nothing on stdout either, so emptiness alone would pass
+# vacuously, and the status assertion is what keeps these red before the
+# script exists (same trap the guard section documents at the top of the file).
+#
+# Nothing here needs /usr/local/bin/code-map to exist — the image that stages
+# it may not have been rebuilt yet. The shim is injected via CODE_MAP_BIN and
+# the engine via the fixture HOME (setup() + install_real_engine), and the log
+# is redirected under the fixture repo via CODE_MAP_LOG so no test writes to
+# the real /workspace/.claude/logs.
+#
+# FROZEN per beads_claude_docker-fi7's acceptance contract from its RED commit
+# on: if a test here turns out to be wrong, stop and report — do not edit it.
+
+PRIME=/workspace/scripts/code-map-prime.sh
+SETTINGS=/workspace/config/claude-settings.json
+
+# A repo with no code at all: prime must stay silent rather than map a docs
+# tree.
+fixture_docs_repo() {
+    local dir=$1
+    mkdir -p "$dir"
+    git -C "$dir" init -q
+    printf '# just docs\n' > "$dir/README.md"
+    git -C "$dir" add README.md
+    fixture_commit "$dir" -m init
+}
+
+# ── silent when inapplicable ─────────────────────────────────────────────────
+
+@test "prime: the prime script exists and is executable" {
+    [ -x "$PRIME" ]
+}
+
+@test "prime: outside a git repo it says nothing and exits 0" {
+    plain="$BATS_TEST_TMPDIR/plain"
+    mkdir -p "$plain"
+    cd "$plain"
+
+    # guard against a $TMPDIR that is itself inside some repo, which would make
+    # this test assert the wrong branch
+    run git -C "$plain" rev-parse --show-toplevel
+    [ "$status" -ne 0 ]
+
+    run --separate-stderr sh "$PRIME"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+}
+
+@test "prime: CODE_MAP_DISABLE=1 silences a repo that would otherwise emit" {
+    install_real_engine
+    repo="$BATS_TEST_TMPDIR/repo"
+    fixture_repo "$repo"
+    cd "$repo"
+
+    run --separate-stderr sh "$SHIM" build
+    [ "$status" -eq 0 ]
+    [ -f "$repo/graphify-out/graph.json" ]
+
+    export CODE_MAP_BIN="$SHIM"
+    export CODE_MAP_LOG="$repo/.claude/logs/code-map.log"
+    export CODE_MAP_DISABLE=1
+
+    run --separate-stderr sh "$PRIME"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+}
+
+@test "prime: a repo with no code files says nothing and starts no build" {
+    install_real_engine
+    docs="$BATS_TEST_TMPDIR/docs"
+    fixture_docs_repo "$docs"
+    cd "$docs"
+
+    export CODE_MAP_BIN="$SHIM"
+    export CODE_MAP_LOG="$docs/.claude/logs/code-map.log"
+
+    run --separate-stderr sh "$PRIME"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+    [ ! -e "$docs/graphify-out/graph.json" ]
+    [ ! -e "$CODE_MAP_LOG" ]
+}
+
+@test "prime: an unavailable code-map shim says nothing" {
+    install_real_engine
+    repo="$BATS_TEST_TMPDIR/repo"
+    fixture_repo "$repo"
+    cd "$repo"
+
+    export CODE_MAP_BIN="$BATS_TEST_TMPDIR/no-such-code-map"
+    [ ! -e "$CODE_MAP_BIN" ]
+
+    run --separate-stderr sh "$PRIME"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+}
+
+# ── the injected block ───────────────────────────────────────────────────────
+
+@test "prime: an existing graph produces the two-line context block" {
+    install_real_engine
+    repo="$BATS_TEST_TMPDIR/repo"
+    fixture_repo "$repo"
+    cd "$repo"
+
+    run --separate-stderr sh "$SHIM" build
+    [ "$status" -eq 0 ]
+
+    head=$(git -C "$repo" rev-parse HEAD)
+    sha8=${head:0:8}
+    [ -n "$sha8" ]
+
+    export CODE_MAP_BIN="$SHIM"
+    export CODE_MAP_LOG="$repo/.claude/logs/code-map.log"
+
+    run --separate-stderr sh "$PRIME"
+    [ "$status" -eq 0 ]
+
+    nodes=$(jq '.nodes|length' "$repo/graphify-out/graph.json")
+    links=$(jq '.links|length' "$repo/graphify-out/graph.json")
+    [ "$nodes" -gt 0 ]
+    [ "$links" -gt 0 ]
+
+    # exactly two lines: the refresh the hook runs first prints engine chatter,
+    # and none of it may reach the context block
+    [ "${#lines[@]}" -eq 2 ]
+    [[ "${lines[0]}" == "[code-map] $nodes nodes"* ]]
+    [[ "${lines[0]}" == *"$links edges"* ]]
+    [[ "${lines[0]}" == *"built at $sha8"* ]]
+    [[ "${lines[0]}" == *"(fresh)"* ]]
+    [[ "${lines[0]}" == *"code-map explain"* ]]
+    [[ "${lines[1]}" == *"INFERRED"* ]]
+    [[ "${lines[1]}" == *"verify before acting"* ]]
+}
+
+@test "prime: with no graph it emits one building line and the build really runs" {
+    install_real_engine
+    repo="$BATS_TEST_TMPDIR/repo"
+    fixture_repo "$repo"
+    cd "$repo"
+    [ ! -e "$repo/graphify-out/graph.json" ]
+
+    export CODE_MAP_BIN="$SHIM"
+    export CODE_MAP_LOG="$repo/.claude/logs/code-map.log"
+
+    run --separate-stderr sh "$PRIME"
+    [ "$status" -eq 0 ]
+    [ "${#lines[@]}" -eq 1 ]
+    [ "${lines[0]}" = "[code-map] no graph yet — building in background (log: .claude/logs/code-map.log); code-map status when done" ]
+
+    # the line is a promise: a detached build must actually be running
+    built=0
+    for _ in $(seq 1 60); do
+        if [ -f "$repo/graphify-out/graph.json" ]; then
+            built=1
+            break
+        fi
+        sleep 1
+    done
+    [ "$built" -eq 1 ]
+    [ -s "$CODE_MAP_LOG" ]
+}
+
+# ── the SessionStart wiring ──────────────────────────────────────────────────
+
+@test "prime: claude-settings.json is valid and runs code-map-prime after context-detect" {
+    run --separate-stderr jq empty "$SETTINGS"
+    [ "$status" -eq 0 ]
+
+    cmds='[.hooks.SessionStart[0].hooks[].command]'
+    cd_idx=$(jq "$cmds | map(test(\"context-detect\")) | index(true)" "$SETTINGS")
+    cm_idx=$(jq "$cmds | map(test(\"code-map-prime\")) | index(true)" "$SETTINGS")
+
+    # numeric comparisons on purpose: an absent entry is the string "null",
+    # which is non-empty and would satisfy a [ -n ] check
+    [ "$cd_idx" -ge 0 ]
+    [ "$cm_idx" -gt "$cd_idx" ]
+}
