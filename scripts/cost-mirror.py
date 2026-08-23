@@ -235,6 +235,22 @@ purpose: an untimestamped worker in an otherwise-timestamped session has no
 bucket to place it in and so contributes zero, which does differ from the
 old whole-session figure.
 
+Overdrive (bead 51c, added 2026-08-23): `tier-set overdrive` lifts the
+worker cap and parks .env.TIER_OVERDRIVE="1" in the settings file (tier-set.sh
+owns that flag; the path here is TIER_SETTINGS_PATH, overridable via
+COST_MIRROR_SETTINGS_PATH for tests, and only the literal "1" counts —
+matching tier-gate/tier-reconcile). While it is set, the "saved" clause above
+is a lie by construction: workers run the TOP model, so there is no cheaper
+tier for "what this would have cost at <top>" to be counterfactual against,
+and a session that banked real savings before overdrive was taken would go on
+advertising them. The hook line therefore prints a flat "tier savings n/a
+(OVERDRIVE)" in place of the whole "· ~$X at <top> → saved ~$Y" clause
+whenever the flag is set — unconditionally, since the entire point is that an
+expensive binding must never run silently. Flag off (or absent/unreadable
+settings), the line is byte-identical to what it printed before. Scope note:
+this covers the HOOK line only — `--report`'s at-top/saved COLUMNS still
+compute the same counterfactual per row and are untouched here.
+
 Billing mode: this template runs under both a raw API key and a Claude
 subscription. Under a subscription the dollar figure isn't a bill, it's
 what the session would have cost on the API — same math, different label
@@ -249,8 +265,9 @@ Failure posture: fail SILENT AND OPEN — any error prints nothing and exits 0.
 Env: COST_MIRROR_DISABLE=1 bypasses; COST_MIRROR_STATE_DIR overrides the
 state directory (tests); COST_MIRROR_CREDENTIALS_PATH overrides the
 credentials file consulted for billing-mode auto-detection (tests);
-COST_MIRROR_PROJECTS_DIR overrides the ~/.claude/projects root that --all
-scans (tests).
+COST_MIRROR_SETTINGS_PATH overrides the settings file the overdrive flag is
+read from (tests); COST_MIRROR_PROJECTS_DIR overrides the ~/.claude/projects
+root that --all scans (tests).
 
 Delegation-gate drift segment (added 2026-07-30): scripts/delegation-gate.py
 persists {"max_streak", "warns", "denies"} per session (see its module
@@ -456,6 +473,15 @@ SONNET5_INTRO_CUTOFF = date(2026, 9, 1)
 # delegation-gate.py ever moves its state.
 DELEGATION_GATE_STATE_DIR = "~/.claude/cache/delegation-gate"
 
+# scripts/tier-set.sh OWNS this flag: `tier-set overdrive` parks
+# .env.TIER_OVERDRIVE="1" in the settings file to lift the worker cap. Read
+# here (never imported -- tier-set is a shell script) for the same decoupling
+# reason as DELEGATION_GATE_STATE_DIR/LANE_STATE_DIR, and matched against the
+# literal "1" exactly as tier-gate/tier-reconcile do. See the module
+# docstring's "Overdrive" section. COST_MIRROR_SETTINGS_PATH overrides the
+# path (tests).
+TIER_SETTINGS_PATH = "~/.claude/settings.json"
+
 # scripts/lane.sh OWNS these; duplicated here (not imported -- lane is a shell
 # script) for the same decoupling reason as DELEGATION_GATE_STATE_DIR above.
 # See the module docstring's "Complexity-router lanes" section.
@@ -574,6 +600,26 @@ def detect_billing_mode():
     except Exception:
         pass
     return "api", "auto: no billing signal found, defaulting to api"
+
+
+def overdrive_active():
+    """True when the settings file carries tier-set's sticky worker-cap lift
+    (.env.TIER_OVERDRIVE == "1", see TIER_SETTINGS_PATH). Under overdrive the
+    worker IS the top model, so the "saved" counterfactual below is no longer
+    true -- see summarise_dollars and the module docstring's "Overdrive"
+    section. Only the literal "1" counts (tier-gate/tier-reconcile read it the
+    same way); any missing/unreadable/malformed settings file is False, i.e.
+    exactly today's behaviour, never a crash."""
+    path = os.environ.get("COST_MIRROR_SETTINGS_PATH") or os.path.expanduser(
+        TIER_SETTINGS_PATH
+    )
+    try:
+        with open(path) as fh:
+            settings = json.load(fh)
+        env = settings.get("env")
+        return isinstance(env, dict) and env.get("TIER_OVERDRIVE") == "1"
+    except Exception:
+        return False
 
 
 def _dedup_seen(fstate, mid):
@@ -1049,7 +1095,7 @@ def session_delegation_savings(bucket_total):
     return sum(d["at_epoch"] - d["actual"] for key, d in pricing.items() if not key.startswith("main|"))
 
 
-def summarise_dollars(total, bucket_total, billing_mode="api"):
+def summarise_dollars(total, bucket_total, billing_mode="api", overdrive=False):
     """Actual dollar cost, plus an "at <model>" counterfactual and the
     resulting savings, as a compact clause (or "" if there's nothing to
     show). Unknown-priced models still contribute their tokens to the token
@@ -1067,7 +1113,17 @@ def summarise_dollars(total, bucket_total, billing_mode="api"):
     billing_mode "sub" means this session is paid for via a Claude
     subscription rather than per-token API billing: the math is identical,
     but the leading figure isn't a bill, it's what the session would have
-    cost on the API, so it is labelled "API-equiv"."""
+    cost on the API, so it is labelled "API-equiv".
+
+    overdrive=True (see overdrive_active) replaces the whole counterfactual
+    clause with a flat "tier savings n/a (OVERDRIVE)" marker: the worker cap
+    is lifted, so workers run the top model and there is no cheaper tier for
+    the figure to be counterfactual against. It is printed UNCONDITIONALLY
+    whenever there is a dollar clause at all -- not gated on the savings
+    rounding to nonzero -- because the point is that an expensive binding
+    must never be silently on; a session that accrued real savings BEFORE
+    overdrive was taken would otherwise keep advertising them as if
+    delegation were still buying something."""
     if not total:
         return ""
     models_seen = {key.split("|", 1)[1] for key in total}
@@ -1079,6 +1135,9 @@ def summarise_dollars(total, bucket_total, billing_mode="api"):
         clause += "?"
     if billing_mode == "sub":
         clause += " API-equiv"
+
+    if overdrive:
+        return clause + " · tier savings n/a (OVERDRIVE)"
 
     top = pick_top_model(total)
     saved = session_delegation_savings(bucket_total)
@@ -1952,7 +2011,9 @@ def main():
     if token_line:
         billing_mode, _ = detect_billing_mode()
         bucket_total = aggregate_bucket_total(files_state)
-        dollar_clause = summarise_dollars(total, bucket_total, billing_mode)
+        dollar_clause = summarise_dollars(
+            total, bucket_total, billing_mode, overdrive_active()
+        )
         line = f"{token_line} | {dollar_clause}" if dollar_clause else token_line
         drift = delegation_drift_segment(event.get("session_id"))
         if drift:

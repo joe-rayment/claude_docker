@@ -25,6 +25,11 @@
 # PreCompact — a compaction that dropped the rubric would silently lose the
 # router. An image built before `lane` existed simply prints neither.
 #
+# The trio line also names OVERDRIVE when the settings file carries
+# .env.TIER_OVERDRIVE="1" (see trio_line) — the sticky worker-cap lift is
+# expensive and must never be silently on; without the flag the line is
+# byte-identical to what it has always printed.
+#
 # TIER_PRIME_SETTINGS / TIER_PRIME_AGENTS_DIR override the paths read (used
 # by the test suite); TIER_PRIME_LANE overrides the lane binary; defaults
 # match every other tier-* script.
@@ -51,7 +56,15 @@ trio_line() {
     m=$(jq -r '.model // empty' "$SETTINGS" 2>/dev/null)
     e=$(grep -m1 '^model:' "$AGENTS/executor.md" 2>/dev/null | sed 's/^model:[[:space:]]*//')
     s=$(grep -m1 '^model:' "$AGENTS/scout.md" 2>/dev/null | sed 's/^model:[[:space:]]*//')
-    echo "tier → orchestrator(settings model)=${m:-harness default}  executor=${e:-sonnet (frontmatter)}  scout=${s:-haiku (frontmatter)} | verifier+oracle inherit the session model"
+    # `tier-set overdrive` parks .env.TIER_OVERDRIVE="1" (tier-set.sh owns that
+    # flag) to lift the worker cap — an expensive binding that must never run
+    # silently, so it is stated here rather than left to be inferred from the
+    # executor id above. Appended to the SAME line: this text is re-injected at
+    # every PreCompact and pays rent each time. Only the literal "1" counts,
+    # matching tier-gate/tier-reconcile.
+    od=$(jq -r '.env.TIER_OVERDRIVE // empty' "$SETTINGS" 2>/dev/null)
+    [ "$od" = "1" ] && od=" | OVERDRIVE: worker cap lifted — /tier <top> to clear" || od=""
+    echo "tier → orchestrator(settings model)=${m:-harness default}  executor=${e:-sonnet (frontmatter)}  scout=${s:-haiku (frontmatter)} | verifier+oracle inherit the session model${od}"
 }
 
 trio_line
