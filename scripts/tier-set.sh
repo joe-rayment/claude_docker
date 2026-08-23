@@ -52,6 +52,7 @@
 #   tier-set <top>                  # 1 model  -> worker/recon AUTO-DERIVED (worker capped at sonnet-class)
 #   tier-set <top> <worker>         # 2 models -> a 2-level config: recon SHARES the worker model
 #   tier-set <top> <worker> <recon> # 3 models -> fully independent 3-level config
+#   tier-set overdrive              # lift the worker CAP on the current top (see below)
 #   tier-set show                   # print the current binding
 #   TIER_NO_PROBE=1 tier-set ...    # never probe, even off-ladder ids (bind blind)
 #   TIER_PROBE=1 tier-set ...       # probe EVERY candidate (downward degradation)
@@ -63,6 +64,21 @@
 # combination is accepted (each slot independently probed/degraded). An
 # explicit bind sets .env.TIER_EXPLICIT_PIN="1" so the reconciler leaves the
 # pinned worker/recon alone; a 1-arg bind clears the pin.
+#
+# `tier-set overdrive` is the sanctioned exception to the worker cap: the
+# CURRENT top (settings .model, left exactly as it is — overdrive re-binds the
+# worker seat, not the orchestrator) is re-derived with tier-derive's
+# --overdrive, so the worker becomes the top itself while recon stays derived
+# from the CAPPED worker and never inflates. It sets .env.TIER_OVERDRIVE="1"
+# so the reconciler keeps re-deriving that way in later sessions. The flag and
+# the pin are mutually exclusive — only one thing may own the worker slot:
+#   tier-set overdrive           -> sets TIER_OVERDRIVE, clears TIER_EXPLICIT_PIN
+#   tier-set <top> <worker> ...  -> sets TIER_EXPLICIT_PIN, clears TIER_OVERDRIVE (literal ids win)
+#   tier-set <top>               -> clears BOTH (one obvious reset)
+# An off-ladder .model is NOT liftable (tier-derive can't place it): warn and
+# leave both agent files and the flag untouched, same posture as everywhere
+# else — never clobber a binding we can't place on the ladder. The already-bound
+# top is not re-probed on this path: it is the model the session is running.
 #
 # TIER_SETTINGS and TIER_AGENTS_DIR override the paths (used by the test suite).
 
@@ -165,12 +181,20 @@ if [ $# -eq 0 ] || [ "${1:-}" = "show" ]; then   # no args or `show` -> just pri
     if [ -f "$SETTINGS" ]; then
         cur_model=$(jq -r '.model // empty' "$SETTINGS" 2>/dev/null)
         pinned=$(jq -r '.env.TIER_EXPLICIT_PIN // empty' "$SETTINGS" 2>/dev/null)
+        overdriven=$(jq -r '.env.TIER_OVERDRIVE // empty' "$SETTINGS" 2>/dev/null)
         w=$(fm_model "$EXEC_MD"); c=$(fm_model "$SCOUT_MD")
         echo "orchestrator (settings model)      = ${cur_model:-<harness default>}"
         echo "worker / executor (frontmatter)    = ${w:-<no executor.md>}"
         echo "recon / scout (frontmatter)        = ${c:-<no scout.md>}"
         if [ "$pinned" = "1" ]; then
             echo "explicit pin: ON — worker/recon were set manually (tier-set <top> <worker> [<recon>]); the reconciler leaves them alone until you run a 1-arg /tier <top> again."
+        elif [ "$overdriven" = "1" ]; then
+            # report the LIFTED trio: the capped one would contradict what is
+            # actually bound in the frontmatter above
+            echo "overdrive: ON — the worker cap is LIFTED (executor runs the top model); a 1-arg /tier <top> clears it."
+            if [ -n "$cur_model" ] && [ -x "$DERIVE" ] && trio=$("$DERIVE" --overdrive "$cur_model" 2>/dev/null); then
+                echo "derived trio for top=$cur_model  = $trio  (overdrive)"
+            fi
         elif [ -n "$cur_model" ] && [ -x "$DERIVE" ]; then
             if trio=$("$DERIVE" "$cur_model" 2>/dev/null); then
                 echo "derived trio for top=$cur_model  = $trio"
@@ -193,7 +217,32 @@ if [ $# -eq 0 ] || [ "${1:-}" = "show" ]; then   # no args or `show` -> just pri
 fi
 
 explicit=0
-if [ $# -eq 1 ]; then
+overdrive=0
+if [ $# -eq 1 ] && [ "$1" = "overdrive" ]; then
+    # Lift the worker cap on the top that is ALREADY bound: .model is read, not
+    # rewritten, and not re-probed (it is the model this session is running).
+    overdrive=1
+    if [ ! -x "$DERIVE" ]; then
+        echo "tier-set: tier-derive not found or not executable ($DERIVE) — cannot derive the trio; nothing bound" >&2
+        exit 1
+    fi
+    if [ ! -f "$SETTINGS" ]; then
+        echo "tier-set: no settings file at $SETTINGS — bind a top with /tier <top> first; nothing bound" >&2
+        exit 1
+    fi
+    R=$(jq -r '.model // empty' "$SETTINGS" 2>/dev/null)
+    if [ -z "$R" ]; then
+        echo "tier-set: no top bound in $SETTINGS (.model is unset) — overdrive lifts an existing top; nothing bound" >&2
+        exit 1
+    fi
+    if ! trio=$("$DERIVE" --overdrive "$R" 2>/dev/null); then
+        echo "tier-set: top '$R' is off-ladder — not liftable; bindings and the overdrive flag left untouched, nothing bound" >&2
+        exit 1
+    fi
+    # shellcheck disable=SC2086 # intentional split; set -f so ids like opus[1m] can't glob-expand
+    set -f; set -- $trio; set +f
+    W=$2; C=$3   # $1 (the resolved top) is discarded: .model keeps its exact current value
+elif [ $# -eq 1 ]; then
     # Guard the derive engine BEFORE using its output: a missing/non-executable
     # tier-derive makes $("$DERIVE" ...) fail for the wrong reason, and the
     # off-ladder else-branch below would silently flatten all three tiers onto
@@ -236,10 +285,12 @@ fi
 orig_mode=$(stat -c %a "$SETTINGS" 2>/dev/null) || orig_mode=644
 tmp=$(mktemp "$SETTINGS.XXXXXX") || exit 1
 if jq --arg r "$R" \
-      --argjson pin "$([ "$explicit" -eq 1 ] && echo true || echo false)" '
+      --argjson pin "$([ "$explicit" -eq 1 ] && echo true || echo false)" \
+      --argjson od "$([ "$overdrive" -eq 1 ] && echo true || echo false)" '
         .model = $r
         | .env = ((.env // {})
                   | (if $pin then .TIER_EXPLICIT_PIN = "1" else del(.TIER_EXPLICIT_PIN) end)
+                  | (if $od then .TIER_OVERDRIVE = "1" else del(.TIER_OVERDRIVE) end)
                   | del(.ANTHROPIC_DEFAULT_OPUS_MODEL, .ANTHROPIC_DEFAULT_SONNET_MODEL, .ANTHROPIC_DEFAULT_HAIKU_MODEL,
                         .ANTHROPIC_DEFAULT_OPUS_MODEL_NAME, .ANTHROPIC_DEFAULT_SONNET_MODEL_NAME, .ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME,
                         .CLAUDE_CODE_SUBAGENT_MODEL))
@@ -262,10 +313,17 @@ if [ "$bind_fail" -eq 1 ]; then
     exit 1
 fi
 
-if [ "$explicit" -eq 1 ]; then
+if [ "$overdrive" -eq 1 ]; then
+    echo "tier bound (overdrive — worker cap LIFTED)  top=$R  →  worker=$W  recon=$C  — a 1-arg /tier <top> clears overdrive"
+elif [ "$explicit" -eq 1 ]; then
     echo "tier bound (explicit, pinned)  top=$R  worker=$W  recon=$C  — a 1-arg /tier <top> clears the pin"
 else
     echo "tier bound  top=$R  →  worker=$W  recon=$C  (worker/recon derived from the top)"
 fi
 [ -n "$WARNINGS" ] && printf '%s' "$WARNINGS"
-echo "→ run  /model $R  to move THIS session's model now — new sessions pick everything up automatically."
+if [ "$overdrive" -eq 1 ]; then
+    # the top did not move, so there is nothing for /model to do here
+    echo "→ the lifted worker binding applies to NEW sessions (agent files are snapshotted at session start)."
+else
+    echo "→ run  /model $R  to move THIS session's model now — new sessions pick everything up automatically."
+fi
