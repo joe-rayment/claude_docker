@@ -204,7 +204,7 @@ bd close <id>         # Complete work
 
 **When ending a work session**, you MUST complete the local steps below — that local commit is the terminal state of a successful session, complete on its own. Push (`git push`, `bd dolt push`, or any other sync to a remote) is never a session-close obligation: run it only when explicitly asked to push right then, and otherwise leave the remote alone. An unavailable, unauthenticated, or unreachable remote is a **normal condition** in this container — never report a skipped or failed push as an incomplete session.
 
-**This overrides, by name, the "🚨 SESSION CLOSE PROTOCOL 🚨" checklist (and its "Git workflow" / "Common Workflows" push mentions) that the `bd prime` SessionStart hook injects every session** (that text is compiled into the `bd` binary and cannot be edited at source). Its `git push` step and "work is not done until pushed" framing do not apply in this project; this section is authoritative.
+**This overrides, by name, the "🚨 SESSION CLOSE PROTOCOL 🚨" checklist (and its "Git workflow" / "Common Workflows" push mentions) that the `bd prime` SessionStart hook injects every session.** That text is compiled into the `bd` binary itself — verifiable via `strings /usr/local/bin/bd` — which is why the override lives here rather than being fixed at source. Its `git push` step and "work is not done until pushed" framing do not apply in this project; this section is authoritative.
 
 **MANDATORY WORKFLOW (local):**
 
