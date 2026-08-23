@@ -5,6 +5,9 @@
 #   cost-mirror    UserPromptSubmit      by-model session spend line
 #   tier-prime     SessionStart/PreCompact  tier trio + protocol restatement
 # All fail OPEN: any malformed/missing input path must be silent exit 0.
+# Plus tier-derive itself — the ladder those hooks read, including the
+# --overdrive worker-cap lift. It is not a hook and does not fail open:
+# usage is exit 2, an off-ladder top is exit 3 with no output.
 
 GATE=/workspace/scripts/tier-gate.sh
 LINT=/workspace/scripts/workflow-lint.sh
@@ -44,6 +47,101 @@ setup() {
 gate() { sh "$GATE"; }
 lint() { sh "$LINT"; }
 mirror() { python3 "$MIRROR"; }
+
+# ── tier-derive ──────────────────────────────────────────────────────────────
+
+@test "tier-derive --overdrive: a fable top lifts the worker to fable, recon stays haiku" {
+    run sh "$DERIVE" --overdrive fable
+    [ "$status" -eq 0 ]
+    # the cap is lifted for the WORKER only; recon is still derived from the
+    # capped worker (sonnet), so it does not inflate to sonnet-class
+    [ "$output" = "claude-fable-5 claude-fable-5 claude-haiku-4-5-20251001" ]
+}
+
+@test "tier-derive --overdrive: an opus top lifts the worker to opus, recon stays haiku" {
+    run sh "$DERIVE" --overdrive opus
+    [ "$status" -eq 0 ]
+    [ "$output" = "claude-opus-5 claude-opus-5 claude-haiku-4-5-20251001" ]
+}
+
+@test "tier-derive --overdrive: sonnet lifts to sonnet/haiku, haiku is a no-op" {
+    run sh "$DERIVE" --overdrive sonnet
+    [ "$status" -eq 0 ]
+    [ "$output" = "claude-sonnet-5 claude-sonnet-5 claude-haiku-4-5-20251001" ]
+    # the bottom rung has nothing to lift: overdrive changes nothing
+    run sh "$DERIVE" --overdrive haiku
+    [ "$status" -eq 0 ]
+    [ "$output" = "claude-haiku-4-5-20251001 claude-haiku-4-5-20251001 claude-haiku-4-5-20251001" ]
+}
+
+@test "tier-derive --overdrive: a dated or [variant] top keeps its EXACT value in both the top and worker slots" {
+    run sh "$DERIVE" --overdrive claude-opus-4-8-20260101
+    [ "$status" -eq 0 ]
+    [ "$output" = "claude-opus-4-8-20260101 claude-opus-4-8-20260101 claude-haiku-4-5-20251001" ]
+    run sh "$DERIVE" --overdrive 'sonnet[1m]'
+    [ "$status" -eq 0 ]
+    [ "$output" = "sonnet[1m] sonnet[1m] claude-haiku-4-5-20251001" ]
+    run sh "$DERIVE" --overdrive 'claude-fable-5[1m]'
+    [ "$status" -eq 0 ]
+    [ "$output" = "claude-fable-5[1m] claude-fable-5[1m] claude-haiku-4-5-20251001" ]
+}
+
+@test "tier-derive --overdrive: an off-ladder top still exits 3 with no output" {
+    run sh "$DERIVE" --overdrive gpt-5
+    [ "$status" -eq 3 ]
+    [ -z "$output" ]
+    run sh "$DERIVE" --overdrive best
+    [ "$status" -eq 3 ]
+    [ -z "$output" ]
+}
+
+@test "tier-derive --overdrive: no model argument is a usage error, and the usage text names the flag" {
+    run sh "$DERIVE" --overdrive
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"usage: tier-derive"* ]]
+    run sh "$DERIVE"
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"--overdrive"* ]]
+}
+
+@test "tier-derive: plain (no flag) derivation is byte-identical to the capped ladder" {
+    run sh "$DERIVE" fable
+    [ "$status" -eq 0 ]
+    [ "$output" = "claude-fable-5 claude-sonnet-5 claude-haiku-4-5-20251001" ]
+    run sh "$DERIVE" opus
+    [ "$status" -eq 0 ]
+    [ "$output" = "claude-opus-5 claude-sonnet-5 claude-haiku-4-5-20251001" ]
+    run sh "$DERIVE" sonnet
+    [ "$status" -eq 0 ]
+    [ "$output" = "claude-sonnet-5 claude-haiku-4-5-20251001 claude-haiku-4-5-20251001" ]
+    run sh "$DERIVE" haiku
+    [ "$status" -eq 0 ]
+    [ "$output" = "claude-haiku-4-5-20251001 claude-haiku-4-5-20251001 claude-haiku-4-5-20251001" ]
+    run sh "$DERIVE" claude-opus-4-8-20260101
+    [ "$status" -eq 0 ]
+    [ "$output" = "claude-opus-4-8-20260101 claude-sonnet-5 claude-haiku-4-5-20251001" ]
+    run sh "$DERIVE" 'sonnet[1m]'
+    [ "$status" -eq 0 ]
+    [ "$output" = "sonnet[1m] claude-haiku-4-5-20251001 claude-haiku-4-5-20251001" ]
+    run sh "$DERIVE" gpt-5
+    [ "$status" -eq 3 ]
+    [ -z "$output" ]
+}
+
+@test "tier-derive: --rank and --name are unaffected by the overdrive flag's existence" {
+    run sh "$DERIVE" --rank fable
+    [ "$status" -eq 0 ]
+    [ "$output" = "4" ]
+    run sh "$DERIVE" --rank gpt-5
+    [ "$status" -eq 0 ]
+    [ "$output" = "0" ]
+    run sh "$DERIVE" --name opus
+    [ "$status" -eq 0 ]
+    [ "$output" = "Opus 5" ]
+    run sh "$DERIVE" --name gpt-5
+    [ "$status" -eq 1 ]
+    [ -z "$output" ]
+}
 
 # ── tier-gate ────────────────────────────────────────────────────────────────
 
