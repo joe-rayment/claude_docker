@@ -8,11 +8,12 @@
 #
 # where worker is the next rung down CAPPED at sonnet-class, and recon is one
 # rung below the worker, both clamped at the haiku floor. The cap encodes the
-# core tiering rule: the orchestrator plans, delegates, and reviews — the
-# expensive tiers (opus/fable) never sit in the worker seat, no matter how
-# high the top is. This is the ONLY place the ladder and the derivation live —
-# tier-set (the /tier engine) and tier-reconcile (the hook) both call it, so
-# they can never disagree.
+# DEFAULT tiering rule: the orchestrator plans, delegates, and reviews — the
+# expensive tiers (opus/fable) stay out of the worker seat however high the
+# top is, unless the cap is deliberately lifted (see --overdrive below). This
+# is the ONLY place the ladder and the derivation live — tier-set (the /tier
+# engine) and tier-reconcile (the hook) both call it, so they can never
+# disagree.
 #
 # Ladder (high→low, ranks): fable(4) > opus(3) > sonnet(2) > haiku(1).
 #   fable  → claude-fable-5 claude-sonnet-5 claude-haiku-4-5-20251001
@@ -29,6 +30,18 @@
 # print NOTHING and exit 3. Callers must treat this as "custom/unmanaged" and
 # leave the slots untouched — never clobber a top we can't place on the ladder.
 #
+# --overdrive is the sanctioned exception to the cap: the worker rung becomes
+# the TOP itself (exact value and all, dated/variant suffix included), for the
+# runs where the slice needs the expensive tier in the worker seat. Recon is
+# still derived from the CAPPED worker, so it never inflates along with it:
+#   --overdrive fable  → claude-fable-5 claude-fable-5 claude-haiku-4-5-20251001
+#   --overdrive opus   → claude-opus-5 claude-opus-5 claude-haiku-4-5-20251001
+#   --overdrive haiku  → unchanged (nothing to lift at the bottom rung)
+# tier-derive stays a PURE FUNCTION of its arguments and reads no state: the
+# flag is sticky in settings.json, and the CALLER (tier-set/tier-reconcile/
+# tier-gate) reads it there and passes --overdrive as a LEADING argument —
+# trailing it is silently ignored, as extra arguments always have been.
+#
 # Two auxiliary modes (same ladder, no separate table to drift):
 #   tier-derive --name <model-or-alias>   canonical DISPLAY NAME for a rung's
 #                                          concrete id ("Opus 5"); exit 1 and
@@ -36,7 +49,7 @@
 #                                          falls back to the raw id).
 #   tier-derive --rank <model-or-alias>   numeric rank, 0 if off-ladder.
 #
-# Usage:  tier-derive <model-or-alias>
+# Usage:  tier-derive [--overdrive] <model-or-alias>
 # Exit:   0 derived (three ids on stdout) · 2 usage · 3 off-ladder (no output)
 
 set -u
@@ -74,7 +87,16 @@ rank_of() {  # alias OR full family id -> rank; 0 = off-ladder/unknown
     esac
 }
 
-[ $# -ge 1 ] && [ -n "${1:-}" ] || { echo "usage: tier-derive [--name|--rank] <model-or-alias>" >&2; exit 2; }
+usage() { echo "usage: tier-derive [--name|--rank|--overdrive] <model-or-alias>" >&2; exit 2; }
+
+[ $# -ge 1 ] && [ -n "${1:-}" ] || usage
+
+overdrive=0
+if [ "$1" = "--overdrive" ]; then   # leading modifier on the default mode
+    overdrive=1
+    shift
+    [ $# -ge 1 ] && [ -n "${1:-}" ] || usage
+fi
 
 case "$1" in
     --name)
@@ -103,8 +125,17 @@ case "$top" in
 esac
 
 wr=$((r - 1))
-[ "$wr" -gt 2 ] && wr=2                   # worker CAP: sonnet-class — opus/fable never take the worker seat
+[ "$wr" -gt 2 ] && wr=2                   # worker CAP (default): sonnet-class — opus/fable stay out of the worker seat
 [ "$wr" -lt 1 ] && wr=1                   # worker floor: haiku
-cr=$((wr - 1)); [ "$cr" -lt 1 ] && cr=1   # recon = one rung below the worker, floored
+cr=$((wr - 1)); [ "$cr" -lt 1 ] && cr=1   # recon = one rung below the CAPPED worker, floored
 
-echo "$top_id $(id_for_rank "$wr") $(id_for_rank "$cr")"
+# --overdrive lifts the cap for the worker slot ONLY: it becomes the top's own
+# exact value (so a dated/variant id is preserved there too). Recon keeps the
+# capped derivation above, so lifting the worker never drags recon up with it.
+if [ "$overdrive" -eq 1 ]; then
+    worker_id=$top_id
+else
+    worker_id=$(id_for_rank "$wr")
+fi
+
+echo "$top_id $worker_id $(id_for_rank "$cr")"
