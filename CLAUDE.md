@@ -67,11 +67,11 @@ Flags: `-i` ignore case, `-C N` context, `-l` files only, `-t TYPE` ripgrep type
 
 ## Complexity Router — Lanes
 
-**Route before you act.** The first action on every prompt is `lane express|standard|deep [--why "…"]` — a tiny exempt Bash call that declares the route, logs it for measurement, and tells `delegation-gate` how much ceremony this prompt gets. `lane --prime` is the **authoritative wording** (single home, re-injected at SessionStart and PreCompact); the design, evidence and tuning knobs live in `knowledge-base/TIERED_ORCHESTRATION.md`.
+**Route before you act.** The first action on every prompt is `lane express|standard|deep [--why "…"]` — an exempt Bash call declaring the route and this prompt's ceremony budget for `delegation-gate`. `lane --prime` is the **authoritative wording**, re-injected at SessionStart and PreCompact; design and tuning knobs: `knowledge-base/TIERED_ORCHESTRATION.md`.
 
-- **express** — ALL of: ≤1 file (or none), mechanical/cosmetic or answerable from context/one lookup, no design choice, trivially reversible, no new dependency/interface/contract. → inline now, no plan, no bead, no executor, no verifier.
+- **express** — ALL of: ≤1 file (or none), mechanical/cosmetic or answerable from context/one lookup, no design choice, trivially reversible, no new dependency/interface/contract. → inline now; no plan, bead, executor, or verifier.
 - **standard** — one well-understood slice, low-to-moderate risk, no architectural choice. → one-sentence approach, then inline or ONE executor slice; verify by running the result once.
-- **deep** — ANY of: ≥3 files or an interface/schema/config contract (a multi-file *mechanical* change — a rename, a repeated edit with no design choice — is standard, not deep), real tradeoffs, ambiguity needing interpretation, hard to reverse, security/data-integrity surface, or thoroughness asked for. → write the approach down first (plan mode for big tasks, a few sentences for small ones) and check it against every explicit requirement before implementing; then beads with acceptance contracts, executor slices, verifier sign-off.
+- **deep** — ANY of: ≥3 files or an interface/schema/config contract (a multi-file *mechanical* change — a rename, a repeated edit with no design choice — is standard, not deep), real tradeoffs, ambiguity needing interpretation, hard to reverse, security/data-integrity surface, or thoroughness asked for. → write the approach down and check it against every explicit requirement first; then beads with acceptance contracts, executor slices, verifier sign-off.
 
 **Ties go to the lighter lane**; tripwires (scope outgrows the rubric, a fix attempt fails, hidden ambiguity, unexpected breakage) escalate exactly one lane and never de-escalate within the same prompt.
 
@@ -81,40 +81,37 @@ Flags: `-i` ignore case, `-C N` context, `-l` files only, `-t TYPE` ripgrep type
 
 ## Model Tiering & Delegation
 
-Routing precedes dispatch: declare the lane first (**Complexity Router — Lanes** above) — it decides whether any of the roles below are spawned at all, and express means none are.
+Tiering is **role-based, never model-based**: `tier-set`/`tier-reconcile` write the worker tier into agent frontmatter (never by hand); checkers use `model: inherit`, never weaker than the claims they check. Invariant: **the orchestrator is the most capable of the trio, and by default the expensive tiers (opus/fable) never take the worker seat** — `/tier overdrive` is the sanctioned exception: opt-in, sticky (it follows `/model`), named on every session-start tier line, and cleared by a 1-arg `/tier <top>`. Playbook and history: `knowledge-base/TIERED_ORCHESTRATION.md`.
 
-Tiering is **role-based, never model-based**: agents name roles; the concrete model behind each role is bound per session. Worker roles carry a concrete id in their frontmatter, written by `tier-set`/`tier-reconcile` (never by hand); checker roles use `model: inherit` so the checker is never weaker than the claims it checks. Invariant: **the orchestrator is the most capable of the trio, and by default the expensive tiers (opus/fable) never take the worker seat** — `/tier overdrive` is the sanctioned exception: opt-in, sticky (it follows `/model`), named on every session-start tier line, and cleared by a 1-arg `/tier <top>`. Full playbook and history: `knowledge-base/TIERED_ORCHESTRATION.md`.
-
-Roles and their bindings: **orchestrator** (you) — settings `model`; **executor** — frontmatter worker tier, delegates to `scout` only; **scout** — frontmatter recon tier, leaf (no `Agent` tool); **verifier** and **oracle** — both `model: inherit`, leaf. Depth: orchestrator → executor → scout, 3 levels max; confirm real nesting via the subagent panel's `(+N)` counts.
+Bindings: **orchestrator** — settings `model`; **executor** — worker tier, delegates to `scout` only; **scout** — recon tier, leaf (no `Agent` tool); **verifier**/**oracle** — `model: inherit`, leaf. Depth: orchestrator → executor → scout, 3 levels max.
 
 ### Delegation protocol (operational)
 
-The operational protocol — standing authorization, the lane-first dispatch table, and the invariants — ships globally via `config/claude-user-memory.md` → `~/.claude/CLAUDE.md` and binds here with the same force. Repo-specific addendum: a small odd job no role fits may go to any agent with an explicit cheap `model` — `tier-gate` injects the worker tier if `model` is omitted.
+The operational protocol (standing authorization, lane-first dispatch, invariants) ships globally via `config/claude-user-memory.md` → `~/.claude/CLAUDE.md` and binds here with the same force. Repo addendum: a small odd job no role fits may go to any agent with an explicit cheap `model`; `tier-gate` injects the worker tier if `model` is omitted.
 
 ### Model selection (one lever)
 
-`/model <top>` is the primary lever: it moves the running orchestrator and, via the `tier-reconcile` hook, re-derives worker/recon on the next prompt. `/tier <top>` does the same bind explicitly; bare `/tier` prints the trio. Derivation (ladder `fable > opus > sonnet > haiku`): worker = one rung down **capped at sonnet-class** (lifted by `/tier overdrive`), recon = one below the worker, floored at haiku — so `fable`/`opus` → sonnet/haiku, `sonnet`/`haiku` → haiku/haiku. `/tier <top> <worker> [<recon>]` pins any explicit combo until a 1-arg `/tier` clears it.
+`/model <top>` moves the orchestrator and, via `tier-reconcile`, re-derives worker/recon next prompt; `/tier <top>` binds explicitly, bare `/tier` prints the trio, `/tier <top> <worker> [<recon>]` pins a combo until a 1-arg `/tier` clears it. Derivation (ladder `fable > opus > sonnet > haiku`): worker = one rung down **capped at sonnet-class** (lifted by `/tier overdrive`), recon = one below the worker, floored at haiku. Bindings snapshot at session start, landing in **new** sessions; pass `model` on the `Agent` call for a one-off, and re-bind a missing model with `TIER_PROBE=1 tier-set <top>` (Fable 5 is active — never assume otherwise).
 
-- Agent files are snapshotted at session start: binding changes land in **new** sessions; for a one-off in-session tier, pass `model` on the `Agent` call.
 - **Never set** `CLAUDE_CODE_SUBAGENT_MODEL` or any `ANTHROPIC_DEFAULT_*_MODEL` var — they collapse the tiers and corrupt the `/model` picker; the tier scripts purge them on sight.
-- Off-ladder `.model` values are left unmanaged (never clobbered). A model-not-found at spawn time: re-bind with `TIER_PROBE=1 tier-set <top>` (probes and degrades downward). Fable 5 is active — never assume it is unavailable.
-- After an image rebuild, the SessionStart reconciler re-derives everything from `.model` automatically.
 
-Spawn-time enforcement (all fail open, `tests/tier-hooks.bats`): `tier-gate` injects the worker tier into generic spawns that omit `model`, `workflow-lint` denies workflow scripts whose `agent()` calls omit `model:` (an explicit `model` always wins), and `cost-mirror` shows per-prompt spend with per-model dollars and estimated tier savings. `delegation-gate` (PreToolUse, fail-open, `tests/delegation-gate.bats`) separately counts consecutive main-loop inline work-tool calls — subagents are never gated — and denies or warns per its mode, defaulting to `guard`. Modes, thresholds, env vars, and carve-outs: `knowledge-base/TIERED_ORCHESTRATION.md`.
+Spawn-time enforcement, all fail-open (`tests/tier-hooks.bats`, `tests/delegation-gate.bats`): `tier-gate` injects the worker tier into spawns omitting `model` (explicit `model` wins), `workflow-lint` denies `agent()` calls omitting `model:`, `cost-mirror` reports spend and tier savings, `delegation-gate` (default `guard`) gates runs of inline main-loop work-tool calls — subagents never.
 
-**Oracle is user-invoked only — never spawn it unprompted.** Its leverage is a clean context: refute-first, verdict-first. Choke points where you may note *once* that a consult is available: a plan for a large/risky implementation, a bug surviving two different fix attempts, a one-way-door decision, a significant diff about to be pushed. Before consulting, check `bd` memories and the knowledge-base index; send a distilled brief (goal, constraints, what was tried, the exact question, file pointers — never pasted diffs), then act on the verdict. `advisorModel` must stay ≥ the session's top tier.
+**Oracle is user-invoked only — never spawn it unprompted.** You may note *once* that a consult is available at a choke point (a large or risky plan, a bug surviving two fix attempts, a one-way door, a significant diff about to be pushed). Check `bd` memories and the knowledge-base index first, then send a distilled brief (goal, constraints, what was tried, the question, file pointers — never diffs) and act on the verdict. `advisorModel` must stay ≥ the session's top tier.
 
-**Never pay twice (capture rule).** When a consult or hard-won debugging yields a reusable insight, distill it immediately: `bd remember` for project facts; a `knowledge-base/` doc + index row for step-shaped playbooks.
+**Never pay twice (capture rule).** When a consult or hard-won debugging yields a reusable insight, distill it: `bd remember` for project facts, a `knowledge-base/` doc + index row for step-shaped playbooks.
 
 ## Verification
 
-**Run code, don't guess — and verify by running the actual application.** Code inspection isn't enough: run the app, hit the endpoint, screenshot the UI (`take-screenshot term "<cmd>"` for CLIs, `take-screenshot url <URL>` for web, `curl` for APIs). Code-based tests are for regression protection, not for verifying current work. Before reporting done: "Did I actually see this working?"
+**Run code, don't guess — and verify by running the actual application.** Run the app, hit the endpoint (`curl`), screenshot the UI (`take-screenshot url|term|display`); code inspection isn't enough, and code-based tests are regression protection, not verification of current work. Before reporting done: "Did I actually see this working?"
 
-**Verification is lane-scoped — every lane verifies, they differ in how much.** Express: one run or screenshot when the change is observable, else the diff itself — no verifier agent. Standard: run the result once. Deep: the full independent-verifier treatment against a registered acceptance contract.
+**Verification is lane-scoped** — every lane verifies, they differ in how much: express, one run or screenshot when the change is observable (else the diff); standard, run the result once; deep, the full independent-verifier treatment against a registered acceptance contract.
 
-**The environment must be able to run the program — if it can't, fixing that is part of the task.** Install whatever is missing and continue; never fall back to inspection or an artificial test because a dependency was absent. When a runtime dependency is missing from the image, also add it to the `Dockerfile` so the gap never recurs.
+**The environment must be able to run the program — if it can't, fixing that is part of the task.** Install whatever is missing and continue; never fall back to inspection or an artificial test because a dependency was absent, and add anything missing from the image to the `Dockerfile` so the gap never recurs.
 
-**Acceptance contracts replace open-ended re-verification at close time.** Before an executor is dispatched, register a `CHECK`/`PASS-IF`/`FROZEN`/`CLASS` block on the bead's `--acceptance` field: a runnable command, its expected result, and the test file(s) that must not change afterward. The executor works red-commit-first — write the test, run it, **observe RED**, commit that test alone (`RED-AT: <sha>` appended to the bead's notes with the real failure output) — then implements and reruns the same `CHECK` to **GREEN** (`GREEN-AT: <sha>` + the passing output). `FROZEN` binds from `RED-AT` until that bead's own verification completes, not forever: once a bead closes, its frozen file is free again and a later bead can add cases under its own new `RED-AT` (see `knowledge-base/ACCEPTANCE_CONTRACTS.md`). The verifier then runs five mechanical checks against the contract instead of re-deriving the work — **C1** goalposts unmoved (`bd history` shows the acceptance field unchanged), **C2** test not weakened (`git diff <RED-AT> HEAD` on the frozen paths is empty), **C3** actually green (`CHECK` verbatim matches `PASS-IF`, tree clean), **C4** honest (the implementation diff, frozen paths excluded, read for hardcoding/skips/env-detection — the one judgment step), **C5** not lazily closed (no human hand-off, no silently narrowed scope) — and returns one of four verdicts: `PASS` / `FAIL` / `TAMPERED` / `NO-CONTRACT`. `CLASS: no-contract` is the escape hatch for work with no observable check, assignable only at registration (never at close), and skips the verifier entirely. `contract-gate` nudges a `bd close` lacking a contract or a recorded `VERIFIED: PASS` in `warn` mode (default), blocks it in `enforce` mode, and is silent in `off` mode. None of this replaces the rules above — the contract is how "did I actually see this working?" gets recorded, not a substitute for running the real app and looking at it.
+**Acceptance contracts replace open-ended re-verification at close time.** Before an executor is dispatched, register a `CHECK`/`PASS-IF`/`FROZEN`/`CLASS` block on the bead's `--acceptance` field. The executor works red-commit-first — **observe RED**, commit the test alone, implement, rerun the same `CHECK` to **GREEN** — appending `RED-AT`/`GREEN-AT` shas and the real output to the bead's notes (`config/agents/executor.md`). `FROZEN` binds from `RED-AT` only until that bead's own verification completes (`knowledge-base/ACCEPTANCE_CONTRACTS.md`).
+
+The verifier runs five mechanical checks instead of re-deriving the work: **C1** goalposts unmoved (`bd history`), **C2** frozen test not weakened (`git diff <RED-AT> HEAD` empty), **C3** actually green (`CHECK` run verbatim, tree clean), **C4** honest (implementation diff read for hardcoding/skips/env-detection — the one judgment step), **C5** not lazily closed (no human hand-off, no silently narrowed scope). Verdicts: `PASS` / `FAIL` / `TAMPERED` / `NO-CONTRACT` (`config/agents/verifier.md`). `CLASS: no-contract`, the escape hatch for work with no observable check, is assignable only at registration — never at close — and skips the verifier. `contract-gate` nudges a `bd close` lacking a contract or a recorded `VERIFIED: PASS` in `warn` mode (default), blocks it in `enforce`, is silent in `off`. None of this replaces running the app and looking at it.
 
 ## Noticed Flaws — Fix or Surface
 
@@ -137,13 +134,20 @@ Spawn-time enforcement (all fail open, `tests/tier-hooks.bats`): `tier-gate` inj
 
 ## Beads — Container-Specific Rules
 
-Beads runs in **embedded Dolt mode** (no server); the full command reference and session-close protocol arrive via the `bd prime` SessionStart hook — refer to that block. Container specifics:
+Track **all** work in `bd` (beads) — never TodoWrite, TaskCreate, or markdown TODO lists; `bd prime` (SessionStart hook) carries the full command reference and session-close protocol.
 
-- **Never assign work to a human, directly or indirectly** — the authoritative rule lives in the global CLAUDE.md Beads section and binds here.
-- `bd-guard` (PreToolUse) mechanically enforces this: human assignees, the `human` label, and a default/`human`-type gate are hard-blocked with no override; user-directed bead text is soft-blocked with a redirect to chat. `BD_GUARD_ALLOW=1` overrides the text check only, for genuine false positives (the phrase is quoted content or code, not real pending user work) — never to park user work in a bead.
-- The Dolt DB at `.beads/embeddeddolt/` (gitignored) is the source of truth; `.beads/issues.jsonl` is a passive git-tracked export. `bd doctor` is unsupported in embedded Dolt mode (confirmed no-op); repair with `bd init --prefix <p> --quiet --non-interactive && bd import` instead — see `knowledge-base/BEADS_TROUBLESHOOTING.md` if `bd init` itself refuses. Use `bd update` flags, never `bd edit` (blocks on `$EDITOR`). Reference bead ids in commit messages.
-- **Bead filing is lane-scoped. This overrides, by name, the `bd prime` line "**Workflow**: Create beads issue BEFORE writing code, mark in_progress when starting"** — that step is a deep-lane rule here, not a universal one. Express files **no** bead: the work is done in the same turn, so there is nothing to track. Standard files one only when follow-up genuinely remains after the slice. Deep keeps the full protocol — a bead per slice, with `CHECK`/`PASS-IF` acceptance contracts on any non-trivial claim. Beads discovered as future work are filed in any lane; the override is about ceremony before a one-line edit, never about dropping real follow-up.
-- **Memory precedence:** project knowledge → `bd remember` (syncs with the repo). The harness's own auto-memory is for user-specific context only — never project facts.
+```bash
+bd ready              # Find available work
+bd show <id>          # View issue details
+bd update <id> --claim  # Claim work
+bd close <id>         # Complete work
+```
+
+- **Never assign work to a human, directly or indirectly** — the authoritative rule ships via `config/claude-user-memory.md` (deployed as `~/.claude/CLAUDE.md`) and binds here; if a human decision is genuinely needed after exhausting your own options, ask in chat now. `bd-guard` (PreToolUse) enforces it mechanically; `BD_GUARD_ALLOW=1` overrides its text check only, for genuine false positives (quoted content or code, not real pending user work) — never to park user work in a bead.
+- **Bead filing is lane-scoped. This overrides, by name, the `bd prime` line "**Workflow**: Create beads issue BEFORE writing code, mark in_progress when starting"** — a deep-lane rule here, not a universal one. Express files **no** bead; standard files one only when follow-up genuinely remains after the slice; deep keeps the full protocol — a bead per slice, with `CHECK`/`PASS-IF` acceptance contracts on any non-trivial claim. Beads for genuine future work are filed in any lane: the override targets ceremony before a one-line edit, never real follow-up.
+- **Storage:** beads runs in **embedded Dolt mode** (no server) — the DB at `.beads/embeddeddolt/` (gitignored) is the source of truth, `.beads/issues.jsonl` a passive git-tracked export, sync riding `refs/dolt/data` ([concepts](https://github.com/gastownhall/beads/blob/main/docs/SYNC_CONCEPTS.md)). `bd doctor` is a confirmed no-op there; repair with `bd init --prefix <p> --quiet --non-interactive && bd import` instead — `knowledge-base/BEADS_TROUBLESHOOTING.md` covers a refusing `bd init`.
+- **Mechanics:** `bd update` flags, never `bd edit` (blocks on `$EDITOR`); reference bead ids in commit messages.
+- **Memory precedence:** project knowledge → `bd remember`, never MEMORY.md files; the harness's auto-memory is user-specific only.
 
 ## Project Contexts
 
@@ -175,53 +179,22 @@ Curated playbooks live at `/opt/claude-dev/knowledge-base/` (repo: `knowledge-ba
 | `hx` / `vim` | Helix editor |
 
 
-<!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:7510c1e2 -->
-## Beads Issue Tracker
-
-This project uses **bd (beads)** for issue tracking. Run `bd prime` to see full workflow context and commands.
-
-### Quick Reference
-
-```bash
-bd ready              # Find available work
-bd show <id>          # View issue details
-bd update <id> --claim  # Claim work
-bd close <id>         # Complete work
-```
-
-### Rules
-
-- Use `bd` for ALL task tracking — do NOT use TodoWrite, TaskCreate, or markdown TODO lists
-- **Never assign a bead to a human, directly or indirectly** — see the global CLAUDE.md Beads section; if a human decision is genuinely needed after exhausting your own options, ask in chat now.
-- Run `bd prime` for detailed command reference and session close protocol
-- Use `bd remember` for persistent knowledge — do NOT use MEMORY.md files
-
-**Architecture in one line:** issues live in a local Dolt DB; sync uses `refs/dolt/data` on your git remote; `.beads/issues.jsonl` is a passive export. See https://github.com/gastownhall/beads/blob/main/docs/SYNC_CONCEPTS.md for details and anti-patterns.
-
 ## Session Completion
 
-**Commit locally, always. Push only when asked, in that moment.**
+**Commit locally, always. Push only when asked, in that moment.** When ending a work session you MUST complete the local steps below — that commit is the terminal state of a successful session, and skipping it is what leaves work unrecorded. Push (`git push`, `bd dolt push`, any remote sync) is opt-in: run it only when explicitly asked right then. An unavailable, unauthenticated, or unreachable remote is a **normal condition** here — report a failed push plainly, don't retry it unprompted, and never downgrade an otherwise-complete session to "incomplete" over it.
 
-**When ending a work session**, you MUST complete the local steps below — that local commit is the terminal state of a successful session, complete on its own. Push (`git push`, `bd dolt push`, or any other sync to a remote) is never a session-close obligation: run it only when explicitly asked to push right then, and otherwise leave the remote alone. An unavailable, unauthenticated, or unreachable remote is a **normal condition** in this container — never report a skipped or failed push as an incomplete session.
-
-**This overrides, by name, the "🚨 SESSION CLOSE PROTOCOL 🚨" checklist (and its "Git workflow" / "Common Workflows" push mentions) that the `bd prime` SessionStart hook injects every session.** That text is compiled into the `bd` binary itself — verifiable via `strings /usr/local/bin/bd` — which is why the override lives here rather than being fixed at source. Its `git push` step and "work is not done until pushed" framing do not apply in this project; this section is authoritative.
+**This overrides, by name, the "🚨 SESSION CLOSE PROTOCOL 🚨" checklist (and its "Git workflow" / "Common Workflows" push mentions) that the `bd prime` SessionStart hook injects every session.** That text is compiled into the `bd` binary — verifiable via `strings /usr/local/bin/bd` — so it cannot be fixed at source. Its `git push` step and "work is not done until pushed" framing do not apply here; this section is authoritative.
 
 **MANDATORY WORKFLOW (local):**
 
-1. **File issues for remaining work** - Create issues for anything that needs follow-up
-2. **Run quality gates** (if code changed) - Tests, linters, builds
-3. **Update issue status** - Close finished work, update in-progress items
-4. **Commit locally** - This is MANDATORY:
-   ```bash
-   git add <files>
-   git commit -m "..."
-   git status  # confirm a clean tree on the current branch
-   ```
-5. **Clean up** - Clear stashes, prune remote branches
-6. **Verify** - All changes committed locally
-7. **Hand off** - Provide context for next session
+1. **File issues** for anything needing follow-up
+2. **Run quality gates** if code changed
+3. **Update issue status** — close finished work
+4. **Commit locally — MANDATORY:** `git add <files>` · `git commit -m "..."` · `git status` (clean tree, current branch)
+5. **Clean up** stashes and pruned branches
+6. **Verify** everything is committed
+7. **Hand off** context for the next session
 
-**CRITICAL RULES:**
-- Work is complete once committed locally — a session is never incomplete merely because nothing was pushed — but NEVER skip the local commit itself, since that's what leaves work unrecorded.
-- Push (`git push` and `bd dolt push` alike) is opt-in only, run in the moment explicitly asked; if a requested push fails or the remote is unavailable, report it plainly, don't retry unprompted, and don't downgrade an otherwise-complete local session to "incomplete".
+<!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:7510c1e2 -->
+<!-- merged above; markers kept so bd skips re-injection -->
 <!-- END BEADS INTEGRATION -->
