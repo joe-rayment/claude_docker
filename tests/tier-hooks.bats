@@ -8,6 +8,8 @@
 # Plus tier-derive itself — the ladder those hooks read, including the
 # --overdrive worker-cap lift. It is not a hook and does not fail open:
 # usage is exit 2, an off-ladder top is exit 3 with no output.
+# Plus tier-set's `overdrive` mode — the /tier engine that makes that lift
+# sticky (.env.TIER_OVERDRIVE) and writes the worker/recon frontmatter.
 
 GATE=/workspace/scripts/tier-gate.sh
 LINT=/workspace/scripts/workflow-lint.sh
@@ -141,6 +143,185 @@ mirror() { python3 "$MIRROR"; }
     run sh "$DERIVE" --name gpt-5
     [ "$status" -eq 1 ]
     [ -z "$output" ]
+}
+
+# ── tier-set (overdrive) ─────────────────────────────────────────────────────
+
+TSET=/workspace/scripts/tier-set.sh
+
+tier_set_fixture() {  # scratch settings (.model = $1) + executor/scout frontmatter
+    TS="$BATS_TEST_TMPDIR/tier-set-settings.json"
+    TS_AGENTS="$BATS_TEST_TMPDIR/tier-set-agents"
+    mkdir -p "$TS_AGENTS"
+    printf -- '---\nname: executor\nmodel: claude-sonnet-5\n---\nDo the slice.\n' > "$TS_AGENTS/executor.md"
+    printf -- '---\nname: scout\nmodel: claude-haiku-4-5-20251001\n---\nGo look.\n' > "$TS_AGENTS/scout.md"
+    printf '{"model":"%s"}\n' "$1" > "$TS"
+}
+
+tier_set() {  # run tier-set against the fixture — never the real ~/.claude
+    # TIER_DERIVE pins the REPO tier-derive: the baked /usr/local/bin copy has
+    # no --overdrive until the next image rebuild. TIER_NO_PROBE keeps every
+    # case off the network (a probe is a real `claude -p` round trip).
+    run env TIER_SETTINGS="$TS" TIER_AGENTS_DIR="$TS_AGENTS" TIER_DERIVE="$DERIVE" \
+        TIER_NO_PROBE=1 sh "$TSET" "$@"
+}
+
+fm_of() {  # frontmatter `model:` value of an agent file
+    grep -m1 '^model:' "$1" | sed 's/^model:[[:space:]]*//'
+}
+
+@test "tier-set overdrive: lifts the worker to the top, leaves recon at haiku, sets TIER_OVERDRIVE" {
+    tier_set_fixture claude-fable-5
+    tier_set overdrive
+    [ "$status" -eq 0 ]
+    [ "$(fm_of "$TS_AGENTS/executor.md")" = "claude-fable-5" ]
+    # recon is derived from the CAPPED worker, so it never inflates with it
+    [ "$(fm_of "$TS_AGENTS/scout.md")" = "claude-haiku-4-5-20251001" ]
+    jq -e '.env.TIER_OVERDRIVE == "1"' "$TS"
+    # the top itself is not re-bound: overdrive moves the worker seat only
+    jq -e '.model == "claude-fable-5"' "$TS"
+    # the confirmation names the mode and how to clear it
+    [[ "$output" == *"overdrive"* ]]
+    [[ "$output" == *"a 1-arg /tier <top> clears"* ]]
+    # only the model: line moved — the rest of the agent file is intact
+    grep -q '^name: executor$' "$TS_AGENTS/executor.md"
+    grep -q 'Do the slice.' "$TS_AGENTS/executor.md"
+}
+
+@test "tier-set overdrive: a following 1-arg bind clears TIER_OVERDRIVE and restores the capped worker" {
+    tier_set_fixture claude-fable-5
+    tier_set overdrive
+    [ "$status" -eq 0 ]
+    jq -e '.env.TIER_OVERDRIVE == "1"' "$TS"
+    [ "$(fm_of "$TS_AGENTS/executor.md")" = "claude-fable-5" ]
+
+    # one obvious reset: a 1-arg bind clears BOTH sticky flags
+    tier_set sonnet
+    [ "$status" -eq 0 ]
+    jq -e '.model == "claude-sonnet-5"' "$TS"
+    jq -e '(.env // {}) | has("TIER_OVERDRIVE") | not' "$TS"
+    jq -e '(.env // {}) | has("TIER_EXPLICIT_PIN") | not' "$TS"
+    [ "$(fm_of "$TS_AGENTS/executor.md")" = "claude-haiku-4-5-20251001" ]
+    [ "$(fm_of "$TS_AGENTS/scout.md")" = "claude-haiku-4-5-20251001" ]
+}
+
+@test "tier-set overdrive: a 2-arg explicit pin clears TIER_OVERDRIVE and sets TIER_EXPLICIT_PIN" {
+    tier_set_fixture claude-fable-5
+    tier_set overdrive
+    [ "$status" -eq 0 ]
+    jq -e '.env.TIER_OVERDRIVE == "1"' "$TS"
+
+    # literal ids win — the pin takes the worker slot back
+    tier_set opus haiku
+    [ "$status" -eq 0 ]
+    jq -e '.env.TIER_EXPLICIT_PIN == "1"' "$TS"
+    jq -e '(.env // {}) | has("TIER_OVERDRIVE") | not' "$TS"
+    [ "$(fm_of "$TS_AGENTS/executor.md")" = "claude-haiku-4-5-20251001" ]
+    [ "$(fm_of "$TS_AGENTS/scout.md")" = "claude-haiku-4-5-20251001" ]
+}
+
+@test "tier-set overdrive: taking overdrive after an explicit pin drops the pin — one owner for the worker slot" {
+    tier_set_fixture claude-sonnet-5
+    tier_set fable sonnet haiku
+    [ "$status" -eq 0 ]
+    jq -e '.env.TIER_EXPLICIT_PIN == "1"' "$TS"
+
+    tier_set overdrive
+    [ "$status" -eq 0 ]
+    jq -e '.env.TIER_OVERDRIVE == "1"' "$TS"
+    jq -e '(.env // {}) | has("TIER_EXPLICIT_PIN") | not' "$TS"
+    [ "$(fm_of "$TS_AGENTS/executor.md")" = "claude-fable-5" ]
+    [ "$(fm_of "$TS_AGENTS/scout.md")" = "claude-haiku-4-5-20251001" ]
+}
+
+@test "tier-set overdrive: an off-ladder .model leaves both bindings untouched and never sets the flag" {
+    tier_set_fixture my-custom-router
+    before_e=$(cat "$TS_AGENTS/executor.md")
+    before_c=$(cat "$TS_AGENTS/scout.md")
+    tier_set overdrive
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"off-ladder"* ]]
+    [ "$(cat "$TS_AGENTS/executor.md")" = "$before_e" ]
+    [ "$(cat "$TS_AGENTS/scout.md")" = "$before_c" ]
+    jq -e '(.env // {}) | has("TIER_OVERDRIVE") | not' "$TS"
+    jq -e '.model == "my-custom-router"' "$TS"
+}
+
+@test "tier-set overdrive: a [variant] .model keeps its exact value in the worker slot and is never re-probed" {
+    tier_set_fixture 'claude-fable-5[1m]'
+    # a `claude` stub that ALWAYS fails: overdrive re-derives a top that is
+    # already bound, so it must not probe at all — a probe here would cost a
+    # multi-second round trip and could silently degrade .model underneath us
+    stub_dir="$BATS_TEST_TMPDIR/tier-set-bin"
+    mkdir -p "$stub_dir"
+    printf '#!/bin/sh\nexit 1\n' > "$stub_dir/claude"
+    chmod +x "$stub_dir/claude"
+    run env TIER_SETTINGS="$TS" TIER_AGENTS_DIR="$TS_AGENTS" TIER_DERIVE="$DERIVE" \
+        PATH="$stub_dir:$PATH" sh "$TSET" overdrive
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"WARNING"* ]]
+    [ "$(fm_of "$TS_AGENTS/executor.md")" = "claude-fable-5[1m]" ]
+    [ "$(fm_of "$TS_AGENTS/scout.md")" = "claude-haiku-4-5-20251001" ]
+    jq -e '.model == "claude-fable-5[1m]"' "$TS"
+    jq -e '.env.TIER_OVERDRIVE == "1"' "$TS"
+}
+
+@test "tier-set overdrive: purges the legacy picker env vars and preserves unrelated settings" {
+    tier_set_fixture claude-opus-5
+    jq '.env = {"KEEP":"1","CLAUDE_CODE_SUBAGENT_MODEL":"bad","ANTHROPIC_DEFAULT_SONNET_MODEL":"x"}
+        | .permissions = {"allow":["WebSearch"]}' "$TS" > "$TS.x"
+    mv "$TS.x" "$TS"
+    tier_set overdrive
+    [ "$status" -eq 0 ]
+    jq -e '.env.KEEP == "1"' "$TS"
+    jq -e '.env.TIER_OVERDRIVE == "1"' "$TS"
+    jq -e '(.env | has("CLAUDE_CODE_SUBAGENT_MODEL")) | not' "$TS"
+    jq -e '(.env | keys | map(select(startswith("ANTHROPIC_DEFAULT"))) | length) == 0' "$TS"
+    jq -e '.permissions.allow == ["WebSearch"]' "$TS"
+    [ "$(fm_of "$TS_AGENTS/executor.md")" = "claude-opus-5" ]
+}
+
+@test "tier-set show: names overdrive and reports the LIFTED trio, not the capped one" {
+    tier_set_fixture claude-fable-5
+    tier_set overdrive
+    [ "$status" -eq 0 ]
+    tier_set show
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"overdrive"* ]]
+    # the reported trio must match what is actually bound
+    [[ "$output" == *"claude-fable-5 claude-fable-5 claude-haiku-4-5-20251001"* ]]
+    [[ "$output" != *"claude-fable-5 claude-sonnet-5 claude-haiku-4-5-20251001"* ]]
+}
+
+@test "tier-set overdrive: a bad frontmatter precondition binds nothing — no flag, no settings write" {
+    # the ordering property: every slot is checked BEFORE the settings write, so
+    # a failure can never leave a sticky flag behind that blocks later repair
+    tier_set_fixture claude-fable-5
+    printf -- '---\nname: scout\n---\nGo look.\n' > "$TS_AGENTS/scout.md"
+    before_s=$(cat "$TS")
+    tier_set overdrive
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"nothing bound"* ]]
+    [ "$(cat "$TS")" = "$before_s" ]
+    [ "$(fm_of "$TS_AGENTS/executor.md")" = "claude-sonnet-5" ]
+}
+
+@test "tier-set overdrive: with no top bound it refuses rather than guessing one" {
+    tier_set_fixture claude-fable-5
+    printf '{}\n' > "$TS"
+    before_e=$(cat "$TS_AGENTS/executor.md")
+    tier_set overdrive
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"nothing bound"* ]]
+    jq -e '. == {}' "$TS"
+    [ "$(cat "$TS_AGENTS/executor.md")" = "$before_e" ]
+
+    # a missing settings file is refused too, and is NOT created on the way out
+    rm -f "$TS"
+    tier_set overdrive
+    [ "$status" -ne 0 ]
+    [ ! -f "$TS" ]
+    [ "$(cat "$TS_AGENTS/executor.md")" = "$before_e" ]
 }
 
 # ── tier-gate ────────────────────────────────────────────────────────────────
