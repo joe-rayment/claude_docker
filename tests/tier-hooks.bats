@@ -1,6 +1,7 @@
 #!/usr/bin/env bats
 # tier-hooks.bats — the spend-enforcement / tier-reminder hooks:
 #   tier-gate      PreToolUse[Agent]     default-cheap model for generic spawns
+#   tier-reconcile UserPromptSubmit/SessionStart  agent bindings track .model
 #   workflow-lint  PreToolUse[Workflow]  deny scripts whose agent() omits model
 #   cost-mirror    UserPromptSubmit      by-model session spend line
 #   tier-prime     SessionStart/PreCompact  tier trio + protocol restatement
@@ -396,6 +397,220 @@ fm_of() {  # frontmatter `model:` value of an agent file
     run sh -c 'printf %s "{\"tool_name\":\"Agent\",\"tool_input\":{\"prompt\":\"p\"}}" | TIER_GATE_DERIVE='"$stub"' sh '"$GATE"
     [ "$status" -eq 0 ]
     [ -z "$output" ]
+}
+
+gate_generic() {  # a generic, model-less Agent spawn through the gate
+    run sh -c 'printf %s "{\"tool_name\":\"Agent\",\"tool_input\":{\"subagent_type\":\"general-purpose\",\"prompt\":\"p\"}}" | sh '"$GATE"
+}
+
+@test "tier-gate: TIER_OVERDRIVE=1 injects the LIFTED top, never the capped sonnet-class worker" {
+    printf '{"model":"claude-fable-5","env":{"TIER_OVERDRIVE":"1"}}\n' > "$SETTINGS"
+    gate_generic
+    [ "$status" -eq 0 ]
+    # the Agent tool takes family ALIASES only, so the lift reads as `fable`;
+    # the concrete lifted id is named in the systemMessage
+    echo "$output" | jq -e '.hookSpecificOutput.updatedInput.model == "fable"'
+    echo "$output" | jq -e '.systemMessage | contains("claude-fable-5")'
+    echo "$output" | jq -e '.hookSpecificOutput.updatedInput.prompt == "p"'
+    # control: the SAME top with the flag absent is still capped
+    printf '{"model":"claude-fable-5"}\n' > "$SETTINGS"
+    gate_generic
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.hookSpecificOutput.updatedInput.model == "sonnet"'
+}
+
+@test "tier-gate: an overdriven top keeps its EXACT variant/dated id through the alias mapping" {
+    # under overdrive the worker slot is the top VERBATIM, so --rank is fed a
+    # user-shaped id for the first time — it must still resolve to an alias
+    printf '{"model":"claude-fable-5[1m]","env":{"TIER_OVERDRIVE":"1"}}\n' > "$SETTINGS"
+    gate_generic
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.hookSpecificOutput.updatedInput.model == "fable"'
+    echo "$output" | jq -e '.systemMessage | contains("claude-fable-5[1m]")'
+    printf '{"model":"claude-opus-4-8-20260101","env":{"TIER_OVERDRIVE":"1"}}\n' > "$SETTINGS"
+    gate_generic
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.hookSpecificOutput.updatedInput.model == "opus"'
+    echo "$output" | jq -e '.systemMessage | contains("claude-opus-4-8-20260101")'
+}
+
+@test "tier-gate: only the exact flag value \"1\" lifts the cap" {
+    for v in 0 true yes ""; do
+        printf '{"model":"claude-fable-5","env":{"TIER_OVERDRIVE":"%s"}}\n' "$v" > "$SETTINGS"
+        gate_generic
+        [ "$status" -eq 0 ]
+        echo "$output" | jq -e '.hookSpecificOutput.updatedInput.model == "sonnet"'
+    done
+}
+
+@test "tier-gate: overdrive fails open — an off-ladder top or a derive that rejects --overdrive injects nothing" {
+    printf '{"model":"my-custom-router","env":{"TIER_OVERDRIVE":"1"}}\n' > "$SETTINGS"
+    gate_generic
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+    # the stale/baked shape: --overdrive is unknown, so it lands in the model
+    # slot and comes back off-ladder (exit 3). Fail open — NEVER fall back to
+    # the capped worker, which would silently revert the lift.
+    stub="$BATS_TEST_TMPDIR/derive-no-overdrive"
+    printf '#!/bin/sh\ncase "$1" in --overdrive) exit 3 ;; --rank) echo 2 ;; *) echo "claude-fable-5 claude-sonnet-5 claude-haiku-4-5-20251001" ;; esac\n' > "$stub"
+    chmod +x "$stub"
+    export TIER_GATE_DERIVE="$stub"
+    printf '{"model":"claude-fable-5","env":{"TIER_OVERDRIVE":"1"}}\n' > "$SETTINGS"
+    gate_generic
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+    # the same stub with the flag absent: the capped path is untouched by any of this
+    printf '{"model":"claude-fable-5"}\n' > "$SETTINGS"
+    gate_generic
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.hookSpecificOutput.updatedInput.model == "sonnet"'
+}
+
+@test "tier-gate: overdrive never overrides an explicit model, and still leaves named roles alone" {
+    printf '{"model":"claude-fable-5","env":{"TIER_OVERDRIVE":"1"}}\n' > "$SETTINGS"
+    run sh -c 'printf %s "{\"tool_name\":\"Agent\",\"tool_input\":{\"subagent_type\":\"general-purpose\",\"model\":\"haiku\",\"prompt\":\"p\"}}" | sh '"$GATE"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+    run sh -c 'printf %s "{\"tool_name\":\"Agent\",\"tool_input\":{\"subagent_type\":\"scout\",\"prompt\":\"p\"}}" | sh '"$GATE"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+}
+
+# ── tier-reconcile ───────────────────────────────────────────────────────────
+
+RECON=/workspace/scripts/tier-reconcile.sh
+
+tier_reconcile_fixture() {  # scratch settings (.model = $1) + executor/scout frontmatter
+    TR="$BATS_TEST_TMPDIR/tier-reconcile-settings.json"
+    TR_AGENTS="$BATS_TEST_TMPDIR/tier-reconcile-agents"
+    mkdir -p "$TR_AGENTS"
+    printf -- '---\nname: executor\nmodel: claude-sonnet-5\n---\nDo the slice.\n' > "$TR_AGENTS/executor.md"
+    printf -- '---\nname: scout\nmodel: claude-haiku-4-5-20251001\n---\nGo look.\n' > "$TR_AGENTS/scout.md"
+    printf '{"model":"%s"}\n' "$1" > "$TR"
+}
+
+tier_reconcile() {  # run the hook against the fixture — never the real ~/.claude
+    # TIER_DERIVE pins the REPO tier-derive: the baked /usr/local/bin copy has
+    # no --overdrive until the next image rebuild. $1 overrides it (stub cases).
+    run env TIER_SETTINGS="$TR" TIER_AGENTS_DIR="$TR_AGENTS" TIER_DERIVE="${1:-$DERIVE}" sh "$RECON"
+}
+
+tr_env() {  # merge .env.<key> = <value> into the fixture settings
+    jq --arg k "$1" --arg v "$2" '.env = ((.env // {}) + {($k): $v})' "$TR" > "$TR.x"
+    mv "$TR.x" "$TR"
+}
+
+@test "tier-reconcile: TIER_OVERDRIVE=1 binds the executor to the lifted top and leaves scout cheap" {
+    tier_reconcile_fixture claude-fable-5
+    tr_env TIER_OVERDRIVE 1
+    tier_reconcile
+    [ "$status" -eq 0 ]
+    # a UserPromptSubmit hook's stdout is injected into the prompt: stay silent
+    [ -z "$output" ]
+    [ "$(fm_of "$TR_AGENTS/executor.md")" = "claude-fable-5" ]
+    # recon is derived from the CAPPED worker, so the lift never drags it up
+    [ "$(fm_of "$TR_AGENTS/scout.md")" = "claude-haiku-4-5-20251001" ]
+    # idempotent: the next prompt's run is a no-op, not a flap back to the cap
+    tier_reconcile
+    [ "$status" -eq 0 ]
+    [ "$(fm_of "$TR_AGENTS/executor.md")" = "claude-fable-5" ]
+    # only the model: line moved — the rest of the agent file is intact
+    grep -q '^name: executor$' "$TR_AGENTS/executor.md"
+    grep -q 'Do the slice.' "$TR_AGENTS/executor.md"
+}
+
+@test "tier-reconcile: with the flag absent the capped worker is restored — the revert overdrive must survive" {
+    tier_reconcile_fixture claude-fable-5
+    printf -- '---\nname: executor\nmodel: claude-fable-5\n---\nDo the slice.\n' > "$TR_AGENTS/executor.md"
+    tier_reconcile
+    [ "$status" -eq 0 ]
+    [ "$(fm_of "$TR_AGENTS/executor.md")" = "claude-sonnet-5" ]
+    [ "$(fm_of "$TR_AGENTS/scout.md")" = "claude-haiku-4-5-20251001" ]
+}
+
+@test "tier-reconcile: only the exact flag value \"1\" lifts the cap" {
+    for v in 0 true yes; do
+        tier_reconcile_fixture claude-fable-5
+        printf -- '---\nname: executor\nmodel: claude-fable-5\n---\nDo the slice.\n' > "$TR_AGENTS/executor.md"
+        tr_env TIER_OVERDRIVE "$v"
+        tier_reconcile
+        [ "$status" -eq 0 ]
+        [ "$(fm_of "$TR_AGENTS/executor.md")" = "claude-sonnet-5" ]
+    done
+}
+
+@test "tier-reconcile: overdrive FOLLOWS a /model change — a derivation rule, not a frozen value" {
+    tier_reconcile_fixture claude-fable-5
+    tr_env TIER_OVERDRIVE 1
+    tier_reconcile
+    [ "$status" -eq 0 ]
+    [ "$(fm_of "$TR_AGENTS/executor.md")" = "claude-fable-5" ]
+    # /model moves the top; the next run lifts to the NEW top, not the old one
+    jq '.model = "claude-opus-5"' "$TR" > "$TR.x"
+    mv "$TR.x" "$TR"
+    tier_reconcile
+    [ "$status" -eq 0 ]
+    [ "$(fm_of "$TR_AGENTS/executor.md")" = "claude-opus-5" ]
+    [ "$(fm_of "$TR_AGENTS/scout.md")" = "claude-haiku-4-5-20251001" ]
+    # a [variant] top keeps its exact id in the worker seat
+    jq '.model = "claude-fable-5[1m]"' "$TR" > "$TR.x"
+    mv "$TR.x" "$TR"
+    tier_reconcile
+    [ "$status" -eq 0 ]
+    [ "$(fm_of "$TR_AGENTS/executor.md")" = "claude-fable-5[1m]" ]
+}
+
+@test "tier-reconcile: TIER_EXPLICIT_PIN still wins over TIER_OVERDRIVE and skips derivation entirely" {
+    tier_reconcile_fixture claude-fable-5
+    tr_env TIER_OVERDRIVE 1
+    tr_env TIER_EXPLICIT_PIN 1
+    before_e=$(cat "$TR_AGENTS/executor.md")
+    before_c=$(cat "$TR_AGENTS/scout.md")
+    tier_reconcile
+    [ "$status" -eq 0 ]
+    [ "$(cat "$TR_AGENTS/executor.md")" = "$before_e" ]
+    [ "$(cat "$TR_AGENTS/scout.md")" = "$before_c" ]
+}
+
+@test "tier-reconcile: overdrive fails open — off-ladder top, a derive rejecting --overdrive, missing settings" {
+    tier_reconcile_fixture my-custom-router
+    tr_env TIER_OVERDRIVE 1
+    before_e=$(cat "$TR_AGENTS/executor.md")
+    tier_reconcile
+    [ "$status" -eq 0 ]
+    [ "$(cat "$TR_AGENTS/executor.md")" = "$before_e" ]
+
+    # a derive with no --overdrive support (the stale baked shape) changes
+    # NOTHING — never a silent fall back to the capped worker, which would be
+    # exactly the revert this slice exists to kill
+    stub="$BATS_TEST_TMPDIR/recon-derive-no-overdrive"
+    printf '#!/bin/sh\ncase "$1" in --overdrive) exit 3 ;; *) echo "claude-fable-5 claude-sonnet-5 claude-haiku-4-5-20251001" ;; esac\n' > "$stub"
+    chmod +x "$stub"
+    tier_reconcile_fixture claude-fable-5
+    printf -- '---\nname: executor\nmodel: claude-fable-5\n---\nDo the slice.\n' > "$TR_AGENTS/executor.md"
+    tr_env TIER_OVERDRIVE 1
+    tier_reconcile "$stub"
+    [ "$status" -eq 0 ]
+    [ "$(fm_of "$TR_AGENTS/executor.md")" = "claude-fable-5" ]
+
+    # a missing settings file is a silent no-op, and is never created
+    rm -f "$TR"
+    tier_reconcile
+    [ "$status" -eq 0 ]
+    [ ! -f "$TR" ]
+}
+
+@test "tier-reconcile: the legacy env-var purge still runs under overdrive, and never eats the flag" {
+    tier_reconcile_fixture claude-fable-5
+    jq '.env = {"KEEP":"1","TIER_OVERDRIVE":"1","CLAUDE_CODE_SUBAGENT_MODEL":"bad","ANTHROPIC_DEFAULT_SONNET_MODEL":"x"}' "$TR" > "$TR.x"
+    mv "$TR.x" "$TR"
+    tier_reconcile
+    [ "$status" -eq 0 ]
+    jq -e '(.env | has("CLAUDE_CODE_SUBAGENT_MODEL")) | not' "$TR"
+    jq -e '(.env | keys | map(select(startswith("ANTHROPIC_DEFAULT"))) | length) == 0' "$TR"
+    jq -e '.env.TIER_OVERDRIVE == "1"' "$TR"
+    jq -e '.env.KEEP == "1"' "$TR"
+    [ "$(fm_of "$TR_AGENTS/executor.md")" = "claude-fable-5" ]
 }
 
 # ── tier-prime ───────────────────────────────────────────────────────────────
