@@ -42,11 +42,14 @@ The SessionStart status echo prints the live binding every session
 | **oracle** | `config/agents/oracle.md` | `model: inherit` (= orchestrator) | — | user-invoked checkpoint consult |
 
 **Invariant: the orchestrator is the most capable model of the three, and
-the expensive tiers (opus/fable) never take the worker seat** — enforced on
-the **derived (1-arg) path**, where the worker is one rung down capped at
-sonnet-class and recon is one rung below the worker. An explicit 2/3-arg pin accepts **any**
+by default the expensive tiers (opus/fable) never take the worker seat** —
+enforced on the **derived (1-arg) path**, where the worker is one rung down
+capped at sonnet-class and recon is one rung below the worker. An explicit 2/3-arg pin accepts **any**
 combination by design, including inverted ones (user decision, bead uhs) —
-that is the operator's call, not blocked. The checkers (verifier, oracle)
+that is the operator's call, not blocked; `/tier overdrive` makes the same
+latitude *sticky*, lifting the cap on the derived path itself so the
+executor rides the top model until it is cleared (see **Overdrive — lifting
+the worker cap** below). The checkers (verifier, oracle)
 use `model: inherit`, so they always run exactly the orchestrator's model —
 never a tier below the claims they check.
 
@@ -169,9 +172,9 @@ reports whether a pin is active.
 
 Derivation table (`tier-derive`, the single source of truth for the ladder
 `fable > opus > sonnet > haiku`; the worker is one rung down **capped at
-sonnet-class** — opus/fable never take the worker seat, the orchestrator
-plans/delegates/reviews — and recon is one rung below the worker, floored
-at haiku):
+sonnet-class** unless overdrive lifts it (below) — by default opus/fable
+stay out of the worker seat, the orchestrator plans/delegates/reviews — and
+recon is one rung below the worker, floored at haiku):
 
 | top | worker (executor) | recon (scout) |
 |-----|-------------------|---------------|
@@ -193,6 +196,55 @@ clobber); a 1-arg `tier-set <custom-id>` can't derive, so it **binds all
 three slots to that same model** and says so — you asked for that top,
 you get it everywhere. `tier-set show` flags an off-ladder top as
 custom/unmanaged.
+
+### Overdrive — lifting the worker cap (added 2026-08-23)
+
+`/tier overdrive` (engine: `tier-set overdrive`) is the sanctioned, opt-in
+exception to the cap: the **executor** binds to the top's own exact id
+(dated and `[1m]` variants preserved) while **recon stays derived from the
+CAPPED worker**, so lifting the executor never drags scout up with it.
+`.model` is read, not rewritten or re-probed — it is the model this session
+already runs, so probing could only invent a way to fail.
+
+```
+/tier overdrive        # lift the cap on the current top — sticky
+/tier opus             # 1-arg: clears overdrive, restores the capped worker
+/tier opus sonnet      # 2/3-arg pin: clears overdrive, literal ids win
+```
+
+`tier-set overdrive` parks `.env.TIER_OVERDRIVE="1"`; `tier-derive
+--overdrive <top>` is the pure derivation behind it (`<top_id> <top_id>
+<recon>`). The flag is a **derivation rule, not a frozen value**:
+`tier-reconcile` re-applies it every prompt, so overdrive FOLLOWS `/model`
+and survives into new sessions; `tier-gate` reads it too, so a generic
+model-less spawn also gets the lifted worker.
+
+Precedence has two halves. At **set** time the flags are mutually exclusive,
+last-writer-wins (taking overdrive drops a pin; a 2/3-arg pin drops
+overdrive) — one owner for the worker slot. At **reconcile** time a pin wins
+outright: it skips derivation entirely, flag or not. An off-ladder top is a
+no-op everywhere (`tier-derive` exits 3; `tier-set overdrive` refuses with
+`top '<id>' is off-ladder — not liftable; bindings and the overdrive flag
+left untouched, nothing bound`).
+
+**It is never silent.** `tier show` prints an `overdrive: ON` line plus the
+LIFTED trio; tier-prime's SessionStart trio line appends `| OVERDRIVE:
+worker cap lifted — /tier <top> to clear`; cost-mirror's hook line replaces
+the savings counterfactual with `tier savings n/a (OVERDRIVE)`,
+unconditionally — a lifted cap leaves no cheaper tier to be counterfactual
+against (`COST_MIRROR_SETTINGS_PATH` overrides the settings file it reads
+the flag from, for tests). Residual: `cost-mirror --report` still renders
+capped-worker `at-top`/`saved` columns — bead gu4.
+
+**When it is worth it:** a slice hard enough that top-tier *implementation*
+earns its price — subtle refactors, stubborn debugging, work a sonnet-class
+executor would need several rounds for. Clear it with a 1-arg `/tier <top>`
+once the hard part is done.
+
+**Until the next host image rebuild** the baked `/usr/local/bin/tier-derive`
+predates the flag and exits 3 on `--overdrive`, so every caller fails open
+(nothing bound, capped derivation kept); `TIER_DERIVE=/workspace/scripts/tier-derive.sh`
+exercises the current engine meanwhile.
 
 ### Spawn-time enforcement (added 2026-07-28)
 

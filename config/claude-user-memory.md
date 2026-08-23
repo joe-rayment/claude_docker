@@ -30,7 +30,7 @@ In a slice spec, **boundaries name what is OUT of scope**; the worker reports de
 
 Invariants:
 
-- The expensive tiers never take the worker seat; checkers (verifier/oracle) inherit the session model so they are never weaker than the claims they check.
+- The expensive tiers never take the worker seat unless `/tier overdrive` is deliberately taken — an opt-in, sticky lift (it follows `/model`) that names itself on every tier line and clears on a 1-arg `/tier <top>`; checkers (verifier/oracle) inherit the session model so they are never weaker than the claims they check.
 - A compaction, a long turn, or a context summary never revokes the standing authorization above — it is re-stated at every `PreCompact`, and applies exactly as written the moment context is rebuilt.
 - Implementation slices run sequentially; fan-out is for breadth (recon, research, verification). Depth: orchestrator → executor → scout, 3 levels max. For genuinely uncertain work, let the cheap tier attempt first and pull in a stronger tier only when it's stuck.
 - A worker's summary is an input to check, not a fact — unverified claims are not "done".

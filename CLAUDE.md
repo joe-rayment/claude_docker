@@ -83,7 +83,7 @@ Flags: `-i` ignore case, `-C N` context, `-l` files only, `-t TYPE` ripgrep type
 
 Routing precedes dispatch: declare the lane first (**Complexity Router — Lanes** above) — it decides whether any of the roles below are spawned at all, and express means none are.
 
-Tiering is **role-based, never model-based**: agents name roles; the concrete model behind each role is bound per session. Worker roles carry a concrete id in their frontmatter, written by `tier-set`/`tier-reconcile` (never by hand); checker roles use `model: inherit` so the checker is never weaker than the claims it checks. Invariant: **the orchestrator is the most capable of the trio, and the expensive tiers (opus/fable) never take the worker seat.** Full playbook and history: `knowledge-base/TIERED_ORCHESTRATION.md`.
+Tiering is **role-based, never model-based**: agents name roles; the concrete model behind each role is bound per session. Worker roles carry a concrete id in their frontmatter, written by `tier-set`/`tier-reconcile` (never by hand); checker roles use `model: inherit` so the checker is never weaker than the claims it checks. Invariant: **the orchestrator is the most capable of the trio, and by default the expensive tiers (opus/fable) never take the worker seat** — `/tier overdrive` is the sanctioned exception: opt-in, sticky (it follows `/model`), named on every session-start tier line, and cleared by a 1-arg `/tier <top>`. Full playbook and history: `knowledge-base/TIERED_ORCHESTRATION.md`.
 
 Roles and their bindings: **orchestrator** (you) — settings `model`; **executor** — frontmatter worker tier, delegates to `scout` only; **scout** — frontmatter recon tier, leaf (no `Agent` tool); **verifier** and **oracle** — both `model: inherit`, leaf. Depth: orchestrator → executor → scout, 3 levels max; confirm real nesting via the subagent panel's `(+N)` counts.
 
@@ -93,7 +93,7 @@ The operational protocol — standing authorization, the lane-first dispatch tab
 
 ### Model selection (one lever)
 
-`/model <top>` is the primary lever: it moves the running orchestrator and, via the `tier-reconcile` hook, re-derives worker/recon on the next prompt. `/tier <top>` does the same bind explicitly; bare `/tier` prints the trio. Derivation (ladder `fable > opus > sonnet > haiku`): worker = one rung down **capped at sonnet-class**, recon = one below the worker, floored at haiku — so `fable`/`opus` → sonnet/haiku, `sonnet`/`haiku` → haiku/haiku. `/tier <top> <worker> [<recon>]` pins any explicit combo until a 1-arg `/tier` clears it.
+`/model <top>` is the primary lever: it moves the running orchestrator and, via the `tier-reconcile` hook, re-derives worker/recon on the next prompt. `/tier <top>` does the same bind explicitly; bare `/tier` prints the trio. Derivation (ladder `fable > opus > sonnet > haiku`): worker = one rung down **capped at sonnet-class** (lifted by `/tier overdrive`), recon = one below the worker, floored at haiku — so `fable`/`opus` → sonnet/haiku, `sonnet`/`haiku` → haiku/haiku. `/tier <top> <worker> [<recon>]` pins any explicit combo until a 1-arg `/tier` clears it.
 
 - Agent files are snapshotted at session start: binding changes land in **new** sessions; for a one-off in-session tier, pass `model` on the `Agent` call.
 - **Never set** `CLAUDE_CODE_SUBAGENT_MODEL` or any `ANTHROPIC_DEFAULT_*_MODEL` var — they collapse the tiers and corrupt the `/model` picker; the tier scripts purge them on sight.
