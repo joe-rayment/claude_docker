@@ -45,6 +45,11 @@ setup() {
     # whatever real credentials/env this container happens to run under;
     # billing-mode-specific tests below override this explicitly
     export COST_MIRROR_BILLING="api"
+    # cost-mirror reads .env.TIER_OVERDRIVE (tier-set owns that flag) to decide
+    # whether the "saved" counterfactual is still true; point it at the same
+    # scratch settings file the gate tests use so no assertion here ever
+    # depends on whether THIS container happens to be running overdriven.
+    export COST_MIRROR_SETTINGS_PATH="$SETTINGS"
 }
 
 gate() { sh "$GATE"; }
@@ -680,6 +685,37 @@ setup_prime_agents() {
     run "$PRIME"
     [ "$status" -eq 0 ]
     expected='tier → orchestrator(settings model)=claude-fable-5[1m]  executor=claude-sonnet-5  scout=claude-haiku-4-5-20251001 | verifier+oracle inherit the session model'
+    [ "$output" = "$expected" ]
+}
+
+@test "tier-prime: TIER_OVERDRIVE=1 states the lift on the same single trio line" {
+    # overdrive is expensive and must never run silently: the SessionStart trio
+    # line has to say so itself, on ONE line, and name the way out.
+    setup_prime_agents
+    printf '{"model":"claude-fable-5[1m]","env":{"TIER_OVERDRIVE":"1"}}\n' > "$SETTINGS"
+    run "$PRIME"
+    [ "$status" -eq 0 ]
+    expected='tier → orchestrator(settings model)=claude-fable-5[1m]  executor=claude-sonnet-5  scout=claude-haiku-4-5-20251001 | verifier+oracle inherit the session model | OVERDRIVE: worker cap lifted — /tier <top> to clear'
+    [ "$output" = "$expected" ]
+    [ "${#lines[@]}" -eq 1 ]
+    # a compaction must not launder the notice out either
+    run "$PRIME" --full
+    [ "$status" -eq 0 ]
+    [[ "${lines[0]}" == *"OVERDRIVE: worker cap lifted"* ]]
+}
+
+@test "tier-prime: only the exact flag value \"1\" states overdrive — the trio line is otherwise byte-identical" {
+    setup_prime_agents
+    expected='tier → orchestrator(settings model)=claude-fable-5[1m]  executor=claude-sonnet-5  scout=claude-haiku-4-5-20251001 | verifier+oracle inherit the session model'
+    for v in 0 true yes ""; do
+        printf '{"model":"claude-fable-5[1m]","env":{"TIER_OVERDRIVE":"%s"}}\n' "$v" > "$SETTINGS"
+        run "$PRIME"
+        [ "$status" -eq 0 ]
+        [ "$output" = "$expected" ]
+    done
+    printf '{"model":"claude-fable-5[1m]"}\n' > "$SETTINGS"
+    run "$PRIME"
+    [ "$status" -eq 0 ]
     [ "$output" = "$expected" ]
 }
 
@@ -1762,6 +1798,37 @@ print('ALL PREFIX ORDER CASES OK')
 
 @test "cost-mirror: pricing math — known token counts across two models produce the exact dollar clause" {
     mk_pricing_transcript
+    run sh -c 'printf "{\"transcript_path\":\"%s\"}" "'"$TP"'" | python3 '"$MIRROR"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"~\$26 · ~\$53 at fable-5 → saved ~\$27"* ]]
+}
+
+@test "cost-mirror: under overdrive the savings counterfactual is replaced by an explicit n/a marker" {
+    # `tier-set overdrive` lifts the worker cap (.env.TIER_OVERDRIVE="1"), so
+    # "what this would have cost at the top model" stops being a
+    # counterfactual — the worker IS the top model. This fixture's real $27 of
+    # historical savings must not keep printing as if delegation were still
+    # buying anything.
+    mk_pricing_transcript
+    printf '{"model":"claude-fable-5","env":{"TIER_OVERDRIVE":"1"}}\n' > "$SETTINGS"
+    run sh -c 'printf "{\"transcript_path\":\"%s\"}" "'"$TP"'" | python3 '"$MIRROR"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"~\$26 · tier savings n/a (OVERDRIVE)"* ]]
+    [[ "$output" != *"saved ~\$"* ]]
+    [[ "$output" != *"at fable-5"* ]]
+}
+
+@test "cost-mirror: without the exact flag value \"1\" the hook dollar clause is byte-identical to today" {
+    mk_pricing_transcript
+    for v in 0 true yes ""; do
+        printf '{"model":"claude-fable-5","env":{"TIER_OVERDRIVE":"%s"}}\n' "$v" > "$SETTINGS"
+        run sh -c 'printf "{\"transcript_path\":\"%s\"}" "'"$TP"'" | python3 '"$MIRROR"
+        [ "$status" -eq 0 ]
+        [[ "$output" == *"~\$26 · ~\$53 at fable-5 → saved ~\$27"* ]]
+        [[ "$output" != *"OVERDRIVE"* ]]
+    done
+    # an unreadable/absent settings file is the same as flag-off, never a crash
+    rm -f "$SETTINGS"
     run sh -c 'printf "{\"transcript_path\":\"%s\"}" "'"$TP"'" | python3 '"$MIRROR"
     [ "$status" -eq 0 ]
     [[ "$output" == *"~\$26 · ~\$53 at fable-5 → saved ~\$27"* ]]
