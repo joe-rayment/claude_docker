@@ -65,12 +65,23 @@ fi
 SETTINGS="${TIER_GATE_SETTINGS:-$HOME/.claude/settings.json}"
 TOP=$(jq -r '.model // empty' "$SETTINGS" 2>/dev/null)
 [ -n "$TOP" ] || exit 0
+# `tier-set overdrive` parks .env.TIER_OVERDRIVE="1" to lift the worker cap;
+# honour it here so a generic spawn gets the overdriven worker rather than a
+# sonnet-class one. Read at RUNTIME like the ladder itself — never cached.
+OD=$(jq -r '.env.TIER_OVERDRIVE // empty' "$SETTINGS" 2>/dev/null)
 DERIVE="${TIER_GATE_DERIVE:-}"
 if [ -z "$DERIVE" ]; then
     DERIVE=$(command -v tier-derive 2>/dev/null) || exit 0
 fi
 [ -x "$DERIVE" ] || exit 0
-TRIO=$("$DERIVE" "$TOP" 2>/dev/null) || exit 0   # off-ladder top: fail open
+# off-ladder top: fail open. So does a tier-derive too old to know --overdrive
+# (it reads the flag as the model id and exits 3) — no injection beats
+# injecting the capped worker, which would silently revert the lift.
+if [ "$OD" = "1" ]; then
+    TRIO=$("$DERIVE" --overdrive "$TOP" 2>/dev/null) || exit 0
+else
+    TRIO=$("$DERIVE" "$TOP" 2>/dev/null) || exit 0
+fi
 WORKER=$(printf '%s' "$TRIO" | awk '{print $2}')
 [ -n "$WORKER" ] || exit 0
 

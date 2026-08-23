@@ -29,6 +29,12 @@
 # agent files alone. A plain 1-arg `/tier <top>` clears the pin and resumes
 # tracking .model automatically.
 #
+# `tier-set overdrive` sets .env.TIER_OVERDRIVE="1" instead, and that one is
+# derived THROUGH, not around: this hook passes --overdrive to tier-derive, so
+# the lifted worker is re-applied every prompt (surviving new sessions) and
+# tracks .model wherever /model moves it. Pin beats overdrive: a literal
+# binding is not re-derived at all.
+#
 # Contract (it runs on every prompt, so all three matter):
 #   - Idempotent: no write when already in sync.
 #   - Silent: prints NOTHING on stdout (a UserPromptSubmit hook's stdout would
@@ -99,7 +105,21 @@ pinned=$(jq -r '.env.TIER_EXPLICIT_PIN // empty' "$SETTINGS" 2>/dev/null)
 model=$(jq -r '.model // empty' "$SETTINGS" 2>/dev/null)
 [ -n "$model" ] || exit 0
 
-trio=$("$DERIVE" "$model" 2>/dev/null) || exit 0
+# `tier-set overdrive` parks .env.TIER_OVERDRIVE="1" to lift the worker cap.
+# Unlike TIER_EXPLICIT_PIN above — a literal binding, so derivation is skipped
+# outright — overdrive is a DERIVATION RULE: re-applied here every prompt, so
+# the lift survives new sessions and follows .model wherever /model moves it.
+overdriven=$(jq -r '.env.TIER_OVERDRIVE // empty' "$SETTINGS" 2>/dev/null)
+
+# An off-ladder .model exits non-zero and leaves the bindings alone; so does a
+# tier-derive too old to know --overdrive (it reads the flag as the model id
+# and exits 3). Never retry without the flag: falling back to the capped
+# derivation would silently revert the very lift this is honouring.
+if [ "$overdriven" = "1" ]; then
+    trio=$("$DERIVE" --overdrive "$model" 2>/dev/null) || exit 0
+else
+    trio=$("$DERIVE" "$model" 2>/dev/null) || exit 0
+fi
 # shellcheck disable=SC2086 # intentional split; set -f so ids like opus[1m] can't glob-expand
 set -f; set -- $trio; set +f
 [ $# -eq 3 ] || exit 0
