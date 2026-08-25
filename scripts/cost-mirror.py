@@ -261,13 +261,45 @@ claudeAiOauth.subscriptionType in ~/.claude/.credentials.json means "sub",
 else it defaults to "api". Billing mode is a render-time label only, never
 part of the persisted state.
 
+Pricing snapshot (bead cit, added 2026-08-25): PRICING_TABLE is a hand-kept
+guess — in/out only, with all three cache rates DERIVED from the input rate
+(x0.1 / x1.25 / x2.0) — and no rendered dollar figure said where its number
+came from or how old it was. `cost-mirror.py --refresh-pricing` now fetches
+litellm's model_prices_and_context_window.json, which publishes all five
+rate classes per model, and writes a snapshot to <state dir>/pricing/
+snapshot.json: {schema, fetched_at, source, url, rates:{model:{in,out,cr,w5,
+w1}}}, USD/MTok (upstream is per-token; x1e6 on the way in). rates_for()
+resolves that snapshot first — longest-prefix, per model, so a model it does
+not carry falls through on its own — then the baked table, and returns the
+provenance of whichever won ("source", "fetched_at", "pricing_id") alongside
+the five rates, so a caller can cite what priced a row instead of asserting
+a number. cost() and every other consumer index COUNTER_KEYS and are
+unaffected by the extra keys. This is a citation, not a repricing: checked
+against the live list on 2026-08-25, every Anthropic ladder entry matches the
+derived multipliers exactly, and an install that never fetched (or whose
+fetch failed, or whose model is absent upstream) resolves the same figures it
+always did, marked "baked". The one place the two can drift is sonnet-5:
+_sonnet5_rates() reverts to 3/15 at SONNET5_INTRO_CUTOFF while upstream may
+still be quoting the intro 2/10 — snapshot-first is the specified precedence,
+so a snapshot that stale wins; the TTL keeps it from being stale for long.
+The refresh is built to hang off a session hook: TTL-gated, silent on
+success, exit 0 on every failure with the previous snapshot untouched, since
+an unreachable network is a normal condition here and the fallback is
+precisely what shipped before it existed. The snapshot lives in a
+SUBDIRECTORY of the state dir on purpose — per-session state files are found
+by globbing "<state dir>/*.json", where a sibling would read as a phantom
+session.
+
 Failure posture: fail SILENT AND OPEN — any error prints nothing and exits 0.
-Env: COST_MIRROR_DISABLE=1 bypasses; COST_MIRROR_STATE_DIR overrides the
-state directory (tests); COST_MIRROR_CREDENTIALS_PATH overrides the
-credentials file consulted for billing-mode auto-detection (tests);
-COST_MIRROR_SETTINGS_PATH overrides the settings file the overdrive flag is
-read from (tests); COST_MIRROR_PROJECTS_DIR overrides the ~/.claude/projects
-root that --all scans (tests).
+Env: COST_MIRROR_DISABLE=1 bypasses (the pricing refresh too);
+COST_MIRROR_STATE_DIR overrides the state directory (tests);
+COST_MIRROR_CREDENTIALS_PATH overrides the credentials file consulted for
+billing-mode auto-detection (tests); COST_MIRROR_SETTINGS_PATH overrides the
+settings file the overdrive flag is read from (tests);
+COST_MIRROR_PROJECTS_DIR overrides the ~/.claude/projects root that --all
+scans (tests); COST_MIRROR_PRICING_PATH, _URL, _TTL (seconds, 0 = always
+stale) and _TIMEOUT override the pricing snapshot's file, source, refresh
+interval and fetch timeout (tests).
 
 Delegation-gate drift segment (added 2026-07-30): scripts/delegation-gate.py
 persists {"max_streak", "warns", "denies"} per session (see its module
@@ -374,7 +406,7 @@ import json
 import os
 import sys
 import time
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 
 
 def fmt(n):
@@ -521,16 +553,255 @@ PRICING_TABLE = (
 )
 
 
+# Fetched pricing snapshot (bead cit). PRICING_TABLE above is a hand-kept
+# guess: it carries in/out only and DERIVES all three cache rates from the
+# input rate (x0.1 / x1.25 / x2.0), and nothing in a rendered dollar figure
+# says where the number came from or how old it is. The snapshot replaces the
+# guess with a citation — litellm's model_prices_and_context_window.json
+# publishes all five rate classes per model, first-party Anthropic included —
+# without replacing the table: an install that has never fetched, or whose
+# fetch failed, or whose model is not in the list, resolves exactly the
+# figures it always did (verified against the live list on 2026-08-25: every
+# Anthropic entry on the ladder matches the derived multipliers to the cent).
+PRICING_SCHEMA = 1
+PRICING_SOURCE = "litellm"
+PRICING_URL = (
+    "https://raw.githubusercontent.com/BerriAI/litellm/main/"
+    "model_prices_and_context_window.json"
+)
+# Upstream publishes USD *per token*; cost() works in USD/MTok, so every rate
+# is scaled by 1e6 on the way in. Rounding after that scale is not cosmetic:
+# 2e-07 * 1e6 is 0.19999999999999998, one ULP off the 0.2 the baked table
+# produces, which would make an otherwise-identical rate compare unequal.
+# Ten decimals is far finer than any published rate and kills the noise.
+PRICING_PER_MTOK = 1_000_000
+PRICING_ROUND = 10
+# Provider tag for Anthropic's own API. The same file also carries the model
+# under bedrock/vertex tags at different prices; those ride a different
+# litellm_provider AND a "/"-qualified key, and both are excluded — this hook
+# prices first-party API usage.
+PRICING_PROVIDER = "anthropic"
+# litellm field -> cost-mirror counter key. An entry missing ANY of these is
+# skipped entirely rather than back-filled from the multipliers: cost()
+# indexes all five, and a half-cited rate is exactly the guess this replaces.
+PRICING_FIELDS = (
+    ("in", "input_cost_per_token"),
+    ("out", "output_cost_per_token"),
+    ("cr", "cache_read_input_token_cost"),
+    ("w5", "cache_creation_input_token_cost"),
+    ("w1", "cache_creation_input_token_cost_above_1hr"),
+)
+PRICING_TTL_SECONDS = 24 * 3600  # published rates change on the order of months
+PRICING_TIMEOUT = 20.0  # the live list is ~1.8MB; measured ~1.4s in-container
+PRICING_MAX_BYTES = 32 * 1024 * 1024
+
+
+def _pricing_path():
+    """The snapshot file. A SUBDIRECTORY of the state dir on purpose: the
+    hook's per-session state files are found by globbing "<state dir>/*.json",
+    so a sibling snapshot would show up as a phantom session."""
+    return os.environ.get("COST_MIRROR_PRICING_PATH") or os.path.join(
+        _state_dir(), "pricing", "snapshot.json"
+    )
+
+
+# (stat-key, parsed snapshot or None). rates_for is called once per row per
+# render, so the file is parsed once and re-validated only when its
+# path/mtime/size changes — a stat per call, never a re-parse.
+_PRICING_CACHE = (None, None)
+
+
+def _load_pricing_snapshot():
+    """The current pricing snapshot, or None if there isn't a usable one.
+
+    "Usable" is checked, not assumed: a missing, unreadable, malformed,
+    or FUTURE-schema file all yield None and send rates_for to the baked
+    table. Guessing at a shape this version doesn't know would be worse than
+    the guess the snapshot exists to remove."""
+    global _PRICING_CACHE
+    path = _pricing_path()
+    try:
+        st = os.stat(path)
+        key = (path, st.st_mtime_ns, st.st_size)
+    except OSError:
+        _PRICING_CACHE = ((path, None, None), None)
+        return None
+    if _PRICING_CACHE[0] == key:
+        return _PRICING_CACHE[1]
+    snap = None
+    try:
+        with open(path) as fh:
+            raw = json.load(fh)
+        if (
+            isinstance(raw, dict)
+            and raw.get("schema") == PRICING_SCHEMA
+            and isinstance(raw.get("rates"), dict)
+            and isinstance(raw.get("source"), str)
+            and raw["source"]
+            and isinstance(raw.get("fetched_at"), str)
+        ):
+            snap = raw
+    except Exception:
+        snap = None
+    _PRICING_CACHE = (key, snap)
+    return snap
+
+
+def _snapshot_rates(model, snap):
+    """(matched key, {in,out,cr,w5,w1}) for `model` in a loaded snapshot, or
+    None if it carries no usable entry for it.
+
+    Matching is longest-prefix, which subsumes an exact match (a model id is
+    its own longest prefix) and is what makes real transcript ids resolve:
+    upstream keys the flat "claude-opus-4-6" while a transcript row says
+    "claude-opus-4-6-20260205" or "claude-fable-5[1m]". Longest wins so a
+    dated opus-4-6 id can never be captured by a shorter, cheaper key."""
+    rates = snap["rates"]
+    best_key = None
+    for key, entry in rates.items():
+        if not isinstance(entry, dict) or not model.startswith(key):
+            continue
+        if best_key is None or len(key) > len(best_key):
+            best_key = key
+    if best_key is None:
+        return None
+    try:
+        return best_key, {k: float(rates[best_key][k]) for k in COUNTER_KEYS}
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
 def rates_for(model):
     """USD/MTok rates for a model id: {in, out, cr, w5, w1}, or None if the
-    model matches no pricing prefix (off-ladder/unknown)."""
+    model matches neither the fetched snapshot nor any baked pricing prefix
+    (off-ladder/unknown).
+
+    The dict also carries the PROVENANCE of those five figures — "source"
+    ("litellm" for a fetched snapshot, "baked" for PRICING_TABLE),
+    "fetched_at" (the snapshot's ISO-8601 stamp, None for the table), and
+    "pricing_id" ("<source>:<matched key or prefix>") — so a caller can cite
+    what priced a row rather than asserting a number. cost() and every other
+    consumer index COUNTER_KEYS and are untouched by the extra keys.
+
+    Resolution is snapshot-first, PER MODEL: a model the snapshot does not
+    carry falls through to the table on its own, rather than the snapshot
+    being all-or-nothing."""
     if not model:
         return None
+    snap = _load_pricing_snapshot()
+    if snap:
+        hit = _snapshot_rates(model, snap)
+        if hit:
+            key, vals = hit
+            source = snap["source"]
+            vals["source"] = source
+            vals["fetched_at"] = snap["fetched_at"]
+            vals["pricing_id"] = f"{source}:{key}"
+            return vals
     for prefix, spec in PRICING_TABLE:
         if model.startswith(prefix):
             rin, rout = spec() if callable(spec) else spec
-            return {"in": rin, "out": rout, "cr": rin * 0.1, "w5": rin * 1.25, "w1": rin * 2.0}
+            return {
+                "in": rin, "out": rout, "cr": rin * 0.1, "w5": rin * 1.25, "w1": rin * 2.0,
+                "source": "baked", "fetched_at": None, "pricing_id": f"baked:{prefix}",
+            }
     return None
+
+
+def _pricing_env_float(name, default, floor=0.0):
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        return max(floor, float(raw))
+    except ValueError:
+        return default
+
+
+def pricing_rates_from_payload(raw):
+    """{model: {in,out,cr,w5,w1}} in USD/MTok from a litellm
+    model_prices_and_context_window.json payload.
+
+    Keeps first-party Anthropic entries with a complete set of five rates and
+    a flat (unqualified) key; drops everything else — other providers, the
+    "bedrock/..."-style resale variants of the same models at different
+    prices, litellm's own "sample_spec" schema placeholder, and entries that
+    publish in/out but no cache rates."""
+    if not isinstance(raw, dict):
+        return {}
+    out = {}
+    for model, entry in raw.items():
+        if not isinstance(entry, dict) or entry.get("litellm_provider") != PRICING_PROVIDER:
+            continue
+        if "/" in model:
+            continue
+        vals = {}
+        for key, field in PRICING_FIELDS:
+            v = entry.get(field)
+            if not isinstance(v, (int, float)) or isinstance(v, bool):
+                break
+            vals[key] = round(float(v) * PRICING_PER_MTOK, PRICING_ROUND)
+        else:
+            out[model] = vals
+    return out
+
+
+def _write_pricing_snapshot(path, url, rates):
+    """Replace the snapshot atomically: a torn write would be read as a
+    malformed snapshot on the next prompt, and a refresh must never make the
+    pricing WORSE than not running at all."""
+    snap = {
+        "schema": PRICING_SCHEMA,
+        "fetched_at": datetime.now(timezone.utc).isoformat(),
+        "source": PRICING_SOURCE,
+        "url": url,
+        "rates": rates,
+    }
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    tmp = f"{path}.{os.getpid()}.tmp"
+    with open(tmp, "w") as fh:
+        json.dump(snap, fh)
+    os.replace(tmp, path)
+
+
+def refresh_pricing():
+    """--refresh-pricing entry point: bring the snapshot up to date, quietly.
+
+    Built to be hung off a session hook, so it obeys the same posture as the
+    rest of this script and then some — TTL-gated (a snapshot fetched inside
+    PRICING_TTL_SECONDS is left alone, so it costs one stat on a warm start),
+    silent on success, and exit 0 on EVERY failure with the previous snapshot
+    left byte-identical. An unreachable network is a normal condition here:
+    the fallback for "no fetch ever succeeded" is the baked table, which is
+    exactly what shipped before this existed. Always returns 0."""
+    if os.environ.get("COST_MIRROR_DISABLE") == "1":
+        return 0
+    path = _pricing_path()
+    ttl = _pricing_env_float("COST_MIRROR_PRICING_TTL", PRICING_TTL_SECONDS)
+    if ttl > 0:
+        snap = _load_pricing_snapshot()
+        if snap:
+            ts = _parse_ts(snap.get("fetched_at"))
+            if ts is not None and 0 <= time.time() - ts < ttl:
+                return 0
+    url = os.environ.get("COST_MIRROR_PRICING_URL") or PRICING_URL
+    try:
+        import urllib.request
+
+        req = urllib.request.Request(url, headers={"User-Agent": "cost-mirror"})
+        with urllib.request.urlopen(
+            req, timeout=_pricing_env_float("COST_MIRROR_PRICING_TIMEOUT", PRICING_TIMEOUT, 0.1)
+        ) as resp:
+            body = resp.read(PRICING_MAX_BYTES + 1)
+        if len(body) > PRICING_MAX_BYTES:
+            return 0
+        rates = pricing_rates_from_payload(json.loads(body.decode("utf-8")))
+        if not rates:
+            return 0  # an empty result means the payload changed shape, not that pricing vanished
+        _write_pricing_snapshot(path, url, rates)
+    except Exception:
+        pass
+    return 0
 
 
 def cost(counters, rates):
@@ -2025,6 +2296,14 @@ def main():
 
 
 if __name__ == "__main__":
+    if "--refresh-pricing" in sys.argv:
+        # pricing refresh: silent, and exit 0 whatever happens — it is meant to
+        # be hung off a session hook, where an unreachable network must cost
+        # nothing but a stale snapshot (see refresh_pricing)
+        try:
+            sys.exit(refresh_pricing())
+        except Exception:
+            sys.exit(0)
     if "--report" in sys.argv:
         # report mode is intentionally NOT wrapped in the silent-fail guard
         sys.exit(run_report([a for a in sys.argv[1:] if a != "--report"]))
