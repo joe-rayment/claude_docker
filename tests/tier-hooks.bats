@@ -2966,3 +2966,331 @@ squash() { echo "$1" | tr -s ' '; }
     [ "$status" -eq 0 ]
     [[ "$(squash "$output")" == *"— session sess"* ]]
 }
+
+# ── cost-mirror: pricing snapshot (fetched rates + provenance) ──────────────
+#
+# bd-cit: rates_for() used to derive every cache rate from a hardcoded input
+# rate (cr=in*0.1, w5=in*1.25, w1=in*2.0) against a static PRICING_TABLE, with
+# nothing recording where a figure came from or when. It now resolves a fetched
+# snapshot first, falls back to that same baked table, and returns provenance
+# (source/fetched_at/pricing_id) alongside the five rates so a row ledger can
+# cite what priced it. The snapshot lives in a SUBDIRECTORY of the state dir
+# (pricing/snapshot.json) so it stays invisible to the "$COST_MIRROR_STATE_DIR"/*.json
+# globs the state-schema tests above use.
+#
+# Every case here is hermetic: the source payload is served over file:// so the
+# transform is exercised end to end without a network, and the "unreachable"
+# case points at a refused port rather than waiting on a real timeout.
+
+mk_litellm_payload() {
+    # A litellm model_prices_and_context_window.json in miniature. Deliberately
+    # mixed: two complete Anthropic first-party entries, one bedrock variant of
+    # the same model at a different price, one Anthropic entry missing the
+    # cache fields, one non-Anthropic model, and litellm's own schema-doc
+    # placeholder — only the two complete Anthropic entries may survive.
+    # $1 overrides claude-opus-5's per-token input cost (for the TTL test).
+    PAYLOAD="$BATS_TEST_TMPDIR/litellm.json"
+    local opus_in="${1:-5e-06}"
+    cat > "$PAYLOAD" <<EOF
+{
+  "sample_spec": {"litellm_provider": "one of the providers"},
+  "claude-opus-5": {
+    "litellm_provider": "anthropic",
+    "input_cost_per_token": $opus_in,
+    "output_cost_per_token": 2.5e-05,
+    "cache_read_input_token_cost": 5e-07,
+    "cache_creation_input_token_cost": 6.25e-06,
+    "cache_creation_input_token_cost_above_1hr": 1e-05
+  },
+  "claude-sonnet-5": {
+    "litellm_provider": "anthropic",
+    "input_cost_per_token": 2e-06,
+    "output_cost_per_token": 1e-05,
+    "cache_read_input_token_cost": 2e-07,
+    "cache_creation_input_token_cost": 2.5e-06,
+    "cache_creation_input_token_cost_above_1hr": 4e-06
+  },
+  "bedrock/anthropic.claude-opus-5": {
+    "litellm_provider": "bedrock",
+    "input_cost_per_token": 9.9e-05,
+    "output_cost_per_token": 9.9e-05,
+    "cache_read_input_token_cost": 9.9e-05,
+    "cache_creation_input_token_cost": 9.9e-05,
+    "cache_creation_input_token_cost_above_1hr": 9.9e-05
+  },
+  "claude-4-opus-20250514": {
+    "litellm_provider": "anthropic",
+    "input_cost_per_token": 1.5e-05,
+    "output_cost_per_token": 7.5e-05
+  },
+  "gpt-4o": {
+    "litellm_provider": "openai",
+    "input_cost_per_token": 2.5e-06,
+    "output_cost_per_token": 1e-05,
+    "cache_read_input_token_cost": 1.25e-06,
+    "cache_creation_input_token_cost": 1.25e-06,
+    "cache_creation_input_token_cost_above_1hr": 1.25e-06
+  }
+}
+EOF
+    export COST_MIRROR_PRICING_URL="file://$PAYLOAD"
+}
+
+mk_pricing_snapshot() {
+    # A ready-made snapshot in the shape --refresh-pricing writes, with the
+    # REAL litellm USD/MTok figures for the ladder (verified 2026-08-25) —
+    # except claude-opus-4-6, deliberately set to a price the baked table
+    # cannot produce (baked "claude-opus-" is 5/25) so "snapshot wins" and
+    # longest-prefix resolution are both proven by one assertion.
+    SNAP="$COST_MIRROR_STATE_DIR/pricing/snapshot.json"
+    mkdir -p "$(dirname "$SNAP")"
+    cat > "$SNAP" <<'EOF'
+{
+  "schema": 1,
+  "fetched_at": "2026-08-25T12:00:00+00:00",
+  "source": "litellm",
+  "url": "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json",
+  "rates": {
+    "claude-opus-5":              {"in": 5.0,  "out": 25.0, "cr": 0.5, "w5": 6.25,  "w1": 10.0},
+    "claude-sonnet-5":            {"in": 2.0,  "out": 10.0, "cr": 0.2, "w5": 2.5,   "w1": 4.0},
+    "claude-fable-5":             {"in": 10.0, "out": 50.0, "cr": 1.0, "w5": 12.5,  "w1": 20.0},
+    "claude-haiku-4-5-20251001":  {"in": 1.0,  "out": 5.0,  "cr": 0.1, "w5": 1.25,  "w1": 2.0},
+    "claude-opus-4-6":            {"in": 7.5,  "out": 37.5, "cr": 0.75, "w5": 9.375, "w1": 15.0}
+  }
+}
+EOF
+}
+
+@test "cost-mirror: pricing snapshot — with no snapshot, rates_for returns today's baked figures unchanged and marks them 'baked'" {
+    # The no-dollar-movement half of bd-cit's contract, on the path every
+    # install starts on (nothing fetched yet). sonnet-5 is cross-called
+    # against _sonnet5_rates() rather than hardcoded, so this stays valid on
+    # either side of the 2026-09-01 intro-pricing cutoff.
+    run python3 -c "
+import importlib.util
+spec = importlib.util.spec_from_file_location('cost_mirror_under_test', '$MIRROR')
+cm = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(cm)
+
+def five(model):
+    r = cm.rates_for(model)
+    return [r[k] for k in cm.COUNTER_KEYS]
+
+def derived(rin, rout):
+    return [rin, rout, rin * 0.1, rin * 1.25, rin * 2.0]
+
+assert five('claude-opus-5') == derived(5.0, 25.0), 'opus-5 moved'
+assert five('claude-fable-5') == derived(10.0, 50.0), 'fable-5 moved'
+assert five('claude-haiku-4-5-20251001') == derived(1.0, 5.0), 'haiku moved'
+assert five('claude-sonnet-5') == derived(*cm._sonnet5_rates()), 'sonnet-5 moved'
+
+r = cm.rates_for('claude-opus-5')
+assert r['source'] == 'baked', r['source']
+assert r['fetched_at'] is None, r['fetched_at']
+assert r['pricing_id'] == 'baked:claude-opus-', r['pricing_id']
+assert cm.rates_for('claude-sonnet-5')['pricing_id'] == 'baked:claude-sonnet-5'
+assert cm.rates_for('claude-totally-unknown-model-9') is None, 'unknown model must still be None, not a provenance stub'
+print('BAKED FALLBACK OK')
+"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"BAKED FALLBACK OK"* ]]
+}
+
+@test "cost-mirror: pricing snapshot — a snapshot wins over the baked table, resolves by longest prefix, and carries litellm provenance" {
+    mk_pricing_snapshot
+    run python3 -c "
+import importlib.util
+spec = importlib.util.spec_from_file_location('cost_mirror_under_test', '$MIRROR')
+cm = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(cm)
+
+r = cm.rates_for('claude-opus-5')
+assert [r[k] for k in cm.COUNTER_KEYS] == [5.0, 25.0, 0.5, 6.25, 10.0], r
+assert r['source'] == 'litellm', r['source']
+assert r['fetched_at'] == '2026-08-25T12:00:00+00:00', r['fetched_at']
+assert r['pricing_id'] == 'litellm:claude-opus-5', r['pricing_id']
+
+# dated real-world id -> longest snapshot key that prefixes it; the value is
+# one the baked 'claude-opus-' entry (5/25) could never produce, so this
+# proves the snapshot won rather than coinciding with the table
+d = cm.rates_for('claude-opus-4-6-20260205')
+assert [d[k] for k in cm.COUNTER_KEYS] == [7.5, 37.5, 0.75, 9.375, 15.0], d
+assert d['pricing_id'] == 'litellm:claude-opus-4-6', d['pricing_id']
+
+# a variant-annotated id still prefix-matches
+assert cm.rates_for('claude-fable-5[1m]')['pricing_id'] == 'litellm:claude-fable-5'
+
+# a model the snapshot does not carry falls through to the baked table IN THE
+# SAME PROCESS -- resolution is per-model, not all-or-nothing
+m = cm.rates_for('claude-mythos-5')
+assert [m[k] for k in cm.COUNTER_KEYS] == [10.0, 50.0, 1.0, 12.5, 20.0], m
+assert m['source'] == 'baked', m['source']
+assert m['pricing_id'] == 'baked:claude-mythos-', m['pricing_id']
+
+# unknown to both is still None
+assert cm.rates_for('claude-totally-unknown-model-9') is None
+print('SNAPSHOT RESOLUTION OK')
+"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"SNAPSHOT RESOLUTION OK"* ]]
+}
+
+@test "cost-mirror: pricing snapshot — real litellm figures move no dollars: snapshot and baked rates agree on the ladder" {
+    # The citation-not-a-repricing claim, checked mechanically rather than by
+    # eye: the same five values are read twice in one process, once with the
+    # snapshot visible and once with it hidden, and compared.
+    mk_pricing_snapshot
+    run python3 -c "
+import importlib.util, os
+spec = importlib.util.spec_from_file_location('cost_mirror_under_test', '$MIRROR')
+cm = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(cm)
+
+def five(model):
+    r = cm.rates_for(model)
+    return [r[k] for k in cm.COUNTER_KEYS]
+
+snap = {m: five(m) for m in ('claude-opus-5', 'claude-sonnet-5', 'claude-fable-5', 'claude-haiku-4-5-20251001')}
+assert cm.rates_for('claude-opus-5')['source'] == 'litellm'
+
+os.environ['COST_MIRROR_PRICING_PATH'] = '$BATS_TEST_TMPDIR/no-such-snapshot.json'
+baked = {m: five(m) for m in snap}
+assert cm.rates_for('claude-opus-5')['source'] == 'baked'
+
+for m in ('claude-opus-5', 'claude-fable-5', 'claude-haiku-4-5-20251001'):
+    assert snap[m] == baked[m], (m, snap[m], baked[m])
+
+# sonnet-5 is the one entry whose baked price is date-switched
+# (SONNET5_INTRO_CUTOFF, 2026-09-01). While the intro price holds, litellm and
+# the table agree exactly; from the cutoff the table reverts to 3/15 and a
+# snapshot still quoting the intro 2/10 legitimately differs -- snapshot-first
+# is the specified precedence, so assert the agreement only where it is real.
+if cm._sonnet5_rates() == (2.00, 10.00):
+    assert snap['claude-sonnet-5'] == baked['claude-sonnet-5'], (snap, baked)
+else:
+    assert snap['claude-sonnet-5'] == [2.0, 10.0, 0.2, 2.5, 4.0], snap
+print('NO DOLLAR MOVEMENT OK')
+"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"NO DOLLAR MOVEMENT OK"* ]]
+}
+
+@test "cost-mirror: pricing snapshot — --refresh-pricing writes a schema-tagged snapshot, converting per-token to USD/MTok and filtering to first-party Anthropic" {
+    mk_litellm_payload
+    run python3 "$MIRROR" --refresh-pricing
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+    SNAP="$COST_MIRROR_STATE_DIR/pricing/snapshot.json"
+    [ -f "$SNAP" ]
+    jq -e '.schema == 1' "$SNAP"
+    jq -e '.source == "litellm"' "$SNAP"
+    jq -e --arg u "$COST_MIRROR_PRICING_URL" '.url == $u' "$SNAP"
+    jq -e '.fetched_at | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T")' "$SNAP"
+    # x1e6, and no float noise: 5e-07/token must land on exactly 0.5, not
+    # 0.4999999999999999
+    jq -e '.rates["claude-opus-5"] == {"in":5.0,"out":25.0,"cr":0.5,"w5":6.25,"w1":10.0}' "$SNAP"
+    jq -e '.rates["claude-sonnet-5"] == {"in":2.0,"out":10.0,"cr":0.2,"w5":2.5,"w1":4.0}' "$SNAP"
+    # exactly the two complete first-party entries: no bedrock variant, no
+    # entry missing cache fields (cost() indexes all five), no other provider,
+    # no schema-doc placeholder
+    jq -e '(.rates | keys | sort) == ["claude-opus-5","claude-sonnet-5"]' "$SNAP"
+    # and the freshly written snapshot is what rates_for now cites
+    run python3 -c "
+import importlib.util
+spec = importlib.util.spec_from_file_location('cost_mirror_under_test', '$MIRROR')
+cm = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(cm)
+r = cm.rates_for('claude-opus-5')
+assert r['source'] == 'litellm', r
+assert [r[k] for k in cm.COUNTER_KEYS] == [5.0, 25.0, 0.5, 6.25, 10.0], r
+print('REFRESH OK')
+"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"REFRESH OK"* ]]
+}
+
+@test "cost-mirror: pricing snapshot — --refresh-pricing is TTL-gated: a fresh snapshot is left alone, an expired one is refetched" {
+    mk_litellm_payload
+    run python3 "$MIRROR" --refresh-pricing
+    [ "$status" -eq 0 ]
+    SNAP="$COST_MIRROR_STATE_DIR/pricing/snapshot.json"
+    jq -e '.rates["claude-opus-5"]["in"] == 5.0' "$SNAP"
+    # source now says something different; a within-TTL refresh must not notice
+    mk_litellm_payload 8e-06
+    run python3 "$MIRROR" --refresh-pricing
+    [ "$status" -eq 0 ]
+    jq -e '.rates["claude-opus-5"]["in"] == 5.0' "$SNAP"
+    # TTL 0 means "always stale"
+    COST_MIRROR_PRICING_TTL=0 run python3 "$MIRROR" --refresh-pricing
+    [ "$status" -eq 0 ]
+    jq -e '.rates["claude-opus-5"]["in"] == 8.0' "$SNAP"
+}
+
+@test "cost-mirror: pricing snapshot — an unreachable source exits 0 fast, leaves the previous snapshot intact, and never blocks rates_for" {
+    # No snapshot yet + nowhere to fetch from: the refresh must fail open
+    # (silent, exit 0, no half-written file) and rates_for must still answer
+    # from the baked table, marked as such, without touching the network.
+    export COST_MIRROR_PRICING_URL="http://127.0.0.1:1/nope.json"
+    START=$SECONDS
+    run python3 "$MIRROR" --refresh-pricing
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+    [ $((SECONDS - START)) -lt 5 ]
+    [ ! -f "$COST_MIRROR_STATE_DIR/pricing/snapshot.json" ]
+    run python3 -c "
+import importlib.util, time
+spec = importlib.util.spec_from_file_location('cost_mirror_under_test', '$MIRROR')
+cm = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(cm)
+t0 = time.time()
+r = cm.rates_for('claude-opus-5')
+elapsed = time.time() - t0
+assert elapsed < 2.0, elapsed
+assert [r[k] for k in cm.COUNTER_KEYS] == [5.0, 25.0, 0.5, 6.25, 10.0], r
+assert r['source'] == 'baked', r
+print('OFFLINE OK')
+"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"OFFLINE OK"* ]]
+
+    # now with a good snapshot already on disk: a failed refresh leaves it
+    # byte-identical rather than clobbering it with nothing
+    mk_pricing_snapshot
+    BEFORE=$(md5sum "$SNAP" | awk '{print $1}')
+    COST_MIRROR_PRICING_TTL=0 run python3 "$MIRROR" --refresh-pricing
+    [ "$status" -eq 0 ]
+    [ "$(md5sum "$SNAP" | awk '{print $1}')" = "$BEFORE" ]
+}
+
+@test "cost-mirror: pricing snapshot — a malformed, wrong-schema, or unreadable snapshot is ignored, never fatal" {
+    SNAP="$COST_MIRROR_STATE_DIR/pricing/snapshot.json"
+    mkdir -p "$(dirname "$SNAP")"
+    printf 'THIS IS NOT JSON\n' > "$SNAP"
+    run python3 -c "
+import importlib.util
+spec = importlib.util.spec_from_file_location('cost_mirror_under_test', '$MIRROR')
+cm = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(cm)
+r = cm.rates_for('claude-opus-5')
+assert r['source'] == 'baked', r
+assert [r[k] for k in cm.COUNTER_KEYS] == [5.0, 25.0, 0.5, 6.25, 10.0], r
+print('MALFORMED OK')
+"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"MALFORMED OK"* ]]
+    # a FUTURE schema is not readable either -- ignore it rather than guess at
+    # a shape this version does not know
+    printf '{"schema":99,"fetched_at":"2026-08-25T12:00:00+00:00","source":"litellm","url":"x","rates":{"claude-opus-5":{"in":99.0,"out":99.0,"cr":99.0,"w5":99.0,"w1":99.0}}}\n' > "$SNAP"
+    run python3 -c "
+import importlib.util
+spec = importlib.util.spec_from_file_location('cost_mirror_under_test', '$MIRROR')
+cm = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(cm)
+r = cm.rates_for('claude-opus-5')
+assert r['source'] == 'baked', r
+assert r['in'] == 5.0, r
+print('SCHEMA GUARD OK')
+"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"SCHEMA GUARD OK"* ]]
+}
