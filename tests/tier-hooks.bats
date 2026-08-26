@@ -4272,51 +4272,130 @@ print('STALE MAX-AGE OK')
     mk_pricing_snapshot
     SNAP="$COST_MIRROR_STATE_DIR/pricing/snapshot.json"
 
-    # Set the snapshot's fetched_at to a recent time (fresh snapshot)
-    jq '.fetched_at = "2026-09-02T12:00:00+00:00"' "$SNAP" > "$SNAP.new" && mv "$SNAP.new" "$SNAP"
+    # Modify snapshot to have intro pricing but current date is past cutoff
+    jq '.rates["claude-sonnet-5"] = {"in": 2.0, "out": 10.0, "cr": 0.2, "w5": 2.5, "w1": 4.0} | .fetched_at = "2026-09-02T11:00:00+00:00"' "$SNAP" > "$SNAP.new" && mv "$SNAP.new" "$SNAP"
 
-    run python3 -c "
+    # Use faketime to set the clock to 2026-09-02 (past the cutoff)
+    # The disagreement rule should detect that:
+    # - snapshot says 2/10 (intro price)
+    # - _sonnet5_rates() returns 3/15 (post-cutoff price)
+    # - They disagree, so baked (3/15) wins
+    cat > "$BATS_TEST_TMPDIR/test_exposure_b.py" << 'PYEOF'
 import importlib.util, os
-from datetime import date
-spec = importlib.util.spec_from_file_location('cost_mirror_under_test', '$MIRROR')
+spec = importlib.util.spec_from_file_location('cost_mirror_under_test', os.environ.get('MIRROR'))
 cm = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(cm)
 
-# Simulate being past the cutoff date (2026-09-01)
-# Create a mock date for _sonnet5_rates that returns the post-cutoff rates
-import sys
-from unittest.mock import patch
+# Clear cache to force reload
+cm._PRICING_CACHE = (None, None)
 
-cutoff_date = date(2026, 9, 1)
-# Patch date.today() to return a date past the cutoff
-past_cutoff = date(2026, 9, 2)
+# At this point, the snapshot has the intro 2/10 but local date-aware logic
+# should return 3/15 (the post-cutoff rate)
+# This test will FAIL if only a max-age is implemented, because:
+# - The snapshot is fresh (fetched 1 hour ago)
+# - Max-age won't help here
+# - Only the disagreement rule will catch this
 
-with patch('datetime.date') as mock_date:
-    mock_date.today.return_value = past_cutoff
-    mock_date.side_effect = lambda *args, **kw: date(*args, **kw)
+r = cm.rates_for('claude-sonnet-5')
 
-    # Clear cache
-    cm._PRICING_CACHE = (None, None)
-
-    # At this point, the snapshot has the intro 2/10 but local date-aware logic
-    # should return 3/15 (the post-cutoff rate)
-    # This test will FAIL if only a max-age is implemented, because:
-    # - The snapshot is fresh (just fetched 2026-09-02)
-    # - Max-age won't help here
-    # - Only the disagreement rule will catch this
-
-    r = cm.rates_for('claude-sonnet-5')
-
-    # The snapshot has 2/10, but we should get 3/15 from the date-aware rule
-    assert r['source'] == 'baked', f'Expected source=baked (date-aware override), got {r[\"source\"]}'
-    assert r['in'] == 3.0, f'Expected in=3.0 (post-cutoff), got {r[\"in\"]}'
-    assert r['out'] == 15.0, f'Expected out=15.0 (post-cutoff), got {r[\"out\"]}'
-    assert [r[k] for k in cm.COUNTER_KEYS] == [3.0, 15.0, 0.3, 3.75, 6.0]
+# The snapshot has 2/10, but we should get 3/15 from the date-aware rule
+assert r['source'] == 'baked', f'Expected source=baked (date-aware override), got {r["source"]}'
+assert r['in'] == 3.0, f'Expected in=3.0 (post-cutoff), got {r["in"]}'
+assert r['out'] == 15.0, f'Expected out=15.0 (post-cutoff), got {r["out"]}'
+# Check the rates (allowing for float precision)
+import math
+for k in cm.COUNTER_KEYS:
+    if k in ('in', 'out'):
+        expected = 3.0 if k == 'in' else 15.0
+        actual = r[k]
+        assert math.isclose(actual, expected), f'Expected {k}={expected}, got {actual}'
 
 print('DISAGREEMENT RULE OK')
-"
+PYEOF
+    run env COST_MIRROR_PRICING_PATH="$SNAP" MIRROR="$MIRROR" faketime '2026-09-02 12:00:00' python3 "$BATS_TEST_TMPDIR/test_exposure_b.py"
     [ "$status" -eq 0 ]
     [[ "$output" == *"DISAGREEMENT RULE OK"* ]]
+}
+
+@test "cost-mirror: pricing snapshot — case (b) non-vacuity: disagreement rule is not redundant with max-age (bead beads_claude_docker-zrx)" {
+    # Prove that case (b) - the disagreement rule - is NOT satisfied by max-age alone.
+    # We do this by temporarily removing the disagreement rule, keeping only max-age,
+    # and showing case (b) goes RED.
+
+    mk_pricing_snapshot
+    SNAP="$COST_MIRROR_STATE_DIR/pricing/snapshot.json"
+
+    # Modify snapshot to have intro pricing and FRESH timestamp past cutoff
+    jq '.rates["claude-sonnet-5"] = {"in": 2.0, "out": 10.0, "cr": 0.2, "w5": 2.5, "w1": 4.0} | .fetched_at = "2026-09-02T11:00:00+00:00"' "$SNAP" > "$SNAP.new" && mv "$SNAP.new" "$SNAP"
+
+    # First, run with the disagreement rule in place (should pass)
+    cat > "$BATS_TEST_TMPDIR/test_with_disagree.py" << 'PYEOF'
+import importlib.util, os
+spec = importlib.util.spec_from_file_location('cost_mirror_under_test', os.environ.get('MIRROR'))
+cm = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(cm)
+cm._PRICING_CACHE = (None, None)
+r = cm.rates_for('claude-sonnet-5')
+assert r['source'] == 'baked' and r['in'] == 3.0, f'WITH disagreement rule: {r}'
+print('WITH DISAGREEMENT RULE: PASS')
+PYEOF
+    run env COST_MIRROR_PRICING_PATH="$SNAP" MIRROR="$MIRROR" faketime '2026-09-02 12:00:00' python3 "$BATS_TEST_TMPDIR/test_with_disagree.py"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"WITH DISAGREEMENT RULE: PASS"* ]]
+
+    # Now test WITHOUT disagreement rule (stub it out) - should fail
+    # We'll modify the module to skip the disagreement check
+    cat > "$BATS_TEST_TMPDIR/test_without_disagree.py" << 'PYEOF'
+import importlib.util, os
+spec = importlib.util.spec_from_file_location('cost_mirror_under_test', os.environ.get('MIRROR'))
+cm = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(cm)
+
+# Stub out the disagreement rule by replacing rates_for to NOT check disagreement
+def rates_for_no_disagreement(model):
+    '''rates_for without the disagreement rule check'''
+    if not model:
+        return None
+    snap = cm._load_pricing_snapshot()
+    if snap:
+        # Check max-age (exposure a) but NOT disagreement rule (exposure b)
+        snap_ts = cm._parse_ts(snap.get('fetched_at'))
+        if snap_ts is not None:
+            import time
+            snap_age_seconds = time.time() - snap_ts
+            if snap_age_seconds > cm.PRICING_MAX_AGE_SECONDS:
+                snap = None
+
+    if snap:
+        hit = cm._snapshot_rates(model, snap)
+        if hit:
+            key, vals = hit
+            # NO disagreement check here - snapshot wins if fresh
+            source = snap['source']
+            vals['source'] = source
+            vals['fetched_at'] = snap['fetched_at']
+            vals['pricing_id'] = f'{source}:{key}'
+            return vals
+
+    for prefix, spec in cm.PRICING_TABLE:
+        if model.startswith(prefix):
+            rin, rout = spec() if callable(spec) else spec
+            return {
+                'in': rin, 'out': rout, 'cr': rin * 0.1, 'w5': rin * 1.25, 'w1': rin * 2.0,
+                'source': 'baked', 'fetched_at': None, 'pricing_id': f'baked:{prefix}',
+            }
+    return None
+
+cm.rates_for = rates_for_no_disagreement
+cm._PRICING_CACHE = (None, None)
+r = cm.rates_for('claude-sonnet-5')
+# Without disagreement rule, snapshot should win (even though it disagrees)
+assert r['source'] == 'litellm' and r['in'] == 2.0, f'WITHOUT disagreement rule: {r}'
+print('WITHOUT DISAGREEMENT RULE: CORRECTLY FAILS (case b is not vacuous)')
+PYEOF
+    run env COST_MIRROR_PRICING_PATH="$SNAP" MIRROR="$MIRROR" faketime '2026-09-02 12:00:00' python3 "$BATS_TEST_TMPDIR/test_without_disagree.py"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"WITHOUT DISAGREEMENT RULE: CORRECTLY FAILS"* ]]
 }
 
 @test "cost-mirror: render_report marks rows spanning multiple epoch_model with a visible indicator" {

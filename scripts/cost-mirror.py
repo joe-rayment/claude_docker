@@ -643,6 +643,8 @@ PRICING_FIELDS = (
 PRICING_TTL_SECONDS = 24 * 3600  # published rates change on the order of months
 PRICING_TIMEOUT = 20.0  # the live list is ~1.8MB; measured ~1.4s in-container
 PRICING_MAX_BYTES = 32 * 1024 * 1024
+PRICING_MAX_AGE_SECONDS = 72 * 3600  # 72 hours: read-side max-age independent of fetch TTL.
+# Past this age, a snapshot entry loses to the baked table per model (bead beads_claude_docker-zrx exposure a).
 
 
 def _pricing_path():
@@ -734,19 +736,62 @@ def rates_for(model):
 
     Resolution is snapshot-first, PER MODEL: a model the snapshot does not
     carry falls through to the table on its own, rather than the snapshot
-    being all-or-nothing."""
+    being all-or-nothing. HOWEVER:
+
+    Exposure (a) STALE SNAPSHOT: A snapshot older than PRICING_MAX_AGE_SECONDS
+    loses to the baked table, independent of fetch TTL (bead beads_claude_docker-zrx).
+
+    Exposure (b) UPSTREAM DISAGREEMENT: When a callable PRICING_TABLE entry
+    (e.g., _sonnet5_rates with date-aware knowledge) disagrees with the snapshot,
+    the date-aware local value wins (bead beads_claude_docker-zrx)."""
     if not model:
         return None
     snap = _load_pricing_snapshot()
     if snap:
+        # Exposure (a): Check if snapshot is too old (read-side max-age).
+        # Past that age, it loses to the baked table per model.
+        snap_age_seconds = None
+        snap_ts = _parse_ts(snap.get("fetched_at"))
+        if snap_ts is not None:
+            snap_age_seconds = time.time() - snap_ts
+            if snap_age_seconds > PRICING_MAX_AGE_SECONDS:
+                # Snapshot is too old; skip it and use baked table
+                snap = None
+
+    if snap:
         hit = _snapshot_rates(model, snap)
         if hit:
             key, vals = hit
+
+            # Exposure (b): Check for disagreement with callable PRICING_TABLE entries.
+            # If a callable entry exists and disagrees with the snapshot,
+            # the date-aware local value wins.
+            baked_vals = None
+            for prefix, spec in PRICING_TABLE:
+                if model.startswith(prefix) and callable(spec):
+                    # This is a callable entry (e.g., _sonnet5_rates)
+                    baked_rin, baked_rout = spec()
+                    baked_vals = {
+                        "in": baked_rin, "out": baked_rout,
+                        "cr": baked_rin * 0.1, "w5": baked_rin * 1.25, "w1": baked_rin * 2.0,
+                    }
+                    # Check if they disagree (in or out differs)
+                    if vals.get("in") != baked_rin or vals.get("out") != baked_rout:
+                        # They disagree; use the baked (date-aware) value
+                        return {
+                            "in": baked_rin, "out": baked_rout,
+                            "cr": baked_rin * 0.1, "w5": baked_rin * 1.25, "w1": baked_rin * 2.0,
+                            "source": "baked", "fetched_at": None, "pricing_id": f"baked:{prefix}",
+                        }
+                    break
+
+            # No disagreement; snapshot wins
             source = snap["source"]
             vals["source"] = source
             vals["fetched_at"] = snap["fetched_at"]
             vals["pricing_id"] = f"{source}:{key}"
             return vals
+
     for prefix, spec in PRICING_TABLE:
         if model.startswith(prefix):
             rin, rout = spec() if callable(spec) else spec
