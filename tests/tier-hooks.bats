@@ -1778,6 +1778,48 @@ print('ALL PREFIX ORDER CASES OK')
     [[ "$output" == *"ALL PREFIX ORDER CASES OK"* ]]
 }
 
+@test "cost-mirror: baked-path pricing (snapshot absent) — Opus 4/4.1 at 15/75, Opus 4.5+ at 5/25, Claude 3-era ids non-None (bd-1dm)" {
+    # bd-1dm: fix for Opus family pricing in the FALLBACK path. With the
+    # litellm snapshot present, these resolve correctly. This test exercises
+    # the baked path (PRICING_TABLE) by suppressing the snapshot, verifying
+    # that the table correctly prices:
+    # - Opus 4 and Opus 4.1 at 15/75 USD/MTok (not the flattened 5/25)
+    # - Opus 4.5 and Opus 5 remain at 5/25
+    # - Claude 3-era models are non-None (not missing)
+    run python3 -c "
+import os
+import importlib.util
+
+# Suppress the snapshot to force baked-path resolution
+os.environ['COST_MIRROR_PRICING_PATH'] = '$BATS_TEST_TMPDIR/nonexistent-snapshot.json'
+
+spec = importlib.util.spec_from_file_location('cost_mirror_under_test', '$MIRROR')
+cm = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(cm)
+
+def rate_pair(model):
+    r = cm.rates_for(model)
+    return (r['in'], r['out']) if r else None
+
+# Opus 4 and 4.1 should be 15/75 in baked path
+assert rate_pair('claude-opus-4-20250514') == (15.0, 75.0), f'Opus 4 should be 15/75, got {rate_pair(\"claude-opus-4-20250514\")}'
+assert rate_pair('claude-opus-4-1') == (15.0, 75.0), f'Opus 4.1 should be 15/75, got {rate_pair(\"claude-opus-4-1\")}'
+
+# Opus 4.5 and 5 should remain at 5/25
+assert rate_pair('claude-opus-4-5-20250929') == (5.0, 25.0), f'Opus 4.5 should be 5/25, got {rate_pair(\"claude-opus-4-5-20250929\")}'
+assert rate_pair('claude-opus-5-20260101') == (5.0, 25.0), f'Opus 5 should be 5/25, got {rate_pair(\"claude-opus-5-20260101\")}'
+
+# Claude 3-era models should be non-None in baked path
+assert cm.rates_for('claude-3-opus-20240229') is not None, 'Claude 3 Opus should be non-None'
+assert cm.rates_for('claude-3-5-sonnet-20240229') is not None, 'Claude 3 Sonnet should be non-None'
+assert cm.rates_for('claude-3-haiku-20240307') is not None, 'Claude 3 Haiku should be non-None'
+
+print('BAKED PATH PRICING OK')
+"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"BAKED PATH PRICING OK"* ]]
+}
+
 @test "cost-mirror: subagent role label prefers customAgentType over agentType (named-spawn sidecar)" {
     # NAMED spawns put the spawn's *name* in agentType and the true role in
     # customAgentType -- using agentType alone would mislabel this as
