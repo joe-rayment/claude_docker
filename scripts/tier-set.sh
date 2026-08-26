@@ -150,8 +150,16 @@ DERIVE="${TIER_DERIVE:-}"
 # overrides). Both candidates are the same python file — the installed copy
 # carries its shebang, the repo one may not be executable — so the caller
 # below falls back to python3 rather than assuming either.
+# Prefer the repo copy (sibling) over a PATH hit to avoid stale staged copies.
 MIRROR="${TIER_COST_MIRROR:-}"
-[ -n "$MIRROR" ] || MIRROR=$(command -v cost-mirror 2>/dev/null) || MIRROR="$(dirname "$0")/cost-mirror.py"
+if [ -z "$MIRROR" ]; then
+    repo_copy="$(dirname "$0")/cost-mirror.py"
+    if [ -f "$repo_copy" ]; then
+        MIRROR="$repo_copy"
+    else
+        MIRROR=$(command -v cost-mirror 2>/dev/null) || true
+    fi
+fi
 
 fm_model() {  # current frontmatter `model:` value of an agent file ('' if none/missing)
     grep -m1 '^model:' "$1" 2>/dev/null | sed 's/^model:[[:space:]]*//'
@@ -270,6 +278,17 @@ if [ $# -eq 1 ] && [ "$1" = "overdrive" ]; then
     set -f; set -- $trio; set +f
     W=$2; C=$3   # $1 (the resolved top) is discarded: .model keeps its exact current value
 elif [ $# -eq 1 ]; then
+    # Guard against unknown single arguments: if it's not a recognized alias,
+    # subcommand, or a model-like ID (containing hyphen/bracket), reject it.
+    resolved="$(alias_id "$1")"
+    if [ "$resolved" = "$1" ]; then
+        # Not an alias — check if it looks like a valid model ID
+        if ! echo "$resolved" | grep -qE '[.-\[]'; then
+            # No hyphen, dot, or bracket — likely a typo or unknown subcommand
+            echo "tier-set: unknown subcommand or model id: '$1'" >&2
+            exit 1
+        fi
+    fi
     # Guard the derive engine BEFORE using its output: a missing/non-executable
     # tier-derive makes $("$DERIVE" ...) fail for the wrong reason, and the
     # off-ladder else-branch below would silently flatten all three tiers onto
@@ -278,7 +297,7 @@ elif [ $# -eq 1 ]; then
         echo "tier-set: tier-derive not found or not executable ($DERIVE) — cannot derive the trio; nothing bound" >&2
         exit 1
     fi
-    pick top "$(alias_id "$1")" claude-opus-5 claude-sonnet-5 claude-haiku-4-5-20251001; R=$PICKED
+    pick top "$resolved" claude-opus-5 claude-sonnet-5 claude-haiku-4-5-20251001; R=$PICKED
     if trio=$("$DERIVE" "$R" 2>/dev/null); then   # derive worker+recon from the bound top
         # shellcheck disable=SC2086 # intentional split; set -f so ids like opus[1m] can't glob-expand
         set -f; set -- $trio; set +f
