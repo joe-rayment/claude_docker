@@ -3641,6 +3641,52 @@ print('SCHEMA GUARD OK')
     [[ "$output" == *"SCHEMA GUARD OK"* ]]
 }
 
+@test "cost-mirror: SessionStart hook refresh — hook exits 0 with network up and advances fetched_at" {
+    mk_litellm_payload
+    SNAP="$COST_MIRROR_STATE_DIR/pricing/snapshot.json"
+    # First refresh: creates snapshot
+    run python3 "$MIRROR" --refresh-pricing
+    [ "$status" -eq 0 ]
+    [ -f "$SNAP" ]
+    FIRST_FETCHED=$(jq -r '.fetched_at' "$SNAP")
+    # wait a moment to ensure timestamps differ
+    sleep 1
+    # Second refresh with TTL=0 to force a new fetch
+    COST_MIRROR_PRICING_TTL=0 run python3 "$MIRROR" --refresh-pricing
+    [ "$status" -eq 0 ]
+    SECOND_FETCHED=$(jq -r '.fetched_at' "$SNAP")
+    [ "$FIRST_FETCHED" != "$SECOND_FETCHED" ]
+}
+
+@test "cost-mirror: SessionStart hook refresh — hook exits 0 with egress blocked, snapshot untouched, no traceback" {
+    mk_litellm_payload
+    mk_pricing_snapshot
+    SNAP="$COST_MIRROR_STATE_DIR/pricing/snapshot.json"
+    BEFORE=$(md5sum "$SNAP" | awk '{print $1}')
+    # Block network traffic by pointing URL to unreachable address
+    export COST_MIRROR_PRICING_URL="http://127.0.0.1:1/nope.json"
+    # Force a refresh attempt by disabling TTL
+    export COST_MIRROR_PRICING_TTL=0
+    START=$SECONDS
+    run python3 "$MIRROR" --refresh-pricing
+    ELAPSED=$((SECONDS - START))
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+    [ $ELAPSED -lt 5 ]
+    AFTER=$(md5sum "$SNAP" | awk '{print $1}')
+    [ "$BEFORE" = "$AFTER" ]
+}
+
+@test "cost-mirror: SessionStart hook refresh — COST_MIRROR_DISABLE=1 exits 0 without fetching" {
+    mk_litellm_payload
+    SNAP="$COST_MIRROR_STATE_DIR/pricing/snapshot.json"
+    mkdir -p "$(dirname "$SNAP")"
+    export COST_MIRROR_DISABLE=1
+    run python3 "$MIRROR" --refresh-pricing
+    [ "$status" -eq 0 ]
+    [ ! -f "$SNAP" ]
+}
+
 # ── cost-mirror --report --csv ───────────────────────────────────────────────
 
 mk_csv_corpus() {
