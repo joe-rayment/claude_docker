@@ -262,7 +262,7 @@ hook_json() { printf '{"session_id":"%s","hook_event_name":"UserPromptSubmit"}' 
 @test "lane --prime --short: exact one-liner" {
     run lane --prime --short
     [ "$status" -eq 0 ]
-    [ "$output" = "[lane] route first — lane express|standard|deep · express: inline, no ceremony · standard: 1 slice + run-verify · deep: plan+contracts+verifier · ties→lighter, tripwires escalate one-way · scope: the question as asked" ]
+    [ "$output" = "[lane] route first — lane express|standard|deep · express: inline, no ceremony · standard: 1 slice + run-verify · deep: plan+contracts+verifier · ties→lighter, tripwires escalate one-way · declare standard when unsure — tripwires self-correct · Recon breadth ≠ depth: many reads + ≤2→standard · scope: the question as asked" ]
 }
 
 @test "lane --prime: needs no session id and writes no state" {

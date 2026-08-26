@@ -106,7 +106,7 @@ EOF
 
 prime_short() {
     cat <<'EOF'
-[lane] route first — lane express|standard|deep · express: inline, no ceremony · standard: 1 slice + run-verify · deep: plan+contracts+verifier · ties→lighter, tripwires escalate one-way · scope: the question as asked
+[lane] route first — lane express|standard|deep · express: inline, no ceremony · standard: 1 slice + run-verify · deep: plan+contracts+verifier · ties→lighter, tripwires escalate one-way · declare standard when unsure — tripwires self-correct · Recon breadth ≠ depth: many reads + ≤2→standard · scope: the question as asked
 EOF
 }
 
