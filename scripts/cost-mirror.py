@@ -579,13 +579,25 @@ def _sonnet5_rates(today=None):
 # first match wins, so the specific "claude-sonnet-5" entry must precede the
 # generic "claude-sonnet-" fallback. (in, out) pairs, or a zero-arg callable
 # for entries whose price varies (e.g. an intro-period discount).
+# Opus family pricing varies by version: split into specific entries with
+# more specific prefixes before generic fallbacks (bd-1dm).
 PRICING_TABLE = (
     ("claude-fable-", (10.00, 50.00)),
     ("claude-mythos-", (10.00, 50.00)),
-    ("claude-opus-", (5.00, 25.00)),
+    # Opus family: split by version to handle different pricing tiers.
+    # Only entries that *change* the rate from the 5/25 fallback are needed.
+    # More specific prefixes must come before more general ones.
+    ("claude-opus-4-1", (15.00, 75.00)),  # Opus 4.1 (note: also matches hypothetical 4-10+, 4-15+, etc.)
+    ("claude-opus-4-202", (15.00, 75.00)),  # Opus 4 (date-based models, e.g. claude-opus-4-20250514)
+    ("claude-opus-", (5.00, 25.00)),  # Fallback: Opus 5, Opus 4.5, Opus 4.6+ (if it exists), and Claude 3-era
     ("claude-sonnet-5", _sonnet5_rates),
     ("claude-sonnet-", (3.00, 15.00)),
     ("claude-haiku-", (1.00, 5.00)),
+    # Claude 3 family (historical models, pricing from litellm snapshot)
+    ("claude-3-opus-", (15.00, 75.00)),  # Claude 3 Opus
+    ("claude-3-5-sonnet-", (3.00, 15.00)),  # Claude 3.5 Sonnet
+    ("claude-3-sonnet-", (3.00, 15.00)),  # Claude 3 Sonnet
+    ("claude-3-haiku-", (1.00, 5.00)),  # Claude 3 Haiku
 )
 
 
