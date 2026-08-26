@@ -3687,6 +3687,38 @@ print('SCHEMA GUARD OK')
     [ ! -f "$SNAP" ]
 }
 
+@test "cost-mirror: SessionStart hook is defined in config/claude-settings.json, invokes --refresh-pricing, is backgrounded and timeout-capped" {
+    # This test READS the hook command from config/claude-settings.json to verify
+    # the SessionStart entry itself, not just that --refresh-pricing works.
+    # It discriminates between: (1) a bare --refresh-pricing flag existing, and
+    # (2) the new SessionStart hook entry that INVOKES it.
+
+    # Extract the SessionStart refresh-pricing hook command from the settings
+    hook_cmd=$(jq -r '[.hooks.SessionStart[].hooks[] | select(.command | contains("cost-mirror") and contains("refresh-pricing"))] | .[0].command' "$SETTINGS_JSON")
+    # Must find the hook in the JSON, not just have --refresh-pricing flag somewhere
+    [ "$hook_cmd" != "null" ]
+
+    # Verify the hook contains the three key properties: timeout cap, flag, and backgrounded
+    [[ "$hook_cmd" =~ "timeout 3" ]]
+    [[ "$hook_cmd" =~ "refresh-pricing" ]]
+    [[ "$hook_cmd" =~ "&" ]]
+
+    mk_litellm_payload
+    SNAP="$COST_MIRROR_STATE_DIR/pricing/snapshot.json"
+
+    # Run the hook command extracted from the settings file.
+    # The hook does two things: runs in background (the & at the end) and exits 0 immediately.
+    # We need to run it and wait for the background job to complete.
+    run bash -c "cd /workspace && $hook_cmd"
+    [ "$status" -eq 0 ]
+
+    # Wait for background job to complete (timeout 3 + fetch time, bounded by outer 5s)
+    sleep 2
+    [ -f "$SNAP" ]
+    FIRST_FETCHED=$(jq -r '.fetched_at' "$SNAP")
+    [ "$FIRST_FETCHED" != "null" ]
+}
+
 # ── cost-mirror --report --csv ───────────────────────────────────────────────
 
 mk_csv_corpus() {
