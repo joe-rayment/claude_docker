@@ -29,6 +29,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     jq \
     xvfb \
     imagemagick \
+    faketime \
     tmux \
     && locale-gen en_US.UTF-8 \
     && apt-get clean \
