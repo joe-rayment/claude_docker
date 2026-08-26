@@ -2218,8 +2218,19 @@ def render_all_sessions_table(session_rows, since_days=None, n_projects=None):
         project = row["project"]
         if len(project) > widths[0] - 1:
             project = project[: widths[0] - 2] + "…"
+
+        # Add epoch-span marker for multi-epoch sessions
+        session_label = row["session"]
+        epoch_models = row.get("epoch_models", set())
+        if len(epoch_models) > 1:
+            # Truncate session id by 1 char to make room for marker, keeping width at 10
+            if len(session_label) > 1:
+                session_label = session_label[:-1] + "†"
+            else:
+                session_label = "†"
+
         lines.append(fmt_row((
-            project, row["session"], modified, fmt(row["tokens"]), fmt_usd(row["actual"]),
+            project, session_label, modified, fmt(row["tokens"]), fmt_usd(row["actual"]),
         )))
     return "\n".join(lines)
 
@@ -2283,12 +2294,15 @@ def run_report_all(since_days, csv_path=None):
         csv_rows.extend(ledger_rows.values())
         tokens = sum(sum(c.values()) for c in session_total.values())
         actual = sum(_row_pricing(row)[0] for row in ledger_rows.values())
+        # Collect unique epoch_model values for this session to detect multi-epoch
+        epoch_models = set(r.get("epoch_model") for r in ledger_rows.values() if r.get("epoch_model"))
         session_rows.append({
             "project": project,
             "session": os.path.splitext(os.path.basename(tp))[0][:8],
             "mtime": mtime,
             "tokens": tokens,
             "actual": actual,
+            "epoch_models": epoch_models,
         })
 
     _save_all_cache(cache)
@@ -2321,12 +2335,15 @@ def run_report_all(since_days, csv_path=None):
         csv_rows.extend(info["rows"])
         tokens = sum(sum(c.values()) for c in info["totals"].values())
         actual = sum(_row_pricing(row)[0] for row in info["rows"])
+        # Collect unique epoch_model values for this session
+        epoch_models = set(r.get("epoch_model") for r in info["rows"] if r.get("epoch_model"))
         session_rows.append({
             "project": info["project"],
             "session": session_id[:8],
             "mtime": info["mtime"],
             "tokens": tokens,
             "actual": actual,
+            "epoch_models": epoch_models,
         })
 
     if not session_rows:
@@ -2352,6 +2369,16 @@ def run_report_all(since_days, csv_path=None):
     # pulled from lifetime history instead of a live file (bd finding).
     label = f"ALL sessions ({len(session_rows)} transcripts{since_label})"
 
+    # Build a mapping of side|model -> set of epoch_model values for render_report
+    epoch_models_by_side_model = {}
+    for row in csv_rows:
+        side_model = f"{row.get('side', '')}|{row.get('model', '')}"
+        epoch_model = row.get("epoch_model")
+        if epoch_model:
+            if side_model not in epoch_models_by_side_model:
+                epoch_models_by_side_model[side_model] = set()
+            epoch_models_by_side_model[side_model].add(epoch_model)
+
     print(render_all_sessions_table(session_rows, since_days, n_projects))
     if missing_count:
         print()
@@ -2360,14 +2387,14 @@ def run_report_all(since_days, csv_path=None):
             "lifetime history)"
         )
     print()
-    print(render_report(label, grand_total, billing_mode, billing_detail, pricing))
+    print(render_report(label, grand_total, billing_mode, billing_detail, pricing, epoch_models_by_side_model))
     print_lanes()
     # a CSV that was asked for and not written is a failed run, even though
     # the table above it rendered fine
     return write_rows_csv(csv_rows, csv_path) if csv_path else 0
 
 
-def render_report(tp, total, billing_mode="api", billing_detail="", pricing=None):
+def render_report(tp, total, billing_mode="api", billing_detail="", pricing=None, epoch_models_by_side_model=None):
     """Human-readable per-side|model table: token counts plus actual/at-top/
     saved dollars, with a totals row. cache-write is shown as one combined
     column (w5+w1) for compactness.
@@ -2481,6 +2508,19 @@ def render_report(tp, total, billing_mode="api", billing_detail="", pricing=None
             at_top = pr["at_epoch"]
             saved = at_top - actual
             label = model.replace("claude-", "") + ("" if rates else "?")
+
+            # Add epoch-span marker for multi-epoch rows without changing width
+            # Check if this side|model group spans multiple epoch_model values
+            side_model_key = f"{side}|{model}"
+            if epoch_models_by_side_model and side_model_key in epoch_models_by_side_model:
+                epochs = epoch_models_by_side_model[side_model_key]
+                if len(epochs) > 1 and len(label) > 0:
+                    # Truncate by 1 char to make room for the marker
+                    if len(label) > 1:
+                        label = label[:-1] + "†"
+                    else:
+                        label = "†"
+
             # side can be an arbitrary-length "worker:<role>" (customAgentType
             # is free text); truncate rather than let an unusually long role
             # name run into the model column with no gap between them.
@@ -2532,7 +2572,16 @@ def _render_single(tp, csv_path=None):
         _load_lifetime()["sessions"],
     )
     pricing = pricing_from_rows(rows.values())
-    print(render_report(tp, aggregate_total(files_state), billing_mode, billing_detail, pricing))
+    # Build epoch_models_by_side_model for render_report
+    epoch_models_by_side_model = {}
+    for row in rows.values():
+        side_model = f"{row.get('side', '')}|{row.get('model', '')}"
+        epoch_model = row.get("epoch_model")
+        if epoch_model:
+            if side_model not in epoch_models_by_side_model:
+                epoch_models_by_side_model[side_model] = set()
+            epoch_models_by_side_model[side_model].add(epoch_model)
+    print(render_report(tp, aggregate_total(files_state), billing_mode, billing_detail, pricing, epoch_models_by_side_model))
     print_lanes(tp)
     return write_rows_csv(rows.values(), csv_path) if csv_path else 0
 
