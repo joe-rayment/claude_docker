@@ -283,7 +283,7 @@ elif [ $# -eq 1 ]; then
     resolved="$(alias_id "$1")"
     if [ "$resolved" = "$1" ]; then
         # Not an alias — check if it looks like a valid model ID
-        if ! echo "$resolved" | grep -qE '[.-\[]'; then
+        if ! echo "$resolved" | grep -qE '[-.\[]'; then
             # No hyphen, dot, or bracket — likely a typo or unknown subcommand
             echo "tier-set: unknown subcommand or model id: '$1'" >&2
             exit 1
