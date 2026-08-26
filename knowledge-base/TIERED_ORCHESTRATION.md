@@ -428,11 +428,22 @@ replaces `~/.claude/projects` as the root the aggregate scans.
 **Durable lifetime rollup (added 2026-07-30).** Transcripts get deleted
 (disk-cleanup, manual pruning), which used to silently erase their spend
 from every future aggregate report. Both the hook (for the live session)
-and the aggregate report path now write each session's final
-`sessionId|side|model` counters into `lifetime.json` in the state dir —
-schema-versioned like the other state files. Writes are **REPLACE, never
+and the aggregate report path now write each session's rows into
+`lifetime.json` in the state dir — schema-versioned like the other state
+files. Since 2026-08-26 (`beads_claude_docker-8dg`) those rows are a
+**row ledger**: keyed `sessionId|side|model|bucket`, at the same time-bucket
+granularity the scan already accumulates (so a session's tier epochs outlive
+its transcript instead of being re-derived from a file that may be gone),
+and each row carries the five USD/MTok **rates that priced it** — frozen the
+first time the row is written, with their provenance — beside its tokens and
+dollars. Report-time code reads those rates rather than calling `rates_for`
+again, so a price change (e.g. sonnet-5's intro rate lapsing at
+`SONNET5_INTRO_CUTOFF`) prices new rows only and never re-prices history; a
+`LIFETIME_VERSION` 3 file is migrated in place to legacy rows marked
+`pricing_source: unknown`, never back-filled with rates they were not priced
+at. Writes are **REPLACE, never
 increment**: every existing row for a session_id is dropped before the
-freshly (re)scanned totals are written back in, so rescanning the same
+freshly (re)scanned rows are written back in, so rescanning the same
 transcript any number of times cannot inflate the durable total — this is
 the single load-bearing property and is tested explicitly (three
 successive aggregate runs must produce byte-identical output and an
