@@ -34,9 +34,11 @@ as "guard" — the gate never silently degrades to a weaker mode on a typo.
   warn-only  (alias: "warn") allow everything, but fire the repeating
              warn note per the cadence below. Never denies.
   guard      (DEFAULT) Edit/Write/NotebookEdit in the main loop are
-             DENIED — an implementation edit is the executor's seat,
-             streak or no — UNLESS the target path falls under the
-             orchestrator's own carve-out (see is_carved_out()).
+             DENIED — an implementation edit is the executor's seat —
+             UNLESS the target path falls under the orchestrator's own
+             carve-out (see is_carved_out()) OR the declared lane is
+             "standard" or "express" (see "Lane awareness" below: the
+             denial fires only for lane "deep" or no lane declared).
              Read/Grep/Glob/Bash are never denied under guard, only
              warned per the cadence below.
   enforce    guard, PLUS Read/Grep/Glob/Bash are also denied once the
@@ -103,9 +105,22 @@ the streak is still counted, and a NEW warn (EXPRESS_WARN_AT, repeating
 every EXPRESS_WARN_EVERY, sharing the same warned_at watermark) fires
 instead of the delegation nudge — a long grind under express is the
 mis-routing signal, and telling that session to delegate would contradict
-the lane it declared. Every other lane value — standard, deep, unset,
-unknown, or an unreadable/absent state file — is byte-identical to the
-pre-lane behavior: the same never-weaker principle as get_mode()'s
+the lane it declared.
+
+Standard lane (beads_claude_docker-dl2) also suspends the guard/enforce
+edit denial, though NOT the rest of the pre-lane behavior: the standard
+rubric already allows a one-slice task to finish inline, so a hard deny
+there just forces an executor spawn the rubric never asked for. Unlike
+express, standard gets no dedicated warn — it falls through to the
+ordinary streak warn cadence (WARN_AT/WARN_EVERY) below like any other
+allowed call, it just never hits emit_deny(). Because the guard/enforce
+edit-deny check is one shared branch (mode in ("guard", "enforce")),
+enforce inherits this relaxation too — same as it already inherits
+express's — there is no separate enforce-only edit rule to preserve.
+Deep and unset (which also covers any unrecognized lane name or an
+unreadable/absent state file) are the only two lane readings that still
+hit the unconditional edit deny: byte-identical to the pre-lane
+behavior, the same never-weaker principle as get_mode()'s
 unrecognized-value fallback.
 
 Failure posture: fail SILENT AND OPEN. Any error — malformed stdin,
@@ -441,7 +456,8 @@ def main():
         return
 
     is_edit_tool = tool_name in EDIT_TOOLS
-    express = get_lane(session_id) == "express"
+    lane = get_lane(session_id)
+    express = lane == "express"
 
     if express:
         # The lane already says this is a one-edit, few-lookup task: no
@@ -460,7 +476,12 @@ def main():
         save_state(state_path, state)
         return
 
-    if mode in ("guard", "enforce") and is_edit_tool and not is_carved_out(payload, tool_name):
+    if (
+        mode in ("guard", "enforce")
+        and is_edit_tool
+        and not is_carved_out(payload, tool_name)
+        and lane in ("deep", "unset")
+    ):
         state["denies"] += 1
         save_state(state_path, state)
         emit_deny(
