@@ -54,6 +54,8 @@
 #   tier-set <top> <worker> <recon> # 3 models -> fully independent 3-level config
 #   tier-set overdrive              # lift the worker CAP on the current top (see below)
 #   tier-set show                   # print the current binding
+#   tier-set cost [report flags]    # the spend report — a verbatim pass-through
+#                                   # to `cost-mirror --report` (see that branch)
 #   TIER_NO_PROBE=1 tier-set ...    # never probe, even off-ladder ids (bind blind)
 #   TIER_PROBE=1 tier-set ...       # probe EVERY candidate (downward degradation)
 #
@@ -80,7 +82,8 @@
 # else — never clobber a binding we can't place on the ladder. The already-bound
 # top is not re-probed on this path: it is the model the session is running.
 #
-# TIER_SETTINGS and TIER_AGENTS_DIR override the paths (used by the test suite).
+# TIER_SETTINGS, TIER_AGENTS_DIR and TIER_COST_MIRROR override the paths (used
+# by the test suite).
 
 set -u
 SETTINGS="${TIER_SETTINGS:-$HOME/.claude/settings.json}"
@@ -142,6 +145,13 @@ pick() {
 # TIER_DERIVE overrides the lookup (test suite / non-standard layouts).
 DERIVE="${TIER_DERIVE:-}"
 [ -n "$DERIVE" ] || DERIVE=$(command -v tier-derive 2>/dev/null) || DERIVE="$(dirname "$0")/tier-derive.sh"
+
+# Same lookup for cost-mirror, which backs `tier-set cost` (TIER_COST_MIRROR
+# overrides). Both candidates are the same python file — the installed copy
+# carries its shebang, the repo one may not be executable — so the caller
+# below falls back to python3 rather than assuming either.
+MIRROR="${TIER_COST_MIRROR:-}"
+[ -n "$MIRROR" ] || MIRROR=$(command -v cost-mirror 2>/dev/null) || MIRROR="$(dirname "$0")/cost-mirror.py"
 
 fm_model() {  # current frontmatter `model:` value of an agent file ('' if none/missing)
     grep -m1 '^model:' "$1" 2>/dev/null | sed 's/^model:[[:space:]]*//'
@@ -214,6 +224,23 @@ if [ $# -eq 0 ] || [ "${1:-}" = "show" ]; then   # no args or `show` -> just pri
     echo "verifier & oracle inherit the orchestrator's model; /model is the primary in-session lever for the derived default."
     echo "worker/recon bindings apply to NEW sessions (agent files are snapshotted at session start); the orchestrator moves only via /model."
     exit 0
+fi
+
+if [ "${1:-}" = "cost" ]; then
+    # `/tier cost` — the spend report, wired here because /tier is the surface
+    # the user already types for tier questions and cost IS a tier question.
+    # Everything after `cost` is handed to cost-mirror --report VERBATIM: this
+    # is a pass-through, never an allowlist, so a flag the report grows later
+    # (--csv, say) works through /tier the day it lands, with no change here.
+    # exec, so the report's exit status and stderr are the ones the caller
+    # sees — a failed report must never read as a success.
+    shift
+    if [ ! -f "$MIRROR" ]; then
+        echo "tier-set: cost-mirror not found at '$MIRROR' — cannot render the spend report" >&2
+        exit 1
+    fi
+    [ -x "$MIRROR" ] && exec "$MIRROR" --report "$@"
+    exec python3 "$MIRROR" --report "$@"
 fi
 
 explicit=0
