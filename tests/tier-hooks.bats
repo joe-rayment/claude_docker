@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+bats_require_minimum_version 1.5.0   # `run --separate-stderr` (tier-set cost)
 # tier-hooks.bats — the spend-enforcement / tier-reminder hooks:
 #   tier-gate      PreToolUse[Agent]     default-cheap model for generic spawns
 #   tier-reconcile UserPromptSubmit/SessionStart  agent bindings track .model
@@ -328,6 +329,190 @@ fm_of() {  # frontmatter `model:` value of an agent file
     [ "$status" -ne 0 ]
     [ ! -f "$TS" ]
     [ "$(cat "$TS_AGENTS/executor.md")" = "$before_e" ]
+}
+
+# ── tier-set cost (the /tier cost spend report) ──────────────────────────────
+
+# TIER_COST_MIRROR pins the REPO cost-mirror in every case below, exactly as
+# TIER_DERIVE pins the repo tier-derive above and for the same reason: the
+# baked /usr/local/bin copy is a build artifact that lags the working tree,
+# and these assertions are about THIS tree's wrapper, not that snapshot.
+# MIRROR_BIN swaps in a stub where the case is about the hand-off itself
+# rather than about the report.
+tier_cost() {  # `tier-set cost …` against the fixture — never the real ~/.claude
+    run env TIER_SETTINGS="$TS" TIER_AGENTS_DIR="$TS_AGENTS" TIER_DERIVE="$DERIVE" \
+        TIER_COST_MIRROR="${MIRROR_BIN:-$MIRROR}" TIER_NO_PROBE=1 sh "$TSET" cost "$@"
+}
+
+tier_cost_err() {  # same, with stderr captured apart from stdout
+    run --separate-stderr env TIER_SETTINGS="$TS" TIER_AGENTS_DIR="$TS_AGENTS" \
+        TIER_DERIVE="$DERIVE" TIER_COST_MIRROR="${MIRROR_BIN:-$MIRROR}" \
+        TIER_NO_PROBE=1 sh "$TSET" cost "$@"
+}
+
+cost_projects() {  # a two-session corpus for the report to have something to say
+    CDIR="$BATS_TEST_TMPDIR/cost-projects"
+    mkdir -p "$CDIR/proj-a" "$CDIR/proj-b"
+    printf '{"message":{"model":"claude-opus-5","usage":{"output_tokens":10}}}\n' \
+        > "$CDIR/proj-a/sess-a.jsonl"
+    printf '{"message":{"model":"claude-haiku-4-5-20251001","usage":{"output_tokens":20}}}\n' \
+        > "$CDIR/proj-b/sess-b.jsonl"
+    export COST_MIRROR_PROJECTS_DIR="$CDIR"
+}
+
+argv_stub() {  # a cost-mirror stand-in that prints its argv, one argument per line
+    MIRROR_BIN="$BATS_TEST_TMPDIR/mirror-stub.py"
+    cat > "$MIRROR_BIN" <<'PY'
+#!/usr/bin/env python3
+import sys
+for a in sys.argv[1:]:
+    print(a)
+PY
+    chmod +x "$MIRROR_BIN"
+}
+
+@test "tier-set cost: renders byte-for-byte what cost-mirror --report renders" {
+    tier_set_fixture claude-fable-5
+    cost_projects
+    # cold and symmetric: a bare --report writes a scan cache and lifetime.json,
+    # so each run gets its OWN state dir instead of reading the other's leftovers
+    export COST_MIRROR_STATE_DIR="$BATS_TEST_TMPDIR/cm-direct"
+    run python3 "$MIRROR" --report
+    [ "$status" -eq 0 ]
+    direct="$output"
+    export COST_MIRROR_STATE_DIR="$BATS_TEST_TMPDIR/cm-wrapped"
+    tier_cost
+    [ "$status" -eq 0 ]
+    [ "$output" = "$direct" ]
+    # a wrapper that printed a banner of its own, or swallowed the table, differs above
+    [[ "$output" == *"cost-mirror report"* ]]
+    [[ "$output" == *"TOTAL"* ]]
+}
+
+@test "tier-set cost: trailing arguments reach cost-mirror --report verbatim, never an allowlist" {
+    tier_set_fixture claude-fable-5
+    argv_stub
+    # --csv does not exist on the report yet (beads_claude_docker-fbi): a
+    # transparent pass-through carries it anyway, with no second change here
+    tier_cost --csv /tmp/rows.csv --since 7d
+    [ "$status" -eq 0 ]
+    [ "${lines[0]}" = "--report" ]
+    [ "${lines[1]}" = "--csv" ]
+    [ "${lines[2]}" = "/tmp/rows.csv" ]
+    [ "${lines[3]}" = "--since" ]
+    [ "${lines[4]}" = "7d" ]
+    [ "${#lines[@]}" -eq 5 ]
+}
+
+@test "tier-set cost: a glob or space-bearing argument survives the hand-off unmangled" {
+    tier_set_fixture claude-fable-5
+    argv_stub
+    # $* (or an unquoted $@) splits "two words" in half and expands a* against
+    # the cwd; the decoy makes that expansion deterministic instead of depending
+    # on whatever happens to sit in the directory bats was started from
+    cd "$BATS_TEST_TMPDIR"
+    touch a-decoy
+    tier_cost --session 'a*' --note 'two words'
+    [ "$status" -eq 0 ]
+    [ "${lines[0]}" = "--report" ]
+    [ "${lines[1]}" = "--session" ]
+    [ "${lines[2]}" = "a*" ]
+    [ "${lines[3]}" = "--note" ]
+    [ "${lines[4]}" = "two words" ]
+    [ "${#lines[@]}" -eq 5 ]
+}
+
+@test "tier-set cost --since/--session: identical to the same flags on cost-mirror --report" {
+    tier_set_fixture claude-fable-5
+    cost_projects
+    touch -d "3 days ago" "$CDIR/proj-a/sess-a.jsonl"
+
+    export COST_MIRROR_STATE_DIR="$BATS_TEST_TMPDIR/cm-since-direct"
+    run python3 "$MIRROR" --report --since 1d
+    [ "$status" -eq 0 ]
+    since_direct="$output"
+    export COST_MIRROR_STATE_DIR="$BATS_TEST_TMPDIR/cm-since-wrapped"
+    tier_cost --since 1d
+    [ "$status" -eq 0 ]
+    [ "$output" = "$since_direct" ]
+    # the flag really narrowed — without this both sides could agree and be wrong
+    [[ "$output" == *"sess-b"* ]]
+    [[ "$output" != *"sess-a"* ]]
+
+    export COST_MIRROR_STATE_DIR="$BATS_TEST_TMPDIR/cm-sess-direct"
+    run python3 "$MIRROR" --report --session sess-b
+    [ "$status" -eq 0 ]
+    sess_direct="$output"
+    export COST_MIRROR_STATE_DIR="$BATS_TEST_TMPDIR/cm-sess-wrapped"
+    tier_cost --session sess-b
+    [ "$status" -eq 0 ]
+    [ "$output" = "$sess_direct" ]
+    [[ "$output" == *"sess-b"* ]]
+}
+
+@test "tier-set cost: a failing report propagates its exit status and its stderr, unfiltered" {
+    tier_set_fixture claude-fable-5
+    export COST_MIRROR_PROJECTS_DIR="$BATS_TEST_TMPDIR/cost-empty"
+    mkdir -p "$COST_MIRROR_PROJECTS_DIR"
+    export COST_MIRROR_STATE_DIR="$BATS_TEST_TMPDIR/cm-fail"
+    tier_cost_err
+    [ "$status" -eq 1 ]
+    [ -z "$output" ]
+    [[ "$stderr" == *"no transcript files found"* ]]
+
+    # a bad flag VALUE is the report's own complaint, still on stderr, still nonzero
+    tier_cost_err --since notaday
+    [ "$status" -eq 1 ]
+    [ -z "$output" ]
+    [[ "$stderr" == *"--since expects"* ]]
+}
+
+@test "tier-set cost: a missing cost-mirror fails loud instead of exiting 0 with nothing" {
+    tier_set_fixture claude-fable-5
+    MIRROR_BIN="$BATS_TEST_TMPDIR/no-such-cost-mirror"
+    tier_cost
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"cost-mirror"* ]]
+}
+
+@test "tier-set cost: binds nothing — 'cost' is a subcommand, never a model id" {
+    tier_set_fixture claude-fable-5
+    cost_projects
+    export COST_MIRROR_STATE_DIR="$BATS_TEST_TMPDIR/cm-nobind"
+    before_s=$(cat "$TS")
+    before_e=$(cat "$TS_AGENTS/executor.md")
+    before_c=$(cat "$TS_AGENTS/scout.md")
+    tier_cost
+    [ "$status" -eq 0 ]
+    [ "$(cat "$TS")" = "$before_s" ]
+    [ "$(cat "$TS_AGENTS/executor.md")" = "$before_e" ]
+    [ "$(cat "$TS_AGENTS/scout.md")" = "$before_c" ]
+}
+
+@test "tier-set cost: the subcommand shadows no binding form — bare, 1-arg, 3-arg and overdrive still bind" {
+    tier_set_fixture claude-fable-5
+    tier_set
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"orchestrator (settings model)"* ]]
+    [[ "$output" == *"worker / executor (frontmatter)"* ]]
+    [[ "$output" == *"recon / scout (frontmatter)"* ]]
+    [[ "$output" == *"derived trio for top=claude-fable-5"* ]]
+
+    tier_set opus
+    [ "$status" -eq 0 ]
+    jq -e '.model == "claude-opus-5"' "$TS"
+    [ "$(fm_of "$TS_AGENTS/executor.md")" = "claude-sonnet-5" ]
+    [ "$(fm_of "$TS_AGENTS/scout.md")" = "claude-haiku-4-5-20251001" ]
+
+    tier_set opus sonnet haiku
+    [ "$status" -eq 0 ]
+    jq -e '.env.TIER_EXPLICIT_PIN == "1"' "$TS"
+    [ "$(fm_of "$TS_AGENTS/executor.md")" = "claude-sonnet-5" ]
+
+    tier_set overdrive
+    [ "$status" -eq 0 ]
+    jq -e '.env.TIER_OVERDRIVE == "1"' "$TS"
+    [ "$(fm_of "$TS_AGENTS/executor.md")" = "claude-opus-5" ]
 }
 
 # ── tier-gate ────────────────────────────────────────────────────────────────
