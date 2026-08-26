@@ -4488,6 +4488,57 @@ PYEOF
     [[ "$SESSION_LINE" != *"†"* ]]
 }
 
+@test "cost-mirror --report: every token cell in render_report stays numeric, even on a multi-epoch row — the marker lives on its own annotation line" {
+    # bd-q6c corrective slice 3: the FIRST fix for the epoch-span marker
+    # fused it onto the "in" token count ("0†"), which the verifier
+    # correctly refused (not byte-identical, not numeric). This pins the
+    # replacement: the flagged row's own 9 fields stay pristine and the
+    # marker moves to a separate annotation line directly below it.
+    mk_epoch_transcript
+    REP="$BATS_TEST_TMPDIR/numeric.txt"
+    run sh -c "python3 '$MIRROR' --report '$TP' > '$REP'"
+    [ "$status" -eq 0 ]
+
+    # `read -a` against a multi-line grep capture only ever consumes the
+    # FIRST line, so this is the worker row's own line, never the
+    # annotation line appended directly below it (both start with "worker").
+    WORKER_LINE=$(grep '^worker' "$REP" | head -1)
+    read -r -a WL <<< "$WORKER_LINE"
+    [ "${#WL[@]}" -eq 9 ]
+    [[ "$WORKER_LINE" != *"†"* ]]
+    [ "${WL[6]}" = '$20' ]
+    [ "${WL[7]}" = '$60' ]
+    [ "${WL[8]}" = '$40' ]
+
+    run python3 - "$REP" <<'PY'
+import re
+import sys
+
+data_rows = 0
+for line in open(sys.argv[1]):
+    m = re.match(
+        r'^(main|worker\S*)\s+(\S+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(\S+)\s+(\S+)\s*$',
+        line,
+    )
+    if m:
+        data_rows += 1
+        for tok in m.groups()[2:6]:
+            assert tok.isdigit(), ("non-numeric token cell", line)
+    elif line.startswith("worker") and "†" in line:
+        # the annotation line itself: must never look like a 9-field data
+        # row to reconcile_csv's own heuristic (len(parts) == 9 and
+        # parts[6] starting with "$"), or a future re-wording of the note
+        # could silently poison --csv reconciliation again
+        parts = line.split()
+        looks_like_row = len(parts) == 9 and parts[6].lstrip("-").startswith("$")
+        assert not looks_like_row, ("annotation line parses as a data row", parts)
+assert data_rows == 3, ("expected 2 main rows + 1 worker row", data_rows)
+print(f"OK: {data_rows} numeric data rows, annotation line not row-shaped")
+PY
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"OK:"* ]]
+}
+
 @test "cost-mirror --report: overdrive marks at-top and saved columns as n/a (OVERDRIVE)" {
     # When TIER_OVERDRIVE=1, the at-top and saved columns should show "n/a (OVERDRIVE)"
     # since under overdrive the worker IS the top model, so there's no savings to report.

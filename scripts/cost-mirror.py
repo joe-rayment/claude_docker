@@ -2600,22 +2600,44 @@ def render_report(tp, total, billing_mode="api", billing_detail="", pricing=None
             at_top = pr["at_epoch"]
             saved = at_top - actual
             label = model.replace("claude-", "") + ("" if rates else "?")
-
-            # Add epoch-span marker for multi-epoch rows, appended to the "in" token count
-            # (parts[2]) so it's visible but doesn't interfere with model field parsing.
-            # Reconciliation only uses side/model keys and dollar amounts, not token counts.
-            side_model_key = f"{side}|{model}"
             in_str = str(c["in"])
-            if epoch_models_by_side_model and side_model_key in epoch_models_by_side_model:
-                epochs = epoch_models_by_side_model[side_model_key]
-                if len(epochs) > 1:
-                    # Append marker directly to the "in" count without spaces
-                    in_str = in_str + "†"
 
             # side can be an arbitrary-length "worker:<role>" (customAgentType
             # is free text); truncate rather than let an unusually long role
             # name run into the model column with no gap between them.
             side_label = side if len(side) <= widths[0] - 1 else side[: widths[0] - 2] + "…"
+
+            # Epoch-span note (bd-q6c, corrective slice 3): a side|model row
+            # can group ledger rows priced at more than one epoch_model (a
+            # worker whose buckets straddle a /tier change reprices against
+            # a different orchestrator epoch per bucket -- see
+            # build_session_rows). This row's own 9 fields cannot carry the
+            # marker: reconcile_csv (tests/tier-hooks.bats) keys off exactly
+            # (side, model) and value-matches actual $/at-top $ character for
+            # character, and the mid-session-/tier-change test reads saved $
+            # off a fixed field index -- so gluing a marker onto ANY of the
+            # 9 fields either breaks that matching or (for the token columns)
+            # makes a token count non-numeric. Tried both; both regressed.
+            # Instead the marker lives on its own annotation line directly
+            # below the row, prefixed with the same side text so it is still
+            # visible to a reader (and to a `grep '^side'` capture) but
+            # invisible to anything that parses the table as fields:
+            # reconcile_csv's data-row heuristic (exactly 9 whitespace
+            # fields, field 6 starting with "$") never matches this line's
+            # word count, and `read -a` against a multi-line grep capture
+            # only ever consumes the FIRST line -- the untouched data row.
+            side_model_key = f"{side}|{model}"
+            epoch_note = None
+            if epoch_models_by_side_model and side_model_key in epoch_models_by_side_model:
+                epochs = epoch_models_by_side_model[side_model_key]
+                if len(epochs) > 1:
+                    epoch_list = ", ".join(sorted(e.replace("claude-", "") for e in epochs))
+                    epoch_note = (
+                        side_label.ljust(widths[0])
+                        + f"† spans {len(epochs)} tier epochs ({epoch_list})"
+                        " — see --csv for per-row rates"
+                    )
+
             if is_overdrive:
                 lines.append(fmt_row((
                     side_label, label, in_str, str(c["out"]), str(c["cr"]), str(c["w5"] + c["w1"]),
@@ -2626,6 +2648,8 @@ def render_report(tp, total, billing_mode="api", billing_detail="", pricing=None
                     side_label, label, in_str, str(c["out"]), str(c["cr"]), str(c["w5"] + c["w1"]),
                     fmt_usd(actual), fmt_usd(at_top), fmt_usd(saved),
                 )))
+            if epoch_note:
+                lines.append(epoch_note)
             for k in COUNTER_KEYS:
                 grand[k] += c[k]
             tot_actual += actual
