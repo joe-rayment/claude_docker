@@ -785,17 +785,33 @@ def refresh_pricing():
             if ts is not None and 0 <= time.time() - ts < ttl:
                 return 0
     url = os.environ.get("COST_MIRROR_PRICING_URL") or PRICING_URL
+    timeout = _pricing_env_float("COST_MIRROR_PRICING_TIMEOUT", PRICING_TIMEOUT, 0.1)
     try:
         import urllib.request
 
         req = urllib.request.Request(url, headers={"User-Agent": "cost-mirror"})
-        with urllib.request.urlopen(
-            req, timeout=_pricing_env_float("COST_MIRROR_PRICING_TIMEOUT", PRICING_TIMEOUT, 0.1)
-        ) as resp:
-            body = resp.read(PRICING_MAX_BYTES + 1)
-        if len(body) > PRICING_MAX_BYTES:
-            return 0
-        rates = pricing_rates_from_payload(json.loads(body.decode("utf-8")))
+        # urlopen's timeout is per socket OPERATION, not total: a peer that
+        # trickles a byte inside every window keeps it alive indefinitely.
+        # This is meant to run from a session hook, so the wall has to be on
+        # total ELAPSED time — hence a deadline checked around a chunked read,
+        # which also caps the payload without buffering an unbounded one.
+        # read1, not read: read() blocks until it has the full count, so the
+        # deadline below would only be consulted between whole chunks and a
+        # trickling peer would never reach it (measured: a 1-byte/s server
+        # held a read(256k) open for a minute against a 3s timeout). read1
+        # returns whatever has arrived, so the wall is checked per arrival.
+        deadline = time.monotonic() + timeout
+        chunks, total = [], 0
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            while True:
+                chunk = resp.read1(262144)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > PRICING_MAX_BYTES or time.monotonic() > deadline:
+                    return 0
+                chunks.append(chunk)
+        rates = pricing_rates_from_payload(json.loads(b"".join(chunks).decode("utf-8")))
         if not rates:
             return 0  # an empty result means the payload changed shape, not that pricing vanished
         _write_pricing_snapshot(path, url, rates)
