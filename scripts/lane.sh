@@ -96,7 +96,9 @@ prime_full() {
              → one-sentence approach, then inline or ONE executor slice; verify by running the result once; no acceptance contract or verifier unless the claim is contested.
   deep     — ANY of: ≥3 files or an interface/schema/config contract; multiple reasonable approaches with real tradeoffs; ambiguity needing interpretation; hard to reverse (migration, deletion, push, publish); security or data-integrity surface; user asked for thoroughness.
              → full protocol: plan first, beads with acceptance contracts, executor slices, verifier sign-off.
+  Recon breadth is not implementation depth: many files read with ≤2 files changed routes standard — scouts deliver deep-grade evidence in any lane.
   Ties go to the LIGHTER lane, with one-way tripwires: scope outgrows the rubric, a fix attempt fails, hidden ambiguity or unexpected breakage surfaces → escalate exactly one lane (`lane <heavier> --why "…"`), announce it, and never de-escalate within the same prompt.
+  When genuinely unsure between standard and deep, declare standard — tripwires self-correct upward mid-prompt; over-routing has no correction path.
   Scope: classify and answer the request AS ASKED — never the harder question it could become. Adjacent issues or out-of-scope risks get one line at most, never investigation; discovering them is NOT a tripwire — only the asked task's own needs escalate.
   User override always wins: "quick"/"just" biases light; "plan"/"thorough"/"audit" forces deep. Explicit user constraints beat every rubric line.
 EOF

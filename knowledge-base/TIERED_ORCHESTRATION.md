@@ -841,6 +841,10 @@ no stake — never by the worker grading itself.
   for a solo per-claim check — unbundling as the old wording prescribed
   would have cost 1.6-2.8x more. Never bundle claims from DIFFERENT
   workers, and never bundle a claim that depends on another claim's fix.
+  The same batching applies across beads, not just across claims within
+  one: one verifier run may cover several beads sharing an evidence
+  surface — batch them; verifiers are per evidence surface, never per
+  bead.
 - The verdict set is `CONFIRMED`/`REFUTED`/`PARTIAL`/`INCONCLUSIVE` — the
   verifier returns a per-claim **Ledger** line plus the rollup verdict, not
   a transcript. `PARTIAL` (some numbered claims hold, others don't or
@@ -893,7 +897,7 @@ reads, and it is the **measurement** record.
 |------|--------------|-----------------|
 | **express** | ALL of: ≤1 file (or none); mechanical/cosmetic, or answerable from context or one lookup; no design choice; trivially reversible; no new dependency/interface/contract | inline now, ≈5 tool calls — no plan, no bead, no executor, no verifier; verify with one run/screenshot when observable, else the diff |
 | **standard** | one well-understood slice, low-to-moderate risk, no architectural choice | one-sentence approach, then inline or ONE executor slice; verify by running the result once; no acceptance contract or verifier unless the claim is contested |
-| **deep** | ANY of: ≥3 files or an interface/schema/config contract; multiple approaches with real tradeoffs; ambiguity needing interpretation; hard to reverse; security or data-integrity surface; thoroughness asked for | the full protocol above: plan, beads with CHECK/PASS-IF contracts, executor slices, verifier sign-off |
+| **deep** | ANY of: ≥3 files or an interface/schema/config contract; multiple approaches with real tradeoffs; ambiguity needing interpretation; hard to reverse; security or data-integrity surface; thoroughness asked for. Recon breadth is not implementation depth: many files read with ≤2 files changed routes standard — scouts deliver deep-grade evidence in any lane. | the full protocol above: plan, beads with CHECK/PASS-IF contracts, executor slices, verifier sign-off — one verifier run may cover several beads sharing an evidence surface, batch them; verifiers are per evidence surface, never per bead |
 
 The lanes **scope the rest of this doc's protocol** rather than sitting
 beside it. "Trust, but verify" above is written as an unqualified mandate
@@ -923,7 +927,9 @@ safe:
   (`lane <heavier> --why "…"`), announced in the reply, and never
   de-escalated within the same prompt. The no-thrash rule is what makes
   the optimistic default safe: mis-routing down costs one escalation, not
-  a wrong answer.
+  a wrong answer. When genuinely unsure between standard and deep, declare
+  standard — tripwires self-correct upward mid-prompt; over-routing has no
+  correction path.
 - **Scope discipline is part of the rubric, not a style note.** Classify
   and answer the request as asked, never its maximal interpretation. An
   adjacent issue noticed mid-task gets one line at most, never
@@ -1105,6 +1111,29 @@ reconciler replaces them with concrete ids on first run.
 
 Revision log (each reversible via git on the listed files):
 
+- **2026-08-26 — lane rubric: ties-go-lighter teeth, recon-breadth
+  clarifier, verifier batching (bead beads_claude_docker-epe):**
+  `scripts/lane.sh`'s `--prime` rubric gains two lines — "declare standard"
+  when genuinely unsure (tripwires self-correct upward; over-routing does
+  not), and "recon breadth is not implementation depth" (files a scout
+  reads don't count toward the deep-lane file threshold, only files
+  changed do). `CLAUDE.md` and `config/claude-user-memory.md` carry the
+  same two insertions in their lane rubric prose, plus a third: verifier
+  runs batch by evidence surface across beads, never one per bead — this
+  doc's lane table and "Trust, but verify" section gain the same batching
+  line. Evidence: `log.jsonl` showed 9 of 21 routed prompts declared deep
+  with zero mid-prompt escalations (the 5–15% escalation-rate target above
+  implies routing sits above actual need — a lane that never escalates
+  down was arguably never deep), and verifier spawns were tracked running
+  roughly 1:1 against executor sessions, i.e. one verifier per bead rather
+  than per evidence surface. Also fixed in passing: `config/claude-user-memory.md`'s
+  deep-lane row previously read "1 `verifier` per bead", contradicting the
+  "per evidence surface" model documented everywhere else in this file —
+  corrected to "per evidence surface" so the new "never per bead" clause
+  isn't self-contradictory in the same cell. Rollback = revert
+  `scripts/lane.sh`, `CLAUDE.md`, `config/claude-user-memory.md`, and this
+  doc; `lane.sh` fails open, so a partial revert degrades to the
+  pre-change rubric text rather than breaking the hook.
 - **2026-08-11 — complexity router (lanes):** `scripts/lane.sh` added (state,
   log, and the single home of the rubric wording) plus `tests/lane.bats`;
   `scripts/delegation-gate.py` gains lane awareness (express carves out the
