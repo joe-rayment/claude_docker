@@ -4620,6 +4620,73 @@ PY
     [[ "$TOTAL_LINE" != *"n/a (OVERDRIVE)"* ]]
 }
 
+@test "cost-mirror --report: overdrive columns are wide enough that money and marker never fuse" {
+    # Regression for bead gu4's reopen: "n/a (OVERDRIVE)" (15 chars) and the
+    # header's "at-top \$ (n/a)" / "saved \$ (n/a)" (14/13 chars) overran the
+    # plain 10-char money column. rjust never truncates an oversized value,
+    # so the marker ran straight into its neighbour with no gap at all --
+    # "\$230n/a (OVERDRIVE)n/a (OVERDRIVE)" in raw piped text, on EVERY row
+    # including TOTAL, and in the header itself
+    # ("actual \$*at-top \$ (n/a)saved \$ (n/a)"). The old test only checked
+    # substring presence, never layout, so a green suite never saw it.
+    TP="$BATS_TEST_TMPDIR/proj-overdrive-width/sess.jsonl"
+    mkdir -p "$BATS_TEST_TMPDIR/proj-overdrive-width"
+    {
+        printf '{"timestamp":"2026-07-29T00:00:00Z","message":{"model":"claude-fable-5","usage":{"input_tokens":1156,"output_tokens":659967,"cache_read_input_tokens":117634736,"cache_creation":{"ephemeral_5m_input_tokens":3000000,"ephemeral_1h_input_tokens":992524}}}}\n'
+        printf '{"isSidechain":true,"timestamp":"2026-07-29T00:01:00Z","message":{"model":"claude-haiku-4-5-20251001","usage":{"input_tokens":166,"output_tokens":2883,"cache_read_input_tokens":397872,"cache_creation":{"ephemeral_5m_input_tokens":50000,"ephemeral_1h_input_tokens":23768}}}}\n'
+    } > "$TP"
+
+    mkdir -p "$BATS_TEST_TMPDIR/settings"
+    SETTINGS_OVERDRIVE="$BATS_TEST_TMPDIR/settings/settings-width.json"
+    printf '{"env":{"TIER_OVERDRIVE":"1"}}' > "$SETTINGS_OVERDRIVE"
+
+    export COST_MIRROR_SETTINGS_PATH="$SETTINGS_OVERDRIVE"
+    REP="$BATS_TEST_TMPDIR/overdrive-report.txt"
+    run sh -c "python3 '$MIRROR' --report '$TP' > '$REP'"
+    [ "$status" -eq 0 ]
+
+    run python3 - "$REP" <<'PY'
+import re
+import sys
+
+text = open(sys.argv[1]).read()
+lines = text.splitlines()
+
+# 1) No occurrence of the marker may be glued to its neighbour: the
+# character immediately before/after "n/a (OVERDRIVE)" must be
+# whitespace or a line boundary, on every line it appears (header,
+# every side|model row, and TOTAL).
+positions = [m.start() for m in re.finditer(re.escape("n/a (OVERDRIVE)"), text)]
+assert positions, "no overdrive markers found in report"
+for pos in positions:
+    before = text[pos - 1] if pos > 0 else "\n"
+    assert before in " \n", ("marker glued to preceding text", text[max(0, pos - 20):pos + 20])
+    end = pos + len("n/a (OVERDRIVE)")
+    after = text[end] if end < len(text) else "\n"
+    assert after in " \n", ("marker glued to following text", text[pos:end + 20])
+
+# 2) header/data/TOTAL rows in the table all derive their length from the
+# SAME `widths` tuple in render_report, so a non-overflowing render makes
+# them all exactly the length of the header (a separator dash-line is the
+# same length by construction). An overflowing cell in ANY of them would
+# make that row LONGER than the header -- rjust/ljust only pad, they
+# never truncate.
+header_line = next(l for l in lines if l.startswith("side "))
+row_lines = [
+    l for l in lines
+    if (l.startswith("main") or l.startswith("worker") or l.startswith("TOTAL"))
+    and "†" not in l
+]
+assert row_lines, "no data/TOTAL rows found"
+for l in row_lines:
+    assert len(l) == len(header_line), ("row overflowed the table width", len(l), len(header_line), l)
+
+print(f"OK: {len(positions)} markers all separated, {len(row_lines)} rows match header width {len(header_line)}")
+PY
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"OK:"* ]]
+}
+
 @test "cost-mirror --report --csv: leading-punctuation identifier cells are neutralised for Excel formula injection prevention" {
     # Project directory names here lead with '-' (e.g., '-workspace', '-tmp-...')
     # Written raw into CSV, a cell starting '-', '=', '+' or '@' is read by Excel as a formula.
