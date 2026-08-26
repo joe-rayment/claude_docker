@@ -2477,6 +2477,7 @@ def render_report(tp, total, billing_mode="api", billing_detail="", pricing=None
     marks the money columns as API-equivalent (subscription billing, not a
     per-token bill) without altering the table's column layout."""
     pricing = pricing or {}
+    is_overdrive = overdrive_active()
     top = pick_top_model(total)  # informational "top model" line only —
     # no longer what at-top/saved are computed against, see `pricing` above
 
@@ -2494,10 +2495,16 @@ def render_report(tp, total, billing_mode="api", billing_detail="", pricing=None
     lines.append("")
 
     money_suffix = "*" if billing_mode == "sub" else ""
-    cols = (
-        "side", "model", "in", "out", "cache-r", "cache-w",
-        f"actual ${money_suffix}", f"at-top ${money_suffix}", f"saved ${money_suffix}",
-    )
+    if is_overdrive:
+        cols = (
+            "side", "model", "in", "out", "cache-r", "cache-w",
+            f"actual ${money_suffix}", f"at-top $ (n/a)", f"saved $ (n/a)",
+        )
+    else:
+        cols = (
+            "side", "model", "in", "out", "cache-r", "cache-w",
+            f"actual ${money_suffix}", f"at-top ${money_suffix}", f"saved ${money_suffix}",
+        )
     # token columns at 11 (not 9) so a --all grand total (routinely 9-digit
     # cache-r/cache-w counts) never runs two numbers together with no gap.
     # side widened from 7 to 18: "worker:<role>" rows (see _agent_label) run
@@ -2587,20 +2594,32 @@ def render_report(tp, total, billing_mode="api", billing_detail="", pricing=None
             # is free text); truncate rather than let an unusually long role
             # name run into the model column with no gap between them.
             side_label = side if len(side) <= widths[0] - 1 else side[: widths[0] - 2] + "…"
-            lines.append(fmt_row((
-                side_label, label, str(c["in"]), str(c["out"]), str(c["cr"]), str(c["w5"] + c["w1"]),
-                fmt_usd(actual), fmt_usd(at_top), fmt_usd(saved),
-            )))
+            if is_overdrive:
+                lines.append(fmt_row((
+                    side_label, label, str(c["in"]), str(c["out"]), str(c["cr"]), str(c["w5"] + c["w1"]),
+                    fmt_usd(actual), "n/a (OVERDRIVE)", "n/a (OVERDRIVE)",
+                )))
+            else:
+                lines.append(fmt_row((
+                    side_label, label, str(c["in"]), str(c["out"]), str(c["cr"]), str(c["w5"] + c["w1"]),
+                    fmt_usd(actual), fmt_usd(at_top), fmt_usd(saved),
+                )))
             for k in COUNTER_KEYS:
                 grand[k] += c[k]
             tot_actual += actual
             tot_at_top += at_top
 
     lines.append("-" * len(header))
-    lines.append(fmt_row((
-        "TOTAL", "", str(grand["in"]), str(grand["out"]), str(grand["cr"]), str(grand["w5"] + grand["w1"]),
-        fmt_usd(tot_actual), fmt_usd(tot_at_top), fmt_usd(tot_at_top - tot_actual),
-    )))
+    if is_overdrive:
+        lines.append(fmt_row((
+            "TOTAL", "", str(grand["in"]), str(grand["out"]), str(grand["cr"]), str(grand["w5"] + grand["w1"]),
+            fmt_usd(tot_actual), "n/a (OVERDRIVE)", "n/a (OVERDRIVE)",
+        )))
+    else:
+        lines.append(fmt_row((
+            "TOTAL", "", str(grand["in"]), str(grand["out"]), str(grand["cr"]), str(grand["w5"] + grand["w1"]),
+            fmt_usd(tot_actual), fmt_usd(tot_at_top), fmt_usd(tot_at_top - tot_actual),
+        )))
     return "\n".join(lines)
 
 
