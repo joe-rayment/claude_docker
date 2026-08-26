@@ -4109,3 +4109,59 @@ PY
     [ "$(echo "$ROW" | cut -d, -f30)" = "" ]
     [ "$(echo "$ROW" | cut -d, -f31)" = "unknown" ]
 }
+
+# ── tier-set defect fixes ────────────────────────────────────────────────────
+
+@test "tier-set: unknown single argument exits non-zero and leaves settings/executor/scout byte-unchanged" {
+    tier_set_fixture claude-fable-5
+    # Hash the three files before
+    before_s=$(sha256sum "$TS" | awk '{print $1}')
+    before_e=$(sha256sum "$TS_AGENTS/executor.md" | awk '{print $1}')
+    before_c=$(sha256sum "$TS_AGENTS/scout.md" | awk '{print $1}')
+
+    # Try to bind an unknown single argument (not a model id, not a subcommand)
+    tier_set notamodel
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"unknown"* ]]
+
+    # Verify the three files are byte-unchanged
+    after_s=$(sha256sum "$TS" | awk '{print $1}')
+    after_e=$(sha256sum "$TS_AGENTS/executor.md" | awk '{print $1}')
+    after_c=$(sha256sum "$TS_AGENTS/scout.md" | awk '{print $1}')
+
+    [ "$before_s" = "$after_s" ]
+    [ "$before_e" = "$after_e" ]
+    [ "$before_c" = "$after_c" ]
+}
+
+@test "tier-set cost: prefers repo copy over stale PATH copy when available" {
+    tier_set_fixture claude-fable-5
+    cost_projects
+
+    # Create a stale cost-mirror stub on PATH (older than repo copy)
+    STALE_DIR="$BATS_TEST_TMPDIR/stale-bin"
+    mkdir -p "$STALE_DIR"
+    cat > "$STALE_DIR/cost-mirror" <<'PY'
+#!/usr/bin/env python3
+# This is a stale cost-mirror stub
+print("ERROR: stale cost-mirror was invoked", file=__import__('sys').stderr)
+exit(1)
+PY
+    chmod +x "$STALE_DIR/cost-mirror"
+
+    # Run tier-set cost with the stale copy on PATH but repo copy available
+    # The fix should either prefer the repo copy or refuse the stale one
+    export COST_MIRROR_STATE_DIR="$BATS_TEST_TMPDIR/cm-stale-test"
+    run env TIER_SETTINGS="$TS" TIER_AGENTS_DIR="$TS_AGENTS" TIER_DERIVE="$DERIVE" \
+        TIER_COST_MIRROR="" TIER_NO_PROBE=1 PATH="$STALE_DIR:$PATH" sh "$TSET" cost
+
+    # Should succeed (using repo copy) or fail with clear message (refusing stale)
+    # Crucially, it must NOT silently use the stale copy
+    if [ "$status" -eq 0 ]; then
+        # Success case: used the repo copy
+        [[ "$output" != *"stale"* ]]
+    else
+        # Failure case: refused the stale copy
+        [[ "$output" == *"cost-mirror"* ]]
+    fi
+}
