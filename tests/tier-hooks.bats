@@ -4165,3 +4165,93 @@ PY
         [[ "$output" == *"cost-mirror"* ]]
     fi
 }
+
+@test "cost-mirror: render_report marks rows spanning multiple epoch_model with a visible indicator" {
+    # Multi-epoch fixture: a session crossing from opus-5 to haiku-4-5
+    # The mk_epoch_transcript fixture creates multiple side|model combinations
+    # with different epoch_model values for the same grouped row.
+    # Main rows in different epochs will aggregate to show different epoch_model values.
+    CSVDIR="$BATS_TEST_TMPDIR/csv-mark-projects"
+    mkdir -p "$CSVDIR"
+    mkdir -p "$BATS_TEST_TMPDIR/proj-mark"
+    TP="$BATS_TEST_TMPDIR/proj-mark/sess.jsonl"
+    {
+        # worker BEFORE any main row (inside clamped-backward epoch)
+        printf '{"isSidechain":true,"timestamp":"2026-07-28T23:00:00Z","message":{"model":"claude-haiku-4-5-20251001","usage":{"output_tokens":1000000}}}\n'
+        # opus-5 epoch: first main row
+        printf '{"timestamp":"2026-07-29T00:00:00Z","message":{"model":"claude-opus-5","usage":{"output_tokens":1000000}}}\n'
+        # worker inside opus-5 epoch
+        printf '{"isSidechain":true,"timestamp":"2026-07-29T00:01:00Z","message":{"model":"claude-haiku-4-5-20251001","usage":{"output_tokens":1000000}}}\n'
+        # haiku-4-5 epoch: /tier downgrade
+        printf '{"timestamp":"2026-07-29T00:10:00Z","message":{"model":"claude-haiku-4-5-20251001","usage":{"output_tokens":1000000}}}\n'
+        # worker inside haiku-4-5 epoch
+        printf '{"isSidechain":true,"timestamp":"2026-07-29T00:11:00Z","message":{"model":"claude-haiku-4-5-20251001","usage":{"output_tokens":1000000}}}\n'
+        # worker AFTER last main row (inside clamped-forward epoch)
+        printf '{"isSidechain":true,"timestamp":"2026-07-29T01:00:00Z","message":{"model":"claude-haiku-4-5-20251001","usage":{"output_tokens":1000000}}}\n'
+    } > "$TP"
+
+    # Verify render_report shows a marker for the multi-epoch main rows
+    run python3 "$MIRROR" --report "$TP"
+    [ "$status" -eq 0 ]
+
+    # The main side should have rows from multiple epochs: opus-5 and haiku-4-5
+    # These should be grouped as separate lines when rendered, but the worker row
+    # which spans epochs should have a visible marker
+    WORKER_LINE=$(echo "$output" | grep '^worker')
+    # A multi-epoch worker line should show a marker (e.g., *, †, or similar)
+    # This test verifies the marker is present and visible
+    [[ "$WORKER_LINE" == *"†"* || "$WORKER_LINE" == *"*"* || "$WORKER_LINE" =~ [a-zA-Z0-9][\*†] ]]
+}
+
+@test "cost-mirror: render_all_sessions_table marks sessions spanning multiple epoch_model with a visible indicator" {
+    # Setup multi-epoch session for aggregate report
+    CSVDIR="$BATS_TEST_TMPDIR/csv-mark-all-projects"
+    mkdir -p "$CSVDIR/proj-mark-all"
+    TP="$CSVDIR/proj-mark-all/sess.jsonl"
+    {
+        # worker BEFORE any main row
+        printf '{"isSidechain":true,"timestamp":"2026-07-28T23:00:00Z","message":{"model":"claude-haiku-4-5-20251001","usage":{"output_tokens":1000000}}}\n'
+        # opus-5 main row
+        printf '{"timestamp":"2026-07-29T00:00:00Z","message":{"model":"claude-opus-5","usage":{"output_tokens":1000000}}}\n'
+        # haiku-4-5 main row (tier change)
+        printf '{"timestamp":"2026-07-29T00:10:00Z","message":{"model":"claude-haiku-4-5-20251001","usage":{"output_tokens":1000000}}}\n'
+    } > "$TP"
+
+    export COST_MIRROR_PROJECTS_DIR="$CSVDIR"
+
+    # Run aggregate report which uses render_all_sessions_table
+    run python3 "$MIRROR" --report
+    [ "$status" -eq 0 ]
+
+    # The multi-epoch session should show a visible marker (distinct from single-epoch)
+    # in the render_all_sessions_table output
+    [[ "$output" == *"proj-mark-all"* ]]
+    # Extract the session line from proj-mark-all (might have marker)
+    SESSION_LINE=$(echo "$output" | grep "proj-mark-all" | head -1)
+    # A multi-epoch session should have a marker
+    [[ "$SESSION_LINE" == *"†"* || "$SESSION_LINE" == *"*"* || "$SESSION_LINE" =~ [a-zA-Z0-9][\*†] ]]
+}
+
+@test "cost-mirror: single-epoch sessions render unchanged without any marker" {
+    # Verify single-epoch sessions maintain byte-identical output (no marker)
+    CSVDIR="$BATS_TEST_TMPDIR/csv-single-epoch-projects"
+    mkdir -p "$CSVDIR/proj-single"
+    TP="$CSVDIR/proj-single/sess.jsonl"
+    {
+        # All rows use the same model (single epoch)
+        printf '{"timestamp":"2026-07-29T00:00:00Z","message":{"model":"claude-opus-5","usage":{"output_tokens":1000000}}}\n'
+        printf '{"isSidechain":true,"timestamp":"2026-07-29T00:01:00Z","message":{"model":"claude-haiku-4-5-20251001","usage":{"output_tokens":1000000}}}\n'
+    } > "$TP"
+
+    export COST_MIRROR_PROJECTS_DIR="$CSVDIR"
+
+    # Run aggregate report
+    run python3 "$MIRROR" --report
+    [ "$status" -eq 0 ]
+
+    # Extract the single-epoch session line
+    SESSION_LINE=$(echo "$output" | grep "proj-single.*sess" | head -1)
+    # A single-epoch session should NOT have a multi-epoch marker
+    # (it may have other content, but not the epoch-span marker)
+    [[ "$SESSION_LINE" != *"†"* ]]
+}
