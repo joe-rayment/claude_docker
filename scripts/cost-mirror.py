@@ -2303,13 +2303,16 @@ def render_all_sessions_table(session_rows, since_days=None, n_projects=None):
         session_label = row["session"]
         epoch_models = row.get("epoch_models", set())
         if len(epoch_models) > 1:
-            # Place marker in the gutter: pad data to width-1, then add marker.
-            # This preserves the full session ID while using trailing-space budget.
-            # Session column width is 10; marker takes position 9 (the last position).
+            # Append marker directly without padding before it to preserve full ID
+            # and avoid creating extra whitespace fields that would confuse parsers.
+            # fmt_row will pad the result to the column width.
             marker = "†"
             session_width = 10  # Column width for session field
-            # Pad the session ID to width-1 (9 chars), then add marker (1 char) = 10 total
-            session_label = session_label.ljust(session_width - 1) + marker
+            if len(session_label) + len(marker) <= session_width:
+                session_label = session_label + marker
+            else:
+                # Truncate to make room for marker
+                session_label = session_label[:session_width - len(marker)] + marker
 
         lines.append(fmt_row((
             project, session_label, modified, fmt(row["tokens"]), fmt_usd(row["actual"]),
@@ -2598,19 +2601,16 @@ def render_report(tp, total, billing_mode="api", billing_detail="", pricing=None
             saved = at_top - actual
             label = model.replace("claude-", "") + ("" if rates else "?")
 
-            # Add epoch-span marker for multi-epoch rows without changing width
-            # Check if this side|model group spans multiple epoch_model values
+            # Add epoch-span marker for multi-epoch rows, appended to the "in" token count
+            # (parts[2]) so it's visible but doesn't interfere with model field parsing.
+            # Reconciliation only uses side/model keys and dollar amounts, not token counts.
             side_model_key = f"{side}|{model}"
+            in_str = str(c["in"])
             if epoch_models_by_side_model and side_model_key in epoch_models_by_side_model:
                 epochs = epoch_models_by_side_model[side_model_key]
-                if len(epochs) > 1 and len(label) > 0:
-                    # Place marker in the gutter: pad label to width-1, then add marker.
-                    # This preserves the full model identifier while using trailing-space budget.
-                    # Model column width is 28; marker takes position 27 (the last position).
-                    marker = "†"
-                    model_width = 28  # Column width for model field
-                    # Pad the label to width-1 (27 chars), then add marker (1 char) = 28 total
-                    label = label.ljust(model_width - 1) + marker
+                if len(epochs) > 1:
+                    # Append marker directly to the "in" count without spaces
+                    in_str = in_str + "†"
 
             # side can be an arbitrary-length "worker:<role>" (customAgentType
             # is free text); truncate rather than let an unusually long role
@@ -2618,12 +2618,12 @@ def render_report(tp, total, billing_mode="api", billing_detail="", pricing=None
             side_label = side if len(side) <= widths[0] - 1 else side[: widths[0] - 2] + "…"
             if is_overdrive:
                 lines.append(fmt_row((
-                    side_label, label, str(c["in"]), str(c["out"]), str(c["cr"]), str(c["w5"] + c["w1"]),
+                    side_label, label, in_str, str(c["out"]), str(c["cr"]), str(c["w5"] + c["w1"]),
                     fmt_usd(actual), "n/a (OVERDRIVE)", "n/a (OVERDRIVE)",
                 )))
             else:
                 lines.append(fmt_row((
-                    side_label, label, str(c["in"]), str(c["out"]), str(c["cr"]), str(c["w5"] + c["w1"]),
+                    side_label, label, in_str, str(c["out"]), str(c["cr"]), str(c["w5"] + c["w1"]),
                     fmt_usd(actual), fmt_usd(at_top), fmt_usd(saved),
                 )))
             for k in COUNTER_KEYS:
