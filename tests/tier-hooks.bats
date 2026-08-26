@@ -3640,3 +3640,226 @@ print('SCHEMA GUARD OK')
     [ "$status" -eq 0 ]
     [[ "$output" == *"SCHEMA GUARD OK"* ]]
 }
+
+# ── cost-mirror --report --csv ───────────────────────────────────────────────
+
+mk_csv_corpus() {
+    # The mid-session /tier-change fixture (mk_epoch_transcript), re-homed
+    # under its own projects dir so the AGGREGATE report — the path --csv has
+    # to work in — picks it up. Its dollars are hand-computed and asserted
+    # above: actual $50, at-top $90, saved $40, spread over main and worker
+    # rows in two different tier epochs. That is what makes the reconciliation
+    # below a check against KNOWN figures rather than against the code's own
+    # output agreeing with itself.
+    mk_epoch_transcript
+    CSVDIR="$BATS_TEST_TMPDIR/csv-projects"
+    mkdir -p "$CSVDIR"
+    mv "$BATS_TEST_TMPDIR/proj-epoch" "$CSVDIR/proj-epoch"
+    TP="$CSVDIR/proj-epoch/sess.jsonl"
+    export COST_MIRROR_PROJECTS_DIR="$CSVDIR"
+}
+
+reconcile_csv() {  # $1 = CSV, $2 = the rendered report from the SAME run
+    # Sums the CSV's own numbers per (side, model) and checks each against the
+    # cell the table printed for that pair — which is the entire point of the
+    # export. The sum is formatted with the renderer's own fmt_usd rule (whole
+    # dollars at >= $10, cents below), so "equal to the cent" is checked at
+    # the precision the table actually prints. Also compares the two KEY SETS:
+    # equal grand totals with unequal key sets is two errors cancelling.
+    python3 - "$1" "$2" <<'PY'
+import collections
+import csv
+import sys
+
+def fmt_usd(x):
+    sign = "-" if x < 0 else ""
+    x = abs(x)
+    return f"{sign}${x:.0f}" if x >= 10 else f"{sign}${x:.2f}"
+
+rows = list(csv.DictReader(open(sys.argv[1])))
+assert rows, "CSV holds no rows at all"
+
+act = collections.defaultdict(float)
+epo = collections.defaultdict(float)
+for r in rows:
+    key = (r["side"], r["model"].replace("claude-", ""))
+    act[key] += float(r["cost_total"])
+    epo[key] += float(r["cost_at_epoch"])
+    five = 0.0
+    for c in ("in", "out", "cr", "w5", "w1"):
+        want = float(r["tokens_" + c]) * float(r["rate_" + c]) / 1e6
+        got = float(r["cost_" + c])
+        assert abs(got - want) < 1e-9, ("cost_" + c, key, got, want)
+        five += got
+    assert abs(float(r["cost_total"]) - five) < 1e-9, ("cost_total", key, r["cost_total"], five)
+
+table = {}
+total = None
+for line in open(sys.argv[2]):
+    parts = line.split()
+    if line.startswith("TOTAL"):
+        total = parts
+    elif len(parts) == 9 and parts[6].lstrip("-").startswith("$"):
+        table[(parts[0], parts[1].rstrip("?"))] = (parts[6], parts[7])
+
+assert table, "no data rows parsed out of the rendered report"
+assert set(table) == set(act), ("key sets differ", sorted(set(table) ^ set(act)))
+for key, (cell_actual, cell_at_top) in table.items():
+    assert fmt_usd(act[key]) == cell_actual, ("actual $", key, fmt_usd(act[key]), cell_actual)
+    assert fmt_usd(epo[key]) == cell_at_top, ("at-top $", key, fmt_usd(epo[key]), cell_at_top)
+
+assert total is not None, "no TOTAL row in the rendered report"
+assert fmt_usd(sum(act.values())) == total[5], ("grand actual", fmt_usd(sum(act.values())), total[5])
+assert fmt_usd(sum(epo.values())) == total[6], ("grand at-top", fmt_usd(sum(epo.values())), total[6])
+print(f"RECONCILED {len(rows)} rows in {len(act)} groups")
+PY
+}
+
+@test "cost-mirror --report --csv: one row per ledger row, header first, w5 and w1 never collapsed" {
+    mk_csv_corpus
+    OUT="$BATS_TEST_TMPDIR/rows.csv"
+    run python3 "$MIRROR" --report --csv "$OUT"
+    [ "$status" -eq 0 ]
+    # --csv is an EXTRA surface, never a replacement: the table still prints
+    [[ "$output" == *"TOTAL"* ]]
+    [ -f "$OUT" ]
+    # the ledger's columns verbatim, in a stable order. cache-write stays TWO
+    # columns here; the rendered table collapses w5 + w1 into one (:2390).
+    HEADER=$(head -1 "$OUT")
+    [ "$HEADER" = "session_id,side,model,bucket,epoch_model,project,mtime,tp,tokens_in,tokens_out,tokens_cr,tokens_w5,tokens_w1,rate_in,rate_out,rate_cr,rate_w5,rate_w1,rate_epoch_in,rate_epoch_out,rate_epoch_cr,rate_epoch_w5,rate_epoch_w1,cost_in,cost_out,cost_cr,cost_w5,cost_w1,cost_total,cost_at_epoch,pricing_source,pricing_fetched_at,pricing_id" ]
+    LEDGER=$(jq '.sessions | length' "$COST_MIRROR_STATE_DIR/lifetime.json")
+    [ "$LEDGER" -gt 1 ]
+    ROWS=$(( $(wc -l < "$OUT") - 1 ))
+    [ "$ROWS" -eq "$LEDGER" ]
+    # provenance travels with every row: a reader can see whether it was
+    # priced from the fetched snapshot or the baked fallback
+    [[ "$(tail -1 "$OUT")" == *",baked,"* ]]
+    # --csv=<path> is the same flag, same output, exactly as --since=/--session=
+    EQ="$BATS_TEST_TMPDIR/rows-eq.csv"
+    run python3 "$MIRROR" --report "--csv=$EQ"
+    [ "$status" -eq 0 ]
+    run diff "$OUT" "$EQ"
+    [ "$status" -eq 0 ]
+}
+
+@test "cost-mirror --report --csv: every rendered dollar reconciles to the CSV rows behind it" {
+    mk_csv_corpus
+    OUT="$BATS_TEST_TMPDIR/rows.csv"
+    REP="$BATS_TEST_TMPDIR/report.txt"
+    # ONE invocation for both artifacts: the aggregate path rescans and
+    # re-persists as it runs, so a report and a CSV from two separate runs are
+    # two snapshots of a moving corpus, not one snapshot seen twice
+    run sh -c "python3 '$MIRROR' --report --csv '$OUT' > '$REP'"
+    [ "$status" -eq 0 ]
+    # the hand-computed epoch figures from the test above, still true here
+    TOTAL_LINE=$(grep '^TOTAL' "$REP")
+    [[ "$TOTAL_LINE" == *'$50'* ]]
+    [[ "$TOTAL_LINE" == *'$90'* ]]
+    run reconcile_csv "$OUT" "$REP"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"RECONCILED"* ]]
+}
+
+@test "cost-mirror --report --csv: composes with --since and with --session" {
+    mk_csv_corpus
+    mkdir -p "$CSVDIR/proj-old"
+    printf '{"message":{"model":"claude-opus-5","usage":{"output_tokens":10}}}\n' \
+        > "$CSVDIR/proj-old/sess-old.jsonl"
+    touch -d "3 days ago" "$CSVDIR/proj-old/sess-old.jsonl"
+
+    OUT="$BATS_TEST_TMPDIR/since.csv"
+    run python3 "$MIRROR" --report --since 1d --csv "$OUT"
+    [ "$status" -eq 0 ]
+    # the CSV's scope is the REPORT's scope: --since narrowed both
+    SINCE_CSV=$(cat "$OUT")
+    [[ "$SINCE_CSV" == *"proj-epoch"* ]]
+    [[ "$SINCE_CSV" != *"sess-old"* ]]
+
+    OUT2="$BATS_TEST_TMPDIR/session.csv"
+    run python3 "$MIRROR" --report --session sess-old --csv "$OUT2"
+    [ "$status" -eq 0 ]
+    SESS_CSV=$(cat "$OUT2")
+    [[ "$SESS_CSV" == *"sess-old"* ]]
+    [[ "$SESS_CSV" != *"proj-epoch"* ]]
+}
+
+@test "cost-mirror --report: an unrecognised flag is a clear error, not a bogus transcript lookup" {
+    mk_csv_corpus
+    run python3 "$MIRROR" --report --nonsense
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"unknown option"* ]]
+    [[ "$output" == *"--nonsense"* ]]
+    # the old failure mode: an unknown flag fell through to positional[] and
+    # was then looked up as a transcript path
+    [[ "$output" != *"transcript not found"* ]]
+    # the error names what IS valid — the whole reason --report --help was
+    # unreadable rather than merely unsupported
+    [[ "$output" == *"--csv"* ]]
+    [[ "$output" == *"--since"* ]]
+    run python3 "$MIRROR" --report --help
+    [ "$status" -eq 1 ]
+    [[ "$output" != *"transcript not found"* ]]
+    [[ "$output" == *"--session"* ]]
+    # a valueless --csv says so, exactly as --since/--session do
+    run python3 "$MIRROR" --report --csv
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"--csv requires a path"* ]]
+    # ...including when the next token is the NEXT flag, which would
+    # otherwise be silently swallowed as a filename
+    run python3 "$MIRROR" --report --csv --since 7d
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"--csv requires a path"* ]]
+    # a transcript path still works, and is still the only positional
+    run python3 "$MIRROR" --report "$TP"
+    [ "$status" -eq 0 ]
+}
+
+@test "cost-mirror --report --csv: nothing is rounded or truncated relative to the ledger" {
+    LONGDIR="$BATS_TEST_TMPDIR/long-projects"
+    PROJ="-Users-someone-code-a-very-deeply-nested-project-directory-name"
+    SESSID="0f7c9a12-3b4d-4e5f-8a9b-0c1d2e3f4a5b"
+    mkdir -p "$LONGDIR/$PROJ"
+    printf '{"message":{"model":"claude-opus-5","usage":{"output_tokens":3}}}\n' \
+        > "$LONGDIR/$PROJ/$SESSID.jsonl"
+    export COST_MIRROR_PROJECTS_DIR="$LONGDIR"
+    OUT="$BATS_TEST_TMPDIR/long.csv"
+    REP="$BATS_TEST_TMPDIR/long.txt"
+    run sh -c "python3 '$MIRROR' --report --csv '$OUT' > '$REP'"
+    [ "$status" -eq 0 ]
+    RENDERED=$(cat "$REP")
+    ROW=$(tail -1 "$OUT")
+    # the table ellipsises the project name (:2136) and prints 8 id chars
+    # (:2196); the CSV is the audit surface and does neither
+    [[ "$RENDERED" == *"…"* ]]
+    [[ "$RENDERED" != *"$PROJ"* ]]
+    [[ "$ROW" == *"$PROJ"* ]]
+    [[ "$ROW" == "$SESSID,"* ]]
+    # 3 out at opus-5's $25/MTok is $0.000075 — the table rounds it to $0.00,
+    # the CSV carries the figure the ledger actually holds
+    [[ "$RENDERED" == *'$0.00'* ]]
+    [[ "$ROW" == *",7.5e-05,"* ]]
+}
+
+@test "cost-mirror --report --csv: a migrated legacy row exports as-is — unknown, never back-filled" {
+    mk_csv_corpus
+    mkdir -p "$COST_MIRROR_STATE_DIR"
+    printf '{"v":3,"sessions":{"deadsess|main|claude-sonnet-5":{"in":10,"out":20,"cr":30,"w5":40,"w1":50,"project":"ghost","mtime":1,"tp":"/nope.jsonl","sessionId":"deadsess"}}}' \
+        > "$COST_MIRROR_STATE_DIR/lifetime.json"
+    OUT="$BATS_TEST_TMPDIR/legacy.csv"
+    run python3 "$MIRROR" --report --csv "$OUT"
+    [ "$status" -eq 0 ]
+    ROW=$(grep '^deadsess,' "$OUT")
+    [ -n "$ROW" ]
+    # tokens survive; bucket, every rate and every cost stay EMPTY. "This
+    # row's price is unknown" is itself audit output, and a back-filled rate
+    # would fabricate exactly the provenance the ledger exists to keep honest.
+    [ "$(echo "$ROW" | cut -d, -f9)" = "10" ]
+    [ "$(echo "$ROW" | cut -d, -f13)" = "50" ]
+    [ "$(echo "$ROW" | cut -d, -f4)" = "" ]
+    [ "$(echo "$ROW" | cut -d, -f14)" = "" ]
+    [ "$(echo "$ROW" | cut -d, -f19)" = "" ]
+    [ "$(echo "$ROW" | cut -d, -f24)" = "" ]
+    [ "$(echo "$ROW" | cut -d, -f29)" = "" ]
+    [ "$(echo "$ROW" | cut -d, -f30)" = "" ]
+    [ "$(echo "$ROW" | cut -d, -f31)" = "unknown" ]
+}
