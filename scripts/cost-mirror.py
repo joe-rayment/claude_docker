@@ -589,12 +589,13 @@ PRICING_TABLE = (
     # More specific prefixes must come before more general ones.
     ("claude-opus-4-1", (15.00, 75.00)),  # Opus 4.1 (note: also matches hypothetical 4-10+, 4-15+, etc.)
     ("claude-opus-4-202", (15.00, 75.00)),  # Opus 4 (date-based models, e.g. claude-opus-4-20250514)
-    ("claude-opus-", (5.00, 25.00)),  # Fallback: Opus 5, Opus 4.5, Opus 4.6+ (if it exists), and Claude 3-era
+    ("claude-opus-", (5.00, 25.00)),  # Fallback: Opus 5, Opus 4.5, Opus 4.6+ (if it exists)
     ("claude-sonnet-5", _sonnet5_rates),
     ("claude-sonnet-", (3.00, 15.00)),
     ("claude-haiku-", (1.00, 5.00)),
     # Claude 3 family (historical models, pricing from litellm snapshot)
     ("claude-3-opus-", (15.00, 75.00)),  # Claude 3 Opus
+    ("claude-3-7-sonnet-", (3.00, 15.00)),  # Claude 3.7 Sonnet
     ("claude-3-5-sonnet-", (3.00, 15.00)),  # Claude 3.5 Sonnet
     ("claude-3-sonnet-", (3.00, 15.00)),  # Claude 3 Sonnet
     ("claude-3-haiku-", (1.00, 5.00)),  # Claude 3 Haiku

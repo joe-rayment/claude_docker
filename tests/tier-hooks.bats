@@ -1811,7 +1811,7 @@ assert rate_pair('claude-opus-5-20260101') == (5.0, 25.0), f'Opus 5 should be 5/
 
 # Claude 3-era models should be non-None in baked path
 assert cm.rates_for('claude-3-opus-20240229') is not None, 'Claude 3 Opus should be non-None'
-assert cm.rates_for('claude-3-5-sonnet-20240229') is not None, 'Claude 3 Sonnet should be non-None'
+assert cm.rates_for('claude-3-7-sonnet-20250219') is not None, 'Claude 3.7 Sonnet should be non-None'
 assert cm.rates_for('claude-3-haiku-20240307') is not None, 'Claude 3 Haiku should be non-None'
 
 print('BAKED PATH PRICING OK')
