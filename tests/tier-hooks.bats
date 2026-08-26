@@ -4299,19 +4299,32 @@ cm._PRICING_CACHE = (None, None)
 # - Max-age won't help here
 # - Only the disagreement rule will catch this
 
+# faketime must have moved the clock past SONNET5_INTRO_CUTOFF for this test
+# to exercise the disagreement rule at all. If the LD_PRELOAD no-ops (observed
+# under suite load, bead beads_claude_docker-zrx), date.today() falls back to
+# the real pre-cutoff date, _sonnet5_rates() returns the intro 2/10, that
+# AGREES with the snapshot, the disagreement rule never fires, and the
+# assertions below would fail with a confusing pricing mismatch instead of
+# this clear cause.
+assert cm.date.today() >= cm.SONNET5_INTRO_CUTOFF, (
+    f'faketime did not apply: today={cm.date.today()}, expected on/after {cm.SONNET5_INTRO_CUTOFF}'
+)
+
 r = cm.rates_for('claude-sonnet-5')
 
 # The snapshot has 2/10, but we should get 3/15 from the date-aware rule
 assert r['source'] == 'baked', f'Expected source=baked (date-aware override), got {r["source"]}'
 assert r['in'] == 3.0, f'Expected in=3.0 (post-cutoff), got {r["in"]}'
 assert r['out'] == 15.0, f'Expected out=15.0 (post-cutoff), got {r["out"]}'
-# Check the rates (allowing for float precision)
+# Pin all five COUNTER_KEYS, not just in/out: cr/w5/w1 are derived from the
+# baked in-rate (x0.1 / x1.25 / x2.0) and were dropped here at 52bd3e4 despite
+# being asserted at RED-AT (bead beads_claude_docker-zrx). isclose (not ==) is
+# required, not cosmetic: 3.0 * 0.1 == 0.30000000000000004 in IEEE 754, so an
+# exact-equality restore of the original RED-AT list would itself fail.
 import math
+expected = {'in': 3.0, 'out': 15.0, 'cr': 0.3, 'w5': 3.75, 'w1': 6.0}
 for k in cm.COUNTER_KEYS:
-    if k in ('in', 'out'):
-        expected = 3.0 if k == 'in' else 15.0
-        actual = r[k]
-        assert math.isclose(actual, expected), f'Expected {k}={expected}, got {actual}'
+    assert math.isclose(r[k], expected[k]), f'Expected {k}={expected[k]}, got {r[k]}'
 
 print('DISAGREEMENT RULE OK')
 PYEOF
@@ -4338,6 +4351,12 @@ spec = importlib.util.spec_from_file_location('cost_mirror_under_test', os.envir
 cm = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(cm)
 cm._PRICING_CACHE = (None, None)
+# See exposure-b test above: faketime must actually move the clock past
+# cutoff or this degrades to a confusing pricing mismatch instead of a clear
+# cause (bead beads_claude_docker-zrx).
+assert cm.date.today() >= cm.SONNET5_INTRO_CUTOFF, (
+    f'faketime did not apply: today={cm.date.today()}, expected on/after {cm.SONNET5_INTRO_CUTOFF}'
+)
 r = cm.rates_for('claude-sonnet-5')
 assert r['source'] == 'baked' and r['in'] == 3.0, f'WITH disagreement rule: {r}'
 print('WITH DISAGREEMENT RULE: PASS')
