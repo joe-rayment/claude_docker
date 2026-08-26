@@ -2535,6 +2535,18 @@ def render_report(tp, total, billing_mode="api", billing_detail="", pricing=None
     # side widened from 7 to 18: "worker:<role>" rows (see _agent_label) run
     # longer than bare "main"/"worker" -- e.g. "worker:verifier" is 16 chars.
     widths = (18, 28, 11, 11, 11, 11, 10, 10, 10)
+    if is_overdrive:
+        # bead gu4 reopen: "n/a (OVERDRIVE)" (15 chars) and the header's
+        # "at-top $ (n/a)" / "saved $ (n/a)" (14/13 chars) all overran the
+        # plain 10-char money column. rjust() never truncates an oversized
+        # value, so the text ran straight into its neighbour with no gap
+        # at all -- "$230n/a (OVERDRIVE)n/a (OVERDRIVE)". Widen just these
+        # two columns so every overdrive header/data/TOTAL cell fits with
+        # room to spare; header, rows, TOTAL and the separator all derive
+        # their length from this same `widths` tuple, so widening it here
+        # keeps all of them mutually aligned. The non-overdrive branch
+        # never reaches this line, so flag-off output is untouched.
+        widths = widths[:7] + (17, 17)
 
     def fmt_row(values):
         return "".join(
