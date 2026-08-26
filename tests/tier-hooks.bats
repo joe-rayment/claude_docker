@@ -13,13 +13,16 @@ bats_require_minimum_version 1.5.0   # `run --separate-stderr` (tier-set cost)
 # Plus tier-set's `overdrive` mode — the /tier engine that makes that lift
 # sticky (.env.TIER_OVERDRIVE) and writes the worker/recon frontmatter.
 
-GATE=/workspace/scripts/tier-gate.sh
-LINT=/workspace/scripts/workflow-lint.sh
-MIRROR=/workspace/scripts/cost-mirror.py
-DERIVE=/workspace/scripts/tier-derive.sh
-PRIME=/workspace/scripts/tier-prime.sh
-DOCKERFILE=/workspace/Dockerfile
-SETTINGS_JSON=/workspace/config/claude-settings.json
+REPO_ROOT="${BATS_TEST_DIRNAME:-.}"
+REPO_ROOT="$(cd "$REPO_ROOT/.." && pwd)"
+
+GATE="$REPO_ROOT/scripts/tier-gate.sh"
+LINT="$REPO_ROOT/scripts/workflow-lint.sh"
+MIRROR="$REPO_ROOT/scripts/cost-mirror.py"
+DERIVE="$REPO_ROOT/scripts/tier-derive.sh"
+PRIME="$REPO_ROOT/scripts/tier-prime.sh"
+DOCKERFILE="$REPO_ROOT/Dockerfile"
+SETTINGS_JSON="$REPO_ROOT/config/claude-settings.json"
 
 setup() {
     export TMPDIR="$BATS_TEST_TMPDIR"
@@ -154,7 +157,7 @@ mirror() { python3 "$MIRROR"; }
 
 # ── tier-set (overdrive) ─────────────────────────────────────────────────────
 
-TSET=/workspace/scripts/tier-set.sh
+TSET="$REPO_ROOT/scripts/tier-set.sh"
 
 tier_set_fixture() {  # scratch settings (.model = $1) + executor/scout frontmatter
     TS="$BATS_TEST_TMPDIR/tier-set-settings.json"
@@ -668,7 +671,7 @@ gate_generic() {  # a generic, model-less Agent spawn through the gate
 
 # ── tier-reconcile ───────────────────────────────────────────────────────────
 
-RECON=/workspace/scripts/tier-reconcile.sh
+RECON="$REPO_ROOT/scripts/tier-reconcile.sh"
 
 tier_reconcile_fixture() {  # scratch settings (.model = $1) + executor/scout frontmatter
     TR="$BATS_TEST_TMPDIR/tier-reconcile-settings.json"
@@ -906,7 +909,7 @@ setup_prime_agents() {
 
 @test "tier-prime: default mode appends the short lane line when lane is installed" {
     setup_prime_agents
-    export TIER_PRIME_LANE=/workspace/scripts/lane.sh
+    export TIER_PRIME_LANE="$REPO_ROOT/scripts/lane.sh"
     run "$PRIME"
     [ "$status" -eq 0 ]
     [[ "${lines[0]}" == "tier → orchestrator(settings model)="* ]]
@@ -917,7 +920,7 @@ setup_prime_agents() {
 
 @test "tier-prime: --full appends the full lane rubric (a compaction must not lose the router)" {
     setup_prime_agents
-    export TIER_PRIME_LANE=/workspace/scripts/lane.sh
+    export TIER_PRIME_LANE="$REPO_ROOT/scripts/lane.sh"
     run "$PRIME" --full
     [ "$status" -eq 0 ]
     [[ "$output" == *"standing authorization"* ]]
@@ -3156,7 +3159,7 @@ dg_state_file() {
 # rather than hand-writing JSON, so these tests pin the format lane actually
 # emits (including a genuine "escalated":true) instead of an assumed one.
 
-LANE=/workspace/scripts/lane.sh
+LANE="$REPO_ROOT/scripts/lane.sh"
 
 mk_lane_log() {
     # 4 declarations across 2 sessions, exactly one of them an escalation
@@ -3710,7 +3713,7 @@ print('SCHEMA GUARD OK')
     # Run the hook command extracted from the settings file.
     # The hook does two things: runs in background (the & at the end) and exits 0 immediately.
     # We need to run it and wait for the background job to complete.
-    run bash -c "cd /workspace && $hook_cmd"
+    run bash -c "cd '$REPO_ROOT' && $hook_cmd"
     [ "$status" -eq 0 ]
 
     # Bounded polling: wait up to 8s for snapshot to appear (timeout 3 + network/fs latency)
