@@ -2236,11 +2236,13 @@ def render_all_sessions_table(session_rows, since_days=None, n_projects=None):
         session_label = row["session"]
         epoch_models = row.get("epoch_models", set())
         if len(epoch_models) > 1:
-            # Truncate session id by 1 char to make room for marker, keeping width at 10
-            if len(session_label) > 1:
-                session_label = session_label[:-1] + "†"
-            else:
-                session_label = "†"
+            # Place marker in the gutter: pad data to width-1, then add marker.
+            # This preserves the full session ID while using trailing-space budget.
+            # Session column width is 10; marker takes position 9 (the last position).
+            marker = "†"
+            session_width = 10  # Column width for session field
+            # Pad the session ID to width-1 (9 chars), then add marker (1 char) = 10 total
+            session_label = session_label.ljust(session_width - 1) + marker
 
         lines.append(fmt_row((
             project, session_label, modified, fmt(row["tokens"]), fmt_usd(row["actual"]),
@@ -2528,11 +2530,13 @@ def render_report(tp, total, billing_mode="api", billing_detail="", pricing=None
             if epoch_models_by_side_model and side_model_key in epoch_models_by_side_model:
                 epochs = epoch_models_by_side_model[side_model_key]
                 if len(epochs) > 1 and len(label) > 0:
-                    # Truncate by 1 char to make room for the marker
-                    if len(label) > 1:
-                        label = label[:-1] + "†"
-                    else:
-                        label = "†"
+                    # Place marker in the gutter: pad label to width-1, then add marker.
+                    # This preserves the full model identifier while using trailing-space budget.
+                    # Model column width is 28; marker takes position 27 (the last position).
+                    marker = "†"
+                    model_width = 28  # Column width for model field
+                    # Pad the label to width-1 (27 chars), then add marker (1 char) = 28 total
+                    label = label.ljust(model_width - 1) + marker
 
             # side can be an arbitrary-length "worker:<role>" (customAgentType
             # is free text); truncate rather than let an unusually long role
