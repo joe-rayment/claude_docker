@@ -2229,18 +2229,40 @@ def write_rows_csv(rows, path):
     so its rendered dollar is the one figure in the table that the CSV alone
     cannot reproduce — by construction, not by omission.
 
+    CSV formula injection (bead beads_claude_docker-uvf): identifier columns
+    that begin with '-', '=', '+' or '@' are prefixed with a single quote to
+    prevent Excel/Sheets formula interpretation. Numeric columns (tokens_*,
+    rate_*, cost_*) are never modified to remain machine-parseable.
+
     lineterminator="\\n": the csv default is CRLF, and every consumer of this
     file (a spreadsheet, a shell pipeline, python) reads LF fine, while a
     stray CR would silently corrupt the last field of every line for the
     shell ones."""
+    # Identifier columns that need formula-injection protection
+    IDENTIFIER_COLUMNS = {
+        "session_id", "side", "model", "bucket", "epoch_model", "project", "mtime", "tp"
+    }
+
+    def _neutralise_formula(col_name, value):
+        """Neutralise leading formula characters in identifier columns only."""
+        if col_name not in IDENTIFIER_COLUMNS or not isinstance(value, str):
+            return value
+        if value and value[0] in ("-", "=", "+", "@"):
+            return "'" + value
+        return value
+
     try:
         with open(path, "w", newline="") as fh:
             writer = csv.writer(fh, lineterminator="\n")
             writer.writerow(CSV_COLUMNS)
             for row in sorted(rows, key=_csv_sort_key):
-                writer.writerow(
-                    [row.get("sessionId" if col == "session_id" else col) for col in CSV_COLUMNS]
-                )
+                col_values = []
+                for col in CSV_COLUMNS:
+                    col_key = "sessionId" if col == "session_id" else col
+                    value = row.get(col_key)
+                    value = _neutralise_formula(col, value)
+                    col_values.append(value)
+                writer.writerow(col_values)
     except OSError as exc:
         print(f"cost-mirror --report --csv: cannot write {path}: {exc}", file=sys.stderr)
         return 1
