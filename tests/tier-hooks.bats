@@ -4180,32 +4180,35 @@ PY
     tier_set_fixture claude-fable-5
     cost_projects
 
-    # Create a stale cost-mirror stub on PATH (older than repo copy)
+    # Create a stale cost-mirror stub on PATH (older than repo copy). It
+    # emits a SENTINEL that cannot appear in any legitimate cost-mirror
+    # output, so the sentinel's PRESENCE in $output is the only reliable
+    # proof the stale copy actually ran. (A prior version of this test
+    # branched on exit status and asserted the stub's own stderr contained
+    # the substring "cost-mirror" in the failure branch — but the stub's
+    # error message "ERROR: stale cost-mirror was invoked" itself contains
+    # that substring, so "refused the stale copy" and "silently ran the
+    # stale copy" were indistinguishable and the case passed either way.)
     STALE_DIR="$BATS_TEST_TMPDIR/stale-bin"
     mkdir -p "$STALE_DIR"
-    cat > "$STALE_DIR/cost-mirror" <<'PY'
+    SENTINEL="STALE_MIRROR_WAS_INVOKED_7f3ac2e9b1"
+    cat > "$STALE_DIR/cost-mirror" <<PY
 #!/usr/bin/env python3
-# This is a stale cost-mirror stub
-print("ERROR: stale cost-mirror was invoked", file=__import__('sys').stderr)
-exit(1)
+import sys
+print("$SENTINEL", file=sys.stderr)
+sys.exit(1)
 PY
     chmod +x "$STALE_DIR/cost-mirror"
 
     # Run tier-set cost with the stale copy on PATH but repo copy available
-    # The fix should either prefer the repo copy or refuse the stale one
     export COST_MIRROR_STATE_DIR="$BATS_TEST_TMPDIR/cm-stale-test"
     run env TIER_SETTINGS="$TS" TIER_AGENTS_DIR="$TS_AGENTS" TIER_DERIVE="$DERIVE" \
         TIER_COST_MIRROR="" TIER_NO_PROBE=1 PATH="$STALE_DIR:$PATH" sh "$TSET" cost
 
-    # Should succeed (using repo copy) or fail with clear message (refusing stale)
-    # Crucially, it must NOT silently use the stale copy
-    if [ "$status" -eq 0 ]; then
-        # Success case: used the repo copy
-        [[ "$output" != *"stale"* ]]
-    else
-        # Failure case: refused the stale copy
-        [[ "$output" == *"cost-mirror"* ]]
-    fi
+    # The only assertion that proves non-silence: the sentinel must be
+    # absent from $output, unconditionally — not gated behind a branch on
+    # $status, which is how the previous version let both outcomes through.
+    [[ "$output" != *"$SENTINEL"* ]]
 }
 
 @test "cost-mirror: pricing snapshot — stale snapshot (older than read-side max-age) loses to baked table (bead beads_claude_docker-zrx exposure a)" {
