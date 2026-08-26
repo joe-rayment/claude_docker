@@ -1509,13 +1509,16 @@ mk_pricing_transcript() {
     # independent constants on purpose: a lifetime.json already on the
     # CURRENT LIFETIME_VERSION must survive an unrelated future scan-state
     # STATE_VERSION bump untouched, same as v3's bagg-only bump left v2
-    # lifetime data alone.
+    # lifetime data alone. That LIFETIME_VERSION has since been bumped to 4
+    # in its own right (the row ledger) and now reads the same as
+    # STATE_VERSION is a numeric coincidence across two namespaces, not a
+    # coupling: different files, checked independently.
     mk_transcript
     sh -c 'printf "{\"transcript_path\":\"%s\"}" "'"$TP"'" | python3 '"$MIRROR" > /dev/null
     LIFETIME="$COST_MIRROR_STATE_DIR/lifetime.json"
     [ -f "$LIFETIME" ]
-    jq -e '.v == 3' "$LIFETIME"
-    jq -e 'any(.sessions[]; .out == 10)' "$LIFETIME"
+    jq -e '.v == 4' "$LIFETIME"
+    jq -e 'any(.sessions[]; .tokens_out == 10)' "$LIFETIME"
 }
 
 @test "cost-mirror: a pre-fix lifetime.json (old LIFETIME_VERSION, poisoned doubled counters) is rebuilt clean, not carried forward" {
@@ -1525,7 +1528,7 @@ mk_pricing_transcript() {
         > "$LIFETIME"
     mk_transcript
     sh -c 'printf "{\"transcript_path\":\"%s\"}" "'"$TP"'" | python3 '"$MIRROR" > /dev/null
-    jq -e '.v == 3' "$LIFETIME"
+    jq -e '.v == 4' "$LIFETIME"
     # the old-version poisoned row is gone -- not merged, not carried forward
     jq -e 'any(.sessions | keys[]; . == "deadsess|main|claude-opus-5") | not' "$LIFETIME"
 }
@@ -2566,6 +2569,164 @@ with open(path, 'wb') as fh:
 
     AFTER=$(state_dir_checksum)
     [ "$BEFORE" = "$AFTER" ]
+}
+
+# ── cost-mirror: the row ledger (immutable rows carrying their own rates) ───
+
+mk_sonnet_projects() {
+    # One sonnet-5-only session: 1M in + 1M out, so the report's dollars move
+    # VISIBLY when the intro price lapses at SONNET5_INTRO_CUTOFF (2/10 ->
+    # 3/15 USD/MTok, i.e. $12 -> $18) unless the persisted rows carry the
+    # rates that priced them. No "timestamp" field, so every row lands in the
+    # NA bucket (-1) and the ledger key is stable run to run.
+    SONDIR="$BATS_TEST_TMPDIR/sonnet-projects"
+    mkdir -p "$SONDIR/proj-s"
+    printf '{"message":{"model":"claude-sonnet-5","usage":{"input_tokens":1000000,"output_tokens":1000000}}}\n' \
+        > "$SONDIR/proj-s/sess-s.jsonl"
+    export COST_MIRROR_PROJECTS_DIR="$SONDIR"
+}
+
+report_on_date() {
+    # The aggregate report with the module's clock pinned to $1 (ISO date),
+    # so a pricing cutoff can be crossed deterministically instead of
+    # depending on when the suite happens to run. Both endpoints of every
+    # comparison below are pinned for that reason -- a test that compared a
+    # pinned date against "now" would quietly change meaning the day the real
+    # clock passes the cutoff. Patching the module's `date` global covers
+    # every clock read that can move a dollar figure (_sonnet5_rates, and
+    # render_report's intro-pricing note).
+    python3 -c "
+import importlib.util, sys
+from datetime import date as _date
+spec = importlib.util.spec_from_file_location('cost_mirror_under_test', '$MIRROR')
+cm = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(cm)
+class _Pinned(_date):
+    @classmethod
+    def today(cls):
+        return _date.fromisoformat('$1')
+cm.date = _Pinned
+sys.exit(cm.run_report([]))
+"
+}
+
+@test "cost-mirror: lifetime.json is a v4 ledger of session|side|model|bucket rows carrying the rates that priced them" {
+    mk_transcript
+    sh -c 'printf "{\"transcript_path\":\"%s\"}" "'"$TP"'" | python3 '"$MIRROR" > /dev/null
+    LIFETIME="$COST_MIRROR_STATE_DIR/lifetime.json"
+    [ -f "$LIFETIME" ]
+    jq -e '.v == 4' "$LIFETIME"
+    # no row in this fixture carries a timestamp, so every row shares the NA
+    # bucket -- the key still NAMES the bucket, unlike v3's collapsed
+    # "<session>|<side>|<model>", which is the dimension this slice restores
+    jq -e '.sessions["sess|main|claude-opus-5|-1"].tokens_out == 10' "$LIFETIME"
+    jq -e '.sessions["sess|main|claude-opus-5|-1"].tokens_cr == 100' "$LIFETIME"
+    jq -e '.sessions["sess|main|claude-opus-5|-1"].bucket == -1' "$LIFETIME"
+    jq -e '.sessions["sess|main|claude-opus-5|-1"].rate_out == 25' "$LIFETIME"
+    jq -e '.sessions["sess|main|claude-opus-5|-1"].cost_out == (10 * 25 / 1000000)' "$LIFETIME"
+    jq -e '.sessions["sess|main|claude-opus-5|-1"].pricing_source == "baked"' "$LIFETIME"
+    jq -e '.sessions["sess|main|claude-opus-5|-1"].pricing_id == "baked:claude-opus-"' "$LIFETIME"
+    # the sidechain row in the main transcript and the subagent file share
+    # one side/model/bucket, so they are ONE row (5 + 7 out, 50 + 70 cache-r)
+    jq -e '.sessions["sess|worker|claude-haiku-4-5-20251001|-1"].tokens_out == 12' "$LIFETIME"
+    jq -e '.sessions["sess|worker|claude-haiku-4-5-20251001|-1"].tokens_cr == 120' "$LIFETIME"
+}
+
+@test "cost-mirror: every persisted ledger row's dollars reconcile to its own tokens at its own frozen rates" {
+    mk_all_projects
+    run python3 "$MIRROR" --report --all
+    [ "$status" -eq 0 ]
+    LIFETIME="$COST_MIRROR_STATE_DIR/lifetime.json"
+    jq -e '[.sessions[] | select(.rate_in != null)] | length >= 2' "$LIFETIME"
+    # a row is arithmetically self-contained: every cost is that row's own
+    # tokens at that row's own rate, and cost_total is the sum of the five.
+    # 1e-9 absorbs float noise and nothing else.
+    jq -e '[.sessions[] | select(.rate_in != null) | (["in","out","cr","w5","w1"][]) as $k | ((.["cost_" + $k] - (.["tokens_" + $k] * .["rate_" + $k] / 1000000)) | fabs) > 1e-9] | any | not' "$LIFETIME"
+    jq -e '[.sessions[] | select(.rate_in != null) | ((.cost_total - ([.cost_in, .cost_out, .cost_cr, .cost_w5, .cost_w1] | add)) | fabs) > 1e-9] | any | not' "$LIFETIME"
+}
+
+@test "cost-mirror: a message.id group collapses to ONE ledger row — tokens_out the group max, tokens_in counted once" {
+    # Same shape as the de-dup report test above (three rows, one message.id,
+    # cumulative output_tokens). Asserted on the PERSISTED row this time: a
+    # ledger that re-derived rows from transcript rows rather than from the
+    # already-deduped bucket counters would write 150 in / 577 out here. No
+    # timestamps, so all three rows share the NA bucket and cannot split.
+    DEDUPDIR="$BATS_TEST_TMPDIR/dedup-projects"
+    mkdir -p "$DEDUPDIR/proj-d"
+    {
+        printf '{"message":{"id":"msg_1","model":"claude-opus-5","usage":{"input_tokens":50,"output_tokens":3,"cache_read_input_tokens":100}}}\n'
+        printf '{"message":{"id":"msg_1","model":"claude-opus-5","usage":{"input_tokens":50,"output_tokens":3,"cache_read_input_tokens":100}}}\n'
+        printf '{"message":{"id":"msg_1","model":"claude-opus-5","usage":{"input_tokens":50,"output_tokens":571,"cache_read_input_tokens":100}}}\n'
+    } > "$DEDUPDIR/proj-d/sess-d.jsonl"
+    export COST_MIRROR_PROJECTS_DIR="$DEDUPDIR"
+    run python3 "$MIRROR" --report --all
+    [ "$status" -eq 0 ]
+    LIFETIME="$COST_MIRROR_STATE_DIR/lifetime.json"
+    jq -e '[.sessions | keys[] | select(startswith("sess-d|main|claude-opus-5"))] | length == 1' "$LIFETIME"
+    jq -e '.sessions["sess-d|main|claude-opus-5|-1"].tokens_in == 50' "$LIFETIME"
+    jq -e '.sessions["sess-d|main|claude-opus-5|-1"].tokens_out == 571' "$LIFETIME"
+    jq -e '.sessions["sess-d|main|claude-opus-5|-1"].tokens_cr == 100' "$LIFETIME"
+}
+
+@test "cost-mirror: a v3 lifetime.json migrates in place to v4 legacy rows — marked unknown, never back-filled with rates" {
+    mkdir -p "$COST_MIRROR_STATE_DIR"
+    LIFETIME="$COST_MIRROR_STATE_DIR/lifetime.json"
+    printf '{"v":3,"sessions":{"deadsess|main|claude-sonnet-5":{"in":10,"out":20,"cr":30,"w5":40,"w1":50,"project":"ghost","mtime":1,"tp":"/nope.jsonl","sessionId":"deadsess"}}}' \
+        > "$LIFETIME"
+    mk_transcript
+    sh -c 'printf "{\"transcript_path\":\"%s\"}" "'"$TP"'" | python3 '"$MIRROR" > /dev/null
+    jq -e '.v == 4' "$LIFETIME"
+    # the v3 row survives as ONE legacy row per (session, side, model): its
+    # counters renamed, never reinterpreted as bucket-level, and never given
+    # rates it was not priced with
+    jq -e '.sessions["deadsess|main|claude-sonnet-5"].tokens_out == 20' "$LIFETIME"
+    jq -e '.sessions["deadsess|main|claude-sonnet-5"].side == "main"' "$LIFETIME"
+    jq -e '.sessions["deadsess|main|claude-sonnet-5"].model == "claude-sonnet-5"' "$LIFETIME"
+    jq -e '.sessions["deadsess|main|claude-sonnet-5"].bucket == null' "$LIFETIME"
+    jq -e '.sessions["deadsess|main|claude-sonnet-5"].pricing_source == "unknown"' "$LIFETIME"
+    jq -e '.sessions["deadsess|main|claude-sonnet-5"].rate_in == null' "$LIFETIME"
+    jq -e '.sessions["deadsess|main|claude-sonnet-5"].cost_total == null' "$LIFETIME"
+}
+
+@test "cost-mirror --report: a re-run past the sonnet-5 cutoff reports the SAME historical dollars over unchanged transcripts" {
+    mk_sonnet_projects
+    run report_on_date 2026-08-15
+    [ "$status" -eq 0 ]
+    BEFORE=$(echo "$output" | grep '^TOTAL')
+    [[ "$BEFORE" == *'$12'* ]]
+    run report_on_date 2026-09-15
+    [ "$status" -eq 0 ]
+    AFTER=$(echo "$output" | grep '^TOTAL')
+    [ "$BEFORE" = "$AFTER" ]
+    # control: the same transcript priced COLD past the cutoff really does
+    # cost more, so the equality above is a frozen ledger rather than a clock
+    # that never moved
+    rm -rf "$COST_MIRROR_STATE_DIR"
+    run report_on_date 2026-09-15
+    [ "$status" -eq 0 ]
+    COLD=$(echo "$output" | grep '^TOTAL')
+    [[ "$COLD" == *'$18'* ]]
+}
+
+@test "cost-mirror --report: a scanned row is priced from the rates the LEDGER carries, not from today's table" {
+    mk_sonnet_projects
+    run python3 "$MIRROR" --report --all
+    [ "$status" -eq 0 ]
+    [[ "$output" == *'$12'* ]]
+    LIFETIME="$COST_MIRROR_STATE_DIR/lifetime.json"
+    ROW="sess-s|main|claude-sonnet-5|-1"
+    # rewrite the frozen out-rate to a figure no pricing table would ever
+    # produce; a report that re-derives from rates_for ignores it entirely
+    jq --arg row "$ROW" '.sessions[$row].rate_out = 100' "$LIFETIME" > "$LIFETIME.edited"
+    mv "$LIFETIME.edited" "$LIFETIME"
+    run python3 "$MIRROR" --report --all
+    [ "$status" -eq 0 ]
+    TOTAL=$(echo "$output" | grep '^TOTAL')
+    [[ "$TOTAL" == *'$102'* ]]
+    # and the rescan REPLACED the row without re-pricing it: the frozen rate
+    # survives, its cost recomputed from that rate
+    jq -e --arg row "$ROW" '.sessions[$row].rate_out == 100' "$LIFETIME"
+    jq -e --arg row "$ROW" '.sessions[$row].cost_out == 100' "$LIFETIME"
 }
 
 # ── cost-mirror: tier epochs (delegation-only savings) ──────────────────────
