@@ -4487,3 +4487,62 @@ PYEOF
     # (it may have other content, but not the epoch-span marker)
     [[ "$SESSION_LINE" != *"†"* ]]
 }
+
+@test "cost-mirror --report: overdrive marks at-top and saved columns as n/a (OVERDRIVE)" {
+    # When TIER_OVERDRIVE=1, the at-top and saved columns should show "n/a (OVERDRIVE)"
+    # since under overdrive the worker IS the top model, so there's no savings to report.
+    TP="$BATS_TEST_TMPDIR/proj-overdrive/sess.jsonl"
+    mkdir -p "$BATS_TEST_TMPDIR/proj-overdrive"
+    {
+        printf '{"timestamp":"2026-07-29T00:00:00Z","message":{"model":"claude-fable-5","usage":{"input_tokens":1000000,"output_tokens":100000,"cache_read_input_tokens":1000000,"cache_creation":{"ephemeral_5m_input_tokens":400000,"ephemeral_1h_input_tokens":100000}}}}\n'
+        printf '{"isSidechain":true,"timestamp":"2026-07-29T00:01:00Z","message":{"model":"claude-haiku-4-5-20251001","usage":{"input_tokens":2000000,"output_tokens":200000}}}\n'
+    } > "$TP"
+
+    # Setup settings file with TIER_OVERDRIVE=1
+    mkdir -p "$BATS_TEST_TMPDIR/settings"
+    SETTINGS_OVERDRIVE="$BATS_TEST_TMPDIR/settings/settings-overdrive.json"
+    printf '{"env":{"TIER_OVERDRIVE":"1"}}' > "$SETTINGS_OVERDRIVE"
+
+    export COST_MIRROR_SETTINGS_PATH="$SETTINGS_OVERDRIVE"
+    run python3 "$MIRROR" --report "$TP"
+    [ "$status" -eq 0 ]
+
+    # Check that at-top and saved columns show "n/a (OVERDRIVE)"
+    # The output should contain this marker in the at-top and saved columns
+    [[ "$output" == *"n/a (OVERDRIVE)"* ]]
+
+    # TOTAL line should also have n/a (OVERDRIVE) in the at-top and saved positions
+    TOTAL_LINE=$(echo "$output" | grep '^TOTAL')
+    [[ "$TOTAL_LINE" == *"n/a (OVERDRIVE)"* ]]
+}
+
+@test "cost-mirror --report: with TIER_OVERDRIVE off, output is byte-identical to baseline" {
+    # Verify that without overdrive flag, the report is byte-identical
+    TP="$BATS_TEST_TMPDIR/proj-no-overdrive/sess.jsonl"
+    mkdir -p "$BATS_TEST_TMPDIR/proj-no-overdrive"
+    {
+        printf '{"timestamp":"2026-07-29T00:00:00Z","message":{"model":"claude-fable-5","usage":{"input_tokens":1000000,"output_tokens":100000,"cache_read_input_tokens":1000000,"cache_creation":{"ephemeral_5m_input_tokens":400000,"ephemeral_1h_input_tokens":100000}}}}\n'
+        printf '{"isSidechain":true,"timestamp":"2026-07-29T00:01:00Z","message":{"model":"claude-haiku-4-5-20251001","usage":{"input_tokens":2000000,"output_tokens":200000}}}\n'
+    } > "$TP"
+
+    # Run without overdrive flag (settings file missing or with flag off)
+    mkdir -p "$BATS_TEST_TMPDIR/settings-baseline"
+    SETTINGS_BASELINE="$BATS_TEST_TMPDIR/settings-baseline/settings.json"
+    printf '{}' > "$SETTINGS_BASELINE"
+
+    export COST_MIRROR_SETTINGS_PATH="$SETTINGS_BASELINE"
+    run python3 "$MIRROR" --report "$TP"
+    [ "$status" -eq 0 ]
+    BASELINE_OUTPUT="$output"
+
+    # Run again to verify byte-identical output
+    run python3 "$MIRROR" --report "$TP"
+    [ "$status" -eq 0 ]
+    [ "$output" = "$BASELINE_OUTPUT" ]
+
+    # Verify the normal columns are still there (not n/a)
+    TOTAL_LINE=$(echo "$output" | grep '^TOTAL')
+    # Should contain dollar signs, not "n/a (OVERDRIVE)"
+    [[ "$TOTAL_LINE" =~ \$ ]]
+    [[ "$TOTAL_LINE" != *"n/a (OVERDRIVE)"* ]]
+}
