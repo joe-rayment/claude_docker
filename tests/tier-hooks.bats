@@ -4208,6 +4208,117 @@ PY
     fi
 }
 
+@test "cost-mirror: pricing snapshot — stale snapshot (older than read-side max-age) loses to baked table (bead beads_claude_docker-zrx exposure a)" {
+    # Exposure (a): a snapshot older than the read-side max-age should be ignored
+    # in favour of the baked table, independent of the fetch TTL.
+    mk_pricing_snapshot
+    SNAP="$COST_MIRROR_STATE_DIR/pricing/snapshot.json"
+
+    # Modify the snapshot to be old (past max-age)
+    # The snapshot will have fetched_at = 2026-08-25T12:00:00+00:00
+    # We'll test with a snapshot that is much older than the max-age
+    jq '.fetched_at = "2020-01-01T00:00:00+00:00"' "$SNAP" > "$SNAP.new" && mv "$SNAP.new" "$SNAP"
+
+    run python3 -c "
+import importlib.util
+spec = importlib.util.spec_from_file_location('cost_mirror_under_test', '$MIRROR')
+cm = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(cm)
+
+# With a stale snapshot (over max-age), baked table should win
+r = cm.rates_for('claude-opus-5')
+assert r['source'] == 'baked', f'Expected source=baked for stale snapshot, got {r[\"source\"]}'
+assert r['pricing_id'] == 'baked:claude-opus-', f'Expected pricing_id=baked:claude-opus-, got {r[\"pricing_id\"]}'
+
+# Fresh snapshot should still win (created just now)
+# Reset the snapshot to fresh
+snap2 = cm._load_pricing_snapshot()
+# Clear the cache to force reload
+cm._PRICING_CACHE = (None, None)
+
+# Now create a fresh snapshot - should win over baked
+import os, json
+os.makedirs(os.path.dirname('$SNAP'), exist_ok=True)
+snap_fresh = {
+    'schema': 1,
+    'fetched_at': '2026-08-26T12:00:00+00:00',
+    'source': 'litellm',
+    'url': 'https://example.com/prices.json',
+    'rates': {
+        'claude-opus-5': {'in': 5.0, 'out': 25.0, 'cr': 0.5, 'w5': 6.25, 'w1': 10.0}
+    }
+}
+with open('$SNAP', 'w') as f:
+    json.dump(snap_fresh, f)
+
+# Clear cache and reload
+cm._PRICING_CACHE = (None, None)
+r2 = cm.rates_for('claude-opus-5')
+assert r2['source'] == 'litellm', f'Expected source=litellm for fresh snapshot, got {r2[\"source\"]}'
+assert [r2[k] for k in cm.COUNTER_KEYS] == [5.0, 25.0, 0.5, 6.25, 10.0]
+
+print('STALE MAX-AGE OK')
+"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"STALE MAX-AGE OK"* ]]
+}
+
+@test "cost-mirror: pricing snapshot — date-aware callable pricing table wins over snapshot disagreement (bead beads_claude_docker-zrx exposure b)" {
+    # Exposure (b): when a callable PRICING_TABLE entry (like _sonnet5_rates)
+    # disagrees with the snapshot, the date-aware local value should win.
+    # Test case: past SONNET5_INTRO_CUTOFF (2026-09-01), snapshot should NOT
+    # win if it still quotes the intro price.
+
+    mk_pricing_snapshot
+    SNAP="$COST_MIRROR_STATE_DIR/pricing/snapshot.json"
+
+    # Set the snapshot's fetched_at to a recent time (fresh snapshot)
+    jq '.fetched_at = "2026-09-02T12:00:00+00:00"' "$SNAP" > "$SNAP.new" && mv "$SNAP.new" "$SNAP"
+
+    run python3 -c "
+import importlib.util, os
+from datetime import date
+spec = importlib.util.spec_from_file_location('cost_mirror_under_test', '$MIRROR')
+cm = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(cm)
+
+# Simulate being past the cutoff date (2026-09-01)
+# Create a mock date for _sonnet5_rates that returns the post-cutoff rates
+import sys
+from unittest.mock import patch
+
+cutoff_date = date(2026, 9, 1)
+# Patch date.today() to return a date past the cutoff
+past_cutoff = date(2026, 9, 2)
+
+with patch('datetime.date') as mock_date:
+    mock_date.today.return_value = past_cutoff
+    mock_date.side_effect = lambda *args, **kw: date(*args, **kw)
+
+    # Clear cache
+    cm._PRICING_CACHE = (None, None)
+
+    # At this point, the snapshot has the intro 2/10 but local date-aware logic
+    # should return 3/15 (the post-cutoff rate)
+    # This test will FAIL if only a max-age is implemented, because:
+    # - The snapshot is fresh (just fetched 2026-09-02)
+    # - Max-age won't help here
+    # - Only the disagreement rule will catch this
+
+    r = cm.rates_for('claude-sonnet-5')
+
+    # The snapshot has 2/10, but we should get 3/15 from the date-aware rule
+    assert r['source'] == 'baked', f'Expected source=baked (date-aware override), got {r[\"source\"]}'
+    assert r['in'] == 3.0, f'Expected in=3.0 (post-cutoff), got {r[\"in\"]}'
+    assert r['out'] == 15.0, f'Expected out=15.0 (post-cutoff), got {r[\"out\"]}'
+    assert [r[k] for k in cm.COUNTER_KEYS] == [3.0, 15.0, 0.3, 3.75, 6.0]
+
+print('DISAGREEMENT RULE OK')
+"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"DISAGREEMENT RULE OK"* ]]
+}
+
 @test "cost-mirror: render_report marks rows spanning multiple epoch_model with a visible indicator" {
     # Multi-epoch fixture: a session crossing from opus-5 to haiku-4-5
     # The mk_epoch_transcript fixture creates multiple side|model combinations
