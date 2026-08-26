@@ -3701,7 +3701,8 @@ print('SCHEMA GUARD OK')
     # Verify the hook contains the three key properties: timeout cap, flag, and backgrounded
     [[ "$hook_cmd" =~ "timeout 3" ]]
     [[ "$hook_cmd" =~ "refresh-pricing" ]]
-    [[ "$hook_cmd" =~ "&" ]]
+    # Must match the trailing backgrounding ampersand, not just any & (e.g. 2>&1)
+    [[ "$hook_cmd" =~ "& exit 0; }; exit 0" ]]
 
     mk_litellm_payload
     SNAP="$COST_MIRROR_STATE_DIR/pricing/snapshot.json"
@@ -3721,6 +3722,30 @@ print('SCHEMA GUARD OK')
     [ -f "$SNAP" ]
     FIRST_FETCHED=$(jq -r '.fetched_at' "$SNAP")
     [ "$FIRST_FETCHED" != "null" ]
+}
+
+@test "cost-mirror: SessionStart hook backgrounding assertion is not vacuous — fails when trailing & is stripped" {
+    # Verify the fixed assertion [[ "$hook_cmd" =~ "& exit 0; }; exit 0" ]] actually tests backgrounding,
+    # not just matching "&" (which would pass even with 2>&1 redirections and no trailing &).
+
+    # Extract the real hook command
+    hook_cmd=$(jq -r '[.hooks.SessionStart[].hooks[] | select(.command | contains("cost-mirror") and contains("refresh-pricing"))] | .[0].command' "$SETTINGS_JSON")
+    [ "$hook_cmd" != "null" ]
+
+    # The real hook should pass the fixed assertion (includes backgrounding)
+    [[ "$hook_cmd" =~ "& exit 0; }; exit 0" ]]
+
+    # Now test with a deliberately broken version: remove the trailing & from the refresh-pricing branch
+    # The assertion should fail because the backgrounding is gone
+    broken_hook="${hook_cmd//' & exit 0; }; exit 0'/' exit 0; }; exit 0'}"
+
+    # The fixed (end-anchored) assertion should NOT match the broken version
+    if [[ "$broken_hook" =~ "& exit 0; }; exit 0" ]]; then
+      # This is what we want to avoid — the old vacuous assertion would pass even here
+      echo "ERROR: Assertion matched despite stripped &"
+      exit 1
+    fi
+    # If we get here, the assertion correctly fails on the broken version ✓
 }
 
 @test "cost-mirror: SessionStart hook PATH fallback is gated on --refresh-pricing flag support" {
@@ -3803,6 +3828,60 @@ EOF
     # Wait for background job (timeout 3 + execution time) to write sentinel
     sleep 2
     [ -f "$SENTINEL_WITH_FLAG" ]
+}
+
+@test "cost-mirror: SessionStart hook PATH fallback --help probe is timeout-gated to prevent stdin-block hang" {
+    # Critical: the --help probe must not stall the hook if the stub blocks on stdin.
+    # The gate: timeout 1 "$c" --help </dev/null 2>/dev/null | grep -q refresh-pricing
+    # This test verifies: timeout 1 (caps hang at 1s) + </dev/null (prevents stdin block).
+
+    # Setup: create a fake PATH with a cost-mirror stub that blocks on stdin
+    FAKE_BIN="$BATS_TEST_TMPDIR/fake-bin-hang"
+    mkdir -p "$FAKE_BIN"
+    NO_GIT_DIR="$BATS_TEST_TMPDIR/no-git-hang"
+    mkdir -p "$NO_GIT_DIR"
+
+    # Stub that blocks on stdin when --help is called (waits for input on EOF)
+    # Without timeout 1, this would hang for 60s+ (bash default read timeout).
+    # Without </dev/null, stdin left open allows the stub to block.
+    cat > "$FAKE_BIN/cost-mirror" <<'EOF'
+#!/bin/sh
+case "$1" in
+  --help)
+    # Attempt to read from stdin: blocks until EOF or timeout
+    # With </dev/null this is EOF immediately; without it, blocks indefinitely
+    read -t 30 line || true
+    # If we get here, we weren't blocked (timeout or EOF reached)
+    echo "Usage: cost-mirror [--report] [--refresh-pricing]"
+    exit 0
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+EOF
+    chmod +x "$FAKE_BIN/cost-mirror"
+
+    mk_litellm_payload
+
+    # Extract the hook command from settings (now with timeout 1 and </dev/null)
+    hook_cmd=$(jq -r '[.hooks.SessionStart[].hooks[] | select(.command | contains("cost-mirror") and contains("refresh-pricing"))] | .[0].command' "$SETTINGS_JSON")
+    [ "$hook_cmd" != "null" ]
+    # Verify the fix is in place: grep for timeout 1 and </dev/null
+    [[ "$hook_cmd" =~ "timeout 1" ]]
+    [[ "$hook_cmd" =~ "</dev/null" ]]
+
+    # Run the hook with the blocking stub on PATH
+    # With timeout 1 + </dev/null, should exit quickly (within 2s)
+    # Without it, would hang for ~30s (the read timeout in the stub)
+    START=$SECONDS
+    bash -c "export PATH='$FAKE_BIN':\$PATH; cd '$NO_GIT_DIR' && $hook_cmd"
+    EXIT_CODE=$?
+    ELAPSED=$((SECONDS - START))
+
+    # Verify: hook exited quickly (well under the stub's 30s read timeout)
+    [ "$EXIT_CODE" -eq 0 ]
+    [ $ELAPSED -lt 5 ]
 }
 
 # ── cost-mirror --report --csv ───────────────────────────────────────────────
