@@ -4546,3 +4546,31 @@ PYEOF
     [[ "$TOTAL_LINE" =~ \$ ]]
     [[ "$TOTAL_LINE" != *"n/a (OVERDRIVE)"* ]]
 }
+
+@test "cost-mirror --report --csv: leading-punctuation identifier cells are neutralised for Excel formula injection prevention" {
+    # Project directory names here lead with '-' (e.g., '-workspace', '-tmp-...')
+    # Written raw into CSV, a cell starting '-', '=', '+' or '@' is read by Excel as a formula.
+    # Fix: prefix such cells with a single quote for identifier columns only.
+    CSVDIR="$BATS_TEST_TMPDIR/csv-formula-inject"
+    mkdir -p "$CSVDIR/-workspace"
+    TP="$CSVDIR/-workspace/sess.jsonl"
+    {
+        printf '{"message":{"model":"claude-opus-5","usage":{"input_tokens":1000000,"output_tokens":100000,"cache_read_input_tokens":1000000,"cache_creation":{"ephemeral_5m_input_tokens":400000,"ephemeral_1h_input_tokens":100000}}}}\n'
+        printf '{"isSidechain":true,"message":{"model":"claude-haiku-4-5-20251001","usage":{"input_tokens":2000000,"output_tokens":200000}}}\n'
+    } > "$TP"
+
+    export COST_MIRROR_PROJECTS_DIR="$CSVDIR"
+    OUT="$BATS_TEST_TMPDIR/formula-inject.csv"
+    run python3 "$MIRROR" --report --csv "$OUT"
+    [ "$status" -eq 0 ]
+
+    # Check that the project column (which starts with '-workspace') is neutralised
+    # It should have a single quote prefix or be properly quoted
+    CSV_CONTENT=$(cat "$OUT")
+    # The project column should be neutralised (starts with ' or is properly escaped)
+    [[ "$CSV_CONTENT" == *"'-workspace"* ]]
+
+    # Also verify numeric columns are not affected
+    NUMERIC_LINE=$(tail -1 "$OUT")
+    [[ "$NUMERIC_LINE" =~ [0-9] ]]
+}
