@@ -207,3 +207,6 @@
 {"id":"int-7a990546","kind":"field_change","created_at":"2026-08-26T14:15:43.044075169Z","actor":"claude","issue_id":"beads_claude_docker-kxx","extra":{"field":"status","new_value":"closed","old_value":"open","reason":"Closed"}}
 {"id":"int-bb43b354","kind":"field_change","created_at":"2026-08-26T14:15:50.598520881Z","actor":"claude","issue_id":"beads_claude_docker-zrx","extra":{"field":"status","new_value":"closed","old_value":"open","reason":"Closed"}}
 {"id":"int-b7a6394b","kind":"field_change","created_at":"2026-08-26T14:15:50.79960209Z","actor":"claude","issue_id":"beads_claude_docker-gu4","extra":{"field":"status","new_value":"closed","old_value":"open","reason":"Closed"}}
+{"id":"int-fd527a40","kind":"field_change","created_at":"2026-08-26T14:17:45.869615462Z","actor":"claude","issue_id":"beads_claude_docker-zrx","extra":{"field":"status","new_value":"open","old_value":"closed"}}
+{"id":"int-118c3213","kind":"field_change","created_at":"2026-08-26T14:17:46.059179129Z","actor":"claude","issue_id":"beads_claude_docker-gu4","extra":{"field":"status","new_value":"open","old_value":"closed"}}
+{"id":"int-77af61c0","kind":"field_change","created_at":"2026-08-26T14:17:46.849233129Z","actor":"claude","issue_id":"beads_claude_docker-cjp","extra":{"field":"status","new_value":"closed","old_value":"open","reason":"Closed"}}
