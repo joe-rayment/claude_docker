@@ -3712,11 +3712,97 @@ print('SCHEMA GUARD OK')
     run bash -c "cd /workspace && $hook_cmd"
     [ "$status" -eq 0 ]
 
-    # Wait for background job to complete (timeout 3 + fetch time, bounded by outer 5s)
-    sleep 2
+    # Bounded polling: wait up to 8s for snapshot to appear (timeout 3 + network/fs latency)
+    timeout 8 bash -c "until [ -f '$SNAP' ]; do sleep 0.1; done"
+    [ "$?" -eq 0 ] || {
+      echo "Snapshot not created within 8 seconds"
+      exit 1
+    }
     [ -f "$SNAP" ]
     FIRST_FETCHED=$(jq -r '.fetched_at' "$SNAP")
     [ "$FIRST_FETCHED" != "null" ]
+}
+
+@test "cost-mirror: SessionStart hook PATH fallback is gated on --refresh-pricing flag support" {
+    # Gap 1: verify that a cost-mirror on PATH without --refresh-pricing support is NOT invoked.
+    # The gating mechanism: c=$(command -v cost-mirror 2>/dev/null) && "$c" --help 2>/dev/null | grep -q refresh-pricing
+    # This test creates a scenario where the git repo path is not available, so the hook falls back to PATH.
+    # Then it verifies that a stub without the flag is skipped, and a stub with the flag is invoked.
+
+    # Setup: create a fake PATH with cost-mirror stubs
+    FAKE_BIN="$BATS_TEST_TMPDIR/fake-bin"
+    mkdir -p "$FAKE_BIN"
+    SENTINEL_NO_FLAG="$BATS_TEST_TMPDIR/sentinel-no-flag"
+    SENTINEL_WITH_FLAG="$BATS_TEST_TMPDIR/sentinel-with-flag"
+
+    # Stub 1: cost-mirror that lacks --refresh-pricing in its help output
+    cat > "$FAKE_BIN/cost-mirror" <<EOF
+#!/bin/sh
+# This stub does NOT advertise --refresh-pricing
+case "\$1" in
+  --help)
+    echo "Usage: cost-mirror [--report] [--other-flag]"
+    echo "A mock cost-mirror without --refresh-pricing support"
+    exit 0
+    ;;
+  --refresh-pricing)
+    # If invoked, write a sentinel so the test can detect it
+    touch "$SENTINEL_NO_FLAG"
+    exit 0
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+EOF
+    chmod +x "$FAKE_BIN/cost-mirror"
+
+    mk_litellm_payload
+    SNAP="$COST_MIRROR_STATE_DIR/pricing/snapshot.json"
+
+    # Extract the hook command from settings
+    hook_cmd=$(jq -r '[.hooks.SessionStart[].hooks[] | select(.command | contains("cost-mirror") and contains("refresh-pricing"))] | .[0].command' "$SETTINGS_JSON")
+    [ "$hook_cmd" != "null" ]
+
+    # Test 1: Run the hook in a non-git directory (so git rev-parse fails)
+    # so the first branch fails and it falls back to PATH.
+    # The stub lacks the flag, so the gated branch should be skipped.
+    NO_GIT_DIR="$BATS_TEST_TMPDIR/no-git"
+    mkdir -p "$NO_GIT_DIR"
+    # Put fake-bin first in PATH so our stub cost-mirror is found, but keep rest of PATH for grep/etc
+    bash -c "export PATH='$FAKE_BIN':\$PATH; cd '$NO_GIT_DIR' && $hook_cmd"
+    [ "$?" -eq 0 ]
+    [ ! -f "$SENTINEL_NO_FLAG" ]
+
+    # Test 2: Create a stub that DOES advertise --refresh-pricing and verify it IS invoked
+    cat > "$FAKE_BIN/cost-mirror" <<EOF
+#!/bin/sh
+# This stub DOES advertise --refresh-pricing
+case "\$1" in
+  --help)
+    echo "Usage: cost-mirror [--report] [--refresh-pricing] [--other-flag]"
+    echo "A mock cost-mirror WITH --refresh-pricing support"
+    exit 0
+    ;;
+  --refresh-pricing)
+    # If invoked, write a sentinel so the test can detect it
+    touch "$SENTINEL_WITH_FLAG"
+    exit 0
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+EOF
+    chmod +x "$FAKE_BIN/cost-mirror"
+
+    # Run the hook from the non-git directory again, so it falls back to PATH.
+    # The stub DOES support --refresh-pricing, so the gated branch should be taken.
+    bash -c "export PATH='$FAKE_BIN':\$PATH; cd '$NO_GIT_DIR' && $hook_cmd"
+    [ "$?" -eq 0 ]
+    # Wait for background job (timeout 3 + execution time) to write sentinel
+    sleep 2
+    [ -f "$SENTINEL_WITH_FLAG" ]
 }
 
 # ── cost-mirror --report --csv ───────────────────────────────────────────────
