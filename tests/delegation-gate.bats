@@ -471,13 +471,33 @@ set_lane() {
     echo "$output" | jq -e '.hookSpecificOutput.additionalContext | test("express lane, 10 inline tool calls")'
 }
 
-@test "lane standard: guard still denies a main-loop Edit naming the executor (today's behavior)" {
+@test "lane standard: guard allows a main-loop Edit and Write (beads_claude_docker-dl2: denial no longer fires outside deep/no-lane)" {
     export DELEGATION_GATE_MODE=guard
     set_lane s33 standard
     run sh -c 'jq -cn "{tool_name:\"Edit\",session_id:\"s33\",agent_id:null,tool_input:{file_path:\"/workspace/src/x.py\"}}" | python3 '"$GATE"
     [ "$status" -eq 0 ]
-    echo "$output" | jq -e '.hookSpecificOutput.permissionDecision == "deny"'
-    echo "$output" | jq -e '.hookSpecificOutput.permissionDecisionReason | test("executor")'
+    [ -z "$output" ]
+    run sh -c 'jq -cn "{tool_name:\"Write\",session_id:\"s33\",agent_id:null,tool_input:{file_path:\"/workspace/src/y.py\"}}" | python3 '"$GATE"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+    jq -e '.denies == 0' "$(state_file s33)"
+}
+
+@test "lane standard: guard's edit denial is gone but the inline-streak warn still fires at WARN_AT" {
+    export DELEGATION_GATE_MODE=guard
+    export DELEGATION_GATE_WARN_AT=4
+    export DELEGATION_GATE_WARN_EVERY=8
+    set_lane s33c standard
+    for i in 1 2 3; do
+        run sh -c 'jq -cn "{tool_name:\"Edit\",session_id:\"s33c\",agent_id:null,tool_input:{file_path:\"/workspace/src/x.py\"}}" | python3 '"$GATE"
+        [ "$status" -eq 0 ]
+        [ -z "$output" ]
+    done
+    run sh -c 'jq -cn "{tool_name:\"Edit\",session_id:\"s33c\",agent_id:null,tool_input:{file_path:\"/workspace/src/x.py\"}}" | python3 '"$GATE"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.hookSpecificOutput.permissionDecision == "allow"'
+    echo "$output" | jq -e '.hookSpecificOutput.additionalContext | test("4 consecutive")'
+    jq -e '.denies == 0' "$(state_file s33c)"
 }
 
 @test "lane deep: guard still denies a main-loop Edit" {
