@@ -385,13 +385,25 @@ repeat runs only read appended bytes; this cache is separate from the
 hook's per-session state files, and the single-session forms above still
 never write any state at all.
 
-Durable lifetime rollup: transcripts get deleted (disk-cleanup, manual
-pruning), which would otherwise silently erase their spend from every
-future aggregate report. Both the hook (for the live session) and the
-aggregate report path write each session's final `sessionId|side|model`
-counters into `lifetime.json` in the state dir — REPLACING that session's
-prior rows every time (never incrementing), so rescanning the same
-transcript any number of times cannot inflate the durable total. The
+Durable lifetime rollup — the row ledger: transcripts get deleted
+(disk-cleanup, manual pruning), which would otherwise silently erase their
+spend from every future aggregate report. Both the hook (for the live
+session) and the aggregate report path write this session's rows into
+`lifetime.json` in the state dir, keyed `sessionId|side|model|bucket` —
+the same time-bucket granularity the scan already accumulates, so a
+session's tier epochs outlive its transcript instead of being re-derived
+from a file that may be gone. Every row carries the RATES that priced it
+(and their provenance) beside its tokens and dollars, frozen the first
+time the row is written: report-time code reads those rates rather than
+calling rates_for again, so re-running a report after a price change
+prices NEW rows only and never re-prices history. Rows are REPLACED per
+session every time (never incremented), so rescanning the same transcript
+any number of times cannot inflate the durable total; the replacement rows
+inherit the dropped rows' frozen rates, so only tokens are ever re-derived.
+A v3 file (per-session counters, no buckets, no rates) is migrated in
+place to legacy rows marked `pricing_source: unknown` — never back-filled
+with rates they were not priced at, and still priced live at report time
+exactly as v3 did. The
 aggregate report unions live-scanned transcripts with lifetime rows whose
 transcript is no longer on disk, so a deleted session's spend still counts
 toward the grand total and the per-session table; a footnote names how
@@ -440,7 +452,15 @@ STATE_VERSION = 4  # bumped from 3: every assistant JSONL row used to be
 # labelled subagent transcript), so a clean rescan is needed for that
 # reason too -- an old state's "worker|model" rows would otherwise never
 # get their per-role split.
-LIFETIME_VERSION = 3  # bumped from 2 alongside STATE_VERSION this time --
+LIFETIME_VERSION = 4  # bumped from 3 for the ROW LEDGER (bd-8dg): rows are
+# now keyed per (session, side, model, BUCKET) and carry the rates that
+# priced them, instead of a per-(session, side, model) counter blob priced at
+# whatever the table said the day you happened to run the report. A v3 file
+# is migrated in place rather than wiped (see _migrate_v3_rows) -- its
+# counters are sound, only its provenance is missing, so it survives as a
+# legacy row marked pricing_source="unknown" with no rates back-filled onto
+# it. The previous bump's reasoning, still true, follows.
+# 3 (from 2): bumped alongside STATE_VERSION that time --
 # unlike the earlier bagg-only STATE_VERSION bump (which left lifetime.json
 # untouched on purpose, see below), THIS bug corrupted the actual counters
 # _update_lifetime persists (the same double-counted in/out/cr/w5/w1 the
@@ -1311,7 +1331,183 @@ def _epoch_model_for_bucket(epochs, bucket):
     return None
 
 
-def session_epoch_pricing(bucket_total):
+# ── The row ledger (bd-8dg) ────────────────────────────────────────────────
+# lifetime.json is a ledger of IMMUTABLE ROWS -- one per (session, side,
+# model, bucket), the same granularity scan_file already accumulates in
+# `bagg` -- and every row carries the RATES that priced it, not just its
+# token counts. Two defects that fixes:
+#   * v3 persisted "<session>|<side>|<model>", collapsing the bucket
+#     dimension, so this session's tier epochs survived only as long as its
+#     transcript did (they were re-derived from the file on every scan, and
+#     a deleted transcript's spend lost its epoch structure entirely).
+#   * rates were applied at REPORT time, so re-running the report after a
+#     price change silently re-priced history. Not theoretical: _sonnet5_rates
+#     flips at SONNET5_INTRO_CUTOFF, so the same unchanged transcripts
+#     reported either side of that date disagreed on what the past cost.
+# A row's rates are frozen the first time the row is written and carried
+# forward verbatim by every later rescan (see build_session_rows); rates_for()
+# prices NEW rows only. Note what is NOT here: no hook-time configuration
+# capture and no fingerprint scheme. A tier epoch already IS "the
+# configuration changed", derived from the transcript itself
+# (_epochs_from_main_buckets), and a bucket is already the row boundary.
+
+
+def _row_key(session_id, side, model, bucket):
+    """Ledger key for one row -- the same "|"-joined composite-string scheme
+    the in-memory aggregates use, with the session id in front and the bucket
+    at the back. Every field is ALSO stored on the row itself, so no reader
+    has to parse this back out: a "worker:<role>" side (customAgentType is
+    free text) and a dated model id both make string surgery on the key
+    fragile. A migrated v3 legacy row deliberately keeps its old three-part
+    key, having no bucket to name (see _migrate_v3_rows)."""
+    return f"{session_id}|{side}|{model}|{bucket}"
+
+
+def _rates_from_row(row, prefix):
+    """The five USD/MTok rates a persisted row froze under `prefix`
+    ("rate_" or "rate_epoch_"), or None if it carries none -- a migrated v3
+    legacy row, or a row whose model had no known rates when it was written.
+    For "rate_" the row's pricing provenance rides along in the same shape
+    rates_for() returns it, so a frozen rate can still cite what set it."""
+    if not row:
+        return None
+    vals = {}
+    for k in COUNTER_KEYS:
+        v = row.get(f"{prefix}{k}")
+        if v is None:
+            return None
+        vals[k] = float(v)
+    if prefix == "rate_":
+        vals["source"] = row.get("pricing_source") or "unknown"
+        vals["fetched_at"] = row.get("pricing_fetched_at")
+        vals["pricing_id"] = row.get("pricing_id")
+    return vals
+
+
+def _ledger_row(meta, counters, rates, epoch_model, epoch_rates):
+    """One ledger row: its tokens, the rates that priced them, the dollars
+    those two multiply out to, and the same for its tier-epoch counterfactual.
+
+    Every dollar on the row is that row's own tokens at that row's own rate
+    (cost_X == tokens_X * rate_X / 1e6, cost_total their sum), so a reader
+    never has to know today's price list to know what this row cost.
+    Unpriced (rates None -- an off-ladder model, or a legacy row) leaves
+    every rate and cost null rather than writing a 0.0 that would read as
+    "this genuinely cost nothing"; _row_pricing prices such a row live at
+    report time, exactly as every version before this one did."""
+    row = dict(meta)
+    row["epoch_model"] = epoch_model
+    row["pricing_source"] = rates.get("source", "unknown") if rates else "unknown"
+    row["pricing_fetched_at"] = rates.get("fetched_at") if rates else None
+    row["pricing_id"] = rates.get("pricing_id") if rates else None
+    for k in COUNTER_KEYS:
+        tokens = counters.get(k, 0)
+        row[f"tokens_{k}"] = tokens
+        row[f"rate_{k}"] = rates[k] if rates else None
+        row[f"rate_epoch_{k}"] = epoch_rates[k] if epoch_rates else None
+        row[f"cost_{k}"] = tokens * rates[k] / 1_000_000 if rates else None
+    row["cost_total"] = sum(row[f"cost_{k}"] for k in COUNTER_KEYS) if rates else None
+    if epoch_rates:
+        row["cost_at_epoch"] = sum(
+            row[f"tokens_{k}"] * epoch_rates[k] / 1_000_000 for k in COUNTER_KEYS
+        )
+    else:
+        row["cost_at_epoch"] = row["cost_total"]
+    return row
+
+
+def build_session_rows(session_id, tp, project, mtime, bucket_total, prior=None):
+    """This session's ledger rows, keyed by _row_key, built from its bucketed
+    counters (aggregate_bucket_total's output for THIS session only).
+
+    `prior` is the ledger rows already on file: a row whose key is already
+    there keeps the rates it was FIRST written with, so a rescan re-derives
+    its tokens from the transcript but never re-prices them. Only a key the
+    ledger has never held -- a new session, or a new time bucket in a session
+    still being written -- is priced at today's rates_for(). That is what
+    makes REPLACE-per-session write semantics compatible with immutable rows.
+
+    Tokens come from `bucket_total`, i.e. from scan_file's already-de-duped
+    counters -- never re-derived from transcript rows here, which is what
+    keeps one API response's several content-block rows (sharing a message.id,
+    repeating in/cache-r/cache-w verbatim with a CUMULATIVE output_tokens)
+    counted once rather than ~2.17x over.
+
+    A MAIN row's counterfactual is itself, unconditionally, mirroring
+    session_epoch_pricing: a bucket that mixed two main-loop models resolves
+    to one representative model, and the loser's rows must net to zero rather
+    than silently reprice at the winner. So a main row names its OWN model as
+    epoch_model -- the model that actually priced its counterfactual --
+    rather than the bucket's representative. A worker row outside every epoch
+    (a session with no main rows at all) keeps epoch_model None and prices
+    its counterfactual at its own rates, i.e. claims no savings."""
+    epochs = _epochs_from_main_buckets(bucket_total)
+    prior = prior or {}
+    rows = {}
+    for key, counters in bucket_total.items():
+        side, model, bucket_s = key.split("|", 2)
+        bucket = int(bucket_s)
+        rkey = _row_key(session_id, side, model, bucket)
+        old = prior.get(rkey)
+        rates = _rates_from_row(old, "rate_") or rates_for(model)
+        if side == "main":
+            epoch_model = model
+            epoch_rates = rates
+        else:
+            epoch_model = _epoch_model_for_bucket(epochs, bucket)
+            epoch_rates = None
+            if epoch_model:
+                # the frozen counterfactual is only reusable while it is the
+                # SAME counterfactual: more main-loop rows can move an epoch
+                # boundary, and repricing a worker row at a tier it now
+                # provably ran under is new evidence, not rewritten history
+                if old and old.get("epoch_model") == epoch_model:
+                    epoch_rates = _rates_from_row(old, "rate_epoch_")
+                epoch_rates = epoch_rates or rates_for(epoch_model)
+            if not epoch_rates:
+                epoch_rates = rates
+        rows[rkey] = _ledger_row(
+            {
+                "sessionId": session_id, "side": side, "model": model,
+                "bucket": bucket, "project": project, "mtime": mtime, "tp": tp,
+            },
+            counters, rates, epoch_model, epoch_rates,
+        )
+    return rows
+
+
+def _row_pricing(row):
+    """(actual $, at_epoch $) for one ledger row: the frozen dollars the row
+    carries, or a live rates_for() pricing when it carries none -- a migrated
+    v3 legacy row (never back-filled with rates it was not priced at) or a
+    row whose model is off-ladder ($0, marked '?' in the table, as today)."""
+    if row.get("cost_total") is not None:
+        actual = float(row["cost_total"])
+        at_epoch = row.get("cost_at_epoch")
+        return actual, actual if at_epoch is None else float(at_epoch)
+    counters = {k: row.get(f"tokens_{k}", 0) for k in COUNTER_KEYS}
+    actual = cost(counters, rates_for(row.get("model") or ""))
+    return actual, actual
+
+
+def pricing_from_rows(rows):
+    """Ledger rows -> the "side|model" -> {"actual", "at_epoch"} dict that
+    render_report takes as `pricing` (see session_epoch_pricing). Rows from
+    several sessions may be folded together here safely: each row was priced
+    against its OWN session's epochs when it was written, so summing them
+    cannot let one session's tier reprice another's spend."""
+    out = {}
+    for row in rows:
+        actual, at_epoch = _row_pricing(row)
+        d = out.setdefault(
+            f"{row.get('side')}|{row.get('model')}", {"actual": 0.0, "at_epoch": 0.0}
+        )
+        d["actual"] += actual
+        d["at_epoch"] += at_epoch
+    return out
+
+
+def session_epoch_pricing(bucket_total, rows=None):
     """Per "side|model" -> {"actual": $, "at_epoch": $}, this session's
     tier-epoch-aware counterfactual (replaces the old "reprice everything
     at one session-wide top model" approach — see module docstring).
@@ -1337,21 +1533,16 @@ def session_epoch_pricing(bucket_total):
     (no row in the session has a usable timestamp), in which case the
     lone epoch is NA_BUCKET's own and, being clamped forward to infinity,
     captures every worker regardless of its own bucket — see the module
-    docstring's NA-timestamp note."""
-    epochs = _epochs_from_main_buckets(bucket_total)
-    per_row = {}
-    for key, counters in bucket_total.items():
-        side, model, bucket_s = key.split("|", 2)
-        d = per_row.setdefault(f"{side}|{model}", {"actual": 0.0, "at_epoch": 0.0})
-        actual = cost(counters, rates_for(model))
-        d["actual"] += actual
-        if side == "main":
-            d["at_epoch"] += actual
-            continue
-        epoch_model = _epoch_model_for_bucket(epochs, int(bucket_s))
-        epoch_rates = rates_for(epoch_model) if epoch_model else None
-        d["at_epoch"] += cost(counters, epoch_rates) if epoch_rates else actual
-    return per_row
+    docstring's NA-timestamp note.
+
+    bd-8dg: the arithmetic runs through the row ledger now. `rows` are this
+    session's ledger rows when the caller has them (each already priced at
+    the rates it was written with, so a report never re-prices history);
+    without them — every read-only single-session view — throwaway rows are
+    built from bucket_total at today's rates, which is what this did before."""
+    if rows is None:
+        rows = build_session_rows("", "", "", 0, bucket_total).values()
+    return pricing_from_rows(rows)
 
 
 def _add_pricing(dst, src):
@@ -1366,7 +1557,7 @@ def _add_pricing(dst, src):
         cur["at_epoch"] += d["at_epoch"]
 
 
-def session_delegation_savings(bucket_total):
+def session_delegation_savings(bucket_total, rows=None):
     """This session's total delegation savings: Σ over WORKER "side|model"
     rows of (at_epoch − actual) from session_epoch_pricing. "worker" here
     means any side that ISN'T "main" — plain "worker" rows and per-role
@@ -1377,12 +1568,16 @@ def session_delegation_savings(bucket_total):
     with role-labelled subagents). Main-loop rows never contribute (they
     always have at_epoch == actual there), so this is equivalent to
     summing over every row, but summing worker-only here makes that
-    invariant explicit rather than relying on it silently."""
-    pricing = session_epoch_pricing(bucket_total)
+    invariant explicit rather than relying on it silently.
+
+    `rows` (bd-8dg) is this session's ledger rows when the caller has them —
+    passed straight through to session_epoch_pricing, so the savings figure
+    and the persisted ledger can never drift apart."""
+    pricing = session_epoch_pricing(bucket_total, rows)
     return sum(d["at_epoch"] - d["actual"] for key, d in pricing.items() if not key.startswith("main|"))
 
 
-def summarise_dollars(total, bucket_total, billing_mode="api", overdrive=False):
+def summarise_dollars(total, bucket_total, billing_mode="api", overdrive=False, rows=None):
     """Actual dollar cost, plus an "at <model>" counterfactual and the
     resulting savings, as a compact clause (or "" if there's nothing to
     show). Unknown-priced models still contribute their tokens to the token
@@ -1410,12 +1605,21 @@ def summarise_dollars(total, bucket_total, billing_mode="api", overdrive=False):
     rounding to nonzero -- because the point is that an expensive binding
     must never be silently on; a session that accrued real savings BEFORE
     overdrive was taken would otherwise keep advertising them as if
-    delegation were still buying something."""
+    delegation were still buying something.
+
+    `rows` (bd-8dg) is this session's ledger rows when the caller has them.
+    The leading figure is then the sum of what those rows RECORD having
+    cost, not a fresh repricing of their tokens — so the hook line agrees
+    with the ledger (and with the report) even across a price change."""
     if not total:
         return ""
     models_seen = {key.split("|", 1)[1] for key in total}
     unknown = any(rates_for(m) is None for m in models_seen)
-    actual = sum(cost(counters, rates_for(key.split("|", 1)[1])) for key, counters in total.items())
+    if rows is None:
+        actual = sum(cost(counters, rates_for(key.split("|", 1)[1])) for key, counters in total.items())
+    else:
+        rows = list(rows)
+        actual = sum(_row_pricing(row)[0] for row in rows)
 
     clause = f"~{fmt_usd(actual)}"
     if unknown:
@@ -1427,7 +1631,7 @@ def summarise_dollars(total, bucket_total, billing_mode="api", overdrive=False):
         return clause + " · tier savings n/a (OVERDRIVE)"
 
     top = pick_top_model(total)
-    saved = session_delegation_savings(bucket_total)
+    saved = session_delegation_savings(bucket_total, rows)
     if top and round(saved, 2) != 0:
         at_top = actual + saved
         top_short = top.replace("claude-", "")
@@ -1770,6 +1974,43 @@ def _lifetime_path():
     return os.path.join(_state_dir(), "lifetime.json")
 
 
+def _migrate_v3_rows(rows):
+    """v3 rows ("<session>|<side>|<model>" -> {in,out,cr,w5,w1,...}) as v4
+    LEGACY ledger rows: one per (session, side, model), carrying no bucket
+    and no rates, under their original three-part key.
+
+    A v3 row records what was spent but not what it was priced at, so its
+    rates stay null and pricing_source reads "unknown". Back-filling today's
+    rates onto old tokens would fabricate exactly the provenance this ledger
+    exists to keep honest, and reinterpreting the row as bucket-level would
+    invent a time bucket it never carried. Such a row is still priced live at
+    report time (see _row_pricing) — i.e. exactly the v3 behaviour it came
+    from, no better and no worse."""
+    out = {}
+    for key, entry in rows.items():
+        if not isinstance(entry, dict):
+            continue
+        session_id = entry.get("sessionId") or key.rsplit("|", 2)[0]
+        side, _, model = key[len(session_id) + 1:].partition("|")
+        if not side or not model:
+            continue
+        row = {
+            "sessionId": session_id, "side": side, "model": model, "bucket": None,
+            "project": entry.get("project", ""), "mtime": entry.get("mtime", 0),
+            "tp": entry.get("tp", ""), "epoch_model": None,
+            "pricing_source": "unknown", "pricing_fetched_at": None, "pricing_id": None,
+        }
+        for k in COUNTER_KEYS:
+            row[f"tokens_{k}"] = entry.get(k, 0)
+            row[f"rate_{k}"] = None
+            row[f"rate_epoch_{k}"] = None
+            row[f"cost_{k}"] = None
+        row["cost_total"] = None
+        row["cost_at_epoch"] = None
+        out[key] = row
+    return out
+
+
 def _load_lifetime():
     path = _lifetime_path()
     try:
@@ -1778,11 +2019,18 @@ def _load_lifetime():
     except Exception:
         data = {}
     # LIFETIME_VERSION, deliberately NOT the scan-state STATE_VERSION —
-    # this schema (plain "sessionId|side|model" counters) didn't change
-    # when STATE_VERSION was bumped for tier-epoch bucketing, so tying the
-    # two together would wipe durable history on every unrelated scan-
-    # state schema bump for no reason.
-    if data.get("v") != LIFETIME_VERSION:  # old/missing schema: start clean
+    # this schema didn't change when STATE_VERSION was bumped for tier-epoch
+    # bucketing, so tying the two together would wipe durable history on
+    # every unrelated scan-state schema bump for no reason.
+    #
+    # v3 is MIGRATED rather than wiped (bd-8dg): its counters are sound (the
+    # de-dup fix that poisoned v2 landed in v3), only its per-bucket
+    # granularity and its provenance are missing, and neither can be
+    # recovered by throwing the rows away. Any other old version still starts
+    # clean — a v2 row's counters are actually wrong.
+    if data.get("v") == 3:
+        data = {"sessions": _migrate_v3_rows(data.get("sessions", {}))}
+    elif data.get("v") != LIFETIME_VERSION:  # old/missing schema: start clean
         data = {}
     data["v"] = LIFETIME_VERSION
     data.setdefault("sessions", {})
@@ -1798,45 +2046,59 @@ def _save_lifetime(data):
     os.replace(tmp, path)
 
 
-def _update_lifetime(session_id, tp, project, mtime, session_total):
-    """Durably record this session's final counters, keyed
-    "sessionId|side|model" per the row, with per-row metadata (project dir,
-    last-seen mtime, transcript path) alongside the counters.
+def _update_lifetime(session_id, tp, project, mtime, bucket_total):
+    """Durably record this session's ledger rows — one per (side, model,
+    bucket), each carrying the rates that priced it (see build_session_rows)
+    — and return them, so the caller prices the report off exactly the rows
+    that were persisted rather than re-deriving them.
 
     REPLACE, never increment: every existing row for this session_id is
-    dropped first, then the freshly scanned totals are written in whole —
-    so calling this any number of times with the same (fully rescanned)
-    session_total is idempotent, and a session can never be double-counted
-    by being written twice. This is deliberately called from both the hook
-    path (main(), for the live session) and the aggregate report path
-    (run_report_all) — never from a single-session view, which must stay
-    read-only with respect to state."""
+    dropped first, then the freshly scanned rows are written in whole — so
+    calling this any number of times on the same (fully rescanned) session is
+    idempotent, and a session can never be double-counted by being written
+    twice. That stays compatible with immutable rows because the replacement
+    rows are rebuilt from the transcript and inherit the rates the dropped
+    rows froze; only tokens can change, never history's prices. This is
+    deliberately called from both the hook path (main(), for the live
+    session) and the aggregate report path (run_report_all) — never from a
+    single-session view, which must stay read-only with respect to state."""
     data = _load_lifetime()
     rows = data["sessions"]
     prefix = f"{session_id}|"
-    for key in [k for k in rows if k.startswith(prefix)]:
+    prior = {k: rows[k] for k in list(rows) if k.startswith(prefix)}
+    for key in prior:
         del rows[key]
-    for side_model, counters in session_total.items():
-        entry = {k: counters.get(k, 0) for k in COUNTER_KEYS}
-        entry.update({"project": project, "mtime": mtime, "tp": tp, "sessionId": session_id})
-        rows[f"{session_id}|{side_model}"] = entry
+    fresh = build_session_rows(session_id, tp, project, mtime, bucket_total, prior)
+    rows.update(fresh)
     _save_lifetime(data)
+    return fresh
 
 
 def _lifetime_sessions_by_id(lifetime_data):
-    """Group lifetime.json's flat "sessionId|side|model" rows back into
-    per-session dicts: session_id -> {"totals": {side|model: counters},
-    "project", "mtime", "tp"} — the shape run_report_all's durability union
-    needs to add missing (deleted-from-disk) sessions back into the report."""
+    """Group the ledger's flat rows back into per-session dicts: session_id
+    -> {"rows": [...], "totals": {side|model: counters}, "project", "mtime",
+    "tp"} — the shape run_report_all's durability union needs to add missing
+    (deleted-from-disk) sessions back into the report.
+
+    "rows" is what prices the session (each row at its own frozen rates, see
+    _row_pricing); "totals" is the token-only rollup the grand total needs,
+    summed ACROSS a session's buckets since a side|model is several rows
+    now rather than one."""
     grouped = {}
     for key, entry in lifetime_data.get("sessions", {}).items():
-        session_id = entry.get("sessionId") or key.rsplit("|", 2)[0]
-        side_model = key[len(session_id) + 1:]
+        if not isinstance(entry, dict):
+            continue
+        session_id = entry.get("sessionId") or key.split("|", 1)[0]
+        side_model = f"{entry.get('side', '')}|{entry.get('model', '')}"
         g = grouped.setdefault(
             session_id,
-            {"totals": {}, "project": entry.get("project", ""), "mtime": 0, "tp": entry.get("tp", "")},
+            {"rows": [], "totals": {}, "project": entry.get("project", ""), "mtime": 0,
+             "tp": entry.get("tp", "")},
         )
-        g["totals"][side_model] = {k: entry.get(k, 0) for k in COUNTER_KEYS}
+        g["rows"].append(entry)
+        cur = g["totals"].setdefault(side_model, _empty_counters())
+        for k in COUNTER_KEYS:
+            cur[k] += entry.get(f"tokens_{k}", 0)
         if entry.get("mtime", 0) >= g["mtime"]:
             g["project"] = entry.get("project", g["project"])
             g["mtime"] = entry.get("mtime", g["mtime"])
@@ -1914,18 +2176,21 @@ def run_report_all(since_days):
         session_state = {p: files_state[p] for p in paths}
         selected_state.update(session_state)
         session_total = aggregate_total(session_state)
+        project = os.path.basename(os.path.dirname(tp))
+        mtime = os.path.getmtime(tp)
         # Epochs computed and priced PER SESSION, then folded into the
         # aggregate breakdown via _add_pricing — never by handing
         # render_report a bucket_total merged across sessions, which would
-        # let session A's tier reprice session B's spend.
-        _add_pricing(pricing, session_epoch_pricing(aggregate_bucket_total(session_state)))
-        project = os.path.basename(os.path.dirname(tp))
-        mtime = os.path.getmtime(tp)
-        _update_lifetime(session_id, tp, project, mtime, session_total)
-        tokens = sum(sum(c.values()) for c in session_total.values())
-        actual = sum(
-            cost(c, rates_for(key.split("|", 1)[1])) for key, c in session_total.items()
+        # let session A's tier reprice session B's spend. The rows the
+        # ledger just persisted ARE the pricing (bd-8dg): every dollar below
+        # is what a row records having cost, so a price change from here on
+        # prices new rows only and leaves this history where it stands.
+        ledger_rows = _update_lifetime(
+            session_id, tp, project, mtime, aggregate_bucket_total(session_state)
         )
+        _add_pricing(pricing, pricing_from_rows(ledger_rows.values()))
+        tokens = sum(sum(c.values()) for c in session_total.values())
+        actual = sum(_row_pricing(row)[0] for row in ledger_rows.values())
         session_rows.append({
             "project": project,
             "session": os.path.splitext(os.path.basename(tp))[0][:8],
@@ -1957,10 +2222,12 @@ def run_report_all(since_days):
             cur = grand_total.setdefault(side_model, _empty_counters())
             for k in COUNTER_KEYS:
                 cur[k] += counters.get(k, 0)
+        # a dead session's rows price the same way a live one's do — from
+        # what the row itself records, or live for a migrated v3 legacy row
+        # that never recorded any rates (see _row_pricing)
+        _add_pricing(pricing, pricing_from_rows(info["rows"]))
         tokens = sum(sum(c.values()) for c in info["totals"].values())
-        actual = sum(
-            cost(c, rates_for(sm.split("|", 1)[1])) for sm, c in info["totals"].items()
-        )
+        actual = sum(_row_pricing(row)[0] for row in info["rows"])
         session_rows.append({
             "project": info["project"],
             "session": session_id[:8],
@@ -2096,8 +2363,19 @@ def render_report(tp, total, billing_mode="api", billing_detail="", pricing=None
         # same input regardless of dict/insertion order (see
         # tests/tier-hooks.bats: two --report runs on one transcript diffed
         # to nothing).
+        # bd-8dg: the row's dollars come from the LEDGER when the caller
+        # priced it there — each ledger row at the rates that row was
+        # written with, so a re-run after a price change reports the same
+        # history rather than silently re-pricing it. A row the caller did
+        # not price (`pricing` empty, or a side|model absent from it) still
+        # falls back to a live cost(), which is what this always did. The
+        # sort key and the "actual $" column read the SAME figure, so the
+        # cost-descending order below stays the order of the printed column.
         priced = [(model, c, rates_for(model)) for model, c in rows]
-        priced = [(model, c, rates, cost(c, rates)) for model, c, rates in priced]
+        priced = [
+            (model, c, rates, pricing.get(f"{side}|{model}", {}).get("actual", cost(c, rates)))
+            for model, c, rates in priced
+        ]
         priced.sort(key=lambda row: (-row[3], row[0]))
         for model, c, rates, actual in priced:
             pr = pricing.get(f"{side}|{model}", {"actual": actual, "at_epoch": actual})
@@ -2137,7 +2415,16 @@ def _render_single(tp):
     files_state = {}  # throwaway: full scan from offset 0, state never written
     scan_session(tp, files_state)
     billing_mode, billing_detail = detect_billing_mode()
-    pricing = session_epoch_pricing(aggregate_bucket_total(files_state))
+    # READ the ledger (never write it, see the docstring above): a row this
+    # session already has on file keeps the rates it was priced at, so a
+    # single-session view can't disagree with the aggregate report about what
+    # the past cost. A session with no rows yet is priced live, as before.
+    session_id = _session_id_for(tp)
+    rows = build_session_rows(
+        session_id, tp, os.path.basename(os.path.dirname(tp)), 0,
+        aggregate_bucket_total(files_state), _load_lifetime()["sessions"],
+    )
+    pricing = pricing_from_rows(rows.values())
     print(render_report(tp, aggregate_total(files_state), billing_mode, billing_detail, pricing))
     print_lanes(tp)
     return 0
@@ -2272,6 +2559,7 @@ def main():
     scan_session(tp, files_state)
 
     total = aggregate_total(files_state)
+    bucket_total = aggregate_bucket_total(files_state)
     # Durable lifetime rollup: replace (never increment) this session's
     # rows so the transcript can be deleted later without losing its spend
     # from future aggregate reports. Best-effort in INTENT, but not in
@@ -2283,12 +2571,12 @@ def main():
     # behaviour today (unchanged by this slice) and is judged acceptable
     # because the overall fail-open contract (never crash the prompt, print
     # nothing rather than partial/wrong output) still holds either way.
-    _update_lifetime(
+    ledger_rows = _update_lifetime(
         _session_id_for(tp),
         tp,
         os.path.basename(os.path.dirname(tp)),
         os.path.getmtime(tp),
-        total,
+        bucket_total,
     )
     token_line = summarise_tokens(total)
     tmp = state_path + ".tmp"
@@ -2297,9 +2585,8 @@ def main():
     os.replace(tmp, state_path)
     if token_line:
         billing_mode, _ = detect_billing_mode()
-        bucket_total = aggregate_bucket_total(files_state)
         dollar_clause = summarise_dollars(
-            total, bucket_total, billing_mode, overdrive_active()
+            total, bucket_total, billing_mode, overdrive_active(), ledger_rows.values()
         )
         line = f"{token_line} | {dollar_clause}" if dollar_clause else token_line
         drift = delegation_drift_segment(event.get("session_id"))
