@@ -366,7 +366,22 @@ into a throwaway dict and never write any state (including lifetime.json
 — see below), so they can be run any number of times without disturbing
 the hook's incremental counters. Unlike hook mode this path is NOT
 fail-silent: a missing/unreadable/ambiguous transcript prints to stderr
-and exits nonzero, since it's invoked directly from a terminal to debug.
+and exits nonzero, since it's invoked directly from a terminal to debug —
+as does any unrecognised leading-dash token, which names the valid options
+instead of being looked up as a transcript path.
+
+Row export: `--report --csv <path>` writes the LEDGER ROWS behind whichever
+view ran to a CSV, alongside (never instead of) the rendered table — see
+write_rows_csv. One line per row, header first, the ledger's own columns
+verbatim, nothing rounded and nothing truncated: cache-write stays split
+w5/w1 where the table collapses it, project names and session ids ship in
+full where the table ellipsises them, and every rate and provenance field
+travels beside the dollars it produced. That makes each figure in the table
+reproducible by arithmetic over the export — Σ cost_total per (side, model)
+IS that row's "actual $" cell, Σ cost_at_epoch its "at-top $" — with one
+documented exception: an unpriced legacy row (see _migrate_v3_rows) exports
+empty cost cells because it never recorded any, while the report prices it
+live, so its rendered dollar is the one the CSV alone cannot reconstruct.
 
 Cross-session report: `cost-mirror --report` (bare or `--all`)
 `[--since <N>d]` scopes the report to every transcript found on disk,
@@ -412,6 +427,7 @@ views (`--session`/`--this`/a direct positional transcript) never touch
 lifetime.json, preserving their read-only-with-respect-to-state guarantee.
 """
 
+import csv
 import glob
 import hashlib
 import json
@@ -2106,6 +2122,73 @@ def _lifetime_sessions_by_id(lifetime_data):
     return grouped
 
 
+CSV_COLUMNS = (
+    ("session_id", "side", "model", "bucket", "epoch_model", "project", "mtime", "tp")
+    + tuple(f"tokens_{k}" for k in COUNTER_KEYS)
+    + tuple(f"rate_{k}" for k in COUNTER_KEYS)
+    + tuple(f"rate_epoch_{k}" for k in COUNTER_KEYS)
+    + tuple(f"cost_{k}" for k in COUNTER_KEYS)
+    + ("cost_total", "cost_at_epoch", "pricing_source", "pricing_fetched_at", "pricing_id")
+)
+# The ledger row's own fields, in a fixed order, one CSV column each. Only
+# "session_id" is renamed (the row calls it "sessionId"); everything else is
+# the ledger key verbatim, so a column heading is directly greppable in this
+# file. Deliberately WIDER than the rendered table in two ways: cache-write
+# stays split into w5/w1 (render_report collapses them into one column) and
+# every rate/provenance field ships, because the point of the export is that
+# a reader can recompute each dollar without knowing today's price list.
+
+
+def _csv_sort_key(row):
+    """Newest session first (matching the rendered table's order), then a
+    total order within it. A legacy row's bucket is None, which won't compare
+    against an int — sort those to the end of their session rather than
+    crashing on the comparison."""
+    bucket = row.get("bucket")
+    return (
+        -(row.get("mtime") or 0),
+        row.get("sessionId") or "",
+        row.get("side") or "",
+        row.get("model") or "",
+        bucket is None,
+        bucket or 0,
+    )
+
+
+def write_rows_csv(rows, path):
+    """Write `rows` (ledger rows — see _ledger_row) to `path` as CSV, one line
+    per row plus a header. Returns 0, or 1 after a clear stderr message if the
+    path can't be written.
+
+    Values go out exactly as the ledger holds them: csv renders a float via
+    str(), i.e. the shortest representation that round-trips, so nothing is
+    rounded or reformatted on the way out, and a None (an unpriced legacy
+    row's rates and costs, see _migrate_v3_rows) becomes an EMPTY cell rather
+    than a 0.0 that would read as "this genuinely cost nothing". An empty
+    cost cell is audit output in its own right: that row's price is unknown,
+    and back-filling one would fabricate the provenance this ledger exists to
+    keep honest. Such a row is still priced live in the REPORT (_row_pricing),
+    so its rendered dollar is the one figure in the table that the CSV alone
+    cannot reproduce — by construction, not by omission.
+
+    lineterminator="\\n": the csv default is CRLF, and every consumer of this
+    file (a spreadsheet, a shell pipeline, python) reads LF fine, while a
+    stray CR would silently corrupt the last field of every line for the
+    shell ones."""
+    try:
+        with open(path, "w", newline="") as fh:
+            writer = csv.writer(fh, lineterminator="\n")
+            writer.writerow(CSV_COLUMNS)
+            for row in sorted(rows, key=_csv_sort_key):
+                writer.writerow(
+                    [row.get("sessionId" if col == "session_id" else col) for col in CSV_COLUMNS]
+                )
+    except OSError as exc:
+        print(f"cost-mirror --report --csv: cannot write {path}: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
 def render_all_sessions_table(session_rows, since_days=None, n_projects=None):
     """One row per transcript — project dir, short session id, last-modified
     date, total tokens, actual $ — sorted by most recent first. Header
@@ -2141,7 +2224,7 @@ def render_all_sessions_table(session_rows, since_days=None, n_projects=None):
     return "\n".join(lines)
 
 
-def run_report_all(since_days):
+def run_report_all(since_days, csv_path=None):
     """The aggregate report: every transcript under ~/.claude/projects/*/*.jsonl
     (plus each one's beside-it subagents/*.jsonl), optionally scoped to
     --since. This is now what bare `--report` does (i.e. the `tier-cost`
@@ -2158,13 +2241,21 @@ def run_report_all(since_days):
     transcript no longer exists on disk (deleted by disk-cleanup, manual
     pruning, etc) so its spend is never silently lost. Sessions still
     on disk are always read live, never from lifetime, so lifetime is
-    purely a fallback for what's gone."""
+    purely a fallback for what's gone.
+
+    csv_path (bd-fbi): also write every ledger row this report priced to that
+    path (see write_rows_csv). The rows collected here are the SAME objects
+    the dollars below are summed from — both the live-scanned sessions' and
+    the durability union's — so the export can't drift from the table it sits
+    beneath. The CSV's scope is the report's scope: a session --since
+    excluded is absent from both."""
     transcripts = _list_transcripts(since_days)
 
     cache = _load_all_cache()
     files_state = cache["files"]  # persisted across runs: path -> {off, agg}
 
     session_rows = []
+    csv_rows = []  # every ledger row in scope, for --csv (see write_rows_csv)
     selected_state = {}  # this run's scope only (cache may hold more history)
     scanned_session_ids = set()
     pricing = {}  # "side|model" -> {actual, at_epoch}, summed per-session (see below)
@@ -2189,6 +2280,7 @@ def run_report_all(since_days):
             session_id, tp, project, mtime, aggregate_bucket_total(session_state)
         )
         _add_pricing(pricing, pricing_from_rows(ledger_rows.values()))
+        csv_rows.extend(ledger_rows.values())
         tokens = sum(sum(c.values()) for c in session_total.values())
         actual = sum(_row_pricing(row)[0] for row in ledger_rows.values())
         session_rows.append({
@@ -2226,6 +2318,7 @@ def run_report_all(since_days):
         # what the row itself records, or live for a migrated v3 legacy row
         # that never recorded any rates (see _row_pricing)
         _add_pricing(pricing, pricing_from_rows(info["rows"]))
+        csv_rows.extend(info["rows"])
         tokens = sum(sum(c.values()) for c in info["totals"].values())
         actual = sum(_row_pricing(row)[0] for row in info["rows"])
         session_rows.append({
@@ -2238,6 +2331,10 @@ def run_report_all(since_days):
 
     if not session_rows:
         scope = f" modified in the last {since_days}d" if since_days is not None else ""
+        # an asked-for CSV is still written (header only) before failing: a
+        # requested artifact that simply isn't there is worse than an empty one
+        if csv_path:
+            write_rows_csv([], csv_path)
         print(
             f"cost-mirror --report --all: no transcript files found under "
             f"{os.path.join(_projects_dir(), '*', '*.jsonl')}{scope}",
@@ -2265,7 +2362,9 @@ def run_report_all(since_days):
     print()
     print(render_report(label, grand_total, billing_mode, billing_detail, pricing))
     print_lanes()
-    return 0
+    # a CSV that was asked for and not written is a failed run, even though
+    # the table above it rendered fine
+    return write_rows_csv(csv_rows, csv_path) if csv_path else 0
 
 
 def render_report(tp, total, billing_mode="api", billing_detail="", pricing=None):
@@ -2403,12 +2502,16 @@ def render_report(tp, total, billing_mode="api", billing_detail="", pricing=None
     return "\n".join(lines)
 
 
-def _render_single(tp):
+def _render_single(tp, csv_path=None):
     """Render one transcript's report — the shared tail end of every
     single-session view (a direct positional path, --session, --this).
     Read-only: a throwaway scan from offset 0, state never written, so it
     can be run any number of times without disturbing the hook's
-    incremental counters or lifetime.json."""
+    incremental counters or lifetime.json.
+
+    csv_path (bd-fbi) exports THIS session's ledger rows, the same rows the
+    table below is priced from. Read-only still holds: the rows are built in
+    memory and never persisted."""
     if not os.path.isfile(tp):
         print(f"cost-mirror --report: transcript not found: {tp}", file=sys.stderr)
         return 1
@@ -2419,18 +2522,22 @@ def _render_single(tp):
     # session already has on file keeps the rates it was priced at, so a
     # single-session view can't disagree with the aggregate report about what
     # the past cost. A session with no rows yet is priced live, as before.
+    # The real mtime (rather than the 0 placeholder this passed before these
+    # rows had anywhere to go) so a --csv export carries an honest timestamp;
+    # nothing prices off mtime, so no dollar in the table above can move.
     session_id = _session_id_for(tp)
     rows = build_session_rows(
-        session_id, tp, os.path.basename(os.path.dirname(tp)), 0,
-        aggregate_bucket_total(files_state), _load_lifetime()["sessions"],
+        session_id, tp, os.path.basename(os.path.dirname(tp)),
+        os.path.getmtime(tp), aggregate_bucket_total(files_state),
+        _load_lifetime()["sessions"],
     )
     pricing = pricing_from_rows(rows.values())
     print(render_report(tp, aggregate_total(files_state), billing_mode, billing_detail, pricing))
     print_lanes(tp)
-    return 0
+    return write_rows_csv(rows.values(), csv_path) if csv_path else 0
 
 
-def run_report_session(prefix):
+def run_report_session(prefix, csv_path=None):
     """--session <prefix> entry point: resolve prefix to exactly one
     transcript (by sessionId or filename-UUID prefix, see
     _find_transcripts_by_session) and render its single-session report.
@@ -2451,7 +2558,7 @@ def run_report_session(prefix):
             file=sys.stderr,
         )
         return 1
-    return _render_single(matches[0])
+    return _render_single(matches[0], csv_path)
 
 
 def run_report(argv):
@@ -2474,10 +2581,23 @@ def run_report(argv):
 
     --since <N>d (e.g. 7d, 30d) narrows the aggregate report (default or
     --all) to transcripts modified in that window; it is a no-op on the
-    single-session forms, which have nothing to filter."""
+    single-session forms, which have nothing to filter.
+
+    --csv <path> additionally exports the ledger rows behind whichever of
+    those views ran, to that path (see write_rows_csv). It composes with all
+    of them rather than replacing any: the table still prints to stdout, and
+    the rows written are exactly the ones that table's dollars were summed
+    from. It takes a value like --since/--session do, and says so when the
+    value is missing.
+
+    Any OTHER leading-dash token is a hard error naming the valid options.
+    This used to fall through to positional[] and be looked up as a file, so
+    `--report --help` reported "transcript not found: --help" — a failure
+    message that named neither the real problem nor the way out."""
     this_mode = False
     session_prefix = None
     since_days = None
+    csv_path = None
     positional = []
     i = 0
     while i < len(argv):
@@ -2508,12 +2628,39 @@ def run_report(argv):
             except ValueError as exc:
                 print(f"cost-mirror --report: {exc}", file=sys.stderr)
                 return 1
+        elif arg == "--csv" or arg.startswith("--csv="):
+            if arg == "--csv":
+                # a following flag is a missing value, not a filename: silently
+                # swallowing "--since" here would write a file called --since
+                if i + 1 >= len(argv) or argv[i + 1].startswith("-"):
+                    print(
+                        "cost-mirror --report: --csv requires a path, e.g. --csv rows.csv",
+                        file=sys.stderr,
+                    )
+                    return 1
+                csv_path, i = argv[i + 1], i + 2
+            else:
+                csv_path, i = arg.split("=", 1)[1], i + 1
+            if not csv_path:
+                print(
+                    "cost-mirror --report: --csv requires a path, e.g. --csv rows.csv",
+                    file=sys.stderr,
+                )
+                return 1
+        elif arg.startswith("-"):
+            print(
+                f"cost-mirror --report: unknown option {arg} — valid options are "
+                "--all, --this, --session <prefix>, --since <N>d, --csv <path>, "
+                "or a transcript path",
+                file=sys.stderr,
+            )
+            return 1
         else:
             positional.append(arg)
             i += 1
 
     if session_prefix is not None:
-        return run_report_session(session_prefix)
+        return run_report_session(session_prefix, csv_path)
 
     if this_mode:
         tp = _default_transcript()
@@ -2525,12 +2672,12 @@ def run_report(argv):
                 file=sys.stderr,
             )
             return 1
-        return _render_single(tp)
+        return _render_single(tp, csv_path)
 
     if positional:
-        return _render_single(positional[0])
+        return _render_single(positional[0], csv_path)
 
-    return run_report_all(since_days)
+    return run_report_all(since_days, csv_path)
 
 
 def main():
