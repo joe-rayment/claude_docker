@@ -4275,8 +4275,16 @@ print('STALE MAX-AGE OK')
     mk_pricing_snapshot
     SNAP="$COST_MIRROR_STATE_DIR/pricing/snapshot.json"
 
-    # Modify snapshot to have intro pricing but current date is past cutoff
-    jq '.rates["claude-sonnet-5"] = {"in": 2.0, "out": 10.0, "cr": 0.2, "w5": 2.5, "w1": 4.0} | .fetched_at = "2026-09-02T11:00:00+00:00"' "$SNAP" > "$SNAP.new" && mv "$SNAP.new" "$SNAP"
+    # Modify snapshot to have intro pricing but current date is past cutoff.
+    # fetched_at is derived from the REAL wall clock at fixture-build time
+    # (not a hardcoded future timestamp): rates_for()'s max-age check runs
+    # against the real time.time(), which cm.date rebinding does not touch,
+    # so a fixed absolute stamp goes stale on its own as real time advances
+    # past it and the test starts passing for the wrong reason (bead
+    # beads_claude_docker-w2l). "Now" keeps the snapshot inside
+    # PRICING_MAX_AGE_SECONDS indefinitely, so the disagreement rule stays
+    # the only path to source=baked.
+    jq --arg ts "$(date -u +%Y-%m-%dT%H:%M:%S+00:00)" '.rates["claude-sonnet-5"] = {"in": 2.0, "out": 10.0, "cr": 0.2, "w5": 2.5, "w1": 4.0} | .fetched_at = $ts' "$SNAP" > "$SNAP.new" && mv "$SNAP.new" "$SNAP"
 
     # Rebind cm.date in-process to pin the clock to 2026-09-02 (past the cutoff).
     # The disagreement rule should detect that:
@@ -4343,8 +4351,12 @@ PYEOF
     mk_pricing_snapshot
     SNAP="$COST_MIRROR_STATE_DIR/pricing/snapshot.json"
 
-    # Modify snapshot to have intro pricing and FRESH timestamp past cutoff
-    jq '.rates["claude-sonnet-5"] = {"in": 2.0, "out": 10.0, "cr": 0.2, "w5": 2.5, "w1": 4.0} | .fetched_at = "2026-09-02T11:00:00+00:00"' "$SNAP" > "$SNAP.new" && mv "$SNAP.new" "$SNAP"
+    # Modify snapshot to have intro pricing and FRESH timestamp past cutoff.
+    # See exposure-(b) test above: fetched_at must track the real wall clock
+    # at build time, not a hardcoded future stamp, or the snapshot eventually
+    # ages past PRICING_MAX_AGE_SECONDS and this test stops proving
+    # non-vacuity for the wrong reason (bead beads_claude_docker-w2l).
+    jq --arg ts "$(date -u +%Y-%m-%dT%H:%M:%S+00:00)" '.rates["claude-sonnet-5"] = {"in": 2.0, "out": 10.0, "cr": 0.2, "w5": 2.5, "w1": 4.0} | .fetched_at = $ts' "$SNAP" > "$SNAP.new" && mv "$SNAP.new" "$SNAP"
 
     # First, run with the disagreement rule in place (should pass)
     cat > "$BATS_TEST_TMPDIR/test_with_disagree.py" << 'PYEOF'
