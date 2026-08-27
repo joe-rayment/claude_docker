@@ -4278,16 +4278,29 @@ print('STALE MAX-AGE OK')
     # Modify snapshot to have intro pricing but current date is past cutoff
     jq '.rates["claude-sonnet-5"] = {"in": 2.0, "out": 10.0, "cr": 0.2, "w5": 2.5, "w1": 4.0} | .fetched_at = "2026-09-02T11:00:00+00:00"' "$SNAP" > "$SNAP.new" && mv "$SNAP.new" "$SNAP"
 
-    # Use faketime to set the clock to 2026-09-02 (past the cutoff)
+    # Rebind cm.date in-process to pin the clock to 2026-09-02 (past the cutoff).
     # The disagreement rule should detect that:
     # - snapshot says 2/10 (intro price)
     # - _sonnet5_rates() returns 3/15 (post-cutoff price)
     # - They disagree, so baked (3/15) wins
     cat > "$BATS_TEST_TMPDIR/test_exposure_b.py" << 'PYEOF'
 import importlib.util, os
+from datetime import date as _real_date
 spec = importlib.util.spec_from_file_location('cost_mirror_under_test', os.environ.get('MIRROR'))
 cm = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(cm)
+
+# Rebind the module's own `date` name (it does `from datetime import date`,
+# so `datetime.date` itself is never consulted by cm's code) to a subclass
+# whose today() is pinned past SONNET5_INTRO_CUTOFF. This is deterministic
+# and in-process: no LD_PRELOAD clock override (faketime) is needed, and
+# mock.patch('datetime.date') would be a no-op against cm's bound name
+# (bead beads_claude_docker-w2l).
+class _FakeDate(_real_date):
+    @classmethod
+    def today(cls):
+        return cls(2026, 9, 2)
+cm.date = _FakeDate
 
 # Clear cache to force reload
 cm._PRICING_CACHE = (None, None)
@@ -4298,17 +4311,6 @@ cm._PRICING_CACHE = (None, None)
 # - The snapshot is fresh (fetched 1 hour ago)
 # - Max-age won't help here
 # - Only the disagreement rule will catch this
-
-# faketime must have moved the clock past SONNET5_INTRO_CUTOFF for this test
-# to exercise the disagreement rule at all. If the LD_PRELOAD no-ops (observed
-# under suite load, bead beads_claude_docker-zrx), date.today() falls back to
-# the real pre-cutoff date, _sonnet5_rates() returns the intro 2/10, that
-# AGREES with the snapshot, the disagreement rule never fires, and the
-# assertions below would fail with a confusing pricing mismatch instead of
-# this clear cause.
-assert cm.date.today() >= cm.SONNET5_INTRO_CUTOFF, (
-    f'faketime did not apply: today={cm.date.today()}, expected on/after {cm.SONNET5_INTRO_CUTOFF}'
-)
 
 r = cm.rates_for('claude-sonnet-5')
 
@@ -4328,7 +4330,7 @@ for k in cm.COUNTER_KEYS:
 
 print('DISAGREEMENT RULE OK')
 PYEOF
-    run env COST_MIRROR_PRICING_PATH="$SNAP" MIRROR="$MIRROR" faketime '2026-09-02 12:00:00' python3 "$BATS_TEST_TMPDIR/test_exposure_b.py"
+    run env COST_MIRROR_PRICING_PATH="$SNAP" MIRROR="$MIRROR" python3 "$BATS_TEST_TMPDIR/test_exposure_b.py"
     [ "$status" -eq 0 ]
     [[ "$output" == *"DISAGREEMENT RULE OK"* ]]
 }
@@ -4347,21 +4349,23 @@ PYEOF
     # First, run with the disagreement rule in place (should pass)
     cat > "$BATS_TEST_TMPDIR/test_with_disagree.py" << 'PYEOF'
 import importlib.util, os
+from datetime import date as _real_date
 spec = importlib.util.spec_from_file_location('cost_mirror_under_test', os.environ.get('MIRROR'))
 cm = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(cm)
+# See exposure-b test above: rebind cm's own `date` name in-process instead
+# of relying on faketime's LD_PRELOAD (bead beads_claude_docker-w2l).
+class _FakeDate(_real_date):
+    @classmethod
+    def today(cls):
+        return cls(2026, 9, 2)
+cm.date = _FakeDate
 cm._PRICING_CACHE = (None, None)
-# See exposure-b test above: faketime must actually move the clock past
-# cutoff or this degrades to a confusing pricing mismatch instead of a clear
-# cause (bead beads_claude_docker-zrx).
-assert cm.date.today() >= cm.SONNET5_INTRO_CUTOFF, (
-    f'faketime did not apply: today={cm.date.today()}, expected on/after {cm.SONNET5_INTRO_CUTOFF}'
-)
 r = cm.rates_for('claude-sonnet-5')
 assert r['source'] == 'baked' and r['in'] == 3.0, f'WITH disagreement rule: {r}'
 print('WITH DISAGREEMENT RULE: PASS')
 PYEOF
-    run env COST_MIRROR_PRICING_PATH="$SNAP" MIRROR="$MIRROR" faketime '2026-09-02 12:00:00' python3 "$BATS_TEST_TMPDIR/test_with_disagree.py"
+    run env COST_MIRROR_PRICING_PATH="$SNAP" MIRROR="$MIRROR" python3 "$BATS_TEST_TMPDIR/test_with_disagree.py"
     [ "$status" -eq 0 ]
     [[ "$output" == *"WITH DISAGREEMENT RULE: PASS"* ]]
 
@@ -4369,9 +4373,15 @@ PYEOF
     # We'll modify the module to skip the disagreement check
     cat > "$BATS_TEST_TMPDIR/test_without_disagree.py" << 'PYEOF'
 import importlib.util, os
+from datetime import date as _real_date
 spec = importlib.util.spec_from_file_location('cost_mirror_under_test', os.environ.get('MIRROR'))
 cm = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(cm)
+class _FakeDate(_real_date):
+    @classmethod
+    def today(cls):
+        return cls(2026, 9, 2)
+cm.date = _FakeDate
 
 # Stub out the disagreement rule by replacing rates_for to NOT check disagreement
 def rates_for_no_disagreement(model):
@@ -4415,7 +4425,7 @@ r = cm.rates_for('claude-sonnet-5')
 assert r['source'] == 'litellm' and r['in'] == 2.0, f'WITHOUT disagreement rule: {r}'
 print('WITHOUT DISAGREEMENT RULE: CORRECTLY FAILS (case b is not vacuous)')
 PYEOF
-    run env COST_MIRROR_PRICING_PATH="$SNAP" MIRROR="$MIRROR" faketime '2026-09-02 12:00:00' python3 "$BATS_TEST_TMPDIR/test_without_disagree.py"
+    run env COST_MIRROR_PRICING_PATH="$SNAP" MIRROR="$MIRROR" python3 "$BATS_TEST_TMPDIR/test_without_disagree.py"
     [ "$status" -eq 0 ]
     [[ "$output" == *"WITHOUT DISAGREEMENT RULE: CORRECTLY FAILS"* ]]
 }
