@@ -24,6 +24,25 @@ Don't reach for `bd init --reinit-local`/`--force` as the fix even though bd's o
 
 `bd doctor --fix --yes` is **unsupported in embedded Dolt mode**, confirmed 2026-08-07: it prints `Note: 'bd doctor' is not yet supported in embedded mode.` and exits 0 without repairing anything. It is not called anywhere in `ensure_beads()`.
 
+## Stuck rebase (`git pull --rebase` wedged on a clean tree)
+
+`git rebase` (interactive, single-commit pick during `pull --rebase`) can get
+stuck showing the SAME commit as both "Last command done" and "Next command to
+do" in `.git/rebase-merge/git-rebase-todo`, and repeatedly errors
+"Your local changes ... would be overwritten by merge" on a genuinely clean
+working tree (`git diff` / `git diff --cached` both empty).
+
+**Recovery that worked:** confirm `git status` shows a truly clean tree, then
+run `git rebase --continue` directly. Do **not** keep re-running
+`git pull --rebase` — it re-enters the same bad state.
+
+**Unconfirmed hypothesis** (from a parallel scout investigation): the beads
+post-checkout hook (`bd hooks run post-checkout`) dirties the tree between
+checkout and cherry-pick. Manually invoking that hook produced zero file
+changes in the original session, so treat this as an open hypothesis, not a
+fix; root cause never fully isolated. Ref: session 2026-08-10, commit
+`4576aa2` rebase onto `53ace0a`, landed as `a30c558`, pushed clean.
+
 ## Common issues
 
 | Symptom | Fix |
