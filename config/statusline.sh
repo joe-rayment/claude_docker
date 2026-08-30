@@ -68,8 +68,44 @@ color_pct() {
     color_by_threshold "$1" "$([ "$1" = "?" ] && echo "?" || printf "%d%%" "$1")" 70 90
 }
 
+# Flat (non-severity) color for the optional Claude Code >=2.1.251 segments
+# below — cache-hit and context-remaining are "higher is better", unlike the
+# other percentages here, so the red/yellow/green severity ramp doesn't apply.
+color_flat() {
+    printf "\033[34m%s\033[0m" "$1"
+}
+
 ctx_display=$(color_by_threshold "$ctx_pct" "$bar $ctx_pct%" 40 75)
 
-printf "\033[32m%s\033[0m | %s | \033[36m%s\033[0m | session: %s | weekly: %s\n" \
+# Optional segments fed by statusline JSON fields Claude Code >=2.1.251 emits:
+# prompt-cache hit ratio, context-window remaining, session cost. Each field
+# is read with a `// empty` fallback and a stderr guard so a field that is
+# absent, null, or a differently-shaped value renders nothing rather than
+# erroring; the whole segment is then omitted (not shown empty) when its
+# value is unavailable, keeping output byte-identical to before when none of
+# these fields are present (e.g. today, container is 2.1.247).
+extra=""
+
+cache_hit_raw=$(echo "$input" | jq -r '.prompt_cache.hit_ratio // empty' 2>/dev/null)
+if [ -n "$cache_hit_raw" ]; then
+    cache_pct=$(awk -v h="$cache_hit_raw" 'BEGIN{printf "%d", h*100}')
+    extra="${extra:+$extra | }$(color_flat "cache ${cache_pct}%")"
+fi
+
+ctx_remaining_raw=$(echo "$input" | jq -r '.context_window.remaining_percentage // empty' 2>/dev/null)
+if [ -n "$ctx_remaining_raw" ]; then
+    ctx_remaining_pct=$(awk -v p="$ctx_remaining_raw" 'BEGIN{printf "%d", p}')
+    extra="${extra:+$extra | }$(color_flat "ctx ${ctx_remaining_pct}%")"
+fi
+
+cost_raw=$(echo "$input" | jq -r '.cost.total_cost_usd // empty' 2>/dev/null)
+if [ -n "$cost_raw" ]; then
+    cost_fmt=$(awk -v c="$cost_raw" 'BEGIN{printf "$%.2f", c}')
+    extra="${extra:+$extra | }$(color_flat "$cost_fmt")"
+fi
+
+line=$(printf "\033[32m%s\033[0m | %s | \033[36m%s\033[0m | session: %s | weekly: %s" \
     "$model" "$ctx_display" "$branch" \
-    "$(color_pct "$session_pct")" "$(color_pct "$weekly_pct")"
+    "$(color_pct "$session_pct")" "$(color_pct "$weekly_pct")")
+[ -n "$extra" ] && line="$line | $extra"
+printf "%s\n" "$line"
