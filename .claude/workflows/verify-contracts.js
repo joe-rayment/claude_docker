@@ -16,9 +16,7 @@
 
 export const meta = {
   name: 'verify-contracts',
-  description:
-    'Run the five mechanical acceptance-contract checks (C1-C5) plus C2b ' +
-    'against one or more beads, one verifier-grade agent() call per bead.',
+  description: 'Run the five mechanical acceptance-contract checks (C1-C5) plus C2b against one or more beads, one verifier-grade agent() call per bead.',
   phases: ['Verify'],
 };
 

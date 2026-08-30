@@ -19,9 +19,7 @@
 
 export const meta = {
   name: 'recon-fanout',
-  description:
-    'Fan out independent recon questions to one scout-grade agent() call ' +
-    'per question, each returning typed findings anchored to file:line.',
+  description: 'Fan out independent recon questions to one scout-grade agent() call per question, each returning typed findings anchored to file:line.',
   phases: ['Recon'],
 };
 
