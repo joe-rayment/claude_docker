@@ -206,6 +206,7 @@ COPY --chown=agent:agent scripts/lane.sh /usr/local/bin/lane
 COPY --chown=agent:agent scripts/workflow-lint.sh /usr/local/bin/workflow-lint
 COPY --chown=agent:agent scripts/cost-mirror.py /usr/local/bin/cost-mirror
 COPY --chown=agent:agent scripts/disk-cleanup.sh /usr/local/bin/disk-cleanup
+COPY --chown=agent:agent scripts/session-end-audit.sh /usr/local/bin/session-end-audit
 COPY --chown=agent:agent scripts/bd-guard.sh /usr/local/bin/bd-guard
 COPY --chown=agent:agent scripts/context-detect.sh /usr/local/bin/context-detect
 COPY --chown=agent:agent scripts/delegation-gate.py /usr/local/bin/delegation-gate
@@ -256,6 +257,7 @@ RUN chmod +x /usr/local/bin/entrypoint.sh \
              /usr/local/bin/tier-derive \
              /usr/local/bin/tier-reconcile \
              /usr/local/bin/disk-cleanup \
+             /usr/local/bin/session-end-audit \
              /usr/local/bin/bd-guard \
              /usr/local/bin/delegation-gate \
              /usr/local/bin/contract-gate \

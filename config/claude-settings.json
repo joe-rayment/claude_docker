@@ -128,6 +128,17 @@
         ]
       }
     ],
+    "SessionEnd": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "r=$(git rev-parse --show-toplevel 2>/dev/null); [ -n \"$r\" ] && [ -x \"$r/scripts/session-end-audit.sh\" ] && { \"$r/scripts/session-end-audit.sh\" 2>/dev/null; exit 0; }; command -v session-end-audit >/dev/null 2>&1 && { session-end-audit 2>/dev/null; exit 0; }; [ -x \"$HOME/.claude/hooks/session-end-audit\" ] && { \"$HOME/.claude/hooks/session-end-audit\" 2>/dev/null; exit 0; }; exit 0"
+          }
+        ]
+      }
+    ],
     "PreToolUse": [
       {
         "matcher": "Bash",
