@@ -168,3 +168,126 @@ with open('$SCRATCH', 'w') as fh:
     [ "$status" -eq 0 ]
     [ -z "$output" ]
 }
+
+# ── bd prime dedup + SessionEnd audit hook (beads_claude_docker-1qf) ───────
+
+@test "hook-staging: project .claude/settings.json has no bd prime registration under SessionStart or PreCompact" {
+    run python3 -c "
+import json, sys
+with open('/workspace/.claude/settings.json') as fh:
+    s = json.load(fh)
+hooks = s.get('hooks', {})
+found = []
+for event in ('SessionStart', 'PreCompact'):
+    for entry in hooks.get(event, []):
+        for h in entry.get('hooks', []):
+            if h.get('command', '').strip() == 'bd prime':
+                found.append(event)
+sys.exit(1 if found else 0)
+"
+    [ "$status" -eq 0 ]
+}
+
+@test "hook-staging: config/claude-settings.json registers bd prime exactly once per event" {
+    run python3 -c "
+import json, sys
+with open('/workspace/config/claude-settings.json') as fh:
+    s = json.load(fh)
+hooks = s.get('hooks', {})
+bad = []
+for event in ('SessionStart', 'PreCompact'):
+    count = sum(1 for entry in hooks.get(event, []) for h in entry.get('hooks', [])
+                if h.get('command', '').strip() == 'bd prime')
+    if count != 1:
+        bad.append('%s=%d' % (event, count))
+print(' '.join(bad))
+sys.exit(1 if bad else 0)
+"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+}
+
+@test "hook-staging: home settings.json registers bd prime exactly once per event" {
+    run python3 -c "
+import json, sys
+with open('/home/agent/.claude/settings.json') as fh:
+    s = json.load(fh)
+hooks = s.get('hooks', {})
+bad = []
+for event in ('SessionStart', 'PreCompact'):
+    count = sum(1 for entry in hooks.get(event, []) for h in entry.get('hooks', [])
+                if h.get('command', '').strip() == 'bd prime')
+    if count != 1:
+        bad.append('%s=%d' % (event, count))
+print(' '.join(bad))
+sys.exit(1 if bad else 0)
+"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+}
+
+@test "hook-staging: config/claude-settings.json and home settings.json both register a SessionEnd hook invoking session-end-audit" {
+    run python3 -c "
+import json, sys
+missing = []
+for path in ('/workspace/config/claude-settings.json', '/home/agent/.claude/settings.json'):
+    with open(path) as fh:
+        s = json.load(fh)
+    hooks = s.get('hooks', {})
+    found = any('session-end-audit' in h.get('command', '')
+                for entry in hooks.get('SessionEnd', [])
+                for h in entry.get('hooks', []))
+    if not found:
+        missing.append(path)
+print(' '.join(missing))
+sys.exit(1 if missing else 0)
+"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+}
+
+@test "hook-staging: session-end-audit.sh logs the dirty file count via dev-log when the tree is dirty" {
+    REPO="$BATS_TEST_TMPDIR/dirty-repo"
+    mkdir -p "$REPO"
+    git -C "$REPO" init -q
+    git -C "$REPO" config user.email test@example.com
+    git -C "$REPO" config user.name test
+    echo one > "$REPO/a.txt"
+    git -C "$REPO" add a.txt
+    git -C "$REPO" commit -q -m init
+    echo two >> "$REPO/a.txt"
+    echo untracked > "$REPO/b.txt"
+    FAKEBIN="$BATS_TEST_TMPDIR/fakebin-dirty"
+    mkdir -p "$FAKEBIN"
+    CAPTURE="$BATS_TEST_TMPDIR/devlog-dirty.log"
+    printf '#!/usr/bin/env bash\necho "$@" >> "%s"\n' "$CAPTURE" > "$FAKEBIN/dev-log"
+    chmod +x "$FAKEBIN/dev-log"
+    export PATH="$FAKEBIN:$PATH"
+    payload="{\"cwd\":\"$REPO\"}"
+    run bash -c 'printf "%s" "$1" | /workspace/scripts/session-end-audit.sh' _ "$payload"
+    [ "$status" -eq 0 ]
+    [ -f "$CAPTURE" ]
+    grep -q "2 file" "$CAPTURE"
+}
+
+@test "hook-staging: session-end-audit.sh emits nothing when the tree is clean" {
+    REPO="$BATS_TEST_TMPDIR/clean-repo"
+    mkdir -p "$REPO"
+    git -C "$REPO" init -q
+    git -C "$REPO" config user.email test@example.com
+    git -C "$REPO" config user.name test
+    echo one > "$REPO/a.txt"
+    git -C "$REPO" add a.txt
+    git -C "$REPO" commit -q -m init
+    FAKEBIN="$BATS_TEST_TMPDIR/fakebin-clean"
+    mkdir -p "$FAKEBIN"
+    CAPTURE="$BATS_TEST_TMPDIR/devlog-clean.log"
+    printf '#!/usr/bin/env bash\necho "$@" >> "%s"\n' "$CAPTURE" > "$FAKEBIN/dev-log"
+    chmod +x "$FAKEBIN/dev-log"
+    export PATH="$FAKEBIN:$PATH"
+    payload="{\"cwd\":\"$REPO\"}"
+    run bash -c 'printf "%s" "$1" | /workspace/scripts/session-end-audit.sh' _ "$payload"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+    [ ! -f "$CAPTURE" ]
+}
