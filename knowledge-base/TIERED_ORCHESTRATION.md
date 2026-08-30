@@ -1187,3 +1187,11 @@ Revision log (each reversible via git on the listed files):
   (new); `scout.md`, `config/claude-settings.json`, `config/.zshrc`,
   `CLAUDE.md` (additive edits). Base commit `bc5cb028`; pre-change copy
   under `~/.claude/backups/tiered-orchestration-<sha>/`.
+
+## Consults: native advisor vs oracle (decision 2026-08-30)
+
+Claude Code's native advisor tool (`/advisor`, `advisorModel`, ≥2.1.170, Fable-capable) covers the oracle's mid-task consult role — but it is Anthropic-API-only, so on this container's OAuth/subscription sessions it is unavailable. Decision: **oracle remains the consult path here** (fresh-context, user-invoked, panel-capable); revisit if the container moves to API auth. `advisorModel`, where used, must stay ≥ the session's top tier.
+
+## Hook-trigger migration (pending image ≥ 2.1.251)
+
+`tier-reconcile` runs on every UserPromptSubmit only because 2.1.247 has no model-change event. Claude Code 2.1.251 added `PostModelSwitch`/`ConfigChange` hooks — once a host rebuild lands ≥2.1.251, move reconcile there and drop the per-prompt run (keep SessionStart). Tracked as bead beads_claude_docker-v4p.

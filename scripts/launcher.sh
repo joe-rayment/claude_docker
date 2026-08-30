@@ -588,6 +588,14 @@ cmd_update() {
     echo -e "\033[2mNote: Auth, git config, and history are preserved in the volume.\033[0m"
     echo -e "${C_GREEN}✓ Update complete${C_RESET}"
 
+    # Best-effort pinned-tool drift report — never fails the update; a
+    # network hiccup here must not block an otherwise-successful update.
+    if [ -x "$CLAUDE_DEV_DIR/scripts/pin-currency.sh" ]; then
+        echo ""
+        echo -e "${C_BOLD}${C_BLUE}Pin currency report:${C_RESET}"
+        bash "$CLAUDE_DEV_DIR/scripts/pin-currency.sh" || true
+    fi
+
     # Start fresh container and exec in
     start_container
     exec_into

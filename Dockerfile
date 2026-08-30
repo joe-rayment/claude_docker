@@ -85,10 +85,11 @@ RUN HELIX_VERSION=25.07.1 && \
 # Tell Helix where to find its runtime files
 ENV HELIX_RUNTIME=/usr/local/lib/helix/runtime
 
-# Install Node.js 22 LTS — base image ships Node 20.19; some tools require
-# node:sqlite, a built-in added in 22.5+. NodeSource replaces the apt nodejs
-# package with their build, so this also unblocks anything else needing >=22.
-RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+# Install Node.js 24 LTS (active LTS since Oct 2025) — base image ships Node
+# 20.19; some tools require node:sqlite, a built-in added in 22.5+. NodeSource
+# replaces the apt nodejs package with their build, so this also unblocks
+# anything else needing >=22.
+RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* \

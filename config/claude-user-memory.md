@@ -48,7 +48,7 @@ Where a project ships mechanical enforcement (e.g. this template's `scripts/bd-g
 
 # Opus Answer Protocol — Hard Brevity
 
-**Scope: this section binds whenever an Opus-family model is generating the visible reply** — main session or subagent; the environment block names your model. Other models skip it. It tightens every other style rule and loosens none.
+**Scope: this section binds whenever an Opus-family or Mythos-class (Fable) model is generating the visible reply** — main session or subagent; the environment block names your model. Other models skip it. It tightens every other style rule and loosens none.
 
 Opus's known failure mode is treated as a defect here, not a personality: it narrates, philosophizes, re-derives, hedges, recaps its own process, and buries a one-line answer under ceremony. Over-correct, hard.
 
