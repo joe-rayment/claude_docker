@@ -25,6 +25,17 @@ set -e
 cleanup() { trap - SIGTERM SIGINT; kill -- -$$ 2>/dev/null; }
 trap cleanup SIGTERM SIGINT
 
+# Opt-in egress firewall (beads_claude_docker-0am): default-deny OUTPUT with
+# an allowlist for the services this container talks to. OFF by default
+# everywhere -- CLAUDE_DEV_FIREWALL=1 is the only thing that invokes it, and
+# even then a refusal (no CAP_NET_ADMIN) only warns and lets the container
+# keep starting -- a wrong or unapplied allowlist must never brick it. See
+# knowledge-base/EGRESS_FIREWALL.md.
+if [ "${CLAUDE_DEV_FIREWALL:-0}" = "1" ] && [ -x /usr/local/bin/egress-firewall.sh ]; then
+    /usr/local/bin/egress-firewall.sh \
+        || dev-log error "egress-firewall.sh failed to apply (CLAUDE_DEV_FIREWALL=1)" "container continuing with the firewall NOT applied -- run 'egress-firewall.sh --dry-run' to inspect the intended policy" 2>/dev/null || true
+fi
+
 # Import IntelliShell defaults on first run
 MARKER_FILE="/home/agent/.config/intelli-shell/.defaults_imported"
 DEFAULTS_FILE="/home/agent/.config/intelli-shell/defaults.txt"

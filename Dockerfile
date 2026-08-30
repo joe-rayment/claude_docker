@@ -48,6 +48,18 @@ RUN test -x /usr/bin/gnustty \
     && ln -sf /usr/bin/gnustty /bin/stty \
     && stty --version | grep -q 'GNU coreutils'
 
+# Install iptables + dnsutils (dig) for the opt-in egress firewall
+# (scripts/egress-firewall.sh, beads_claude_docker-0am). Off by default
+# everywhere -- see CLAUDE_DEV_FIREWALL in scripts/entrypoint.sh and
+# knowledge-base/EGRESS_FIREWALL.md -- but the binaries are baked in either
+# way so --dry-run always works and an opt-in apply never hits a missing
+# command.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    iptables \
+    dnsutils \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
 # ── Agent: user-level shell setup ─────────────────────────────────────
 USER agent
 WORKDIR /home/agent
@@ -213,6 +225,7 @@ COPY --chown=agent:agent scripts/context-detect.sh /usr/local/bin/context-detect
 COPY --chown=agent:agent scripts/delegation-gate.py /usr/local/bin/delegation-gate
 COPY --chown=agent:agent scripts/contract-gate.py /usr/local/bin/contract-gate
 COPY --chown=agent:agent scripts/image-drift.py /usr/local/bin/image-drift
+COPY --chown=agent:agent scripts/egress-firewall.sh /usr/local/bin/egress-firewall.sh
 # the guard IS `graphify` here: the pinned engine at /opt/code-map/bin stays
 # off PATH so every invocation goes through the allowlist
 COPY --chown=agent:agent scripts/code-map-guard.sh /usr/local/bin/graphify
@@ -263,6 +276,7 @@ RUN chmod +x /usr/local/bin/entrypoint.sh \
              /usr/local/bin/delegation-gate \
              /usr/local/bin/contract-gate \
              /usr/local/bin/image-drift \
+             /usr/local/bin/egress-firewall.sh \
              /usr/local/bin/run-tests.sh
 
 # Pin the Playwright CLI globally. take-screenshot calls this binary instead
