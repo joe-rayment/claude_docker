@@ -111,7 +111,7 @@ RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
 # former `gem install bundler ... || true` silently failed on every build —
 # dropped. Add ruby-full + a real gem install here if Bundler is ever needed.)
 RUN pip3 install --no-cache-dir --break-system-packages poetry uv \
-    && npm install -g pnpm@9 yarn@1.22
+    && npm install -g pnpm@11 yarn@1.22.22
 
 # Install the code-map graph engine (graphifyy, pinned like every other tool
 # here) into a SYSTEM prefix that is deliberately OFF PATH: the only graphify
@@ -121,7 +121,7 @@ RUN pip3 install --no-cache-dir --break-system-packages poetry uv \
 # this is the floor, not the ceiling. a+rX because uv installs as root here
 # and the container runs as agent.
 RUN UV_NO_CACHE=1 UV_TOOL_DIR=/opt/code-map/tools UV_TOOL_BIN_DIR=/opt/code-map/bin \
-        uv tool install graphifyy==0.9.48 \
+        uv tool install graphifyy==0.9.53 \
     && chmod -R a+rX /opt/code-map \
     && /opt/code-map/bin/graphify version
 
@@ -168,7 +168,7 @@ ENV DISABLE_AUTOUPDATER=1
 ENV DISABLE_AUTO_MIGRATE_TO_NATIVE=1
 
 # Install bats-core for experience testing
-RUN git clone --depth 1 --branch v1.11.1 https://github.com/bats-core/bats-core.git /tmp/bats-core \
+RUN git clone --depth 1 --branch v1.14.0 https://github.com/bats-core/bats-core.git /tmp/bats-core \
     && /tmp/bats-core/install.sh /usr/local \
     && rm -rf /tmp/bats-core
 
@@ -178,7 +178,7 @@ RUN git clone --depth 1 --branch v1.11.1 https://github.com/bats-core/bats-core.
 # intent — cf. Helix/bats/IntelliShell pins). bd runs in embedded Dolt mode, so
 # no SQL server is required. (The upstream repo moved to gastownhall/beads.)
 RUN set -eu; \
-    BD_VERSION=1.0.4; \
+    BD_VERSION=1.2.2; \
     arch=$(uname -m); \
     case "$arch" in \
         x86_64|amd64) bdarch=amd64 ;; \
@@ -198,7 +198,7 @@ RUN set -eu; \
 
 # Install Dolt (pinned). Beads' embedded mode uses Dolt for on-disk storage;
 # the tagged install.sh installs that exact version (no moving 'latest').
-RUN curl -fsSL https://github.com/dolthub/dolt/releases/download/v2.0.5/install.sh | bash
+RUN curl -fsSL https://github.com/dolthub/dolt/releases/download/v2.3.1/install.sh | bash
 
 # Copy scripts first (change less often than config — better layer caching)
 COPY --chown=agent:agent scripts/entrypoint.sh /usr/local/bin/entrypoint.sh
@@ -298,8 +298,8 @@ RUN npm install -g @playwright/mcp@0.0.76
 # ── Agent: user-level tool install and final state ────────────────────
 USER agent
 
-# Install IntelliShell for the agent user (pinned to v3.4.0 via URL)
-RUN curl -sSf https://raw.githubusercontent.com/lasantosr/intelli-shell/v3.4.0/install.sh | sh
+# Install IntelliShell for the agent user (pinned to v3.4.5 via URL)
+RUN curl -sSf https://raw.githubusercontent.com/lasantosr/intelli-shell/v3.4.5/install.sh | sh
 
 # Install Chromium for the pinned Playwright (as agent user so browsers cache
 # to ~/.cache/ms-playwright/, preserved by the home volume)

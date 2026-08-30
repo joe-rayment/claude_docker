@@ -3525,6 +3525,15 @@ mk_pricing_snapshot() {
   }
 }
 EOF
+    # Re-stamp fetched_at to the real wall clock at fixture-build time
+    # (not the hardcoded 2026-08-25 literal above). rates_for()'s max-age
+    # check runs against real time.time(), so a fixed absolute stamp
+    # eventually ages past PRICING_MAX_AGE_SECONDS as real time advances
+    # and source flips from litellm to baked for the wrong reason — the
+    # same clock-fragility class w2l fixed for exposure-(b) (bead
+    # beads_claude_docker-w2l; rc8 is the exposure-(a) follow-up). "Now"
+    # keeps the snapshot inside max-age indefinitely.
+    jq --arg ts "$(date -u +%Y-%m-%dT%H:%M:%S+00:00)" '.fetched_at = $ts' "$SNAP" > "$SNAP.new" && mv "$SNAP.new" "$SNAP"
 }
 
 @test "cost-mirror: pricing snapshot — with no snapshot, rates_for returns today's baked figures unchanged and marks them 'baked'" {
@@ -3565,15 +3574,23 @@ print('BAKED FALLBACK OK')
 @test "cost-mirror: pricing snapshot — a snapshot wins over the baked table, resolves by longest prefix, and carries litellm provenance" {
     mk_pricing_snapshot
     run python3 -c "
-import importlib.util
+import importlib.util, json
 spec = importlib.util.spec_from_file_location('cost_mirror_under_test', '$MIRROR')
 cm = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(cm)
 
+# fetched_at is stamped to the real wall clock by mk_pricing_snapshot at
+# fixture-build time (bead beads_claude_docker-rc8), not a fixed literal,
+# so compare against the value actually written to the snapshot file
+# rather than a second, independently-computed 'now' (which would race
+# the fixture's own timestamp across a second boundary).
+with open('$SNAP') as f:
+    expected_fetched_at = json.load(f)['fetched_at']
+
 r = cm.rates_for('claude-opus-5')
 assert [r[k] for k in cm.COUNTER_KEYS] == [5.0, 25.0, 0.5, 6.25, 10.0], r
 assert r['source'] == 'litellm', r['source']
-assert r['fetched_at'] == '2026-08-25T12:00:00+00:00', r['fetched_at']
+assert r['fetched_at'] == expected_fetched_at, (r['fetched_at'], expected_fetched_at)
 assert r['pricing_id'] == 'litellm:claude-opus-5', r['pricing_id']
 
 # dated real-world id -> longest snapshot key that prefixes it; the value is
@@ -3623,18 +3640,21 @@ os.environ['COST_MIRROR_PRICING_PATH'] = '$BATS_TEST_TMPDIR/no-such-snapshot.jso
 baked = {m: five(m) for m in snap}
 assert cm.rates_for('claude-opus-5')['source'] == 'baked'
 
-for m in ('claude-opus-5', 'claude-fable-5', 'claude-haiku-4-5-20251001'):
+for m in ('claude-opus-5', 'claude-sonnet-5', 'claude-fable-5', 'claude-haiku-4-5-20251001'):
     assert snap[m] == baked[m], (m, snap[m], baked[m])
 
 # sonnet-5 is the one entry whose baked price is date-switched
-# (SONNET5_INTRO_CUTOFF, 2026-09-01). While the intro price holds, litellm and
-# the table agree exactly; from the cutoff the table reverts to 3/15 and a
-# snapshot still quoting the intro 2/10 legitimately differs -- snapshot-first
-# is the specified precedence, so assert the agreement only where it is real.
-if cm._sonnet5_rates() == (2.00, 10.00):
-    assert snap['claude-sonnet-5'] == baked['claude-sonnet-5'], (snap, baked)
-else:
-    assert snap['claude-sonnet-5'] == [2.0, 10.0, 0.2, 2.5, 4.0], snap
+# (SONNET5_INTRO_CUTOFF, 2026-09-01), but it needs no special case above:
+# pre-cutoff, litellm and the table genuinely agree (both 2/10); from the
+# cutoff, the snapshot's now-stale intro price disagrees with the
+# date-aware baked value (3/15), so rates_for()'s exposure-(b)
+# disagreement rule (bead beads_claude_docker-zrx) overrides snap's read
+# to the baked figure too -- snap[m] == baked[m] holds unconditionally on
+# both sides of the cutoff, by construction rather than by coincidence.
+# (A prior version special-cased the post-cutoff branch against the raw
+# snapshot literal [2.0, 10.0, ...], which was never actually reachable
+# through rates_for() and went untested until a far-future faketime
+# clock exposed it -- beads_claude_docker-rc8.)
 print('NO DOLLAR MOVEMENT OK')
 "
     [ "$status" -eq 0 ]
@@ -4317,9 +4337,16 @@ cm._PRICING_CACHE = (None, None)
 # Now create a fresh snapshot - should win over baked
 import os, json
 os.makedirs(os.path.dirname('$SNAP'), exist_ok=True)
+# fetched_at is derived from the real wall clock at fixture-build time --
+# bash \$(date -u ...) is interpolated into this double-quoted run block
+# before python ever sees it, same as \$SNAP and \$MIRROR above -- not a
+# hardcoded stamp, which would eventually age past
+# PRICING_MAX_AGE_SECONDS and flip source to baked for the wrong reason
+# (same clock-fragility class w2l fixed for exposure-(b); this is the
+# exposure-(a) follow-up, bead beads_claude_docker-rc8).
 snap_fresh = {
     'schema': 1,
-    'fetched_at': '2026-08-26T12:00:00+00:00',
+    'fetched_at': '$(date -u +%Y-%m-%dT%H:%M:%S+00:00)',
     'source': 'litellm',
     'url': 'https://example.com/prices.json',
     'rates': {
