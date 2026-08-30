@@ -1,0 +1,11 @@
+{
+  "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
+  "$comment": "GENERATED FILE \u2014 do not edit by hand. Source: config/ via scripts/build-plugin.sh. See that script's header for the full generation map.",
+  "name": "claude-dev",
+  "version": "0.1.0",
+  "description": "Claude Code Development Container: agents, skills, and hooks for tiered orchestrator/executor/scout delegation, beads-based task tracking, and code-map-aware development.",
+  "author": {
+    "name": "Joe Rayment",
+    "email": "joe@joerayment.com"
+  }
+}
