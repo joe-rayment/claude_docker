@@ -6,6 +6,13 @@
 // Invoke via the Workflow tool with:
 //
 //   { beads: [{ id: "proj-abc", redAt: "<sha>", greenAt: "<sha>" }, ...] }
+//
+// `args` is the Workflow tool's own global carrying this script's
+// invocation input — there is no function-parameter entry point. The
+// `typeof args !== 'undefined'` guard below keeps a plain `import()` of
+// this module (e.g. tests/workflows.bats's meta-shape check) side-effect
+// free: outside the Workflow tool, `args`/`agent`/`phase`/`pipeline`/
+// `log` are never dereferenced, so loading the module never throws.
 
 export const meta = {
   name: 'verify-contracts',
@@ -58,22 +65,22 @@ function verifyPrompt(bead) {
   );
 }
 
-export default async function run(args) {
+if (typeof args !== 'undefined') {
   const { beads } = args || {};
   if (!Array.isArray(beads) || beads.length === 0) {
     throw new Error('verify-contracts: args.beads must be a non-empty array of {id, redAt, greenAt}');
   }
 
-  const verdicts = await Promise.all(
-    beads.map((bead) =>
-      agent(verifyPrompt(bead), {
-        model: 'fable',
-        phase: 'Verify',
-        schema: VERDICT_SCHEMA,
-        label: `verify: ${bead.id}`,
-      })
-    )
+  phase('Verify');
+
+  const verdicts = await pipeline(beads, (bead) =>
+    agent(verifyPrompt(bead), {
+      model: 'fable',
+      phase: 'Verify',
+      schema: VERDICT_SCHEMA,
+      label: `verify: ${bead.id}`,
+    })
   );
 
-  return { beadCount: beads.length, verdicts };
+  log(JSON.stringify({ beadCount: beads.length, verdicts: verdicts.filter(Boolean) }, null, 2));
 }

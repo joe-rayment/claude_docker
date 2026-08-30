@@ -341,12 +341,32 @@ for writing a `workflow-lint`-clean Workflow script — both `export const
 meta` as a pure literal (`name`/`description`/`phases`) and set an
 explicit `model:` on every `agent()` call, so a `Workflow` invocation of
 either passes `workflow-lint` without needing a `/* workflow-lint:
-model-ok */` annotation.
+model-ok */` annotation. Per the Workflow docs (code.claude.com/docs/en/
+workflows): a script's invocation input arrives as a top-level `args`
+global, not a function parameter — there is no exported entry point
+besides `meta` — and `phase()`/`pipeline()`/`log()` are the other
+confirmed script-scope globals alongside `agent()`; `import()` inside a
+script is rejected before the run starts. Both scripts here guard their
+whole body in `if (typeof args !== 'undefined')`, which does double duty:
+it's how a script with no invocation args is a no-op, and it keeps a
+plain Node `import()` of the file (e.g. `tests/workflows.bats`'s
+meta-shape check, which loads the module to inspect the real `meta`
+export rather than grep for it) side-effect free, since `args` is a
+genuinely undeclared global outside the Workflow tool. `model:` on each
+`agent()` call is confirmed independently of the docs page: workflow-
+spawned sidecars observed under `subagents/workflows/*/agent-*.meta.json`
+carry real `model` values (see *Model-selection mechanics* in
+`knowledge-base/TRANSCRIPT_FORENSICS.md`) — `phase:` as a **per-call**
+`agent()` option is not independently confirmed the same way (the docs
+example shows `phase()` as its own call grouping subsequent agents by
+title instead), so both scripts call `phase('Recon')`/`phase('Verify')`
+once per the confirmed mechanism *and* keep `phase:` in each call's own
+options, belt-and-suspenders.
 
 - **`.claude/workflows/recon-fanout.js`** — args `{questions: string[],
   glob?: string}`. Fans the questions out to one **scout-grade**
   `agent()` call per question (`model: 'haiku'`, `phase: 'Recon'`), run
-  in parallel via `Promise.all`, each returning a schema-typed result:
+  in parallel via `pipeline()`, each returning a schema-typed result:
   concrete `file:line` findings, or an explicit `negative: true` when the
   honest answer is "found nowhere" rather than a guess. This is the
   scriptable form of spawning several parallel `scout` agents for
