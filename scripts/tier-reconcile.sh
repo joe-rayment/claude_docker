@@ -79,6 +79,33 @@ fm_set() {  # fm_set <agent-file> <model-id> — rewrite the frontmatter model: 
     fi
 }
 
+fm_effort() {  # current frontmatter `effort:` value of an agent file ('' if none/missing)
+    grep -m1 '^effort:' "$1" 2>/dev/null | sed 's/^effort:[[:space:]]*//'
+}
+
+fm_effort_set() {  # fm_effort_set <agent-file> <low|medium|...> — add-or-correct the effort: line
+    # atomically. Unlike fm_set, a MISSING line is not "nothing to bind": effort
+    # is a per-role STATIC default (never derived from the ladder/top), so it is
+    # INSERTED right after model: (matching the verifier.md/oracle.md template
+    # convention) rather than requiring a pre-existing line to substitute into.
+    f=$1; val=$2
+    case "$val" in (*[!]a-zA-Z0-9._[-]*|'') return 0 ;; esac   # same injection guard as fm_set
+    grep -q '^model:' "$f" 2>/dev/null || return 0   # no stable anchor -> stay silent, never guess placement
+    mode=$(stat -c %a "$f" 2>/dev/null) || mode=644
+    tmp=$(mktemp "$f.XXXXXX") || return 0
+    if grep -q '^effort:' "$f" 2>/dev/null; then
+        sed "0,/^effort:/s|^effort:.*|effort: $val|" "$f" > "$tmp"
+    else
+        sed "/^model:/a effort: $val" "$f" > "$tmp"
+    fi
+    if [ $? -eq 0 ]; then
+        chmod "$mode" "$tmp" 2>/dev/null
+        mv "$tmp" "$f"
+    else
+        rm -f "$tmp"
+    fi
+}
+
 # 1) Purge legacy picker-corrupting env vars, if any are present (always runs,
 #    even when a pin or off-ladder .model skips the derivation below).
 if jq -e '(.env // {}) | keys | map(select(test("^ANTHROPIC_DEFAULT_(OPUS|SONNET|HAIKU)_MODEL(_NAME)?$") or . == "CLAUDE_CODE_SUBAGENT_MODEL")) | length > 0' \
@@ -127,4 +154,13 @@ want_w=$2; want_c=$3
 
 [ "$(fm_model "$EXEC_MD")" = "$want_w" ] || fm_set "$EXEC_MD" "$want_w"
 [ "$(fm_model "$SCOUT_MD")" = "$want_c" ] || fm_set "$SCOUT_MD" "$want_c"
+
+# Effort is a per-role STATIC default (never derived from the ladder/top),
+# maintained here alongside model: for the same reason and gated the same way
+# — pinned/off-ladder/unset .model all skip this too, so this hook never
+# reaches into the agent files at all under those conditions. Checkers
+# (verifier/oracle) are structurally out of reach: this hook only ever opens
+# EXEC_MD/SCOUT_MD, never scans the agents directory.
+[ "$(fm_effort "$EXEC_MD")" = "medium" ] || fm_effort_set "$EXEC_MD" "medium"
+[ "$(fm_effort "$SCOUT_MD")" = "low" ] || fm_effort_set "$SCOUT_MD" "low"
 exit 0

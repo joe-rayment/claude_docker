@@ -195,6 +195,36 @@ fm_set() {  # fm_set <agent-file> <model-id> — rewrite the frontmatter model: 
     fi
 }
 
+fm_effort() {  # current frontmatter `effort:` value of an agent file ('' if none/missing)
+    grep -m1 '^effort:' "$1" 2>/dev/null | sed 's/^effort:[[:space:]]*//'
+}
+
+fm_effort_set() {  # fm_effort_set <agent-file> <low|medium|...> — add-or-correct the effort:
+    # line atomically. Best-effort and NEVER fails the bind: effort is a
+    # secondary, per-role STATIC default (never derived from top/worker/recon,
+    # unlike model:), so a write here is not required for tier-set's core
+    # contract to hold. A MISSING line is INSERTED right after model: (matching
+    # the verifier.md/oracle.md template convention) rather than requiring a
+    # pre-existing line to substitute into, mirroring tier-reconcile.sh's copy.
+    local f val mode tmp
+    f=$1; val=$2
+    case "$val" in (*[!]a-zA-Z0-9._[-]*|'') return 0 ;; esac   # same injection guard as fm_set
+    grep -q '^model:' "$f" 2>/dev/null || return 0   # no stable anchor -> stay silent, never guess placement
+    mode=$(stat -c %a "$f" 2>/dev/null) || mode=644
+    tmp=$(mktemp "$f.XXXXXX") || return 0
+    if grep -q '^effort:' "$f" 2>/dev/null; then
+        sed "0,/^effort:/s|^effort:.*|effort: $val|" "$f" > "$tmp"
+    else
+        sed "/^model:/a effort: $val" "$f" > "$tmp"
+    fi
+    if [ $? -eq 0 ]; then
+        chmod "$mode" "$tmp" 2>/dev/null
+        mv "$tmp" "$f"
+    else
+        rm -f "$tmp"
+    fi
+}
+
 if [ $# -eq 0 ] || [ "${1:-}" = "show" ]; then   # no args or `show` -> just print state
     if [ -f "$SETTINGS" ]; then
         cur_model=$(jq -r '.model // empty' "$SETTINGS" 2>/dev/null)
@@ -358,6 +388,13 @@ if [ "$bind_fail" -eq 1 ]; then
     echo "tier: PARTIAL bind — top=$R written to settings, but a worker/recon frontmatter write FAILED (see stderr); fix and re-run."
     exit 1
 fi
+
+# Effort is a per-role STATIC default (never derived from top/worker/recon),
+# maintained alongside every successful model bind above — every binding form
+# (bare, 2-arg, 3-arg, overdrive) funnels through this shared tail, so a /tier
+# pin never leaves stale/missing effort lines behind.
+[ "$(fm_effort "$EXEC_MD")" = "medium" ] || fm_effort_set "$EXEC_MD" "medium"
+[ "$(fm_effort "$SCOUT_MD")" = "low" ] || fm_effort_set "$SCOUT_MD" "low"
 
 if [ "$overdrive" -eq 1 ]; then
     echo "tier bound (overdrive — worker cap LIFTED)  top=$R  →  worker=$W  recon=$C  — a 1-arg /tier <top> clears overdrive"
