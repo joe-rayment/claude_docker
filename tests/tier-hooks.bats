@@ -180,6 +180,10 @@ fm_of() {  # frontmatter `model:` value of an agent file
     grep -m1 '^model:' "$1" | sed 's/^model:[[:space:]]*//'
 }
 
+fm_effort_of() {  # frontmatter `effort:` value of an agent file ('' if none/missing)
+    grep -m1 '^effort:' "$1" | sed 's/^effort:[[:space:]]*//'
+}
+
 @test "tier-set overdrive: lifts the worker to the top, leaves recon at haiku, sets TIER_OVERDRIVE" {
     tier_set_fixture claude-fable-5
     tier_set overdrive
@@ -804,6 +808,77 @@ tr_env() {  # merge .env.<key> = <value> into the fixture settings
     jq -e '.env.TIER_OVERDRIVE == "1"' "$TR"
     jq -e '.env.KEEP == "1"' "$TR"
     [ "$(fm_of "$TR_AGENTS/executor.md")" = "claude-fable-5" ]
+}
+
+# ── tier-reconcile: effort frontmatter (beads_claude_docker-7qi) ────────────
+
+@test "tier-reconcile: writes effort: low into scout.md when absent" {
+    tier_reconcile_fixture claude-fable-5
+    [ -z "$(fm_effort_of "$TR_AGENTS/scout.md")" ]
+    tier_reconcile
+    [ "$status" -eq 0 ]
+    [ "$(fm_effort_of "$TR_AGENTS/scout.md")" = "low" ]
+    [ "$(fm_of "$TR_AGENTS/scout.md")" = "claude-haiku-4-5-20251001" ]
+}
+
+@test "tier-reconcile: writes effort: medium into executor.md when absent" {
+    tier_reconcile_fixture claude-fable-5
+    [ -z "$(fm_effort_of "$TR_AGENTS/executor.md")" ]
+    tier_reconcile
+    [ "$status" -eq 0 ]
+    [ "$(fm_effort_of "$TR_AGENTS/executor.md")" = "medium" ]
+    [ "$(fm_of "$TR_AGENTS/executor.md")" = "claude-sonnet-5" ]
+    # placement convention: effort: sits immediately after model: (matches verifier.md/oracle.md)
+    [ "$(grep -A1 '^model:' "$TR_AGENTS/executor.md" | tail -1)" = "effort: medium" ]
+}
+
+@test "tier-reconcile: effort lines are idempotent — two consecutive runs are byte-identical" {
+    tier_reconcile_fixture claude-fable-5
+    tier_reconcile
+    [ "$status" -eq 0 ]
+    after_first_e=$(cat "$TR_AGENTS/executor.md")
+    after_first_s=$(cat "$TR_AGENTS/scout.md")
+    tier_reconcile
+    [ "$status" -eq 0 ]
+    [ "$(cat "$TR_AGENTS/executor.md")" = "$after_first_e" ]
+    [ "$(cat "$TR_AGENTS/scout.md")" = "$after_first_s" ]
+}
+
+@test "tier-reconcile: an existing wrong effort value is corrected, not left or duplicated" {
+    tier_reconcile_fixture claude-fable-5
+    printf -- '---\nname: scout\nmodel: claude-haiku-4-5-20251001\neffort: high\n---\nGo look.\n' > "$TR_AGENTS/scout.md"
+    [ "$(fm_effort_of "$TR_AGENTS/scout.md")" = "high" ]
+    tier_reconcile
+    [ "$status" -eq 0 ]
+    [ "$(fm_effort_of "$TR_AGENTS/scout.md")" = "low" ]
+    [ "$(grep -c '^effort:' "$TR_AGENTS/scout.md")" -eq 1 ]
+}
+
+@test "tier-reconcile: verifier.md and oracle.md are never touched — no effort key added or changed" {
+    tier_reconcile_fixture claude-fable-5
+    printf -- '---\nname: verifier\nmodel: inherit\neffort: low\n---\nCheck it.\n' > "$TR_AGENTS/verifier.md"
+    printf -- '---\nname: oracle\nmodel: inherit\neffort: high\n---\nAdvise.\n' > "$TR_AGENTS/oracle.md"
+    before_v=$(cat "$TR_AGENTS/verifier.md")
+    before_o=$(cat "$TR_AGENTS/oracle.md")
+    tier_reconcile
+    [ "$status" -eq 0 ]
+    [ "$(cat "$TR_AGENTS/verifier.md")" = "$before_v" ]
+    [ "$(cat "$TR_AGENTS/oracle.md")" = "$before_o" ]
+}
+
+@test "tier-reconcile: a REAL run against the live agent dir writes both effort lines, model: values unchanged" {
+    LIVE_AGENTS="/home/agent/.claude/agents"
+    if [ ! -f "$LIVE_AGENTS/executor.md" ] || [ ! -f "$LIVE_AGENTS/scout.md" ]; then
+        skip "live agent dir not present in this environment"
+    fi
+    before_model_e=$(fm_of "$LIVE_AGENTS/executor.md")
+    before_model_s=$(fm_of "$LIVE_AGENTS/scout.md")
+    run sh "$RECON"
+    [ "$status" -eq 0 ]
+    [ "$(fm_effort_of "$LIVE_AGENTS/executor.md")" = "medium" ]
+    [ "$(fm_effort_of "$LIVE_AGENTS/scout.md")" = "low" ]
+    [ "$(fm_of "$LIVE_AGENTS/executor.md")" = "$before_model_e" ]
+    [ "$(fm_of "$LIVE_AGENTS/scout.md")" = "$before_model_s" ]
 }
 
 # ── tier-prime ───────────────────────────────────────────────────────────────
