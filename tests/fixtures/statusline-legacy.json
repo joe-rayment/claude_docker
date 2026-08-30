@@ -1,0 +1,44 @@
+{
+  "cwd": "/workspace",
+  "session_id": "33333333-3333-4333-8333-333333333333",
+  "transcript_path": "/home/agent/.claude/projects/-workspace/legacy-fixture.jsonl",
+  "model": {
+    "id": "claude-sonnet-5",
+    "display_name": "Sonnet"
+  },
+  "workspace": {
+    "current_dir": "/workspace",
+    "project_dir": "/workspace",
+    "added_dirs": [],
+    "repo": {
+      "host": "github.com",
+      "owner": "example",
+      "name": "claude-docker"
+    }
+  },
+  "version": "2.1.247",
+  "output_style": {
+    "name": "default"
+  },
+  "context_window": {
+    "total_input_tokens": 88000,
+    "total_output_tokens": 3100,
+    "context_window_size": 200000,
+    "used_percentage": 45
+  },
+  "exceeds_200k_tokens": false,
+  "fast_mode": false,
+  "thinking": {
+    "enabled": true
+  },
+  "rate_limits": {
+    "five_hour": {
+      "used_percentage": 23.5,
+      "resets_at": 1893456000
+    },
+    "seven_day": {
+      "used_percentage": 41.2,
+      "resets_at": 1893888000
+    }
+  }
+}
