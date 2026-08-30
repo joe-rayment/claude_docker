@@ -334,6 +334,41 @@ pinning a session's top tier *above* opus (`/tier fable`) leaves the
 advisor below the session model and `/advisor` fails visibly; bump the
 value by hand then, or teach `tier-set` to write it alongside `.model`.
 
+### Named workflows: recon-fanout, verify-contracts (added 2026-08-30)
+
+Two plain-JS scripts under `.claude/workflows/` are the worked examples
+for writing a `workflow-lint`-clean Workflow script — both `export const
+meta` as a pure literal (`name`/`description`/`phases`) and set an
+explicit `model:` on every `agent()` call, so a `Workflow` invocation of
+either passes `workflow-lint` without needing a `/* workflow-lint:
+model-ok */` annotation.
+
+- **`.claude/workflows/recon-fanout.js`** — args `{questions: string[],
+  glob?: string}`. Fans the questions out to one **scout-grade**
+  `agent()` call per question (`model: 'haiku'`, `phase: 'Recon'`), run
+  in parallel via `Promise.all`, each returning a schema-typed result:
+  concrete `file:line` findings, or an explicit `negative: true` when the
+  honest answer is "found nowhere" rather than a guess. This is the
+  scriptable form of spawning several parallel `scout` agents for
+  independent recon questions (see the delegation protocol in
+  CLAUDE.md) without a separate `Agent` call per question.
+- **`.claude/workflows/verify-contracts.js`** — args `{beads:
+  [{id, redAt, greenAt}, ...]}`. Runs one **verifier-grade** `agent()`
+  call per bead (`model: 'fable'`, `phase: 'Verify'` — the explicit top
+  alias, standing in for the `model: inherit` a checker agent frontmatter
+  uses, since a workflow script has no frontmatter to inherit from),
+  each working the bead's pre-registered contract through the five
+  mechanical checks (C1-C5) plus C2b from
+  `knowledge-base/ACCEPTANCE_CONTRACTS.md` and returning one of `PASS` /
+  `FAIL` / `TAMPERED` / `NO-CONTRACT` with per-check evidence.
+
+Neither script calls `Date.now()`, `Math.random()`, or `new Date()`
+anywhere — a workflow script's whole point is a reproducible, reviewable
+plan, and a hidden wall-clock or RNG dependency undermines that the same
+way it would in a test fixture (see the two-clocks lesson: a hardcoded or
+ambient-clock value that looks stable in one run is a time bomb in the
+next). `tests/workflows.bats` is the acceptance suite for both files.
+
 ## Cost monitor (cost-mirror / tier-cost, added 2026-07-28)
 
 The `cost-mirror` hook line (one per prompt) shows, per `side|model`, token
