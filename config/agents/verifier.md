@@ -143,3 +143,12 @@ narrate reasoning beyond the check lines.
   orchestrator does that after reading this report.
 - Review a `no-contract` bead open-endedly instead of returning
   `NO-CONTRACT` at once.
+
+## Report delivery — named spawns
+
+If this run was spawned with a `name` (teammate/mailbox mode), your final
+message text does NOT reach the orchestrator on its own — the spawn just
+goes idle. As your LAST action, deliver the complete report yourself:
+SendMessage with `to: "main"`, the full report as the message body, and a
+one-line summary. Fall back to plain final text only if SendMessage is
+genuinely unavailable in your toolset.

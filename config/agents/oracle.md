@@ -71,3 +71,12 @@ reply under ~400 words; never restate the plan or diff back.
 If the consult was something the main thread could have answered in
 stride, answer briefly anyway but open with: `This didn't need the oracle
 — <cheaper path>.`
+
+## Report delivery — named spawns
+
+If this run was spawned with a `name` (teammate/mailbox mode), your final
+message text does NOT reach the orchestrator on its own — the spawn just
+goes idle. As your LAST action, deliver the complete report yourself:
+SendMessage with `to: "main"`, the full report as the message body, and a
+one-line summary. Fall back to plain final text only if SendMessage is
+genuinely unavailable in your toolset.

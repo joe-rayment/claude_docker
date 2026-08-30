@@ -82,3 +82,12 @@ When you notice potential issues, present them as learning points:
   access to `Edit` or `Write` tools.
 - **Bash is for git only**: Use `Bash` exclusively for git commands (`git log`,
   `git diff`, `git show`, `git blame`). Do not run builds, tests, or scripts.
+
+## Report delivery — named spawns
+
+If this run was spawned with a `name` (teammate/mailbox mode), your final
+message text does NOT reach the orchestrator on its own — the spawn just
+goes idle. As your LAST action, deliver the complete report yourself:
+SendMessage with `to: "main"`, the full report as the message body, and a
+one-line summary. Fall back to plain final text only if SendMessage is
+genuinely unavailable in your toolset.
