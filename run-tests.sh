@@ -37,7 +37,10 @@ case "$SUITE" in
         echo "Running all tests..."
         bats "$TEST_DIR/smoke.bats" "$TEST_DIR/experience.bats" "$TEST_DIR/multi-project.bats" \
              "$TEST_DIR/bd-guard.bats" "$TEST_DIR/context-detect.bats" "$TEST_DIR/tier-hooks.bats" \
-             "$TEST_DIR/hook-staging.bats" "$TEST_DIR/delegation-gate.bats" "$TEST_DIR/image-drift.bats"
+             "$TEST_DIR/hook-staging.bats" "$TEST_DIR/delegation-gate.bats" "$TEST_DIR/image-drift.bats" \
+             "$TEST_DIR/acceptance-contracts.bats" "$TEST_DIR/agent-report-relay.bats" "$TEST_DIR/beads-resume.bats" \
+             "$TEST_DIR/code-map.bats" "$TEST_DIR/contract-gate.bats" "$TEST_DIR/lane.bats" \
+             "$TEST_DIR/start-professor.bats" "$TEST_DIR/statusline.bats"
         ;;
     *)
         echo "Usage: run-tests.sh [smoke|experience|multi-project|all]" >&2
