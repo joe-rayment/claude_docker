@@ -117,7 +117,7 @@ Grade rubric:
 
 **User words override**, same as every other lane call.
 
-Commands: `delegate run --route <route> (--bead <id> | --prompt <text> | --prompt-file <file>)`, `delegate check`, `delegate ps`.
+Commands: `delegate run --route <route> (--bead <id> | --prompt <text> | --prompt-file <file>)`, `delegate check`, `delegate ps`, `delegate report` (per-route verdict rates + dollars).
 
 ## Verification
 

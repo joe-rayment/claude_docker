@@ -2148,6 +2148,140 @@ def _update_lifetime(session_id, tp, project, mtime, bucket_total):
     return fresh
 
 
+def _ingest_delegate_receipt(path):
+    """--ingest-delegate-receipt <path>: fold one delegate.sh job receipt
+    (see its cmd_run) into the durable ledger as a single row (side
+    "delegate"), so `tier-cost` can show delegated spend alongside native
+    session spend (see render_delegate_segment). Returns a process exit
+    code — 0 on success, 1 on a missing/unreadable/malformed receipt, with
+    nothing written to the ledger in that case — since this is a direct CLI
+    entry point (delegate.sh already wraps its own call in `|| true`), not
+    the hook's fail-silent path.
+
+    Row key: _row_key(job, "delegate", model, bucket), reusing the existing
+    "sessionId|side|model|bucket" scheme as-is. session_id is the job id
+    itself: a delegate job has no transcript and so no real session id, but
+    a job id (route-epoch-hex, see cmd_run) is already a unique per-run
+    string, so using it verbatim both satisfies the row key AND makes a
+    re-ingest of the SAME job's receipt land on the SAME key — REPLACE
+    (see _update_lifetime's docstring), i.e. idempotent — while a
+    DIFFERENT job (a different session id) always lands on its own row.
+    bucket is the epoch component parsed back out of that same job id
+    (mirroring cmd_ps's own `awk -F- '{print $(NF-1)}'`), falling back to 0
+    for a job id that doesn't match the "<route>-<epoch>-<hex>" shape.
+
+    Dollars are the receipt's own "usd" field verbatim — a real bill from
+    an external provider — never a token count re-priced against this
+    file's own PRICING_TABLE: cost_total is set directly and every rate_*
+    left None, which is exactly how _row_pricing already treats a row that
+    carries a frozen cost_total (see _ledger_row's docstring: unpriced
+    rates fall back to live repricing ONLY when cost_total is also absent).
+    Tokens still ride along for the record, but they never drive the
+    dollar figure. A null "usd" (the event stream carried no cost, see
+    delegate.sh) still writes a row — at $0.00 — rather than dropping it:
+    the job happened and its tokens, if any, are still worth keeping."""
+    try:
+        with open(path) as fh:
+            receipt = json.load(fh)
+        if not isinstance(receipt, dict):
+            raise ValueError("receipt is not a JSON object")
+        job = receipt["job"]
+        model = receipt["model"]
+        if not job or not isinstance(job, str) or not model or not isinstance(model, str):
+            raise ValueError("receipt missing non-empty job/model")
+        usd = receipt.get("usd")
+        cost_total = float(usd) if usd is not None else 0.0
+        tokens_in = receipt.get("tokens_in")
+        tokens_out = receipt.get("tokens_out")
+        tokens_in = int(tokens_in) if tokens_in is not None else 0
+        tokens_out = int(tokens_out) if tokens_out is not None else 0
+        mtime = _parse_ts(receipt.get("finished_at")) or time.time()
+    except Exception as exc:
+        print(f"cost-mirror --ingest-delegate-receipt: {path}: {exc}", file=sys.stderr)
+        return 1
+
+    parts = job.rsplit("-", 2)
+    bucket = int(parts[1]) if len(parts) == 3 and parts[1].isdigit() else 0
+
+    row = {
+        "sessionId": job, "side": "delegate", "model": model, "bucket": bucket,
+        "project": "delegate", "mtime": mtime, "tp": "", "epoch_model": None,
+        "pricing_source": "delegate-receipt", "pricing_fetched_at": None,
+        "pricing_id": None,
+    }
+    counter_tokens = {"in": tokens_in, "out": tokens_out}
+    for k in COUNTER_KEYS:
+        row[f"tokens_{k}"] = counter_tokens.get(k, 0)
+        row[f"rate_{k}"] = None
+        row[f"rate_epoch_{k}"] = None
+        row[f"cost_{k}"] = None
+    row["cost_total"] = cost_total
+    row["cost_at_epoch"] = cost_total
+
+    data = _load_lifetime()
+    data["sessions"][_row_key(job, "delegate", model, bucket)] = row
+    _save_lifetime(data)
+    return 0
+
+
+def _delegate_rows(lifetime_data=None):
+    """Every lifetime.json row with side == "delegate" — i.e. everything
+    written by _ingest_delegate_receipt. Takes an already-loaded
+    lifetime_data when the caller has one in hand (run_report_all loads it
+    once for the durability union) rather than reading the file twice."""
+    data = lifetime_data if lifetime_data is not None else _load_lifetime()
+    return [
+        row for row in data.get("sessions", {}).values()
+        if isinstance(row, dict) and row.get("side") == "delegate"
+    ]
+
+
+def render_delegate_segment(lifetime_data=None):
+    """"delegated: <model> $X.XX (N job(s)) · ... · total $Z.ZZ" — one entry
+    per model ingested via --ingest-delegate-receipt, dollars-descending
+    then model name (mirroring render_report's own per-row ordering, see
+    its bd-cro note). "" when there are no delegate rows at all, so a
+    caller can skip printing anything (see print_delegate_segment).
+
+    Deliberately its OWN segment, never folded into render_report's
+    side|model table (see _lifetime_sessions_by_id's exclusion): a delegate
+    job's dollars are a real external bill, not tokens this file priced
+    itself, so blending it into the "native sides" table would misreport
+    it as directly comparable to a main/worker row's actual/at-top/saved
+    columns — there is no at-top/saved counterfactual for money already
+    spent outside this session entirely."""
+    rows = _delegate_rows(lifetime_data)
+    if not rows:
+        return ""
+    by_model = {}
+    for row in rows:
+        d = by_model.setdefault(row.get("model") or "unknown", {"usd": 0.0, "jobs": 0})
+        cost_total = row.get("cost_total")
+        d["usd"] += float(cost_total) if cost_total is not None else 0.0
+        d["jobs"] += 1
+    ordered = sorted(by_model.items(), key=lambda kv: (-kv[1]["usd"], kv[0]))
+    parts = [
+        f"{model} {fmt_usd(d['usd'])} ({d['jobs']} job{'' if d['jobs'] == 1 else 's'})"
+        for model, d in ordered
+    ]
+    line = "delegated: " + " · ".join(parts)
+    if len(by_model) > 1:
+        line += f" · total {fmt_usd(sum(d['usd'] for d in by_model.values()))}"
+    return line
+
+
+def print_delegate_segment(lifetime_data=None):
+    """Emit render_delegate_segment() beneath a report, swallowing anything
+    it throws — mirrors print_lanes(): an extra, never a reason for
+    `tier-cost` to fail."""
+    try:
+        section = render_delegate_segment(lifetime_data)
+    except Exception:
+        return
+    if section:
+        print(section)
+
+
 def _lifetime_sessions_by_id(lifetime_data):
     """Group the ledger's flat rows back into per-session dicts: session_id
     -> {"rows": [...], "totals": {side|model: counters}, "project", "mtime",
@@ -2157,10 +2291,18 @@ def _lifetime_sessions_by_id(lifetime_data):
     "rows" is what prices the session (each row at its own frozen rates, see
     _row_pricing); "totals" is the token-only rollup the grand total needs,
     summed ACROSS a session's buckets since a side|model is several rows
-    now rather than one."""
+    now rather than one.
+
+    Delegate rows (side == "delegate", see _ingest_delegate_receipt) are
+    skipped here: a delegate job has no transcript and is not a "session"
+    the durability union should fold into run_report_all's per-session
+    table or "no longer on disk" footnote. They are rendered separately —
+    see render_delegate_segment."""
     grouped = {}
     for key, entry in lifetime_data.get("sessions", {}).items():
         if not isinstance(entry, dict):
+            continue
+        if entry.get("side") == "delegate":
             continue
         session_id = entry.get("sessionId") or key.split("|", 1)[0]
         side_model = f"{entry.get('side', '')}|{entry.get('model', '')}"
@@ -2397,7 +2539,8 @@ def run_report_all(since_days, csv_path=None):
     # Durability union: lifetime sessions whose transcript is gone from
     # disk still count, subject to the same --since window (by their last
     # recorded mtime) as everything else in scope.
-    grouped = _lifetime_sessions_by_id(_load_lifetime())
+    lifetime_data = _load_lifetime()
+    grouped = _lifetime_sessions_by_id(lifetime_data)
     cutoff = time.time() - since_days * 86400 if since_days is not None else None
     missing_count = 0
     for session_id, info in grouped.items():
@@ -2474,6 +2617,7 @@ def run_report_all(since_days, csv_path=None):
     print()
     print(render_report(label, grand_total, billing_mode, billing_detail, pricing, epoch_models_by_side_model))
     print_lanes()
+    print_delegate_segment(lifetime_data)
     # a CSV that was asked for and not written is a failed run, even though
     # the table above it rendered fine
     return write_rows_csv(csv_rows, csv_path) if csv_path else 0
@@ -2945,6 +3089,19 @@ if __name__ == "__main__":
     if "--report" in sys.argv:
         # report mode is intentionally NOT wrapped in the silent-fail guard
         sys.exit(run_report([a for a in sys.argv[1:] if a != "--report"]))
+    if "--ingest-delegate-receipt" in sys.argv:
+        # also NOT wrapped in the silent-fail guard: a caller of this direct
+        # CLI entry point (delegate.sh's cmd_run, itself already `|| true`,
+        # see the module docstring) needs a real exit code for a malformed
+        # receipt, same reasoning as --report above.
+        idx = sys.argv.index("--ingest-delegate-receipt")
+        if idx + 1 >= len(sys.argv):
+            print(
+                "cost-mirror --ingest-delegate-receipt: requires a receipt path",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        sys.exit(_ingest_delegate_receipt(sys.argv[idx + 1]))
     try:
         main()
     except Exception:

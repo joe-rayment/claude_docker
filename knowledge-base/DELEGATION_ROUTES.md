@@ -47,6 +47,11 @@ delegate run --route <route> (--bead <id> | --prompt <text> | --prompt-file <fil
 delegate ps
     # Lists .delegate/jobs/*: "running" (pid alive, no receipt.json yet)
     # vs "done" (receipt.json present). Never deletes or touches state.
+
+delegate report
+    # Per-route table: jobs, PASS/FAIL/TAMPERED counts (from delegated
+    # beads' recorded verifier verdicts), delegated USD (lifetime ledger).
+    # "no delegated beads yet" when both sources are empty. Exit 0 always.
 ```
 
 Routes come from `config/delegate-routes.json` — name → `runner` (only
