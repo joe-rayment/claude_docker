@@ -33,10 +33,19 @@
 # $DELEGATE_REPO, which delegate.sh threads into both `git -C` and `bd -C`
 # — the real /workspace repo's own worktree list and bd DB are never
 # touched by this file.
+#
+# ADDENDUM (beads_claude_docker-clt): unfrozen for this bead (its own
+# predecessor, beads_claude_docker-z16, verified+closed) to append the
+# "cost-mirror ledger ingest" section at the bottom — delegate.sh itself is
+# untouched (its cost-mirror.py call already existed, gated on the flag
+# string being present in the file). Every test below points
+# COST_MIRROR_STATE_DIR/COST_MIRROR_PROJECTS_DIR at scratch tmpdirs, never
+# the real ~/.claude/cache. FROZEN again as of this bead's own RED-AT.
 
 SCRIPT=/workspace/scripts/delegate.sh
 SHIPPED_ROUTES=/workspace/config/delegate-routes.json
 GITIGNORE=/workspace/.gitignore
+MIRROR=/workspace/scripts/cost-mirror.py
 
 setup() {
     export TMPDIR="$BATS_TEST_TMPDIR"
@@ -613,4 +622,171 @@ EOF
 @test ".gitignore: .delegate/ is ignored" {
     run grep -qxF ".delegate/" "$GITIGNORE"
     [ "$status" -eq 0 ]
+}
+
+# ── cost-mirror ledger ingest: delegate receipts -> lifetime.json ──────
+# (beads_claude_docker-clt) scripts/cost-mirror.py --ingest-delegate-receipt
+# <path>, called by delegate.sh's cmd_run after every job (see its own
+# receipt-writing block above). Never goes through delegate.sh here — the
+# entry point is exercised directly against a hand-built receipt, isolated
+# via COST_MIRROR_STATE_DIR/COST_MIRROR_PROJECTS_DIR (the same overrides
+# tests/tier-hooks.bats uses), so the real ~/.claude/cache is never touched.
+
+# make_receipt <path> <job> <model> <usd> [<tokens_in> <tokens_out>] — a
+# delegate.sh-shaped receipt.json (see cmd_run's own jq -n block).
+# usd/tokens_in/tokens_out go through --argjson, so passing the bare word
+# `null` writes a real JSON null, exactly like delegate.sh does when the
+# opencode event stream carried no usage/cost.
+make_receipt() {
+    local path="$1" job="$2" model="$3" usd="$4" tin="${5:-null}" tout="${6:-null}"
+    jq -n --arg job "$job" --arg route "${job%%-*}" --arg model "$model" \
+        --argjson usd "$usd" --argjson tokens_in "$tin" --argjson tokens_out "$tout" \
+        '{job: $job, route: $route, model: $model, bead: null,
+          branch: ("delegate/" + $job), tokens_in: $tokens_in,
+          tokens_out: $tokens_out, wall_seconds: 12, usd: $usd, exit_code: 0,
+          started_at: "2026-08-31T00:00:00Z", finished_at: "2026-08-31T00:00:12Z"}' \
+        >"$path"
+}
+
+@test "cost-mirror --ingest-delegate-receipt: writes a lifetime.json row with side delegate, the receipt's model, and its real USD verbatim" {
+    export COST_MIRROR_STATE_DIR="$BATS_TEST_TMPDIR/cm-state"
+    RECEIPT="$BATS_TEST_TMPDIR/receipt.json"
+    make_receipt "$RECEIPT" "glm-1700000010-aaaa" "openrouter/z-ai/glm-5.2" 0.0089 1234 567
+
+    run python3 "$MIRROR" --ingest-delegate-receipt "$RECEIPT"
+    [ "$status" -eq 0 ]
+
+    LIFETIME="$COST_MIRROR_STATE_DIR/lifetime.json"
+    [ -f "$LIFETIME" ]
+    KEY='.sessions["glm-1700000010-aaaa|delegate|openrouter/z-ai/glm-5.2|1700000010"]'
+
+    # presence checked against the raw file (has()), not a jq {a,b,c}
+    # projection that would null-fill a genuinely absent key
+    run jq -e "$KEY != null" "$LIFETIME"
+    [ "$output" = "true" ]
+    run jq -e "$KEY | has(\"cost_total\") and has(\"tokens_in\") and has(\"tokens_out\")" "$LIFETIME"
+    [ "$output" = "true" ]
+    run jq -r "$KEY.side" "$LIFETIME"
+    [ "$output" = "delegate" ]
+    run jq -r "$KEY.model" "$LIFETIME"
+    [ "$output" = "openrouter/z-ai/glm-5.2" ]
+    run jq -r "$KEY.cost_total" "$LIFETIME"
+    [ "$output" = "0.0089" ]
+    run jq -r "$KEY.tokens_in" "$LIFETIME"
+    [ "$output" = "1234" ]
+    run jq -r "$KEY.tokens_out" "$LIFETIME"
+    [ "$output" = "567" ]
+}
+
+@test "cost-mirror --ingest-delegate-receipt: re-ingesting the same job's receipt REPLACES its row, never duplicates it" {
+    export COST_MIRROR_STATE_DIR="$BATS_TEST_TMPDIR/cm-state"
+    RECEIPT="$BATS_TEST_TMPDIR/receipt.json"
+    make_receipt "$RECEIPT" "glm-1700000020-bbbb" "openrouter/z-ai/glm-5.2" 0.05 100 50
+    LIFETIME="$COST_MIRROR_STATE_DIR/lifetime.json"
+
+    run python3 "$MIRROR" --ingest-delegate-receipt "$RECEIPT"
+    [ "$status" -eq 0 ]
+    run jq '[.sessions | keys[] | select(startswith("glm-1700000020-bbbb|delegate|"))] | length' "$LIFETIME"
+    [ "$output" -eq 1 ]
+
+    run python3 "$MIRROR" --ingest-delegate-receipt "$RECEIPT"
+    [ "$status" -eq 0 ]
+    run jq '[.sessions | keys[] | select(startswith("glm-1700000020-bbbb|delegate|"))] | length' "$LIFETIME"
+    [ "$output" -eq 1 ]
+    run jq -r '.sessions["glm-1700000020-bbbb|delegate|openrouter/z-ai/glm-5.2|1700000020"].cost_total' "$LIFETIME"
+    [ "$output" = "0.05" ]
+}
+
+@test "cost-mirror --ingest-delegate-receipt: a second job (even same model) gets its own second row, first row untouched" {
+    export COST_MIRROR_STATE_DIR="$BATS_TEST_TMPDIR/cm-state"
+    RECEIPT1="$BATS_TEST_TMPDIR/receipt1.json"
+    RECEIPT2="$BATS_TEST_TMPDIR/receipt2.json"
+    make_receipt "$RECEIPT1" "glm-1700000030-cccc" "openrouter/z-ai/glm-5.2" 0.01 10 5
+    make_receipt "$RECEIPT2" "glm-1700000031-dddd" "openrouter/z-ai/glm-5.2" 0.02 20 15
+    LIFETIME="$COST_MIRROR_STATE_DIR/lifetime.json"
+
+    run python3 "$MIRROR" --ingest-delegate-receipt "$RECEIPT1"
+    [ "$status" -eq 0 ]
+    run python3 "$MIRROR" --ingest-delegate-receipt "$RECEIPT2"
+    [ "$status" -eq 0 ]
+
+    run jq '[.sessions | keys[] | select(contains("|delegate|"))] | length' "$LIFETIME"
+    [ "$output" -eq 2 ]
+    run jq -r '.sessions["glm-1700000030-cccc|delegate|openrouter/z-ai/glm-5.2|1700000030"].cost_total' "$LIFETIME"
+    [ "$output" = "0.01" ]
+    run jq -r '.sessions["glm-1700000031-dddd|delegate|openrouter/z-ai/glm-5.2|1700000031"].cost_total' "$LIFETIME"
+    [ "$output" = "0.02" ]
+}
+
+@test "cost-mirror --report: renders delegated spend as its own segment, separate from and after the native side|model table" {
+    export COST_MIRROR_STATE_DIR="$BATS_TEST_TMPDIR/cm-state"
+    # a minimal real session so run_report_all has native spend to report
+    # alongside the delegate segment (session_rows must be non-empty or the
+    # aggregate report exits before rendering anything at all)
+    PROJDIR="$BATS_TEST_TMPDIR/cm-projects"
+    mkdir -p "$PROJDIR/proj-x"
+    printf '{"message":{"model":"claude-opus-5","usage":{"input_tokens":10,"output_tokens":5}}}\n' \
+        > "$PROJDIR/proj-x/sess-x.jsonl"
+    export COST_MIRROR_PROJECTS_DIR="$PROJDIR"
+
+    RECEIPT="$BATS_TEST_TMPDIR/receipt.json"
+    make_receipt "$RECEIPT" "glm-1700000040-eeee" "openrouter/z-ai/glm-5.2" 0.0123 100 50
+    run python3 "$MIRROR" --ingest-delegate-receipt "$RECEIPT"
+    [ "$status" -eq 0 ]
+
+    run python3 "$MIRROR" --report
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"delegated:"* ]]
+    [[ "$output" == *"openrouter/z-ai/glm-5.2"* ]]
+    [[ "$output" == *'$0.01'* ]]
+
+    TOTAL_LINE=$(grep -n '^TOTAL' <<<"$output" | head -1 | cut -d: -f1)
+    DELEGATED_LINE=$(grep -n '^delegated:' <<<"$output" | head -1 | cut -d: -f1)
+    [ -n "$TOTAL_LINE" ]
+    [ -n "$DELEGATED_LINE" ]
+    [ "$DELEGATED_LINE" -gt "$TOTAL_LINE" ]
+}
+
+@test "cost-mirror --ingest-delegate-receipt: malformed or missing receipt exits nonzero, stderr names it, ledger untouched" {
+    export COST_MIRROR_STATE_DIR="$BATS_TEST_TMPDIR/cm-state"
+    LIFETIME="$COST_MIRROR_STATE_DIR/lifetime.json"
+
+    BAD="$BATS_TEST_TMPDIR/bad.json"
+    echo 'not json at all' >"$BAD"
+    run python3 "$MIRROR" --ingest-delegate-receipt "$BAD"
+    [ "$status" -ne 0 ]
+    [ -n "$output" ]
+    [ ! -f "$LIFETIME" ]
+
+    MISSING="$BATS_TEST_TMPDIR/does-not-exist.json"
+    run python3 "$MIRROR" --ingest-delegate-receipt "$MISSING"
+    [ "$status" -ne 0 ]
+    [ -n "$output" ]
+    [ ! -f "$LIFETIME" ]
+
+    NOMODEL="$BATS_TEST_TMPDIR/nomodel.json"
+    echo '{"job":"glm-1700000050-ffff"}' >"$NOMODEL"
+    run python3 "$MIRROR" --ingest-delegate-receipt "$NOMODEL"
+    [ "$status" -ne 0 ]
+    [ ! -f "$LIFETIME" ]
+}
+
+@test "cost-mirror --ingest-delegate-receipt: a null-usd receipt writes a 0.0-dollar row but still records tokens" {
+    export COST_MIRROR_STATE_DIR="$BATS_TEST_TMPDIR/cm-state"
+    RECEIPT="$BATS_TEST_TMPDIR/receipt.json"
+    make_receipt "$RECEIPT" "local-1700000060-gggg" "ollama/qwen3-coder:30b" null 42 null
+
+    run python3 "$MIRROR" --ingest-delegate-receipt "$RECEIPT"
+    [ "$status" -eq 0 ]
+
+    LIFETIME="$COST_MIRROR_STATE_DIR/lifetime.json"
+    KEY='.sessions["local-1700000060-gggg|delegate|ollama/qwen3-coder:30b|1700000060"]'
+    run jq -e "$KEY != null" "$LIFETIME"
+    [ "$output" = "true" ]
+    run jq -r "$KEY.cost_total" "$LIFETIME"
+    [ "$output" = "0.0" ]
+    run jq -r "$KEY.tokens_in" "$LIFETIME"
+    [ "$output" = "42" ]
+    run jq -r "$KEY.tokens_out" "$LIFETIME"
+    [ "$output" = "0" ]
 }
