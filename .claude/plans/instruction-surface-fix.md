@@ -82,7 +82,7 @@ Outcome first, in plain complete sentences. Short means fewer topics, not clippe
 - **Done** — what changed, and how you saw it work.
 - **One question** — only when the choice is genuinely the user's; ask it as a question, with the options.
 - **Blocked** — what is missing and what you tried.
-Anything else you noticed is either fixed before you finish or dropped. No trailing caveats, no "issues to flag" without a question, no offers of next steps.
+Anything else you noticed is either fixed before you finish or dropped. A recap is fine when it is readable; a trailing caveat, an "issue to flag" without a question, or a "next" that is not one of the three shapes is not.
 
 ## Beads
 `bd` is the only task tracker: `bd ready` · `bd show <id>` · `bd create --title … --description …` · `bd update <id> --claim` · `bd close <id>`; `bd update` flags, never `bd edit`. Beads are Claude's memory, never a human's: no human assignee, no bead text that hands work to the user, no blocking on a person — a needed decision goes to chat.
