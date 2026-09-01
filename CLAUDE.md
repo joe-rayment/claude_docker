@@ -103,6 +103,22 @@ Spawn-time enforcement, all fail-open (`tests/tier-hooks.bats`, `tests/delegatio
 
 **Never pay twice (capture rule).** When a consult or hard-won debugging yields a reusable insight, distill it: `bd remember` for project facts, a `knowledge-base/` doc + index row for step-shaped playbooks.
 
+## Delegation Routes
+
+**Routes are quota relief and parallel implementation, not cost savings.** Subscription tokens are free at the margin inside this container — routing a slice to `config/delegate-routes.json` only pays off when native capacity is rationed (parallel slices in flight, a long queue) and it buys headroom, never a cheaper token. Playbook: `knowledge-base/DELEGATION_ROUTES.md`.
+
+Grade rubric:
+
+- **executor-grade** (`glm`) — contract-backed, token-heavy, or parallelizable implementation slices. Runs headless in an ephemeral git worktree on its own branch; that branch merges only after a native `verifier` PASS, never on the delegate's own say-so.
+- **scout-grade** (`local`) — bulk recon/summarisation only, prompt-only (`--prompt`/`--prompt-file`); never `--bead`.
+- **Express lane never delegates** — inline or nothing.
+
+**Planning, acceptance contracts, verification, and merge are always native.** A route executes a slice; it never sets scope, writes its own acceptance contract, judges its own work, or merges itself in.
+
+**User words override**, same as every other lane call.
+
+Commands: `delegate run --route <route> (--bead <id> | --prompt <text> | --prompt-file <file>)`, `delegate check`, `delegate ps`.
+
 ## Verification
 
 **Run code, don't guess — and verify by running the actual application.** Run the app, hit the endpoint (`curl`), screenshot the UI (`take-screenshot url|term|display`); code inspection isn't enough, and code-based tests are regression protection, not verification of current work. Before reporting done: "Did I actually see this working?"
