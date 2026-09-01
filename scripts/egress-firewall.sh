@@ -32,6 +32,15 @@ ALLOWED_HOSTS=(
     files.pythonhosted.org
 )
 
+# Opt-in extras for the delegation backends -- default-deny posture is
+# unaffected unless explicitly opted in (beads_claude_docker-1t9). Any value
+# other than exactly "1" (including unset) is byte-identical to the posture
+# above.
+if [ "${CLAUDE_DEV_ALLOW_OPENROUTER:-0}" = "1" ]; then
+    ALLOWED_HOSTS+=(openrouter.ai)
+fi
+ALLOW_HOST_OLLAMA="${CLAUDE_DEV_ALLOW_HOST_OLLAMA:-0}"
+
 usage() {
     cat >&2 <<EOF
 Usage: $(basename "$0") [--dry-run]
@@ -55,6 +64,19 @@ have_net_admin() {
     [ $(( (16#${cap_eff}) & (1 << 12) )) -ne 0 ]
 }
 
+# Resolves the Docker host-gateway alias for the opt-in Ollama route
+# (CLAUDE_DEV_ALLOW_HOST_OLLAMA=1). Tries dig first, consistent with the
+# rest of this script, then falls back to getent hosts -- host.docker.internal
+# is often only present in /etc/hosts, not via a DNS resolver.
+resolve_host_gateway() {
+    local ip
+    ip=$(dig +short A host.docker.internal 2>/dev/null | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -n1)
+    if [ -z "$ip" ]; then
+        ip=$(getent hosts host.docker.internal 2>/dev/null | awk '{print $1}' | head -n1)
+    fi
+    printf '%s' "$ip"
+}
+
 # Preview only — pure text generation, never executes iptables. Kept in sync
 # with apply_rules() below by hand: same policy shape, one printed (with
 # hostnames, since nothing is resolved yet) and one applied (with the IPs
@@ -71,6 +93,9 @@ dry_run() {
     for host in "${ALLOWED_HOSTS[@]}"; do
         echo "#   iptables -A OUTPUT -p tcp -d <resolved-ip> --dport 443 -j ACCEPT   # ${host}"
     done
+    if [ "$ALLOW_HOST_OLLAMA" = "1" ]; then
+        echo "#   iptables -A OUTPUT -p tcp -d <resolved-ip> --dport 11434 -j ACCEPT   # host.docker.internal (Ollama, opt-in)"
+    fi
     echo "iptables -P OUTPUT DROP"
 }
 
@@ -97,6 +122,16 @@ apply_rules() {
             echo "egress-firewall: WARNING - could not resolve $host; it will be unreachable until the next apply" >&2
         fi
     done
+
+    if [ "$ALLOW_HOST_OLLAMA" = "1" ]; then
+        local host_ip
+        host_ip=$(resolve_host_gateway)
+        if [ -n "$host_ip" ]; then
+            iptables -A OUTPUT -p tcp -d "$host_ip" --dport 11434 -j ACCEPT
+        else
+            echo "egress-firewall: WARNING - could not resolve host.docker.internal; the Ollama route will be unreachable until the next apply" >&2
+        fi
+    fi
 
     iptables -P OUTPUT DROP
     echo "egress-firewall: applied default-deny OUTPUT policy."
