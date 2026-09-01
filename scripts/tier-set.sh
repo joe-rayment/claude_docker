@@ -369,7 +369,8 @@ if jq --arg r "$R" \
                   | (if $od then .TIER_OVERDRIVE = "1" else del(.TIER_OVERDRIVE) end)
                   | del(.ANTHROPIC_DEFAULT_OPUS_MODEL, .ANTHROPIC_DEFAULT_SONNET_MODEL, .ANTHROPIC_DEFAULT_HAIKU_MODEL,
                         .ANTHROPIC_DEFAULT_OPUS_MODEL_NAME, .ANTHROPIC_DEFAULT_SONNET_MODEL_NAME, .ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME,
-                        .CLAUDE_CODE_SUBAGENT_MODEL))
+                        .CLAUDE_CODE_SUBAGENT_MODEL,
+                        .ANTHROPIC_BASE_URL, .ANTHROPIC_AUTH_TOKEN, .ANTHROPIC_API_KEY))
     ' "$SETTINGS" > "$tmp" 2>/dev/null && jq -e . "$tmp" >/dev/null 2>&1; then
     chmod "$orig_mode" "$tmp" 2>/dev/null
     mv "$tmp" "$SETTINGS"

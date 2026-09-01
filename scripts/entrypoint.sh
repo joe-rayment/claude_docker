@@ -25,6 +25,22 @@ set -e
 cleanup() { trap - SIGTERM SIGINT; kill -- -$$ 2>/dev/null; }
 trap cleanup SIGTERM SIGINT
 
+# Billing hard-guard (beads_claude_docker-q34): this container must run
+# Claude Code on subscription auth only -- ANTHROPIC_BASE_URL/AUTH_TOKEN/
+# API_KEY (process env, or the `.env` block of either settings file)
+# silently flip billing to API, a hazard rather than a config choice. A
+# FATAL refusal by default; CLAUDE_DEV_ALLOW_API_BILLING=1 downgrades to a
+# warning and lets the container start anyway. Unlike the firewall block
+# below, a failure here is NOT survivable: it stops the session before it
+# starts, same diagnostic-then-hang shape as the /workspace check further
+# down this file.
+if [ -x /usr/local/bin/auth-guard.sh ]; then
+    if ! /usr/local/bin/auth-guard.sh; then
+        echo "   Container will stay alive for debugging. Run: docker exec -it <name> /bin/bash" >&2
+        exec sleep infinity
+    fi
+fi
+
 # Opt-in egress firewall (beads_claude_docker-0am): default-deny OUTPUT with
 # an allowlist for the services this container talks to. OFF by default
 # everywhere -- CLAUDE_DEV_FIREWALL=1 is the only thing that invokes it, and

@@ -108,13 +108,14 @@ fm_effort_set() {  # fm_effort_set <agent-file> <low|medium|...> — add-or-corr
 
 # 1) Purge legacy picker-corrupting env vars, if any are present (always runs,
 #    even when a pin or off-ladder .model skips the derivation below).
-if jq -e '(.env // {}) | keys | map(select(test("^ANTHROPIC_DEFAULT_(OPUS|SONNET|HAIKU)_MODEL(_NAME)?$") or . == "CLAUDE_CODE_SUBAGENT_MODEL")) | length > 0' \
+if jq -e '(.env // {}) | keys | map(select(test("^ANTHROPIC_DEFAULT_(OPUS|SONNET|HAIKU)_MODEL(_NAME)?$") or . == "CLAUDE_CODE_SUBAGENT_MODEL" or . == "ANTHROPIC_BASE_URL" or . == "ANTHROPIC_AUTH_TOKEN" or . == "ANTHROPIC_API_KEY")) | length > 0' \
         "$SETTINGS" >/dev/null 2>&1; then
     tmp=$(mktemp "$SETTINGS.XXXXXX") || exit 0
     if jq '.env = ((.env // {})
                    | del(.ANTHROPIC_DEFAULT_OPUS_MODEL, .ANTHROPIC_DEFAULT_SONNET_MODEL, .ANTHROPIC_DEFAULT_HAIKU_MODEL,
                          .ANTHROPIC_DEFAULT_OPUS_MODEL_NAME, .ANTHROPIC_DEFAULT_SONNET_MODEL_NAME, .ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME,
-                         .CLAUDE_CODE_SUBAGENT_MODEL))
+                         .CLAUDE_CODE_SUBAGENT_MODEL,
+                         .ANTHROPIC_BASE_URL, .ANTHROPIC_AUTH_TOKEN, .ANTHROPIC_API_KEY))
        ' "$SETTINGS" > "$tmp" 2>/dev/null && jq -e . "$tmp" >/dev/null 2>&1; then
         mode=$(stat -c %a "$SETTINGS" 2>/dev/null) || mode=644
         chmod "$mode" "$tmp" 2>/dev/null
