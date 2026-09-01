@@ -1,0 +1,15 @@
+{
+  "routes": {
+    "glm": {
+      "runner": "opencode",
+      "model": "openrouter/z-ai/glm-5.2",
+      "pin": { "order": ["novita", "parasail"], "allow_fallbacks": false },
+      "grade": "executor"
+    },
+    "local": {
+      "runner": "opencode",
+      "model": "ollama/qwen3-coder:30b",
+      "grade": "scout"
+    }
+  }
+}
