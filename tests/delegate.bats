@@ -41,6 +41,18 @@
 # string being present in the file). Every test below points
 # COST_MIRROR_STATE_DIR/COST_MIRROR_PROJECTS_DIR at scratch tmpdirs, never
 # the real ~/.claude/cache. FROZEN again as of this bead's own RED-AT.
+#
+# ADDENDUM (beads_claude_docker-2dw): unfrozen again for this bead (its
+# own predecessor, beads_claude_docker-clt, GREEN-AT already recorded in
+# its notes) to append the "delegate report" section at the bottom — a
+# NEW cmd_report in delegate.sh, no existing subcommand touched. report
+# has no dependency on config/delegate-routes.json at all: route names
+# come from bead notes (`delegated-to: <route>` lines, appended by
+# cmd_run's own bead stamping) and from the ledger's own job-id parsing
+# (`<route>-<epoch>-<hex>`, same scheme cmd_ps already parses), so every
+# test below works against scratch DELEGATE_REPO/COST_MIRROR_STATE_DIR
+# fixtures only, same isolation guarantee as every section above. FROZEN
+# again as of this bead's own RED-AT.
 
 SCRIPT=/workspace/scripts/delegate.sh
 SHIPPED_ROUTES=/workspace/config/delegate-routes.json
@@ -789,4 +801,137 @@ make_receipt() {
     [ "$output" = "42" ]
     run jq -r "$KEY.tokens_out" "$LIFETIME"
     [ "$output" = "0" ]
+}
+
+# ── report: per-route job/verdict counts (beads) joined with USD (ledger) ──
+# (beads_claude_docker-2dw) Output is a whitespace-separated table --
+# ROUTE JOBS PASS FAIL TAMPERED USD -- read below with `awk '$1=="<route>"
+# {print $2,$3,$4,$5,$6}'` so assertions check exact field values (raw
+# table cells), never a vague substring match that could pass on the
+# wrong row or the wrong column.
+
+# append_note <dir> <bead> <text> -- thin wrapper around `bd update
+# --append-notes`, the exact multi-line-string call cmd_run's own bead
+# stamping makes (see its "delegated-to: $route\nbranch: ..." block).
+append_note() {
+    local dir="$1" id="$2" text="$3"
+    bd -C "$dir" update "$id" --append-notes "$text" >/dev/null
+}
+
+@test "report: no delegated beads and no ledger rows -> clear empty-state line, no table, exit 0" {
+    REPO="$BATS_TEST_TMPDIR/repo21"
+    make_repo "$REPO"
+    export COST_MIRROR_STATE_DIR="$BATS_TEST_TMPDIR/cm-state21"
+    DELEGATE_REPO="$REPO" run "$SCRIPT" report
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"no delegated beads yet"* ]]
+    [[ "$output" != *"ROUTE"* ]]
+}
+
+@test "report: one bead delegated to glm with a PASS verdict -> jobs=1 PASS=1 FAIL=0 TAMPERED=0, \$0.00 with no ledger row" {
+    REPO="$BATS_TEST_TMPDIR/repo22"
+    make_repo "$REPO"
+    export COST_MIRROR_STATE_DIR="$BATS_TEST_TMPDIR/cm-state22"
+    BEAD=$(make_bead "$REPO" "Solo glm bead")
+    append_note "$REPO" "$BEAD" "delegated-to: glm
+branch: delegate/glm-1700000100-aaaa
+receipt: /workspace/.delegate/jobs/glm-1700000100-aaaa/receipt.json"
+    append_note "$REPO" "$BEAD" "VERIFIED: PASS — verifier averifier-abc123"
+
+    DELEGATE_REPO="$REPO" run "$SCRIPT" report
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"ROUTE"*"JOBS"*"PASS"*"FAIL"*"TAMPERED"*"USD"* ]]
+
+    ROW=$(awk '$1=="glm"{print $2,$3,$4,$5,$6}' <<<"$output")
+    [ "$ROW" = '1 1 0 0 $0.00' ]
+}
+
+@test "report: ledger USD joins onto the bead-derived route row by route name, jobs/verdicts stay bead-derived" {
+    REPO="$BATS_TEST_TMPDIR/repo23"
+    make_repo "$REPO"
+    export COST_MIRROR_STATE_DIR="$BATS_TEST_TMPDIR/cm-state23"
+    BEAD=$(make_bead "$REPO" "Ledger join bead")
+    append_note "$REPO" "$BEAD" "delegated-to: glm
+branch: delegate/glm-1700000200-bbbb
+receipt: /workspace/.delegate/jobs/glm-1700000200-bbbb/receipt.json"
+    append_note "$REPO" "$BEAD" "VERIFIED: PASS — verifier averifier-def456"
+
+    RECEIPT="$BATS_TEST_TMPDIR/receipt23.json"
+    make_receipt "$RECEIPT" "glm-1700000200-bbbb" "openrouter/z-ai/glm-5.2" 4.5600 900 300
+    run python3 "$MIRROR" --ingest-delegate-receipt "$RECEIPT"
+    [ "$status" -eq 0 ]
+
+    DELEGATE_REPO="$REPO" run "$SCRIPT" report
+    [ "$status" -eq 0 ]
+    ROW=$(awk '$1=="glm"{print $2,$3,$4,$5,$6}' <<<"$output")
+    [ "$ROW" = '1 1 0 0 $4.56' ]
+}
+
+@test "report: two beads on two different routes tally independently" {
+    REPO="$BATS_TEST_TMPDIR/repo24"
+    make_repo "$REPO"
+    export COST_MIRROR_STATE_DIR="$BATS_TEST_TMPDIR/cm-state24"
+    BEAD_GLM=$(make_bead "$REPO" "Glm route bead")
+    append_note "$REPO" "$BEAD_GLM" "delegated-to: glm
+branch: delegate/glm-1700000300-cccc
+receipt: /workspace/.delegate/jobs/glm-1700000300-cccc/receipt.json"
+    append_note "$REPO" "$BEAD_GLM" "VERIFIED: FAIL — verifier averifier-ghi789"
+
+    BEAD_LOCAL=$(make_bead "$REPO" "Local route bead")
+    append_note "$REPO" "$BEAD_LOCAL" "delegated-to: local
+branch: delegate/local-1700000301-dddd
+receipt: /workspace/.delegate/jobs/local-1700000301-dddd/receipt.json"
+
+    DELEGATE_REPO="$REPO" run "$SCRIPT" report
+    [ "$status" -eq 0 ]
+
+    GLM_ROW=$(awk '$1=="glm"{print $2,$3,$4,$5,$6}' <<<"$output")
+    [ "$GLM_ROW" = '1 0 1 0 $0.00' ]
+    LOCAL_ROW=$(awk '$1=="local"{print $2,$3,$4,$5,$6}' <<<"$output")
+    [ "$LOCAL_ROW" = '1 0 0 0 $0.00' ]
+}
+
+@test "report: a bead redone onto a different route — each verdict is counted against the route it actually followed" {
+    REPO="$BATS_TEST_TMPDIR/repo25"
+    make_repo "$REPO"
+    export COST_MIRROR_STATE_DIR="$BATS_TEST_TMPDIR/cm-state25"
+    BEAD=$(make_bead "$REPO" "Redone bead")
+    append_note "$REPO" "$BEAD" "delegated-to: local
+branch: delegate/local-1700000400-eeee
+receipt: /workspace/.delegate/jobs/local-1700000400-eeee/receipt.json"
+    append_note "$REPO" "$BEAD" "VERIFIED: FAIL — verifier averifier-jkl012"
+    append_note "$REPO" "$BEAD" "delegated-to: glm
+branch: delegate/glm-1700000401-ffff
+receipt: /workspace/.delegate/jobs/glm-1700000401-ffff/receipt.json"
+    append_note "$REPO" "$BEAD" "VERIFIED: PASS — verifier averifier-mno345"
+
+    DELEGATE_REPO="$REPO" run "$SCRIPT" report
+    [ "$status" -eq 0 ]
+
+    LOCAL_ROW=$(awk '$1=="local"{print $2,$3,$4,$5,$6}' <<<"$output")
+    [ "$LOCAL_ROW" = '1 0 1 0 $0.00' ]
+    GLM_ROW=$(awk '$1=="glm"{print $2,$3,$4,$5,$6}' <<<"$output")
+    [ "$GLM_ROW" = '1 1 0 0 $0.00' ]
+}
+
+@test "report: verdicts aggregate across separate beads on the same route, including TAMPERED" {
+    REPO="$BATS_TEST_TMPDIR/repo26"
+    make_repo "$REPO"
+    export COST_MIRROR_STATE_DIR="$BATS_TEST_TMPDIR/cm-state26"
+    BEAD_A=$(make_bead "$REPO" "Glm bead A")
+    append_note "$REPO" "$BEAD_A" "delegated-to: glm
+branch: delegate/glm-1700000500-gggg
+receipt: /workspace/.delegate/jobs/glm-1700000500-gggg/receipt.json"
+    append_note "$REPO" "$BEAD_A" "VERIFIED: PASS — verifier averifier-pqr678"
+
+    BEAD_B=$(make_bead "$REPO" "Glm bead B")
+    append_note "$REPO" "$BEAD_B" "delegated-to: glm
+branch: delegate/glm-1700000501-hhhh
+receipt: /workspace/.delegate/jobs/glm-1700000501-hhhh/receipt.json"
+    append_note "$REPO" "$BEAD_B" "VERIFIED: TAMPERED — verifier averifier-stu901"
+
+    DELEGATE_REPO="$REPO" run "$SCRIPT" report
+    [ "$status" -eq 0 ]
+    ROW=$(awk '$1=="glm"{print $2,$3,$4,$5,$6}' <<<"$output")
+    [ "$ROW" = '2 1 0 1 $0.00' ]
 }
