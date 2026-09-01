@@ -37,7 +37,7 @@ FETCH_CMD="${PIN_CURRENCY_FETCH_CMD:-curl -fsSL -m 10}"
 
 # Tool inventory, in Dockerfile order. Adding a newly-pinned tool means one
 # new case arm in each of the two functions below, plus the name here.
-TOOLS="base-image node helix graphifyy bats-core bd dolt playwright-cli playwright-mcp intellishell termshot pnpm yarn"
+TOOLS="base-image node helix graphifyy bats-core bd dolt playwright-cli playwright-mcp intellishell termshot pnpm yarn opencode"
 
 # grep -oP pattern (applied to the whole Dockerfile, first match wins) that
 # captures just the pinned version/digest for this tool.
@@ -56,6 +56,7 @@ extract_pattern() {
         termshot)       echo 'termshot@v\K[0-9.]+' ;;
         pnpm)           echo '\-g pnpm@\K[0-9.]+' ;;
         yarn)           echo 'yarn@\K[0-9.]+' ;;
+        opencode)       echo 'OPENCODE_VERSION=\K[0-9.]+' ;;
     esac
 }
 
@@ -77,6 +78,7 @@ upstream_source() {
         termshot)       echo 'github:homeport/termshot' ;;
         pnpm)           echo 'npm:pnpm' ;;
         yarn)           echo 'npm:yarn' ;;
+        opencode)       echo 'npm:opencode-ai' ;;
     esac
 }
 

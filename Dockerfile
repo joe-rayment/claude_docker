@@ -110,8 +110,9 @@ RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
 # Install Python and JS package managers (Ruby isn't in the base image, so the
 # former `gem install bundler ... || true` silently failed on every build —
 # dropped. Add ruby-full + a real gem install here if Bundler is ever needed.)
+ARG OPENCODE_VERSION=1.18.25
 RUN pip3 install --no-cache-dir --break-system-packages poetry uv \
-    && npm install -g pnpm@11 yarn@1.22.22
+    && npm install -g pnpm@11 yarn@1.22.22 opencode-ai@${OPENCODE_VERSION}
 
 # Install the code-map graph engine (graphifyy, pinned like every other tool
 # here) into a SYSTEM prefix that is deliberately OFF PATH: the only graphify
@@ -226,6 +227,7 @@ COPY --chown=agent:agent scripts/delegation-gate.py /usr/local/bin/delegation-ga
 COPY --chown=agent:agent scripts/contract-gate.py /usr/local/bin/contract-gate
 COPY --chown=agent:agent scripts/image-drift.py /usr/local/bin/image-drift
 COPY --chown=agent:agent scripts/egress-firewall.sh /usr/local/bin/egress-firewall.sh
+COPY --chown=agent:agent scripts/auth-guard.sh /usr/local/bin/auth-guard.sh
 # the guard IS `graphify` here: the pinned engine at /opt/code-map/bin stays
 # off PATH so every invocation goes through the allowlist
 COPY --chown=agent:agent scripts/code-map-guard.sh /usr/local/bin/graphify
@@ -258,7 +260,8 @@ COPY --chown=agent:agent config/intellishell-config.toml /home/agent/.config/int
 COPY --chown=agent:agent config/intellishell-defaults.txt /home/agent/.config/intelli-shell/defaults.txt
 COPY --chown=agent:agent config/tmux.conf /home/agent/.tmux.conf
 # Make scripts executable
-RUN chmod +x /usr/local/bin/entrypoint.sh \
+RUN chmod +x /usr/local/bin/auth-guard.sh \
+             /usr/local/bin/entrypoint.sh \
              /usr/local/bin/container-welcome \
              /usr/local/bin/view-logs \
              /usr/local/bin/detect-dependencies.sh \
