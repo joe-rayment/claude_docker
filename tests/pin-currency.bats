@@ -73,6 +73,12 @@ EOF
     [[ "$output" == *$'termshot\t0.6.1'* ]]
 }
 
+@test "pin-currency.sh extract: opencode is tracked with the pinned version 1.18.25" {
+    run bash "$SCRIPT" extract
+    [ "$status" -eq 0 ]
+    [[ "$output" == *$'opencode\t1.18.25'* ]]
+}
+
 # ── drift detection, via PIN_CURRENCY_FETCH_CMD ─────────────────────────
 
 @test "pin-currency.sh report: a mocked upstream latest that DIFFERS from the pin is flagged DRIFT (fetch-cmd seam)" {
