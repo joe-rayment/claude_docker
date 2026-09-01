@@ -41,6 +41,19 @@
 #       Lists job dirs: running (pid alive, no receipt yet) vs done
 #       (receipt present). Never deletes or touches job state.
 #
+#   delegate report
+#       Per-route table: jobs and PASS/FAIL/TAMPERED verdict counts read
+#       from delegated beads' own notes (`delegated-to: <route>` /
+#       `VERIFIED: <verdict>` lines, in the order they were appended — a
+#       VERIFIED line counts against the nearest preceding delegated-to,
+#       so a bead redone onto a different route attributes each verdict
+#       to the route it actually followed), joined by route name with
+#       delegated USD summed from cost-mirror's lifetime.json ledger
+#       (honors $COST_MIRROR_STATE_DIR). No dependency on the routes
+#       config: route names come from the notes and from job-id parsing
+#       alone. Prints one clear line instead of a table when nothing has
+#       been delegated yet. Always exits 0 — informational only.
+#
 # $DELEGATE_ROUTES overrides the routes config path; $DELEGATE_REPO
 # overrides the repo the worktree/bd commands operate on (both exist so
 # the test suite can run entirely against scratch fixtures).
@@ -61,6 +74,7 @@ Usage:
   delegate run --route <route> (--bead <id> | --prompt <text> | --prompt-file <file>)
   delegate check
   delegate ps
+  delegate report
 USAGE
 }
 
@@ -445,6 +459,98 @@ cmd_ps() {
     return 0
 }
 
+cmd_report() {
+    # (a) beads: every bead whose notes mention a delegation, then that
+    # bead's full notes text, one compact JSON string per line, slurped
+    # into a JSON array below. No routes-config dependency: route names
+    # come straight out of the notes text.
+    local ids_json bead_ids notes_lines="" notes_json
+    ids_json=$(bd -C "$REPO_DIR" list --all --notes-contains "delegated-to:" --json 2>/dev/null) || ids_json='[]'
+    [[ -z "$ids_json" ]] && ids_json='[]'
+    bead_ids=$(jq -r '.[]?.id // empty' <<<"$ids_json" 2>/dev/null) || bead_ids=''
+
+    if [[ -n "$bead_ids" ]]; then
+        local id one
+        while IFS= read -r id; do
+            [[ -z "$id" ]] && continue
+            one=$(bd -C "$REPO_DIR" show "$id" --json 2>/dev/null | jq -c '.[0].notes // ""' 2>/dev/null) || one='""'
+            notes_lines+="$one"$'\n'
+        done <<<"$bead_ids"
+    fi
+    notes_json=$(jq -s '.' <<<"$notes_lines" 2>/dev/null) || notes_json='[]'
+    [[ -z "$notes_json" ]] && notes_json='[]'
+
+    # (b) dollars: delegate rows (side == "delegate") from cost-mirror's
+    # lifetime.json ledger — same state-dir logic cost-mirror.py itself
+    # uses (_state_dir()), honoring $COST_MIRROR_STATE_DIR.
+    local state_dir lifetime_file ledger_json='[]'
+    state_dir="${COST_MIRROR_STATE_DIR:-$HOME/.claude/cache/cost-mirror}"
+    lifetime_file="$state_dir/lifetime.json"
+    if [[ -f "$lifetime_file" ]]; then
+        ledger_json=$(jq -c '[.sessions[]? | select(.side == "delegate") | {job: .sessionId, usd: (.cost_total // 0)}]' "$lifetime_file" 2>/dev/null) || ledger_json='[]'
+    fi
+    [[ -z "$ledger_json" ]] && ledger_json='[]'
+
+    python3 - "$notes_json" "$ledger_json" <<'PYEOF' || true
+import json
+import re
+import sys
+
+notes_list = json.loads(sys.argv[1])
+ledger = json.loads(sys.argv[2])
+
+
+def route_of(job_id):
+    # Mirrors cmd_ps's own awk one-liner: drop the trailing
+    # "-<epoch>-<hex>" pair, keep the rest as the route name (a route
+    # name may itself contain hyphens).
+    parts = job_id.split("-")
+    if len(parts) >= 3:
+        return "-".join(parts[:-2])
+    return parts[0] if parts else job_id
+
+
+# Scan each bead's notes top-to-bottom: "current route" is whatever the
+# nearest preceding "delegated-to: <route>" line named, so a VERIFIED
+# line always counts against the route it actually followed -- this is
+# what makes a bead redone onto a different route attribute each verdict
+# correctly instead of double-counting or misattributing it.
+jobs = {}
+verdicts = {}
+for text in notes_list:
+    current = None
+    for line in (text or "").splitlines():
+        m = re.match(r"^delegated-to:\s*(\S+)", line)
+        if m:
+            current = m.group(1)
+            jobs[current] = jobs.get(current, 0) + 1
+            verdicts.setdefault(current, {"PASS": 0, "FAIL": 0, "TAMPERED": 0})
+            continue
+        m = re.match(r"^VERIFIED:\s*(PASS|FAIL|TAMPERED)\b", line)
+        if m and current:
+            verdicts[current][m.group(1)] += 1
+
+usd = {}
+for row in ledger:
+    route = route_of(row.get("job") or "")
+    usd[route] = usd.get(route, 0.0) + float(row.get("usd") or 0.0)
+
+routes = sorted(set(jobs) | set(usd))
+
+if not routes:
+    print("no delegated beads yet")
+    sys.exit(0)
+
+print(f"{'ROUTE':<10} {'JOBS':>4} {'PASS':>4} {'FAIL':>4} {'TAMPERED':>8} {'USD':>10}")
+for r in routes:
+    v = verdicts.get(r, {"PASS": 0, "FAIL": 0, "TAMPERED": 0})
+    usd_str = "${:.2f}".format(usd.get(r, 0.0))
+    print(f"{r:<10} {jobs.get(r, 0):>4} {v['PASS']:>4} {v['FAIL']:>4} {v['TAMPERED']:>8} {usd_str:>10}")
+PYEOF
+
+    return 0
+}
+
 main() {
     local cmd="${1:-}"
     [[ $# -gt 0 ]] && shift
@@ -452,8 +558,9 @@ main() {
         run) cmd_run "$@" ;;
         check) cmd_check ;;
         ps) cmd_ps ;;
+        report) cmd_report ;;
         ""|-h|--help) usage; exit 0 ;;
-        *) die "unknown command '$cmd' (expected: run, check, ps)" ;;
+        *) die "unknown command '$cmd' (expected: run, check, ps, report)" ;;
     esac
 }
 
