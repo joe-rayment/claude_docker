@@ -8,9 +8,20 @@
 # not be edited after its RED commit. If a test here turns out to be wrong,
 # stop and report — do not edit it.
 #
+# SUPERSEDED RED BASELINE: the original RED-AT (5f41051) used a
+# FAKE_OPENCODE_REC_DIR env var to tell the fake opencode where to record
+# its argv/env. delegate.sh's env -i scrub (correctly, per spec) strips
+# any var that isn't PATH/HOME/XDG_CONFIG_HOME/TERM/OPENROUTER_API_KEY, so
+# that var never reached the fake and every run-flow test failed for a
+# reason unrelated to the implementation. Fixed by recording into $HOME
+# instead — delegate.sh always sets HOME to the job's own home dir, and it
+# survives the scrub by design. No assertion changed; see the bead's notes
+# for the exact diff against 5f41051. This file is FROZEN again as of the
+# new RED-AT.
+#
 # No real network and no real opencode call anywhere below. A FAKE
-# opencode goes first on PATH (records argv + full env to files, emits a
-# realistic --format json NDJSON stream including a usage/cost event,
+# opencode goes first on PATH (records argv + full env under $HOME, emits
+# a realistic --format json NDJSON stream including a usage/cost event,
 # exits 0); `iptables` and the ollama reachability `curl` call are faked
 # the same way (pin-currency.bats's fake-binary-on-PATH technique) since
 # this container has neither a real iptables nor a real ollama. `bd init
@@ -45,14 +56,16 @@ setup() {
                "grade": "scout" } } }
 EOF
 
-    # FAKE opencode: records argv (one per line) and full env, emits a
-    # realistic NDJSON --format json stream (including a finish event with
-    # usage/cost), always exits 0.
+    # FAKE opencode: records argv (one per line) and full env under $HOME
+    # — the job-scoped home dir delegate.sh's scrub always passes through
+    # (unlike an arbitrary test env var, which the scrub correctly strips)
+    # — emits a realistic NDJSON --format json stream (including a finish
+    # event with usage/cost), always exits 0.
     FAKE_BIN="$BATS_TEST_TMPDIR/bin"
     mkdir -p "$FAKE_BIN"
     cat >"$FAKE_BIN/opencode" <<'EOF'
 #!/usr/bin/env bash
-REC_DIR="${FAKE_OPENCODE_REC_DIR:?FAKE_OPENCODE_REC_DIR not set}"
+REC_DIR="$HOME"
 mkdir -p "$REC_DIR"
 printf '%s\n' "$@" >"$REC_DIR/argv"
 env >"$REC_DIR/env"
@@ -239,11 +252,11 @@ EOF
     REPO="$BATS_TEST_TMPDIR/repo4"
     make_repo "$REPO"
     fake_curl "$FAKE_BIN" ok
-    export FAKE_OPENCODE_REC_DIR="$BATS_TEST_TMPDIR/rec4"
-    PATH="$FAKE_BIN:$PATH" DELEGATE_ROUTES="$ROUTES" DELEGATE_REPO="$REPO" FAKE_OPENCODE_REC_DIR="$FAKE_OPENCODE_REC_DIR" \
+    PATH="$FAKE_BIN:$PATH" DELEGATE_ROUTES="$ROUTES" DELEGATE_REPO="$REPO" \
         run "$SCRIPT" run --route local --prompt "hello from prompt test"
     [ "$status" -eq 0 ]
-    [ -f "$FAKE_OPENCODE_REC_DIR/argv" ]
+    JOB_DIR=$(find "$REPO/.delegate/jobs" -mindepth 1 -maxdepth 1 -type d | head -1)
+    [ -f "$JOB_DIR/home/argv" ]
 }
 
 # ── run: full flow — worktree, exact argv, generated config, scrubbed env ──
@@ -254,9 +267,8 @@ EOF
     BEAD=$(make_bead "$REPO" "Full flow bead")
     fake_curl "$FAKE_BIN" ok
     fake_iptables "$FAKE_BIN" open
-    export FAKE_OPENCODE_REC_DIR="$BATS_TEST_TMPDIR/rec5"
     PATH="$FAKE_BIN:$PATH" DELEGATE_ROUTES="$ROUTES" DELEGATE_REPO="$REPO" OPENROUTER_API_KEY=sk-test-secret-abc123 \
-        FAKE_OPENCODE_REC_DIR="$FAKE_OPENCODE_REC_DIR" run "$SCRIPT" run --route glm --bead "$BEAD"
+        run "$SCRIPT" run --route glm --bead "$BEAD"
     [ "$status" -eq 0 ]
 
     JOB_DIR=$(find "$REPO/.delegate/jobs" -mindepth 1 -maxdepth 1 -type d | head -1)
@@ -278,13 +290,12 @@ EOF
     BEAD=$(make_bead "$REPO" "Argv check bead")
     fake_curl "$FAKE_BIN" ok
     fake_iptables "$FAKE_BIN" open
-    export FAKE_OPENCODE_REC_DIR="$BATS_TEST_TMPDIR/rec6"
     PATH="$FAKE_BIN:$PATH" DELEGATE_ROUTES="$ROUTES" DELEGATE_REPO="$REPO" OPENROUTER_API_KEY=sk-test \
-        FAKE_OPENCODE_REC_DIR="$FAKE_OPENCODE_REC_DIR" run "$SCRIPT" run --route glm --bead "$BEAD"
+        run "$SCRIPT" run --route glm --bead "$BEAD"
     [ "$status" -eq 0 ]
 
     JOB_DIR=$(find "$REPO/.delegate/jobs" -mindepth 1 -maxdepth 1 -type d | head -1)
-    ARGV="$FAKE_OPENCODE_REC_DIR/argv"
+    ARGV="$JOB_DIR/home/argv"
     [ -f "$ARGV" ]
     HEAD8=$(sed -n '1,8p' "$ARGV")
     EXPECTED=$(printf 'run\n-m\nopenrouter/z-ai/glm-5.2\n--dir\n%s\n--auto\n--format\njson' "$JOB_DIR/worktree")
@@ -307,14 +318,13 @@ EOF
     REPO="$BATS_TEST_TMPDIR/repo7"
     make_repo "$REPO"
     fake_curl "$FAKE_BIN" ok
-    export FAKE_OPENCODE_REC_DIR="$BATS_TEST_TMPDIR/rec7"
     PATH="$FAKE_BIN:$PATH" DELEGATE_ROUTES="$ROUTES" DELEGATE_REPO="$REPO" \
-        FAKE_OPENCODE_REC_DIR="$FAKE_OPENCODE_REC_DIR" run "$SCRIPT" run --route local --prompt "hello from prompt test"
+        run "$SCRIPT" run --route local --prompt "hello from prompt test"
     [ "$status" -eq 0 ]
 
     JOB_DIR=$(find "$REPO/.delegate/jobs" -mindepth 1 -maxdepth 1 -type d | head -1)
     EXPECTED=$(printf 'run\n-m\nollama/qwen3-coder:30b\n--dir\n%s\n--auto\n--format\njson\nhello from prompt test' "$JOB_DIR/worktree")
-    ACTUAL=$(cat "$FAKE_OPENCODE_REC_DIR/argv")
+    ACTUAL=$(cat "$JOB_DIR/home/argv")
     [ "$ACTUAL" = "$EXPECTED" ]
 }
 
@@ -324,11 +334,12 @@ EOF
     fake_curl "$FAKE_BIN" ok
     PROMPT_FILE="$BATS_TEST_TMPDIR/prompt.txt"
     printf 'do the scout task exactly as written' >"$PROMPT_FILE"
-    export FAKE_OPENCODE_REC_DIR="$BATS_TEST_TMPDIR/rec8"
     PATH="$FAKE_BIN:$PATH" DELEGATE_ROUTES="$ROUTES" DELEGATE_REPO="$REPO" \
-        FAKE_OPENCODE_REC_DIR="$FAKE_OPENCODE_REC_DIR" run "$SCRIPT" run --route local --prompt-file "$PROMPT_FILE"
+        run "$SCRIPT" run --route local --prompt-file "$PROMPT_FILE"
     [ "$status" -eq 0 ]
-    LAST_LINE=$(tail -1 "$FAKE_OPENCODE_REC_DIR/argv")
+
+    JOB_DIR=$(find "$REPO/.delegate/jobs" -mindepth 1 -maxdepth 1 -type d | head -1)
+    LAST_LINE=$(tail -1 "$JOB_DIR/home/argv")
     [ "$LAST_LINE" = "do the scout task exactly as written" ]
 }
 
@@ -338,9 +349,8 @@ EOF
     BEAD=$(make_bead "$REPO" "Config shape bead")
     fake_curl "$FAKE_BIN" ok
     fake_iptables "$FAKE_BIN" open
-    export FAKE_OPENCODE_REC_DIR="$BATS_TEST_TMPDIR/rec9"
     PATH="$FAKE_BIN:$PATH" DELEGATE_ROUTES="$ROUTES" DELEGATE_REPO="$REPO" OPENROUTER_API_KEY=sk-test \
-        FAKE_OPENCODE_REC_DIR="$FAKE_OPENCODE_REC_DIR" run "$SCRIPT" run --route glm --bead "$BEAD"
+        run "$SCRIPT" run --route glm --bead "$BEAD"
     [ "$status" -eq 0 ]
 
     JOB_DIR=$(find "$REPO/.delegate/jobs" -mindepth 1 -maxdepth 1 -type d | head -1)
@@ -367,9 +377,8 @@ EOF
     REPO="$BATS_TEST_TMPDIR/repo10"
     make_repo "$REPO"
     fake_curl "$FAKE_BIN" ok
-    export FAKE_OPENCODE_REC_DIR="$BATS_TEST_TMPDIR/rec10"
     PATH="$FAKE_BIN:$PATH" DELEGATE_ROUTES="$ROUTES" DELEGATE_REPO="$REPO" \
-        FAKE_OPENCODE_REC_DIR="$FAKE_OPENCODE_REC_DIR" run "$SCRIPT" run --route local --prompt "hi"
+        run "$SCRIPT" run --route local --prompt "hi"
     [ "$status" -eq 0 ]
 
     JOB_DIR=$(find "$REPO/.delegate/jobs" -mindepth 1 -maxdepth 1 -type d | head -1)
@@ -390,13 +399,13 @@ EOF
     BEAD=$(make_bead "$REPO" "Env scrub bead")
     fake_curl "$FAKE_BIN" ok
     fake_iptables "$FAKE_BIN" open
-    export FAKE_OPENCODE_REC_DIR="$BATS_TEST_TMPDIR/rec11"
     PATH="$FAKE_BIN:$PATH" DELEGATE_ROUTES="$ROUTES" DELEGATE_REPO="$REPO" OPENROUTER_API_KEY=sk-test-secret-xyz \
         ANTHROPIC_API_KEY=sk-ant-should-not-leak ANTHROPIC_MODEL=claude-should-not-leak \
-        FAKE_OPENCODE_REC_DIR="$FAKE_OPENCODE_REC_DIR" run "$SCRIPT" run --route glm --bead "$BEAD"
+        run "$SCRIPT" run --route glm --bead "$BEAD"
     [ "$status" -eq 0 ]
 
-    ENVFILE="$FAKE_OPENCODE_REC_DIR/env"
+    JOB_DIR=$(find "$REPO/.delegate/jobs" -mindepth 1 -maxdepth 1 -type d | head -1)
+    ENVFILE="$JOB_DIR/home/env"
     [ -f "$ENVFILE" ]
     run grep -c '^ANTHROPIC_' "$ENVFILE"
     [ "$output" -eq 0 ]
@@ -408,11 +417,12 @@ EOF
     REPO="$BATS_TEST_TMPDIR/repo12"
     make_repo "$REPO"
     fake_curl "$FAKE_BIN" ok
-    export FAKE_OPENCODE_REC_DIR="$BATS_TEST_TMPDIR/rec12"
     PATH="$FAKE_BIN:$PATH" DELEGATE_ROUTES="$ROUTES" DELEGATE_REPO="$REPO" OPENROUTER_API_KEY=sk-should-not-appear \
-        FAKE_OPENCODE_REC_DIR="$FAKE_OPENCODE_REC_DIR" run "$SCRIPT" run --route local --prompt "hi"
+        run "$SCRIPT" run --route local --prompt "hi"
     [ "$status" -eq 0 ]
-    run grep -c '^OPENROUTER_API_KEY=' "$FAKE_OPENCODE_REC_DIR/env"
+
+    JOB_DIR=$(find "$REPO/.delegate/jobs" -mindepth 1 -maxdepth 1 -type d | head -1)
+    run grep -c '^OPENROUTER_API_KEY=' "$JOB_DIR/home/env"
     [ "$output" -eq 0 ]
 }
 
@@ -424,9 +434,8 @@ EOF
     BEAD=$(make_bead "$REPO" "Receipt bead")
     fake_curl "$FAKE_BIN" ok
     fake_iptables "$FAKE_BIN" open
-    export FAKE_OPENCODE_REC_DIR="$BATS_TEST_TMPDIR/rec13"
     PATH="$FAKE_BIN:$PATH" DELEGATE_ROUTES="$ROUTES" DELEGATE_REPO="$REPO" OPENROUTER_API_KEY=sk-test \
-        FAKE_OPENCODE_REC_DIR="$FAKE_OPENCODE_REC_DIR" run "$SCRIPT" run --route glm --bead "$BEAD"
+        run "$SCRIPT" run --route glm --bead "$BEAD"
     [ "$status" -eq 0 ]
 
     JOB_DIR=$(find "$REPO/.delegate/jobs" -mindepth 1 -maxdepth 1 -type d | head -1)
@@ -463,7 +472,7 @@ EOF
     mkdir -p "$NO_USAGE_BIN"
     cat >"$NO_USAGE_BIN/opencode" <<'EOF'
 #!/usr/bin/env bash
-REC_DIR="${FAKE_OPENCODE_REC_DIR:?}"
+REC_DIR="$HOME"
 mkdir -p "$REC_DIR"
 printf '%s\n' "$@" >"$REC_DIR/argv"
 env >"$REC_DIR/env"
@@ -471,9 +480,8 @@ echo '{"type":"message","timestamp":1788224900500,"role":"assistant","text":"no 
 exit 0
 EOF
     chmod +x "$NO_USAGE_BIN/opencode"
-    export FAKE_OPENCODE_REC_DIR="$BATS_TEST_TMPDIR/rec14"
     PATH="$NO_USAGE_BIN:$FAKE_BIN:$PATH" DELEGATE_ROUTES="$ROUTES" DELEGATE_REPO="$REPO" \
-        FAKE_OPENCODE_REC_DIR="$FAKE_OPENCODE_REC_DIR" run "$SCRIPT" run --route local --prompt "hi"
+        run "$SCRIPT" run --route local --prompt "hi"
     [ "$status" -eq 0 ]
 
     JOB_DIR=$(find "$REPO/.delegate/jobs" -mindepth 1 -maxdepth 1 -type d | head -1)
@@ -494,10 +502,9 @@ EOF
     BEAD=$(make_bead "$REPO" "Redaction bead")
     fake_curl "$FAKE_BIN" ok
     fake_iptables "$FAKE_BIN" open
-    export FAKE_OPENCODE_REC_DIR="$BATS_TEST_TMPDIR/rec15"
     SECRET="sk-super-secret-do-not-leak-99887766"
     PATH="$FAKE_BIN:$PATH" DELEGATE_ROUTES="$ROUTES" DELEGATE_REPO="$REPO" OPENROUTER_API_KEY="$SECRET" \
-        FAKE_OPENCODE_REC_DIR="$FAKE_OPENCODE_REC_DIR" run "$SCRIPT" run --route glm --bead "$BEAD"
+        run "$SCRIPT" run --route glm --bead "$BEAD"
     [ "$status" -eq 0 ]
 
     JOB_DIR=$(find "$REPO/.delegate/jobs" -mindepth 1 -maxdepth 1 -type d | head -1)
@@ -515,9 +522,8 @@ EOF
     BEAD=$(make_bead "$REPO" "Stamping bead")
     fake_curl "$FAKE_BIN" ok
     fake_iptables "$FAKE_BIN" open
-    export FAKE_OPENCODE_REC_DIR="$BATS_TEST_TMPDIR/rec16"
     PATH="$FAKE_BIN:$PATH" DELEGATE_ROUTES="$ROUTES" DELEGATE_REPO="$REPO" OPENROUTER_API_KEY=sk-test \
-        FAKE_OPENCODE_REC_DIR="$FAKE_OPENCODE_REC_DIR" run "$SCRIPT" run --route glm --bead "$BEAD"
+        run "$SCRIPT" run --route glm --bead "$BEAD"
     [ "$status" -eq 0 ]
 
     JOB_DIR=$(find "$REPO/.delegate/jobs" -mindepth 1 -maxdepth 1 -type d | head -1)
@@ -539,9 +545,8 @@ EOF
     REPO="$BATS_TEST_TMPDIR/repo17"
     make_repo "$REPO"
     fake_curl "$FAKE_BIN" ok
-    export FAKE_OPENCODE_REC_DIR="$BATS_TEST_TMPDIR/rec17"
     PATH="$FAKE_BIN:$PATH" DELEGATE_ROUTES="$ROUTES" DELEGATE_REPO="$REPO" \
-        FAKE_OPENCODE_REC_DIR="$FAKE_OPENCODE_REC_DIR" run "$SCRIPT" run --route local --prompt "hi"
+        run "$SCRIPT" run --route local --prompt "hi"
     [ "$status" -eq 0 ]
 }
 
