@@ -75,6 +75,35 @@ EOF
     [ ! -e "$CALL_LOG" ]
 }
 
+# ── opt-in delegate routes (beads_claude_docker-1t9) ───────────────────────
+# Default-deny apply itself needs CAP_NET_ADMIN (see ENVIRONMENT LIMITATION
+# above), so these assert against --dry-run's preview text, same as the
+# host-list test above.
+
+@test "egress-firewall.sh --dry-run: delegate-route flags unset -- no openrouter.ai and no 11434 rule, default-deny retained" {
+    run env -u CLAUDE_DEV_ALLOW_OPENROUTER -u CLAUDE_DEV_ALLOW_HOST_OLLAMA bash "$SCRIPT" --dry-run
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"openrouter.ai"* ]]
+    [[ "$output" != *"11434"* ]]
+    [[ "$output" == *"DROP"* ]]
+}
+
+@test "egress-firewall.sh --dry-run: CLAUDE_DEV_ALLOW_OPENROUTER=1 opens openrouter.ai on 443, default-deny retained" {
+    run env CLAUDE_DEV_ALLOW_OPENROUTER=1 bash "$SCRIPT" --dry-run
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"openrouter.ai"* ]]
+    [[ "$output" == *"443"* ]]
+    [[ "$output" == *"DROP"* ]]
+}
+
+@test "egress-firewall.sh --dry-run: CLAUDE_DEV_ALLOW_HOST_OLLAMA=1 opens the host-gateway IP on 11434, default-deny retained" {
+    run env CLAUDE_DEV_ALLOW_HOST_OLLAMA=1 bash "$SCRIPT" --dry-run
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"host.docker.internal"* ]]
+    [[ "$output" == *"11434"* ]]
+    [[ "$output" == *"DROP"* ]]
+}
+
 # ── refusal without CAP_NET_ADMIN ──────────────────────────────────────────
 
 @test "egress-firewall.sh: refuses to apply without NET_ADMIN, clear message, nonzero exit" {
