@@ -223,6 +223,7 @@ COPY --chown=agent:agent scripts/cost-mirror.py /usr/local/bin/cost-mirror
 COPY --chown=agent:agent scripts/disk-cleanup.sh /usr/local/bin/disk-cleanup
 COPY --chown=agent:agent scripts/session-end-audit.sh /usr/local/bin/session-end-audit
 COPY --chown=agent:agent scripts/bd-guard.sh /usr/local/bin/bd-guard
+COPY --chown=agent:agent scripts/outbound-guard.sh /usr/local/bin/outbound-guard
 COPY --chown=agent:agent scripts/context-detect.sh /usr/local/bin/context-detect
 COPY --chown=agent:agent scripts/delegation-gate.py /usr/local/bin/delegation-gate
 COPY --chown=agent:agent scripts/contract-gate.py /usr/local/bin/contract-gate

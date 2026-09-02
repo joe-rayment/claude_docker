@@ -10,6 +10,10 @@
           },
           {
             "type": "command",
+            "command": "command -v outbound-guard >/dev/null 2>&1 && exec outbound-guard --prompt; exit 0"
+          },
+          {
+            "type": "command",
             "command": "command -v tier-reconcile >/dev/null 2>&1 && tier-reconcile >/dev/null 2>&1; true"
           },
           {
@@ -91,6 +95,10 @@
           {
             "type": "command",
             "command": "command -v bd-guard >/dev/null 2>&1 && exec bd-guard; exit 0"
+          },
+          {
+            "type": "command",
+            "command": "command -v outbound-guard >/dev/null 2>&1 && exec outbound-guard; exit 0"
           },
           {
             "type": "command",
