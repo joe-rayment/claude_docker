@@ -2139,3 +2139,49 @@ EOF'
     run_guard 'git commit -F /tmp/bd-guard-egc-workaround-msg.txt'
     [ "$status" -eq 0 ]
 }
+
+# =============================================================================
+# SOFT RULE: rule-shaped `bd remember` text (beads_claude_docker-zcnb)
+#
+# A rule ("Never use git stash", "Always commit with pathspecs") that lands
+# in `bd remember` instead of a rulebook is invisible to every OTHER project
+# this container runs -- bd remember is per-repo project memory, not a
+# channel that ships anywhere else. Rules belong in config/claude-user-
+# memory.md (ships to every project as ~/.claude/CLAUDE.md) or a
+# knowledge-base/ playbook (a solved-once technical recipe).
+# =============================================================================
+
+@test "bd-guard: bd remember text starting with 'Never' is soft-blocked as rule-shaped" {
+    run_guard 'bd remember "Never use git stash here"'
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"rule-shaped"* ]]
+}
+
+@test "bd-guard: bd remember --key k \"Rule: ...\" is soft-blocked as rule-shaped" {
+    run_guard 'bd remember --key k "Rule: always commit with pathspecs"'
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"rule-shaped"* ]]
+}
+
+@test "bd-guard: bd remember text starting with 'Always' or Don't is soft-blocked as rule-shaped" {
+    run_guard 'bd remember "Always run tests before committing"'
+    [ "$status" -eq 2 ]
+    run_guard "bd remember \"Don't skip the migration step\""
+    [ "$status" -eq 2 ]
+}
+
+@test "bd-guard: an ordinary bd remember fact passes untouched" {
+    run_guard 'bd remember "jq shorthand null-fills absent keys"'
+    [ "$status" -eq 0 ]
+}
+
+@test "bd-guard: BD_GUARD_ALLOW=1 overrides the rule-shaped bd remember soft rule" {
+    run_guard 'BD_GUARD_ALLOW=1 bd remember "Never use git stash here"'
+    [ "$status" -eq 0 ]
+}
+
+@test "bd-guard: the rule-shaped bd remember block names config/claude-user-memory.md or a knowledge-base playbook" {
+    run_guard 'bd remember "Never use git stash here"'
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"config/claude-user-memory.md"* || "$output" == *"knowledge-base"* ]]
+}
