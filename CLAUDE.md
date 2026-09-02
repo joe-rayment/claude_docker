@@ -54,7 +54,7 @@ Grade rubric:
 
 Commands: `delegate run --route <route> (--bead <id> | --prompt <text> | --prompt-file <file>)`, `delegate check`, `delegate ps`, `delegate report` (per-route verdict rates + dollars).
 
-## Verification
+## Acceptance Contracts
 
 Before an executor is dispatched, register a `CHECK`/`PASS-IF`/`FROZEN`/`CLASS` block on the bead's `--acceptance` field. The executor works red-commit-first — **observe RED**, commit the test alone, implement, rerun the same `CHECK` to **GREEN** — appending `RED-AT`/`GREEN-AT` shas and the real output to the bead's notes (`config/agents/executor.md`). `FROZEN` binds from `RED-AT` only until that bead's own verification completes (`knowledge-base/ACCEPTANCE_CONTRACTS.md`).
 
@@ -75,7 +75,7 @@ The verifier runs five mechanical checks instead of re-deriving the work: **C1**
 
 ## Beads — Container-Specific Rules
 
-Track **all** work in `bd` (beads) — never TodoWrite, TaskCreate, or markdown TODO lists; `bd prime` (SessionStart hook) carries the full command reference and session-close protocol.
+Track **all** work in `bd` (beads) — never TodoWrite, TaskCreate, or markdown TODO lists; the `prime-memories` SessionStart hook injects project memories only, budgeted — no command reference, no session-close protocol.
 
 ```bash
 bd ready              # Find available work
@@ -117,10 +117,9 @@ Curated playbooks live at `/opt/claude-dev/knowledge-base/` (repo: `knowledge-ba
 | `ss` | `take-screenshot` |
 | `hx` / `vim` | Helix editor |
 
+## Editing the template
 
-## Session Completion
-
-Commit locally at the end of every session — that commit is the terminal state of a successful session. Push (`git push`, `bd dolt push`, any remote sync) is opt-in: run it only when the prompt asks for it, right then. An unavailable, unauthenticated, or unreachable remote is normal here — report a failed push plainly, don't retry it unprompted, and never downgrade an otherwise-complete session to "incomplete" over it.
+Behaviour rules go in config/claude-user-memory.md, the only file that ships — every project loads it as `~/.claude/CLAUDE.md`. This repo's own CLAUDE.md holds only repo-specific facts (tools, config sync, tests, cleanup); a `## ` heading here that isn't a repo fact fails `tests/rulebook.bats`'s whitelist test. When a shipped behaviour is wrong, fix a behaviour at its source (hook flag, guard, deletion), never with a counter-paragraph — a rule stated only here never reaches a user project. `scripts/rules-effective.sh` prints what a fresh project actually loads (`tests/fresh-project.bats`); check it before assuming a fix landed.
 
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:7510c1e2 -->
 <!-- beads: rules live in ~/.claude/CLAUDE.md § Beads; markers kept so bd skips re-injection -->
