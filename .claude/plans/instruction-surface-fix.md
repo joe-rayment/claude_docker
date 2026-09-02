@@ -1,6 +1,6 @@
 # Plan: one rulebook, no contradictions — fixing the five template misbehaviours
 
-Filed 2026-09-01. Lane: deep. Beads: B1 beads_claude_docker-zcnb (was jhkj) · B2 y2qe · B3 bw66 · B4 re-registered pending · B5 jqmd · B6 beads_claude_docker-b56o. Status: plan only — nothing implemented yet.
+Filed 2026-09-01. Lane: deep. Beads: B1 beads_claude_docker-zcnb (was jhkj) · B2 y2qe · B3 bw66 · B4 beads_claude_docker-mcuw (was 4pvn) · B5 jqmd · B6 beads_claude_docker-b56o. Status: plan only — nothing implemented yet.
 
 ## Root cause (one finding explains most of it)
 
@@ -50,9 +50,9 @@ Sequence: B1 → B3 → B4 → B2 → B5 → B6. B1 and B4 were re-registered on
 - `AGENTS.md`: pointer only.
 - New `tests/rulebook.bats`: word budgets; banned phrases absent from both files (`overrides, by name`, `physically painful`, `Work is not done until pushed`, `1 \`verifier\` per bead`, `≥3 files`, `environment limitation`); required headings present exactly once across both files.
 
-### B4 (re-registered; supersedes beads_claude_docker-4pvn) — hooks emit pointers; `contract-gate` lane-aware
+### B4 (beads_claude_docker-mcuw; supersedes beads_claude_docker-4pvn) — hooks emit pointers; `contract-gate` lane-aware
 - `scripts/lane.sh`: `--prime` and `--prime --short` become the pointer lines in Appendix B; the rubric copy is deleted (its only home is Appendix A § Lanes).
-- `scripts/tier-prime.sh`: both modes print the trio line plus the protocol pointer; the dispatch / standing-authorization / invariants restatement is deleted (home: Appendix A § Delegation). PreCompact re-emits the rulebook verbatim only if the compaction check says the harness does not.
+- `scripts/tier-prime.sh`: both modes print the trio line plus the protocol pointer; the dispatch / standing-authorization / invariants restatement is deleted (home: Appendix A § Delegation). The PreCompact hook entries are deleted (SessionStart already fires on `compact`).
 - `scripts/contract-gate.py`: read the session's lane state (`~/.claude/cache/lane/<session_id>.json`); silent on express/standard; unchanged on deep/unset.
 - Tests: `tests/lane.bats`, `tests/contract-gate.bats`, `tests/tier-hooks.bats` (append-only); `knowledge-base/TIERED_ORCHESTRATION.md` + `ACCEPTANCE_CONTRACTS.md` one line each; plugin regen.
 
@@ -118,5 +118,5 @@ Hooks emit state and pointers, never rules. Rules live in Appendix A, which the 
 
 - `lane --prime` (SessionStart): `[lane] Route first — declare \`lane express|standard|deep [--why "…"]\` before any other action. Rubric: ~/.claude/CLAUDE.md § Lanes.`
 - `lane --prime --short` (every prompt): `[lane] route first — lane express|standard|deep · rubric: ~/.claude/CLAUDE.md § Lanes`
-- `tier-prime` (SessionStart) and `tier-prime --full` (PreCompact): the tier trio line, then `protocol: ~/.claude/CLAUDE.md § Delegation · § Lanes`, then the lane line above. PreCompact additionally re-emits `~/.claude/CLAUDE.md` verbatim only if the compaction check (guide answer, recorded on the B4 bead) shows the harness does not re-attach it.
-- `prime-memories` (SessionStart, PreCompact): `bd prime --memories-only`, budgeted (`PRIME_MEMORY_BUDGET`, default 8000 bytes): whole memories in bd's order until the budget is spent, then one footer line listing every omitted key and `bd memories <keyword>`.
+- `tier-prime` (SessionStart) and `tier-prime --full` (PreCompact): the tier trio line, then `protocol: ~/.claude/CLAUDE.md § Delegation · § Lanes`, then the lane line above. The PreCompact hook entries are removed: per the official docs, SessionStart matchers include `compact` and CLAUDE.md is re-read after `/compact`, so SessionStart already covers compaction.
+- `prime-memories` (SessionStart): `bd prime --memories-only`, budgeted (`PRIME_MEMORY_BUDGET`, default 8000 bytes): whole memories in bd's order until the budget is spent, then one footer line listing every omitted key and `bd memories <keyword>`.
