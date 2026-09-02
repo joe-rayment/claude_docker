@@ -230,7 +230,6 @@ prompt_beads_init() {
             echo ""
             if (cd /workspace && bd init --prefix "$prefix" 2>&1); then
                 (cd /workspace && bd hooks install 2>/dev/null) || true
-                (cd /workspace && bd setup claude 2>/dev/null) || true
                 echo ""
                 echo -e "${C_GREEN}✓${C_RESET} Beads initialized (prefix: ${prefix})"
             else

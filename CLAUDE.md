@@ -123,5 +123,5 @@ Curated playbooks live at `/opt/claude-dev/knowledge-base/` (repo: `knowledge-ba
 Commit locally at the end of every session — that commit is the terminal state of a successful session. Push (`git push`, `bd dolt push`, any remote sync) is opt-in: run it only when the prompt asks for it, right then. An unavailable, unauthenticated, or unreachable remote is normal here — report a failed push plainly, don't retry it unprompted, and never downgrade an otherwise-complete session to "incomplete" over it.
 
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:7510c1e2 -->
-<!-- merged above; markers kept so bd skips re-injection -->
+<!-- beads: rules live in ~/.claude/CLAUDE.md § Beads; markers kept so bd skips re-injection -->
 <!-- END BEADS INTEGRATION -->

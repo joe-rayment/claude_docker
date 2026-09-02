@@ -906,43 +906,96 @@ ensure_beads_hygiene() {
 }
 ensure_beads_hygiene
 
-# Register Claude Code hooks for beads awareness (SessionStart, PreCompact).
-# Idempotent — merges into existing settings.json without overwriting other entries.
-# Runs after config version sync since that may reset settings.json to the template.
-if command -v bd &>/dev/null; then
-    if ! bd setup claude 2>/dev/null; then
-        dev-log error "bd setup claude failed during entrypoint" 2>/dev/null || true
-    fi
-fi
-
-# Rewrite any Claude Code hook command equal to "bd prime" or "bd prime
-# --memories-only" in a project's own .claude/settings.json to
-# prime-memories (memories only, budgeted — scripts/prime-memories.sh).
-# `bd init`/`bd setup claude` above can (re)write a bare "bd prime" hook
-# command into /workspace/.claude/settings.json regardless of the
-# --skip-agents flags added elsewhere in this file (bd setup claude takes
-# no such flag and runs unconditionally); this runs AFTER that, on every
-# start, so the rewrite always wins — for a brand-new project, an
-# existing one whose settings.json predates this change (this repo's own
-# .claude/settings.json included), and any future bd version that
-# changes what it writes there. Idempotent: a file with no "bd prime"
+# Remove any Claude Code hook entry whose command is exactly "bd prime",
+# "bd prime --memories-only" or "prime-memories" from a project's own
+# .claude/settings.json. The global settings (config/claude-settings.json
+# → ~/.claude/settings.json) own the memories hook; a project-level copy
+# is pure duplication (memories injected twice per session). `bd init`
+# (still called elsewhere in this file, always with --skip-agents) can
+# nonetheless (re)write a bare "bd prime" hook into
+# /workspace/.claude/settings.json regardless of that flag, so this runs
+# on every start, after any bd init, and always wins — for a brand-new
+# project, an existing one whose settings.json predates this change (this
+# repo's own .claude/settings.json included), and any future bd version
+# that changes what it writes there. Emptied hooks arrays, matcher
+# objects and event keys are dropped rather than left behind; every other
+# entry in the file is untouched. Idempotent: a file with no matching
 # hook round-trips through jq unchanged (modulo key ordering), and
-# running this twice on an already-rewritten file leaves the bytes
-# byte-for-byte identical to the first run's output.
+# running this twice on an already-pruned file leaves the bytes
+# byte-for-byte identical to the first run's output. Fail-open: missing
+# file, no jq, or invalid JSON is a no-op.
 normalize_bd_prime_hooks() {
     local settings=${1:-/workspace/.claude/settings.json}
     [ -f "$settings" ] || return 0
     command -v jq >/dev/null 2>&1 || return 0
     jq empty "$settings" >/dev/null 2>&1 || return 0
-    local rewritten
-    rewritten=$(jq '
-        (.. | objects | select(has("type") and has("command")) | select(.type == "command") | .command)
-            |= (if . == "bd prime" or . == "bd prime --memories-only" then "prime-memories" else . end)
+    local pruned
+    pruned=$(jq '
+        def is_prime_cmd: . == "bd prime" or . == "bd prime --memories-only" or . == "prime-memories";
+        if has("hooks") then
+            .hooks |= (
+                with_entries(
+                    .value |= (
+                        (. // [])
+                        | map(.hooks |= ((. // []) | map(select((.command // "") | is_prime_cmd | not))))
+                        | map(select((.hooks | length) > 0))
+                    )
+                )
+                | with_entries(select((.value | length) > 0))
+            )
+        else
+            .
+        end
     ' "$settings" 2>/dev/null) || return 0
-    [ -n "$rewritten" ] && printf '%s\n' "$rewritten" > "$settings"
+    if [ -n "$pruned" ]; then
+        printf '%s\n' "$pruned" > "$settings"
+    fi
     return 0
 }
 normalize_bd_prime_hooks
+
+# Strip the marker-bounded BEADS INTEGRATION block that `bd init`/`bd
+# setup claude` inject into a project's CLAUDE.md down to a single
+# pointer comment. That block's body has duplicated and at times
+# contradicted this template's own workflow rules (a "git push … NEVER
+# stop before pushing" framing among them); ~/.claude/CLAUDE.md's §
+# Beads section is the single source of truth now. The marker lines
+# themselves are kept byte-identical so bd's own re-injection check still
+# finds them and skips writing a fresh block. Idempotent and fail-open:
+# no file, no BEGIN marker, no END marker, or an END before a BEGIN is a
+# no-op; everything outside the markers is left untouched.
+normalize_beads_integration_block() {
+    local claude_md=${1:-/workspace/CLAUDE.md}
+    [ -f "$claude_md" ] || return 0
+    local begin_line end_line
+    begin_line=$(grep -n '<!-- BEGIN BEADS INTEGRATION' "$claude_md" 2>/dev/null | head -1 | cut -d: -f1)
+    end_line=$(grep -n '<!-- END BEADS INTEGRATION -->' "$claude_md" 2>/dev/null | head -1 | cut -d: -f1)
+    [ -n "$begin_line" ] || return 0
+    [ -n "$end_line" ] || return 0
+    [ "$end_line" -gt "$begin_line" ] || return 0
+
+    local tmp total_lines
+    tmp=$(mktemp) || return 0
+    total_lines=$(wc -l < "$claude_md")
+    {
+        if [ "$begin_line" -gt 1 ]; then
+            sed -n "1,$((begin_line - 1))p" "$claude_md"
+        fi
+        sed -n "${begin_line}p" "$claude_md"
+        echo '<!-- beads: rules live in ~/.claude/CLAUDE.md § Beads; markers kept so bd skips re-injection -->'
+        sed -n "${end_line}p" "$claude_md"
+        if [ "$end_line" -lt "$total_lines" ]; then
+            sed -n "$((end_line + 1)),\$p" "$claude_md"
+        fi
+    } > "$tmp" 2>/dev/null
+    if [ -s "$tmp" ]; then
+        mv "$tmp" "$claude_md"
+    else
+        rm -f "$tmp"
+    fi
+    return 0
+}
+normalize_beads_integration_block
 
 # Change to workspace directory (with diagnostic on failure to prevent silent restart loop)
 cd /workspace || {
