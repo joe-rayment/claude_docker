@@ -213,25 +213,41 @@ TIER_PRIME=/workspace/scripts/tier-prime.sh
     [ "$status" -ne 0 ]
 }
 
-# (l) scripts/tier-prime.sh --full emits contract-shaped dispatch wording
-# and drops the old 'non-trivial claim->verifier' phrasing entirely.
-@test "(l) tier-prime.sh --full emits contract-shaped dispatch wording, drops 'non-trivial claim->verifier'" {
+# (l) SUPERSEDED by beads_claude_docker-mcuw (channel discipline -- hooks
+# emit state and pointers, never rules). The dispatch table, the standing-
+# authorization sentence and the invariants restatement this case used to
+# pin were themselves the redundant-with-SessionStart PreCompact
+# re-injection that mcuw's own acceptance contract requires tier-prime.sh
+# to stop printing (SessionStart's matchers already include `compact`, and
+# CLAUDE.md is re-read from disk after /compact). Per this file's own
+# bounded-freeze-window convention (see the comment above cases (m)-(p)):
+# a FROZEN file's window runs from its owning bead's RED-AT to that bead's
+# OWN verification and is then open to the next bead -- beads_claude_docker-
+# bmm/-ifd/-lhf are all CLOSED, so this file is unfrozen and mcuw opens a
+# new window on this ONE case. Cases (a)-(k), (m)-(p) are untouched.
+@test "(l) tier-prime.sh default and --full now point to the rulebook instead of restating dispatch/standing-authorization/invariants (beads_claude_docker-mcuw)" {
+    # Pin TIER_PRIME_LANE to the repo's own lane.sh: the ambient `lane` on
+    # PATH is the image-baked /usr/local/bin/lane, which only picks up
+    # working-tree edits after a host rebuild (same staged-artifact
+    # staleness trap as knowledge-base/TIERED_ORCHESTRATION.md documents).
+    export TIER_PRIME_LANE=/workspace/scripts/lane.sh
+    run "$TIER_PRIME"
+    [ "$status" -eq 0 ]
+    bare="$output"
     run "$TIER_PRIME" --full
     [ "$status" -eq 0 ]
     printf '%s\n' "$output" > "$BATS_TEST_TMPDIR/prime-full.txt"
+    [ "$output" = "$bare" ]
 
     run grep -F "non-trivial claim→verifier" "$BATS_TEST_TMPDIR/prime-full.txt"
     [ "$status" -ne 0 ]
 
-    for token in "acceptance contract" "CHECK" "PASS-IF" "red"; do
+    for token in "acceptance contract" "CHECK" "PASS-IF" "standing authorization" "invariants:" "expensive tiers never take the worker seat"; do
         run grep -F "$token" "$BATS_TEST_TMPDIR/prime-full.txt"
-        [ "$status" -eq 0 ]
+        [ "$status" -ne 0 ]
     done
 
-    # the standing-authorization and invariants lines must survive untouched
-    run grep -F "standing authorization" "$BATS_TEST_TMPDIR/prime-full.txt"
-    [ "$status" -eq 0 ]
-    run grep -F "expensive tiers never take the worker seat" "$BATS_TEST_TMPDIR/prime-full.txt"
+    run grep -F "~/.claude/CLAUDE.md § Delegation" "$BATS_TEST_TMPDIR/prime-full.txt"
     [ "$status" -eq 0 ]
 }
 

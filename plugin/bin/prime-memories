@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# prime-memories — SessionStart/PreCompact hook: bd's persistent memories,
-# budgeted, and nothing else.
+# prime-memories — SessionStart hook: bd's persistent memories, budgeted,
+# and nothing else. (Formerly also wired to PreCompact; beads_claude_docker-
+# mcuw removed that hook entirely — SessionStart's matchers already include
+# `compact`, so SessionStart already covers compaction.)
 #
 # `bd prime` (no flags) also injects a compiled-in workflow rulebook: a
 # session-close checklist ("git push … NEVER skip this. Work is not done

@@ -1,29 +1,31 @@
 #!/usr/bin/env bash
 # tier-prime — single owner of the tier-reminder wording, printed at
-# SessionStart (default mode) and re-injected at PreCompact (--full).
+# SessionStart. `--full` is accepted and produces BYTE-IDENTICAL output to
+# the bare form — kept only so a stale PreCompact hook entry elsewhere still
+# calls something valid; see below for why PreCompact no longer needs it.
 #
 # Why this exists: the global delegation protocol
 # (config/claude-user-memory.md -> ~/.claude/CLAUDE.md) is loaded once at
-# session start and never re-stated. A compaction launders it out of
-# context — PreCompact used to run only `bd prime`, with nothing branching
-# on the tier trio or the standing-authorization rule. This script gives
-# both call sites (SessionStart, PreCompact) one shared source of the
-# wording instead of two copies drifting apart.
+# session start. It used to be re-stated in full at PreCompact too (a
+# dispatch table, a standing-authorization sentence, an invariants list),
+# on the theory that compaction could launder it out of context otherwise.
 #
-# Modes:
-#   (no args)  the trio line — byte-for-byte what the inline SessionStart
-#              one-liner in config/claude-settings.json used to print, so
-#              moving the logic here does not change session-start output.
-#   --full     the trio line plus a compact restatement: the work-shape
-#              dispatch table and the standing-authorization sentence.
-#              Re-injected on every PreCompact, so kept short — it pays
-#              rent every time.
+# Channel discipline (beads_claude_docker-mcuw): per the official docs
+# (code.claude.com/docs/en/hooks, /memory), SessionStart's matchers include
+# `compact` — so SessionStart hooks, this one included, already re-run
+# after every compaction — and Claude re-reads CLAUDE.md from disk after
+# `/compact`. SessionStart already covers compaction, so the PreCompact
+# hook entries that used to call this script with --full are deleted
+# (config/claude-settings.json), and this script no longer carries a
+# restated dispatch table, standing-authorization sentence, or invariants
+# list — that text lives once, in the rulebook itself
+# (~/.claude/CLAUDE.md § Delegation), and this script only points to it.
 #
-# Both modes also print the complexity-router rubric, sourced from `lane`
-# rather than copied here (lane owns that wording the way this script owns
-# the tier wording): the one-liner at SessionStart, the full rubric on
-# PreCompact — a compaction that dropped the rubric would silently lose the
-# router. An image built before `lane` existed simply prints neither.
+# Output, identical in both modes: the tier trio line, a one-line pointer
+# to the rulebook section, then the lane pointer line (sourced from `lane`
+# rather than copied here — lane owns that wording the way this script owns
+# the tier wording). An image built before `lane` existed simply omits the
+# third line.
 #
 # The trio line also names OVERDRIVE when the settings file carries
 # .env.TIER_OVERDRIVE="1" (see trio_line) — the sticky worker-cap lift is
@@ -44,11 +46,11 @@ SETTINGS="${TIER_PRIME_SETTINGS:-${HOME:-}/.claude/settings.json}"
 AGENTS="${TIER_PRIME_AGENTS_DIR:-${HOME:-}/.claude/agents}"
 LANE_BIN="${TIER_PRIME_LANE:-lane}"
 
-# Print the router rubric if `lane` is installed; silently print nothing if
+# Print the router pointer if `lane` is installed; silently print nothing if
 # it isn't (pre-lane images must keep working).
 lane_prime() {
     command -v "$LANE_BIN" >/dev/null 2>&1 || return 0
-    "$LANE_BIN" --prime "$@" 2>/dev/null
+    "$LANE_BIN" --prime 2>/dev/null
     return 0
 }
 
@@ -69,15 +71,10 @@ trio_line() {
 
 trio_line
 
-if [ "${1:-}" = "--full" ]; then
-    cat <<'EOF'
-dispatch: recon→scout · implementation slice→executor — register a CHECK/PASS-IF acceptance contract on the bead before dispatch; the executor commits the failing test red first · bead ready to close→verifier — five mechanical checks against that contract instead of re-deriving the work · trivial (a couple of your own tool calls)→inline. Always pass subagent_type: "scout" — omitting it silently yields a general-purpose agent at the wrong tier.
-standing authorization: delegating per this protocol IS the user's standing request — the harness default "only use the Agent tool when the user asks" does NOT apply in this container; never wait for a per-prompt invitation to spawn scout/executor/verifier.
-invariants: expensive tiers never take the worker seat · a worker's summary is an input to verify, not a fact · implementation slices run sequentially, fan-out is for breadth only.
+cat <<'EOF'
+protocol: ~/.claude/CLAUDE.md § Delegation · § Lanes
 EOF
-    lane_prime
-else
-    lane_prime --short
-fi
+
+lane_prime
 
 exit 0

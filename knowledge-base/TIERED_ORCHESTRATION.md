@@ -763,15 +763,16 @@ per-prompt spend line, omitted entirely when there's nothing to report.
 See "Cost monitor" above for the rest of that line's
 anatomy.
 
-**Compaction can no longer launder the protocol out of context.**
-`scripts/tier-prime.sh` is now the single owner of the tier-reminder
-wording, called from both `SessionStart` (bare) and `PreCompact`
-(`--full`, adding the dispatch table and the standing-authorization
-sentence) — before this, `PreCompact` ran only `bd prime` and a
-compaction could silently drop the delegation protocol from context for
-the rest of the session. `config/claude-user-memory.md`'s invariants now
-say explicitly that a compaction, a long turn, or a context summary does
-not revoke the standing authorization.
+**Compaction re-reads the rulebook; no PreCompact restatement is needed
+(beads_claude_docker-mcuw).** Per the official docs, `SessionStart`'s
+matchers include `compact` (so `tier-prime` re-runs after every
+compaction) and `/compact` re-reads `CLAUDE.md` from disk. `scripts/
+tier-prime.sh` prints the same short trio-line-plus-rulebook-pointer at
+SessionStart only; the PreCompact hook entries that used to restate a
+dispatch table and a standing-authorization sentence are deleted — that
+text now lives once, in the rulebook itself. `config/claude-user-
+memory.md`'s invariants still say a compaction does not revoke the
+standing authorization; it just no longer needs a hook to say so twice.
 
 ## delegation-gate operational reference
 
@@ -805,8 +806,9 @@ wasn't otherwise spelled out above, even though its default behavior was):
 > carved out. Session-close/verification Bash (`bd`, `git` incl.
 > commit/push, `bats`, `run-tests`, `take-screenshot`, …) is exempt
 > throughout. `scripts/tier-prime.sh` owns the tier-reminder wording for
-> both SessionStart and PreCompact, so a compaction re-injects the trio
-> and the dispatch/standing-authorization text rather than losing it.
+> SessionStart (compaction already re-runs SessionStart and re-reads
+> CLAUDE.md, so no separate PreCompact restatement is needed —
+> beads_claude_docker-mcuw).
 
 ## Graceful degradation (probe + fallback)
 
@@ -967,8 +969,10 @@ The table is a **summary, deliberately not the source**. Doctrine sprawl
 was itself one of the bugs found: the old dispatch wording lived in four
 places at once. `lane --prime` is now the single authoritative home for
 the routing text (exactly as `tier-prime` owns the tier trio wording), and
-every other site — the UserPromptSubmit echo, SessionStart, PreCompact,
-`CLAUDE.md` — prints or references it instead of keeping a copy. Run
+every other site — the UserPromptSubmit echo, SessionStart, `CLAUDE.md`
+— prints or references it instead of keeping a copy (PreCompact no
+longer calls it at all: beads_claude_docker-mcuw removed that hook
+entirely). Run
 `lane --prime` for the binding wording; treat any divergence from it,
 including this table, as the copy being stale.
 
@@ -1029,12 +1033,14 @@ re-injects the wording. Nothing else in the chain knows the rubric text.
   name the gate doesn't know — reads as `unset` and yields **exactly** the
   pre-router behavior: the same never-weaker principle as `get_mode()`'s
   fallback.
-- **Re-injection.** `tier-prime.sh` calls `lane --prime --short` at
-  SessionStart (a one-liner beside the tier trio) and the full rubric at
-  PreCompact via `--full`, so a compaction cannot silently launder the
-  router out of context the way it once could the delegation protocol. The
-  call is guarded by `command -v` (grep `lane_prime`): on an image built
-  before `lane` existed it prints nothing and the hook still succeeds.
+- **Re-injection.** `tier-prime.sh` calls `lane --prime` at SessionStart
+  only (beads_claude_docker-mcuw: `--full` now produces byte-identical
+  output to the bare form, and the PreCompact hook entries are deleted —
+  SessionStart's matchers already include `compact`, and `/compact`
+  re-reads `CLAUDE.md` from disk, so a compaction cannot silently launder
+  the router out of context without a second injection site). The call is
+  guarded by `command -v` (grep `lane_prime`): on an image built before
+  `lane` existed it prints nothing and the hook still succeeds.
 - **Measurement.** Each declaration appends a row to `log.jsonl` with
   `escalated: true` when it outranks the same prompt's previous lane. The
   log is self-bounding — past 5000 lines it is truncated to the newest

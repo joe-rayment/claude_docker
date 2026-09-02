@@ -188,21 +188,25 @@ sys.exit(1 if found else 0)
     [ "$status" -eq 0 ]
 }
 
-@test "hook-staging: config/claude-settings.json registers a prime-memories hook exactly once per event" {
+@test "hook-staging: config/claude-settings.json registers prime-memories once at SessionStart; PreCompact carries no hooks at all (beads_claude_docker-mcuw)" {
     # beads_claude_docker-zcnb: bd prime -> prime-memories (memories only,
-    # budgeted). The dedup intent is unchanged -- exactly one prime-style
-    # hook per event, no duplicates -- only the command it now names.
+    # budgeted). beads_claude_docker-mcuw then removed the PreCompact hook
+    # entries entirely (channel discipline: SessionStart's matchers already
+    # include `compact`, and CLAUDE.md is re-read from disk after /compact,
+    # so PreCompact re-injection was redundant) -- this test now asserts
+    # that absence honestly instead of pinning the old PreCompact count.
     run python3 -c "
 import json, sys
 with open('/workspace/config/claude-settings.json') as fh:
     s = json.load(fh)
 hooks = s.get('hooks', {})
 bad = []
-for event in ('SessionStart', 'PreCompact'):
-    count = sum(1 for entry in hooks.get(event, []) for h in entry.get('hooks', [])
-                if 'prime-memories' in h.get('command', ''))
-    if count != 1:
-        bad.append('%s=%d' % (event, count))
+count = sum(1 for entry in hooks.get('SessionStart', []) for h in entry.get('hooks', [])
+            if 'prime-memories' in h.get('command', ''))
+if count != 1:
+    bad.append('SessionStart=%d' % count)
+if 'PreCompact' in hooks:
+    bad.append('PreCompact key present (should be removed entirely)')
 print(' '.join(bad))
 sys.exit(1 if bad else 0)
 "
