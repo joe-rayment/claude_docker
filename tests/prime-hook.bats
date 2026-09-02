@@ -194,7 +194,7 @@ JSON
     [ "$status" -eq 1 ]
     run grep -F 'echo other' "$fixture"
     [ "$status" -eq 0 ]
-    run jq -e '.hooks | has("PreCompact")' "$fixture"
+    run jq -r '.hooks | has("PreCompact")' "$fixture"
     [ "$status" -eq 0 ]
     [ "$output" = "false" ]
     run jq -r '.hooks.SessionStart[0].hooks | length' "$fixture"
