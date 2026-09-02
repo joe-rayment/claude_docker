@@ -325,14 +325,15 @@ tools, spawn subagents, or run a workflow" — the last clause matters
 because an ultracode session injects a "use Workflow on every task"
 directive into that turn too. Don't "simplify" these keys away.
 
-**`/advisor` coupling:** `advisorModel` (settings) must be **≥ the
-session's main model** or `/advisor` is rejected. It is pinned to `opus`,
-matching the default `.model`. The pin is static — no `tier-set`/
-`tier-reconcile` code reads or writes `advisorModel` (the only occurrence
-of the key in `scripts/` and `config/` is the settings file itself) — so
-pinning a session's top tier *above* opus (`/tier fable`) leaves the
-advisor below the session model and `/advisor` fails visibly; bump the
-value by hand then, or teach `tier-set` to write it alongside `.model`.
+**`/advisor` coupling:** the template ships **no** `advisorModel`, which is
+the CLI's "No advisor" state — the advisor resolver treats any falsy value
+as off, the picker shows "No advisor" when the key is unset, and
+`/advisor off` clears the key rather than writing a sentinel (there is no
+`"none"` value). Turn an advisor on per session with `/advisor`. Nothing in
+`scripts/` or `config/` reads or writes the key, so it stays off across
+`/tier` changes. If you do pin one — `settings.local.json` is the layer
+that survives a rebuild — it must be **≥ the session's main model** or
+`/advisor` is rejected: a pin at `opus` under `/tier fable` fails visibly.
 
 ### Named workflows: recon-fanout, verify-contracts (added 2026-08-30)
 
@@ -1171,6 +1172,18 @@ templates carry alias placeholders (`model: sonnet` / `model: haiku`); the
 reconciler replaces them with concrete ids on first run.
 
 Revision log (each reversible via git on the listed files):
+
+- **2026-09-02 — advisor pin removed (advisor off by default):**
+  `config/claude-settings.json` dropped `advisorModel: "opus"`. An absent
+  key is the CLI's "No advisor" state (2.1.258: the picker renders
+  "No advisor" when the value is unset, the resolver returns no advisor for
+  any falsy value, and `/advisor off` clears the key — there is no `"none"`
+  sentinel), so every config sync had been handing back an Opus advisor the
+  user then cleared by hand. `tests/smoke.bats` now asserts the key is
+  absent; the `/advisor` coupling paragraph above was rewritten. Layer 2
+  (`/etc/claude-dev/configs/claude-settings.json`) was live-patched the same
+  day so the change took effect without waiting for a host rebuild.
+  Rollback = re-add the key (and it must be ≥ the session's main model).
 
 - **2026-08-26 — lane rubric: ties-go-lighter teeth, recon-breadth
   clarifier, verifier batching (bead beads_claude_docker-epe):**

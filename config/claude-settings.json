@@ -1,6 +1,5 @@
 {
   "model": "opus",
-  "advisorModel": "opus",
   "respondToBashCommands": false,
   "env": {
     "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1",
