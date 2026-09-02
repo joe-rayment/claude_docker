@@ -64,6 +64,18 @@ deny_reason() {
     [[ "$(deny_reason)" == *"no Snowflake access"* ]]
 }
 
+@test "outbound-guard: 'python -m snowflake.cli deploy' is denied (module form)" {
+    run_pretool 'python -m snowflake.cli deploy'
+    [ "$status" -eq 0 ]
+    [[ "$(deny_reason)" == *"no Snowflake access"* ]]
+}
+
+@test "outbound-guard: 'python3 -m snowflake.cli deploy' is denied (module form)" {
+    run_pretool 'python3 -m snowflake.cli deploy'
+    [ "$status" -eq 0 ]
+    [[ "$(deny_reason)" == *"no Snowflake access"* ]]
+}
+
 # ── push/deploy: denied unless the current prompt's marker is set ──────────
 
 @test "outbound-guard: 'git push origin main' is denied with no marker" {
@@ -164,6 +176,18 @@ deny_reason() {
     [ -z "$output" ]
 }
 
+@test "outbound-guard: 'pip install snowflake-cli' alone is allowed (package name, no separate snow invocation)" {
+    run_pretool 'pip install snowflake-cli'
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+}
+
+@test "outbound-guard: 'pip install snowflake-connector-python' is allowed" {
+    run_pretool 'pip install snowflake-connector-python'
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+}
+
 # ── fail-open contract ───────────────────────────────────────────────────────
 
 @test "outbound-guard: a non-Bash tool payload passes through with empty output" {
@@ -184,8 +208,20 @@ deny_reason() {
     [ -z "$output" ]
 }
 
-@test "outbound-guard: PreToolUse payload with no session_id key fails open, even for a snow command" {
+@test "outbound-guard: PreToolUse payload with no session_id key still denies a snow command (unconditional, no session_id needed)" {
     run_pretool_no_sid 'snowsql -q "select 1"'
+    [ "$status" -eq 0 ]
+    [[ "$(deny_reason)" == *"no Snowflake access"* ]]
+}
+
+@test "outbound-guard: PreToolUse payload with no session_id key still denies a snow module invocation" {
+    run_pretool_no_sid 'python3 -m snowflake.cli deploy'
+    [ "$status" -eq 0 ]
+    [[ "$(deny_reason)" == *"no Snowflake access"* ]]
+}
+
+@test "outbound-guard: PreToolUse payload with no session_id key fails open for a push command (only the marker rule needs a session_id)" {
+    run_pretool_no_sid 'git push origin main'
     [ "$status" -eq 0 ]
     [ -z "$output" ]
 }
