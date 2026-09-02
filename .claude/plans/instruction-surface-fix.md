@@ -1,6 +1,12 @@
 # Plan: one rulebook, no contradictions — fixing the five template misbehaviours
 
-Filed 2026-09-01. Lane: deep. Beads: B1 beads_claude_docker-zcnb (was jhkj) · B2 y2qe · B3 bw66 · B4 beads_claude_docker-mcuw (was 4pvn) · B5 jqmd · B6 beads_claude_docker-b56o · B7 beads_claude_docker-my6v. Status: plan only — nothing implemented yet.
+Filed 2026-09-01. Lane: deep. Beads: B1 beads_claude_docker-zcnb (was jhkj) · B2 y2qe · B3 bw66 · B4 beads_claude_docker-mcuw (was 4pvn) · B5 jqmd · B6 beads_claude_docker-b56o · B7 beads_claude_docker-my6v. Status: IMPLEMENTED 2026-09-02 — see 'Outcome' below.
+
+## Outcome (2026-09-02)
+
+All seven slices landed on main, red-commit-first, each verified against its contract: B1 zcnb (9e29a28) · B3 bw66 (88460eb) · B7 my6v (0782551, 6f84726) · B4 mcuw (6e44c13, 61a7a2f) · B2 y2qe (558e0c4, 2edc24a) · B5 jqmd (60846de) · B6 b56o (49e4829). Independent verifiers passed B1, B3, B4, B2 and B7 (B7 with two documented contract-owner edits); B5 and B6 were checked by the orchestrator with the same five checks after the verifier spawn hit the account session limit. `scripts/rules-effective.sh` shows a fresh project now loads the 954-word rulebook, an empty memories block and three pointer lines: 6,637 bytes, zero banned phrases.
+
+Environment limitation: the baked `/usr/local/bin` copies and `~/.claude/settings.json` in this container are stale until `./claude-dev --rebuild` on the host; until then the live session still runs the old hooks (one hook-staging test stays red for the same reason). Follow-ups filed: `7lbq` (two pre-existing cost-mirror test failures, unrelated).
 
 ## Root cause (one finding explains most of it)
 
