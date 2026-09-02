@@ -1,15 +1,19 @@
 #!/usr/bin/env bash
-# lane — per-prompt complexity router: state + the single home of the routing
-# wording.
+# lane — per-prompt complexity router: state + the pointer back to the
+# routing rubric.
 #
 # Why this exists: every prompt used to get the full-court press (plan,
 # beads, executor slices, verifier sign-off) regardless of size. The router
 # asks the orchestrator to classify each prompt into one of three lanes and
 # DECLARE it, so the route is visible in the transcript, enforceable by
-# delegation-gate, and measurable by cost-mirror. This script owns the lane
-# state files and the rubric text; every other site (settings hooks,
-# tier-prime, doctrine) shells out to `lane --prime` instead of keeping its
-# own copy of the wording — same pattern as tier-prime owning the tier trio.
+# delegation-gate, and measurable by cost-mirror.
+#
+# Channel discipline (beads_claude_docker-mcuw): hooks carry state and
+# pointers, never rules. The rubric itself lives once, in the rulebook
+# (config/claude-user-memory.md -> ~/.claude/CLAUDE.md § Lanes), which the
+# harness attaches to every session. This script owns the lane STATE files
+# and the two pointer lines below; every other site (settings hooks,
+# tier-prime) shells out to `lane --prime` instead of keeping its own copy.
 #
 # Subcommands:
 #   lane express|standard|deep [--why "…"]   declare the lane for this session
@@ -17,7 +21,7 @@
 #   lane --reset                             UserPromptSubmit hook: read the
 #                                            hook JSON on stdin, clear the lane
 #                                            for that session, remember the id
-#   lane --prime [--short]                   print the rubric (or its one-liner)
+#   lane --prime [--short]                   print the pointer to the rubric
 #
 # State lives in $LANE_STATE_DIR (default ~/.claude/cache/lane):
 #   <session_id>.json  current lane for that session
@@ -83,30 +87,23 @@ usage() {
 usage: lane express|standard|deep [--why "…"]   declare this prompt's lane
        lane                                     print the current lane
        lane --reset                             clear lane (hook JSON on stdin)
-       lane --prime [--short]                   print the routing rubric
+       lane --prime [--short]                   print the pointer to the rubric
 EOF
 }
 
+# The rubric itself lives once, in ~/.claude/CLAUDE.md § Lanes (Appendix A of
+# .claude/plans/instruction-surface-fix.md) — these two lines only point
+# there (Appendix B), so a hook can never drift out of sync with the rule it
+# is pointing at.
 prime_full() {
     cat <<'EOF'
-[lane] Route first: before any other action, classify the prompt and declare a lane — `lane express|standard|deep [--why "…"]`.
-  express  — ALL of: ≤1 file touched (or none); mechanical/cosmetic change, or answer known from context or one lookup; no design choice; trivially reversible; no new dependency/interface/contract.
-             → do it inline now: ≤~5 tool calls, no plan, no bead, no executor, no verifier; verify with one run/screenshot when observable, else the diff.
-  standard — one well-understood slice, low-to-moderate risk, no architectural choice.
-             → one-sentence approach, then inline or ONE executor slice; verify by running the result once; no acceptance contract or verifier unless the claim is contested.
-  deep     — ANY of: ≥3 files or an interface/schema/config contract; multiple reasonable approaches with real tradeoffs; ambiguity needing interpretation; hard to reverse (migration, deletion, push, publish); security or data-integrity surface; user asked for thoroughness.
-             → full protocol: plan first, beads with acceptance contracts, executor slices, verifier sign-off.
-  Recon breadth is not implementation depth: many files read with ≤2 files changed routes standard — scouts deliver deep-grade evidence in any lane.
-  Ties go to the LIGHTER lane, with one-way tripwires: scope outgrows the rubric, a fix attempt fails, hidden ambiguity or unexpected breakage surfaces → escalate exactly one lane (`lane <heavier> --why "…"`), announce it, and never de-escalate within the same prompt.
-  When genuinely unsure between standard and deep, declare standard — tripwires self-correct upward mid-prompt; over-routing has no correction path.
-  Scope: classify and answer the request AS ASKED — never the harder question it could become. Adjacent issues or out-of-scope risks get one line at most, never investigation; discovering them is NOT a tripwire — only the asked task's own needs escalate.
-  User override always wins: "quick"/"just" biases light; "plan"/"thorough"/"audit" forces deep. Explicit user constraints beat every rubric line.
+[lane] Route first — declare `lane express|standard|deep [--why "…"]` before any other action. Rubric: ~/.claude/CLAUDE.md § Lanes.
 EOF
 }
 
 prime_short() {
     cat <<'EOF'
-[lane] route first — lane express|standard|deep · express: inline, no ceremony · standard: 1 slice + run-verify · deep: plan+contracts+verifier · ties→lighter, tripwires escalate one-way · declare standard when unsure — tripwires self-correct · Recon breadth ≠ depth: many reads + ≤2→standard · scope: the question as asked
+[lane] route first — lane express|standard|deep · rubric: ~/.claude/CLAUDE.md § Lanes
 EOF
 }
 

@@ -120,6 +120,21 @@ was never there -- and no already-closed bead whose note predates this
 format is retroactively condemned, since the gate only ever runs on a
 close happening now.
 
+Lane awareness (beads_claude_docker-mcuw)
+------------------------------------------
+This gate's whole premise -- register a CHECK/PASS-IF contract, corroborate
+a VERIFIED: PASS note -- is a DEEP-lane concept: express and standard
+explicitly carry no contract per the rulebook (~/.claude/CLAUDE.md §
+Lanes). When the session that is closing the bead declared "express" or
+"standard" (read from the same per-session state file `scripts/lane.sh`
+writes, LANE_STATE_DIR/<session_id>.json, key "lane"), the gate is
+entirely silent -- allowed, and not even a `bd show` call is made, the
+same posture as mode=off. "deep" and "no resolvable lane" (missing state
+dir/file, unreadable/malformed JSON, no session_id in the hook payload)
+both keep today's behaviour unchanged: this is a narrowing of WHEN the
+gate speaks, never a new way for a genuinely deep-lane close to go
+unchecked.
+
 Resolving a bare close (bead beads_claude_docker-bh6)
 -----------------------------------------------------
 A bare `bd close` used to be un-checkable: the gate could only ask for an
@@ -168,6 +183,16 @@ import sys
 MODE_FILE = "~/.claude/contract-gate.mode"
 RECOGNIZED_MODES = {"off", "warn", "enforce"}
 BD_SHOW_TIMEOUT_SECONDS = 5
+
+# Lane awareness: same env var, default dir, and per-session file shape as
+# scripts/lane.sh (LANE_STATE_DIR/<session_id>.json, key "lane"). Express and
+# standard are the lanes where this gate's whole premise (a contract, a
+# corroborated VERIFIED: PASS) does not apply, so they suppress the gate
+# entirely; every other lane word, and "no resolvable lane", is unaffected.
+LANE_STATE_DIR_ENV = "LANE_STATE_DIR"
+DEFAULT_LANE_STATE_DIR = "~/.claude/cache/lane"
+LIGHT_LANES = {"express", "standard"}
+SESSION_ID_SAFE_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
 # Same compound-command splitter as delegation-gate: a single Bash tool
 # call is often several shell commands chained together.
@@ -326,6 +351,40 @@ def attributed_agent_ids(notes):
             if token not in ids:
                 ids.append(token)
     return ids
+
+
+def lane_state_dir():
+    return os.path.expanduser(os.environ.get(LANE_STATE_DIR_ENV) or DEFAULT_LANE_STATE_DIR)
+
+
+def sanitize_session_id(raw):
+    """Same character allowlist as lane.sh's sanitize_id(): strip everything
+    outside [A-Za-z0-9._-] so a hostile session_id can never escape the
+    state directory."""
+    if not isinstance(raw, str):
+        return ""
+    return SESSION_ID_SAFE_RE.sub("", raw)
+
+
+def current_lane(session_id):
+    """The lane declared for this session, read from the same state file
+    scripts/lane.sh writes (<LANE_STATE_DIR>/<session_id>.json, key
+    "lane"). None on any failure -- no session id, missing/unreadable/
+    unparsable file, non-dict JSON, non-string lane value -- so the caller
+    falls through to today's behaviour exactly as if lane-awareness did not
+    exist, the same fail-open posture as every other branch in this file."""
+    if not session_id:
+        return None
+    path = os.path.join(lane_state_dir(), "%s.json" % session_id)
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    lane = data.get("lane")
+    return lane if isinstance(lane, str) else None
 
 
 def mode_file():
@@ -567,6 +626,10 @@ def main():
     mode = get_mode()
     if mode == "off":
         return  # silent allow, no bd call made
+
+    lane = current_lane(sanitize_session_id(payload.get("session_id")))
+    if lane in LIGHT_LANES:
+        return  # deep-lane-only ceremony: silent allow, no bd call made
 
     bead_ids = extract_bead_ids(segment)
 

@@ -102,21 +102,6 @@
         ]
       }
     ],
-    "PreCompact": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "r=$(git rev-parse --show-toplevel 2>/dev/null); [ -n \"$r\" ] && [ -x \"$r/scripts/prime-memories.sh\" ] && { \"$r/scripts/prime-memories.sh\" 2>/dev/null; exit 0; }; command -v prime-memories >/dev/null 2>&1 && { prime-memories 2>/dev/null; exit 0; }; [ -x \"$HOME/.claude/hooks/prime-memories\" ] && { \"$HOME/.claude/hooks/prime-memories\" 2>/dev/null; exit 0; }; exit 0"
-          },
-          {
-            "type": "command",
-            "command": "r=$(git rev-parse --show-toplevel 2>/dev/null); [ -n \"$r\" ] && [ -x \"$r/scripts/tier-prime.sh\" ] && { \"$r/scripts/tier-prime.sh\" --full 2>/dev/null; exit 0; }; command -v tier-prime >/dev/null 2>&1 && { tier-prime --full 2>/dev/null; exit 0; }; [ -x \"$HOME/.claude/hooks/tier-prime\" ] && { \"$HOME/.claude/hooks/tier-prime\" --full 2>/dev/null; exit 0; }; exit 0"
-          }
-        ]
-      }
-    ],
     "Stop": [
       {
         "matcher": "",
