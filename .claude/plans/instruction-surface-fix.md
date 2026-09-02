@@ -1,6 +1,6 @@
 # Plan: one rulebook, no contradictions — fixing the five template misbehaviours
 
-Filed 2026-09-01. Lane: deep. Beads: B1 beads_claude_docker-zcnb (was jhkj) · B2 y2qe · B3 bw66 · B4 beads_claude_docker-mcuw (was 4pvn) · B5 jqmd · B6 beads_claude_docker-b56o. Status: plan only — nothing implemented yet.
+Filed 2026-09-01. Lane: deep. Beads: B1 beads_claude_docker-zcnb (was jhkj) · B2 y2qe · B3 bw66 · B4 beads_claude_docker-mcuw (was 4pvn) · B5 jqmd · B6 beads_claude_docker-b56o · B7 beads_claude_docker-my6v. Status: plan only — nothing implemented yet.
 
 ## Root cause (one finding explains most of it)
 
@@ -17,6 +17,10 @@ Filed 2026-09-01. Lane: deep. Beads: B1 beads_claude_docker-zcnb (was jhkj) · B
 | 5 | Bead explosion, checks too early, verification as separate beads | `bd prime`: "Create beads issue BEFORE writing code", the "Write tests for X" separate-bead example, "use parallel subagents" to create issues. `tier-prime` (every SessionStart/PreCompact): "register a CHECK/PASS-IF contract on the bead before dispatch; the executor commits the failing test red first" — no lane qualifier. Global deep row: "1 verifier per bead" vs this repo's "per evidence surface, never per bead". Lane rubric: "≥3 files → deep" (greenfield work is always ≥3 files), and `delegation-gate guard` denies Edit/Write in deep → every edit needs an executor → every executor needs a bead with a contract. `contract-gate` nags on every close without a contract regardless of lane. No greenfield clause anywhere. | `bd prime --export:96,119,178`; `scripts/tier-prime.sh:73`; `config/claude-user-memory.md:17`; `scripts/lane.sh` rubric; `scripts/delegation-gate.py:487`; `scripts/contract-gate.py:472` |
 | 6 | "Can't run its own code" | The sandbox is fully capable (firewall off by default; pip/npm/apt work; Playwright + Chromium + `take-screenshot` baked), but the only shipped sentences about running things in a Snowflake project are the negative ones ("no access … never will … the user runs it … blocked on their reply"). "Run the actual application / install whatever is missing" is in this repo's `CLAUDE.md:124-128` only. Nowhere does the shipped text distinguish *the sandbox* (run everything) from *the user's systems* (never touch). | same as #1 |
 
+## Finding added 2026-09-02: the template injects bd's push rules into every project's CLAUDE.md
+
+`scripts/entrypoint.sh` (and `scripts/guided-setup.sh:233`) run `bd setup claude` at every container start. Verified in a scratch project: it writes `bd prime` hooks into the project's `.claude/settings.json` (a duplicate of the global hook) and injects a marker-bounded "BEADS INTEGRATION" block into the project's `CLAUDE.md`, creating the file if absent. The block reads: "Work is NOT complete until `git push` succeeds … NEVER stop before pushing … NEVER say 'ready to push when you are' - YOU must push … If push fails, resolve and retry until it succeeds." That sits in the project's own `CLAUDE.md`, the highest-precedence instruction file, in every project this template touches. This repo's `CLAUDE.md` had the block body removed by hand (markers kept), which is why the problem was invisible here. B7 removes the call and strips the block at start; B6's probe now exercises the entrypoint's project preparation so this class of drift is caught by a test.
+
 ## Design principles for the fix
 
 1. **One rulebook that ships**: `config/claude-user-memory.md` becomes the complete, short rulebook for every project (target ≤ 1,000 words, from 2,040). This repo's `CLAUDE.md` keeps only repo-specific facts (tools, config sync, tests, cleanup).
@@ -29,7 +33,7 @@ Filed 2026-09-01. Lane: deep. Beads: B1 beads_claude_docker-zcnb (was jhkj) · B
 
 ## Slices (beads)
 
-Sequence: B1 → B3 → B4 → B2 → B5 → B6. B1 and B4 were re-registered on 2026-09-02 (before any implementation) to absorb the channel discipline; the retired ids are superseded, not closed as done. Verifier runs: {B1, B2} hook wiring; {B3, B5} prose; B4 alone; B6 alone (it is the integration probe).
+Sequence: B1 → B3 → (verify B1+B3) → B7 → B4 → B2 → B5 → B6. B1 and B4 were re-registered on 2026-09-02 (before any implementation) to absorb the channel discipline; the retired ids are superseded, not closed as done. Verifier runs: {B1, B2} hook wiring; {B3, B5} prose; B4 alone; B6 alone (it is the integration probe).
 
 ### B1 (beads_claude_docker-zcnb; supersedes beads_claude_docker-jhkj) — the bd channel: `prime-memories`, `bd init --skip-agents`, rule-shaped-memory nudge, delete the override paragraphs
 - New `scripts/prime-memories.sh` (installed as `prime-memories`, Dockerfile COPY, plugin regen): `bd prime --memories-only` under a byte budget, omitted keys listed in a footer, fail-open when `bd` is absent.
@@ -60,6 +64,9 @@ Sequence: B1 → B3 → B4 → B2 → B5 → B6. B1 and B4 were re-registered on
 - `tests/rulebook.bats` (append): every `## ` heading in this repo's `CLAUDE.md` is on a fixed whitelist of repo-fact headings; behavioural headings (Verification, Ownership, Answer Style, Session Completion, Noticed Flaws, Complexity Router, Model Tiering, User Constraints) may not appear there.
 - New `scripts/rules-effective.sh`: prints what a fresh user project actually loads — `config/claude-user-memory.md` plus every SessionStart hook command from `config/claude-settings.json` run inside a temp empty project (no `CLAUDE.md`, no `.beads`). New `tests/fresh-project.bats` asserts the shipped rules are present and the banned phrases absent.
 - `CLAUDE.md`: one repo-fact section, "Editing the template": behaviour rules go in `config/claude-user-memory.md`, the only file that ships; fix a behaviour at its source (hook flag, guard, deletion), never with a counter-paragraph.
+
+### B7 (beads_claude_docker-my6v) — entrypoint: stop `bd setup claude`; dedupe project hooks; strip the injected block
+- Delete the `bd setup claude` calls (entrypoint and guided-setup). `normalize_bd_prime_hooks` removes bd-prime-shaped hook entries from the project's `.claude/settings.json` instead of rewriting them (the global settings own the hook). New `normalize_beads_integration_block` replaces the body between the BEADS INTEGRATION markers in the project `CLAUDE.md` with a one-line pointer, markers kept. Depends on B1's verification (it edits B1's frozen test).
 
 ### B5 (beads_claude_docker-jqmd) — Snowflake surfaces
 - `config/contexts/snowflake.md` → ≤ 90 words: Snowflake-specific residue only (validate SQL locally by parsing; fixtures; the skill prepares deploy packages on request). No "paste the output", no "blocked on their reply".
