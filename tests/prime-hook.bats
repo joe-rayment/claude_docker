@@ -12,10 +12,12 @@
 #
 # Covers: the SessionStart/PreCompact hook wiring (config/claude-
 # settings.json), the wrapper script's own budgeting/fail-open behavior,
-# `bd init --skip-agents` (scripts/entrypoint.sh), the idempotent
-# settings.json rewrite function for existing projects, the Dockerfile/
-# plugin staging, and the two now-deletable "argue with bd's injected
-# text" paragraphs in CLAUDE.md / config/claude-user-memory.md.
+# `bd init --skip-agents` (scripts/entrypoint.sh), the removal of the
+# `bd setup claude` call from entrypoint.sh and guided-setup.sh, the
+# settings.json hook-removal function for existing projects, the
+# CLAUDE.md BEADS INTEGRATION block strip, the Dockerfile/plugin staging,
+# and the two now-deletable "argue with bd's injected text" paragraphs in
+# CLAUDE.md / config/claude-user-memory.md.
 #
 # NOTE on test (1): the bead's own PASS-IF says every hook command
 # mentioning 'prime' "is exactly 'prime-memories'". A literal bare
@@ -31,6 +33,7 @@
 REPO_DIR="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)"
 SETTINGS="$REPO_DIR/config/claude-settings.json"
 ENTRYPOINT_SRC="$REPO_DIR/scripts/entrypoint.sh"
+GUIDED_SETUP_SRC="$REPO_DIR/scripts/guided-setup.sh"
 PRIME_MEMORIES="$REPO_DIR/scripts/prime-memories.sh"
 DOCKERFILE="$REPO_DIR/Dockerfile"
 CLAUDE_MD="$REPO_DIR/CLAUDE.md"
@@ -145,9 +148,16 @@ make_bd_repo() {
     [ "$total" -eq "$with_flag" ]
 }
 
-# ── (6) idempotent settings.json rewrite for existing projects ─────────────
+# ── (5b) bd setup claude removed from entrypoint.sh and guided-setup.sh ────
 
-@test "prime-hook: entrypoint's settings.json rewrite function turns 'bd prime' hooks into prime-memories and is idempotent" {
+@test "prime-hook: neither scripts/entrypoint.sh nor scripts/guided-setup.sh calls 'bd setup claude'" {
+    run grep -F 'bd setup claude' "$ENTRYPOINT_SRC" "$GUIDED_SETUP_SRC"
+    [ "$status" -eq 1 ]
+}
+
+# ── (6) settings.json: remove bd-prime-shaped hooks, prune empties, idempotent ─
+
+@test "prime-hook: entrypoint's settings.json function removes 'bd prime'/'prime-memories' hook entries, prunes emptied arrays/matcher objects/event keys, leaves unrelated hooks untouched, and is idempotent" {
     local start end
     start=$(grep -n '^normalize_bd_prime_hooks() {' "$ENTRYPOINT_SRC" | head -1 | cut -d: -f1)
     end=$(grep -n '^normalize_bd_prime_hooks$' "$ENTRYPOINT_SRC" | head -1 | cut -d: -f1)
@@ -160,10 +170,16 @@ make_bd_repo() {
 {
   "hooks": {
     "PreCompact": [
-      { "hooks": [ { "command": "bd prime", "type": "command" } ], "matcher": "" }
+      { "hooks": [ { "command": "prime-memories", "type": "command" } ], "matcher": "" }
     ],
     "SessionStart": [
-      { "hooks": [ { "command": "bd prime", "type": "command" } ], "matcher": "" }
+      {
+        "hooks": [
+          { "command": "bd prime", "type": "command" },
+          { "command": "echo other", "type": "command" }
+        ],
+        "matcher": ""
+      }
     ]
   }
 }
@@ -171,17 +187,146 @@ JSON
 
     run bash -c "source '$BATS_TEST_TMPDIR/normalize-fn.sh' && normalize_bd_prime_hooks '$fixture'"
     [ "$status" -eq 0 ]
+
     run grep -c '"bd prime"' "$fixture"
     [ "$status" -eq 1 ]
     run grep -c 'prime-memories' "$fixture"
+    [ "$status" -eq 1 ]
+    run grep -F 'echo other' "$fixture"
     [ "$status" -eq 0 ]
-    [ "$output" -eq 2 ]
+    run jq -e '.hooks | has("PreCompact")' "$fixture"
+    [ "$status" -eq 0 ]
+    [ "$output" = "false" ]
+    run jq -r '.hooks.SessionStart[0].hooks | length' "$fixture"
+    [ "$status" -eq 0 ]
+    [ "$output" = "1" ]
+    run jq -r '[.. | arrays | select(length == 0)] | length' "$fixture"
+    [ "$status" -eq 0 ]
+    [ "$output" = "0" ]
 
     cp "$fixture" "$BATS_TEST_TMPDIR/fixture-after-1.json"
     run bash -c "source '$BATS_TEST_TMPDIR/normalize-fn.sh' && normalize_bd_prime_hooks '$fixture'"
     [ "$status" -eq 0 ]
     run diff "$BATS_TEST_TMPDIR/fixture-after-1.json" "$fixture"
     [ "$status" -eq 0 ]
+}
+
+# ── (6b) settings.json with no matching hooks round-trips unchanged ────────
+
+@test "prime-hook: entrypoint's settings.json function leaves a file with no bd-prime-shaped hooks semantically unchanged" {
+    local start end
+    start=$(grep -n '^normalize_bd_prime_hooks() {' "$ENTRYPOINT_SRC" | head -1 | cut -d: -f1)
+    end=$(grep -n '^normalize_bd_prime_hooks$' "$ENTRYPOINT_SRC" | head -1 | cut -d: -f1)
+    [ -n "$start" ]
+    [ -n "$end" ]
+    sed -n "${start},$((end - 1))p" "$ENTRYPOINT_SRC" > "$BATS_TEST_TMPDIR/normalize-fn.sh"
+
+    local fixture="$BATS_TEST_TMPDIR/no-match-settings.json"
+    cat > "$fixture" <<'JSON'
+{
+  "hooks": {
+    "SessionStart": [
+      { "hooks": [ { "command": "echo other", "type": "command" } ], "matcher": "" }
+    ]
+  },
+  "permissions": { "allow": [ "Bash(echo:*)" ] }
+}
+JSON
+    jq -S . "$fixture" > "$BATS_TEST_TMPDIR/before.json"
+
+    run bash -c "source '$BATS_TEST_TMPDIR/normalize-fn.sh' && normalize_bd_prime_hooks '$fixture'"
+    [ "$status" -eq 0 ]
+    jq -S . "$fixture" > "$BATS_TEST_TMPDIR/after.json"
+    run diff "$BATS_TEST_TMPDIR/before.json" "$BATS_TEST_TMPDIR/after.json"
+    [ "$status" -eq 0 ]
+}
+
+# ── (6c) CLAUDE.md: BEADS INTEGRATION block body replaced with pointer line ─
+
+@test "prime-hook: normalize_beads_integration_block replaces the marker-bounded body with the pointer line, leaves the rest byte-identical, and is idempotent" {
+    local start end
+    start=$(grep -n '^normalize_beads_integration_block() {' "$ENTRYPOINT_SRC" | head -1 | cut -d: -f1)
+    end=$(grep -n '^normalize_beads_integration_block$' "$ENTRYPOINT_SRC" | head -1 | cut -d: -f1)
+    [ -n "$start" ]
+    [ -n "$end" ]
+    sed -n "${start},$((end - 1))p" "$ENTRYPOINT_SRC" > "$BATS_TEST_TMPDIR/normalize-block-fn.sh"
+
+    local fixture="$BATS_TEST_TMPDIR/fixture-CLAUDE.md"
+    cat > "$fixture" <<'MD'
+# Some Project
+
+Some content before the block.
+
+<!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:deadbeef -->
+## Beads
+
+Run `bd prime` to see full workflow context.
+
+- Work is NOT complete until `git push` succeeds.
+<!-- END BEADS INTEGRATION -->
+
+Some content after the block.
+MD
+    cp "$fixture" "$BATS_TEST_TMPDIR/fixture-before.md"
+
+    run bash -c "source '$BATS_TEST_TMPDIR/normalize-block-fn.sh' && normalize_beads_integration_block '$fixture'"
+    [ "$status" -eq 0 ]
+
+    run grep -F '<!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:deadbeef -->' "$fixture"
+    [ "$status" -eq 0 ]
+    run grep -F '<!-- END BEADS INTEGRATION -->' "$fixture"
+    [ "$status" -eq 0 ]
+
+    local body body_lines pointer_line
+    body=$(sed -n '/<!-- BEGIN BEADS INTEGRATION/,/<!-- END BEADS INTEGRATION -->/p' "$fixture")
+    body_lines=$(printf '%s\n' "$body" | wc -l)
+    [ "$body_lines" -eq 3 ]
+    pointer_line=$(printf '%s\n' "$body" | sed -n '2p')
+    [ "$pointer_line" = "<!-- beads: rules live in ~/.claude/CLAUDE.md § Beads; markers kept so bd skips re-injection -->" ]
+
+    sed -n '1,4p' "$BATS_TEST_TMPDIR/fixture-before.md" > "$BATS_TEST_TMPDIR/before-head.txt"
+    sed -n '1,4p' "$fixture" > "$BATS_TEST_TMPDIR/after-head.txt"
+    run diff "$BATS_TEST_TMPDIR/before-head.txt" "$BATS_TEST_TMPDIR/after-head.txt"
+    [ "$status" -eq 0 ]
+
+    tail -2 "$BATS_TEST_TMPDIR/fixture-before.md" > "$BATS_TEST_TMPDIR/before-tail.txt"
+    tail -2 "$fixture" > "$BATS_TEST_TMPDIR/after-tail.txt"
+    run diff "$BATS_TEST_TMPDIR/before-tail.txt" "$BATS_TEST_TMPDIR/after-tail.txt"
+    [ "$status" -eq 0 ]
+
+    cp "$fixture" "$BATS_TEST_TMPDIR/fixture-after-1.md"
+    run bash -c "source '$BATS_TEST_TMPDIR/normalize-block-fn.sh' && normalize_beads_integration_block '$fixture'"
+    [ "$status" -eq 0 ]
+    run diff "$BATS_TEST_TMPDIR/fixture-after-1.md" "$fixture"
+    [ "$status" -eq 0 ]
+}
+
+# ── (6d) CLAUDE.md without markers, or missing entirely, is untouched ──────
+
+@test "prime-hook: normalize_beads_integration_block leaves a CLAUDE.md without markers byte-identical and is a no-op when the file is missing" {
+    local start end
+    start=$(grep -n '^normalize_beads_integration_block() {' "$ENTRYPOINT_SRC" | head -1 | cut -d: -f1)
+    end=$(grep -n '^normalize_beads_integration_block$' "$ENTRYPOINT_SRC" | head -1 | cut -d: -f1)
+    [ -n "$start" ]
+    [ -n "$end" ]
+    sed -n "${start},$((end - 1))p" "$ENTRYPOINT_SRC" > "$BATS_TEST_TMPDIR/normalize-block-fn.sh"
+
+    local fixture="$BATS_TEST_TMPDIR/no-markers-CLAUDE.md"
+    cat > "$fixture" <<'MD'
+# Some Project
+
+No beads markers anywhere in this file.
+MD
+    cp "$fixture" "$BATS_TEST_TMPDIR/no-markers-before.md"
+    run bash -c "source '$BATS_TEST_TMPDIR/normalize-block-fn.sh' && normalize_beads_integration_block '$fixture'"
+    [ "$status" -eq 0 ]
+    run diff "$BATS_TEST_TMPDIR/no-markers-before.md" "$fixture"
+    [ "$status" -eq 0 ]
+
+    local missing="$BATS_TEST_TMPDIR/does-not-exist-CLAUDE.md"
+    run bash -c "source '$BATS_TEST_TMPDIR/normalize-block-fn.sh' && normalize_beads_integration_block '$missing'"
+    [ "$status" -eq 0 ]
+    [ ! -f "$missing" ]
 }
 
 # ── (7) the two override-by-name paragraphs are gone ────────────────────────
@@ -208,4 +353,21 @@ JSON
     [ -f "$REPO_DIR/plugin/bin/prime-memories" ]
     run diff "$PRIME_MEMORIES" "$REPO_DIR/plugin/bin/prime-memories"
     [ "$status" -eq 0 ]
+}
+
+# ── (9) this repo's own project files reflect both normalizations ──────────
+
+@test "prime-hook: this repo's own .claude/settings.json has no prime hook and its CLAUDE.md BEADS INTEGRATION block body is the pointer line" {
+    local repo_settings="$REPO_DIR/.claude/settings.json"
+    [ -f "$repo_settings" ]
+    run jq -r '[.. | objects | select(has("type") and has("command")) | select(.type == "command") | .command] | map(select(. == "bd prime" or . == "bd prime --memories-only" or . == "prime-memories")) | length' "$repo_settings"
+    [ "$status" -eq 0 ]
+    [ "$output" = "0" ]
+
+    local body body_lines pointer_line
+    body=$(sed -n '/<!-- BEGIN BEADS INTEGRATION/,/<!-- END BEADS INTEGRATION -->/p' "$CLAUDE_MD")
+    body_lines=$(printf '%s\n' "$body" | wc -l)
+    [ "$body_lines" -eq 3 ]
+    pointer_line=$(printf '%s\n' "$body" | sed -n '2p')
+    [ "$pointer_line" = "<!-- beads: rules live in ~/.claude/CLAUDE.md § Beads; markers kept so bd skips re-injection -->" ]
 }
