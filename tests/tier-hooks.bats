@@ -904,20 +904,35 @@ setup_prime_agents() {
     [[ "$output" == *"verifier+oracle inherit the session model"* ]]
 }
 
-@test "tier-prime: --full adds the dispatch table and the standing-authorization sentence" {
+@test "tier-prime: --full is byte-identical to the bare form (beads_claude_docker-mcuw)" {
     setup_prime_agents
+    run "$PRIME"
+    [ "$status" -eq 0 ]
+    bare="$output"
     run "$PRIME" --full
     [ "$status" -eq 0 ]
+    [ "$output" = "$bare" ]
     [[ "$output" == *"tier → orchestrator(settings model)=claude-fable-5[1m]"* ]]
-    [[ "$output" == *"recon→scout"* ]]
-    [[ "$output" == *"implementation slice→executor"* ]]
-    [[ "$output" == *"register a CHECK/PASS-IF acceptance contract"* ]]
-    [[ "$output" == *"trivial"*"→inline"* ]]
-    [[ "$output" == *'subagent_type: "scout"'* ]]
-    [[ "$output" == *"wrong tier"* ]]
-    [[ "$output" == *"standing authorization"* ]]
-    [[ "$output" == *"user's standing request"* ]]
-    [[ "$output" == *"does NOT apply in this container"* ]]
+    [[ "$output" == *"~/.claude/CLAUDE.md § Delegation"* ]]
+}
+
+@test "tier-prime: default and --full are ≤600 bytes and drop the dispatch/standing-authorization/invariants text (beads_claude_docker-mcuw)" {
+    setup_prime_agents
+    export TIER_PRIME_LANE="$REPO_ROOT/scripts/lane.sh"
+    run "$PRIME"
+    [ "$status" -eq 0 ]
+    bare="$output"
+    run "$PRIME" --full
+    [ "$status" -eq 0 ]
+    [ "$output" = "$bare" ]
+    byte_len=$(printf '%s' "$output" | wc -c)
+    [ "$byte_len" -le 600 ]
+    [[ "$output" == *"tier → orchestrator"* ]]
+    [[ "$output" == *"~/.claude/CLAUDE.md § Delegation"* ]]
+    [[ "$output" == *"[lane] Route first"* ]]
+    [[ "$output" != *"register a CHECK"* ]]
+    [[ "$output" != *"standing authorization"* ]]
+    [[ "$output" != *"invariants:"* ]]
 }
 
 @test "tier-prime: HOME unset still exits 0 with fallback text (no 'unbound variable' abort)" {
@@ -925,9 +940,11 @@ setup_prime_agents() {
     run env -u HOME -u TIER_PRIME_SETTINGS -u TIER_PRIME_AGENTS_DIR "$PRIME"
     [ "$status" -eq 0 ]
     [[ "$output" == *"orchestrator(settings model)=harness default"* ]]
+    bare="$output"
     run env -u HOME -u TIER_PRIME_SETTINGS -u TIER_PRIME_AGENTS_DIR "$PRIME" --full
     [ "$status" -eq 0 ]
-    [[ "$output" == *"standing authorization"* ]]
+    [[ "$output" == *"~/.claude/CLAUDE.md § Delegation"* ]]
+    [ "$output" = "$bare" ]
 }
 
 @test "tier-prime: missing settings/agent files still exits 0 with fallback text" {
@@ -938,9 +955,11 @@ setup_prime_agents() {
     [[ "$output" == *"orchestrator(settings model)=harness default"* ]]
     [[ "$output" == *"executor=sonnet (frontmatter)"* ]]
     [[ "$output" == *"scout=haiku (frontmatter)"* ]]
+    bare="$output"
     run "$PRIME" --full
     [ "$status" -eq 0 ]
-    [[ "$output" == *"standing authorization"* ]]
+    [[ "$output" == *"~/.claude/CLAUDE.md § Delegation"* ]]
+    [ "$output" = "$bare" ]
 }
 
 @test "tier-prime: trio line matches the exact expected string, character for character" {
@@ -948,7 +967,7 @@ setup_prime_agents() {
     run "$PRIME"
     [ "$status" -eq 0 ]
     expected='tier → orchestrator(settings model)=claude-fable-5[1m]  executor=claude-sonnet-5  scout=claude-haiku-4-5-20251001 | verifier+oracle inherit the session model'
-    [ "$output" = "$expected" ]
+    [ "${lines[0]}" = "$expected" ]
 }
 
 @test "tier-prime: TIER_OVERDRIVE=1 states the lift on the same single trio line" {
@@ -959,8 +978,7 @@ setup_prime_agents() {
     run "$PRIME"
     [ "$status" -eq 0 ]
     expected='tier → orchestrator(settings model)=claude-fable-5[1m]  executor=claude-sonnet-5  scout=claude-haiku-4-5-20251001 | verifier+oracle inherit the session model | OVERDRIVE: worker cap lifted — /tier <top> to clear'
-    [ "$output" = "$expected" ]
-    [ "${#lines[@]}" -eq 1 ]
+    [ "${lines[0]}" = "$expected" ]
     # a compaction must not launder the notice out either
     run "$PRIME" --full
     [ "$status" -eq 0 ]
@@ -974,46 +992,56 @@ setup_prime_agents() {
         printf '{"model":"claude-fable-5[1m]","env":{"TIER_OVERDRIVE":"%s"}}\n' "$v" > "$SETTINGS"
         run "$PRIME"
         [ "$status" -eq 0 ]
-        [ "$output" = "$expected" ]
+        [ "${lines[0]}" = "$expected" ]
     done
     printf '{"model":"claude-fable-5[1m]"}\n' > "$SETTINGS"
     run "$PRIME"
     [ "$status" -eq 0 ]
-    [ "$output" = "$expected" ]
+    [ "${lines[0]}" = "$expected" ]
 }
 
-@test "tier-prime: default mode appends the short lane line when lane is installed" {
+@test "tier-prime: appends the lane pointer line when lane is installed, identical in both modes (beads_claude_docker-mcuw)" {
     setup_prime_agents
     export TIER_PRIME_LANE="$REPO_ROOT/scripts/lane.sh"
     run "$PRIME"
     [ "$status" -eq 0 ]
     [[ "${lines[0]}" == "tier → orchestrator(settings model)="* ]]
-    [[ "$output" == *"[lane] route first"* ]]
-    [[ "$output" == *"express: inline, no ceremony"* ]]
+    [[ "$output" == *"[lane] Route first"* ]]
+    [[ "$output" == *"~/.claude/CLAUDE.md § Lanes"* ]]
     [[ "$output" != *"Ties go to the LIGHTER lane"* ]]
+    bare="$output"
+    run "$PRIME" --full
+    [ "$status" -eq 0 ]
+    [ "$output" = "$bare" ]
 }
 
-@test "tier-prime: --full appends the full lane rubric (a compaction must not lose the router)" {
+@test "tier-prime: --full carries the lane pointer but none of the old rubric or dispatch text (beads_claude_docker-mcuw)" {
     setup_prime_agents
     export TIER_PRIME_LANE="$REPO_ROOT/scripts/lane.sh"
     run "$PRIME" --full
     [ "$status" -eq 0 ]
-    [[ "$output" == *"standing authorization"* ]]
     [[ "$output" == *"[lane] Route first"* ]]
-    [[ "$output" == *"Ties go to the LIGHTER lane"* ]]
-    [[ "$output" == *"the request AS ASKED"* ]]
+    [[ "$output" == *"~/.claude/CLAUDE.md § Lanes"* ]]
+    [[ "$output" != *"standing authorization"* ]]
+    [[ "$output" != *"invariants:"* ]]
+    [[ "$output" != *"register a CHECK"* ]]
+    [[ "$output" != *"Ties go to the LIGHTER lane"* ]]
+    [[ "$output" != *"the request AS ASKED"* ]]
 }
 
-@test "tier-prime: an absent lane binary changes nothing — output is the pre-lane text in both modes" {
+@test "tier-prime: an absent lane binary changes nothing about the trio+protocol lines, in both modes (beads_claude_docker-mcuw)" {
     setup_prime_agents
     export TIER_PRIME_LANE="$BATS_TEST_TMPDIR/definitely-not-installed"
     run "$PRIME"
     [ "$status" -eq 0 ]
-    expected='tier → orchestrator(settings model)=claude-fable-5[1m]  executor=claude-sonnet-5  scout=claude-haiku-4-5-20251001 | verifier+oracle inherit the session model'
+    expected=$'tier → orchestrator(settings model)=claude-fable-5[1m]  executor=claude-sonnet-5  scout=claude-haiku-4-5-20251001 | verifier+oracle inherit the session model\nprotocol: ~/.claude/CLAUDE.md § Delegation · § Lanes'
     [ "$output" = "$expected" ]
+    [[ "$output" != *"[lane]"* ]]
+    bare="$output"
     run "$PRIME" --full
     [ "$status" -eq 0 ]
-    [[ "$output" == *"standing authorization"* ]]
+    [ "$output" = "$bare" ]
+    [[ "$output" != *"standing authorization"* ]]
     [[ "$output" != *"[lane]"* ]]
 }
 
@@ -1030,13 +1058,15 @@ setup_prime_agents() {
     jq -e '[.hooks.UserPromptSubmit[].hooks[].command] | any(contains("dispatch: recon→scout"))' "$SETTINGS_JSON"
 }
 
-@test "config/claude-settings.json: SessionStart references tier-prime; PreCompact is exactly [bd prime, tier-prime --full] in order" {
+@test "config/claude-settings.json: SessionStart references tier-prime and prime-memories; PreCompact carries no hooks at all (beads_claude_docker-mcuw)" {
+    # SessionStart's matchers already include `compact` (official docs), and
+    # CLAUDE.md is re-read from disk after /compact, so the PreCompact
+    # re-injection this test used to pin is gone -- not emptied, the whole
+    # "PreCompact" key is removed.
     jq -e . "$SETTINGS_JSON"
     jq -e '[.hooks.SessionStart[].hooks[].command] | any(contains("tier-prime"))' "$SETTINGS_JSON"
-    jq -e '[.hooks.PreCompact[].hooks] | flatten | length == 2' "$SETTINGS_JSON"
-    jq -e '[.hooks.PreCompact[].hooks] | flatten | .[0].command | contains("bd prime")' "$SETTINGS_JSON"
-    jq -e '[.hooks.PreCompact[].hooks] | flatten | .[1].command | contains("tier-prime")' "$SETTINGS_JSON"
-    jq -e '[.hooks.PreCompact[].hooks] | flatten | .[1].command | contains("--full")' "$SETTINGS_JSON"
+    jq -e '[.hooks.SessionStart[].hooks[].command] | any(contains("prime-memories"))' "$SETTINGS_JSON"
+    jq -e '(.hooks | has("PreCompact")) | not' "$SETTINGS_JSON"
 }
 
 @test "Dockerfile: tier-prime.sh is COPY'd to /usr/local/bin/tier-prime" {

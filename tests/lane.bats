@@ -238,31 +238,51 @@ hook_json() { printf '{"session_id":"%s","hook_event_name":"UserPromptSubmit"}' 
 
 # ── --prime (the single wording home) ────────────────────────────────────────
 
-@test "lane --prime: prints the route-first instruction and all three lanes" {
+@test "lane --prime: prints the pointer line to the rulebook, not the rubric (beads_claude_docker-mcuw)" {
+    # Channel discipline: hooks carry state and pointers, never rules. The
+    # rubric itself now lives once, in ~/.claude/CLAUDE.md § Lanes; --prime
+    # only points there.
     run lane --prime
     [ "$status" -eq 0 ]
     [[ "$output" == *"[lane] Route first"* ]]
     [[ "$output" == *'lane express|standard|deep [--why "…"]'* ]]
-    [[ "$output" == *"express  — ALL of:"* ]]
-    [[ "$output" == *"standard — one well-understood slice"* ]]
-    [[ "$output" == *"deep     — ANY of:"* ]]
-    [[ "$output" == *"Ties go to the LIGHTER lane"* ]]
-    [[ "$output" == *"never de-escalate within the same prompt"* ]]
-    [[ "$output" == *"Scope: classify and answer the request AS ASKED"* ]]
-    [[ "$output" == *"discovering them is NOT a tripwire"* ]]
-    [[ "$output" == *"User override always wins"* ]]
+    [[ "$output" == *"before any other action"* ]]
+    [[ "$output" == *"~/.claude/CLAUDE.md § Lanes"* ]]
+    [ "${#lines[@]}" -eq 1 ]
 }
 
-@test "lane --prime: keeps the rubric's indentation (arrow lines are indented)" {
+@test "lane --prime: the old multi-line rubric (indented arrow lines) is gone (beads_claude_docker-mcuw)" {
     run lane --prime
-    [[ "$output" == *"             → do it inline now"* ]]
-    [[ "$output" == *"             → full protocol: plan first"* ]]
+    [[ "$output" != *"→ do it inline now"* ]]
+    [[ "$output" != *"→ full protocol: plan first"* ]]
+    [[ "$output" != *"express  —"* ]]
+    [[ "$output" != *"≥3 files"* ]]
+    [[ "$output" != *"ANY of"* ]]
 }
 
-@test "lane --prime --short: exact one-liner" {
+@test "lane --prime: pointer is at most 300 bytes and carries none of the old rubric text (beads_claude_docker-mcuw)" {
+    run lane --prime
+    [ "$status" -eq 0 ]
+    byte_len=$(printf '%s' "$output" | wc -c)
+    [ "$byte_len" -le 300 ]
+    [[ "$output" == *'lane express|standard|deep'* ]]
+    [[ "$output" == *"~/.claude/CLAUDE.md § Lanes"* ]]
+    [[ "$output" != *"express  —"* ]]
+    [[ "$output" != *"≥3 files"* ]]
+    [[ "$output" != *"ANY of"* ]]
+}
+
+@test "lane --prime --short: exact one-liner (beads_claude_docker-mcuw)" {
     run lane --prime --short
     [ "$status" -eq 0 ]
-    [ "$output" = "[lane] route first — lane express|standard|deep · express: inline, no ceremony · standard: 1 slice + run-verify · deep: plan+contracts+verifier · ties→lighter, tripwires escalate one-way · declare standard when unsure — tripwires self-correct · Recon breadth ≠ depth: many reads + ≤2→standard · scope: the question as asked" ]
+    [ "$output" = "[lane] route first — lane express|standard|deep · rubric: ~/.claude/CLAUDE.md § Lanes" ]
+}
+
+@test "lane --prime --short: starts with the route-first tag and names the rubric location (beads_claude_docker-mcuw)" {
+    run lane --prime --short
+    [ "$status" -eq 0 ]
+    [[ "$output" == "[lane] route first"* ]]
+    [[ "$output" == *"§ Lanes"* ]]
 }
 
 @test "lane --prime: needs no session id and writes no state" {

@@ -705,3 +705,137 @@ EOF
     [ -z "$stderr" ]
     [ ! -f "$FAKE_BD_MARKER" ]
 }
+
+# --- beads_claude_docker-mcuw: contract-gate is lane-aware -------------------
+# The gate's whole premise (register a CHECK/PASS-IF contract, corroborate
+# VERIFIED: PASS) is a DEEP-lane concept; express/standard lanes explicitly
+# carry no contract per the rulebook (~/.claude/CLAUDE.md § Lanes). When the
+# session's lane state file (LANE_STATE_DIR, same file+shape scripts/lane.sh
+# writes: <dir>/<session_id>.json, key "lane") says express or standard, the
+# gate is silent -- not merely warn-suppressed but skipped before it ever
+# shells out to bd, proven via the marker file exactly like cases (f)/(m2).
+# Deep and "no state" (lane unresolved) keep today's behaviour unchanged.
+# These cases are ADDED by beads_claude_docker-mcuw; cases (a)-(z) above are
+# untouched.
+
+# lane_state <lane-word> <session-id>: writes a lane.sh-shaped state file.
+lane_state() {
+    local dir="$BATS_TEST_TMPDIR/lane-state"
+    mkdir -p "$dir"
+    export LANE_STATE_DIR="$dir"
+    jq -cn --arg lane "$1" '{lane:$lane, prev:"unset", why:"", ts:0, escalated:false}' \
+        > "$dir/$2.json"
+}
+
+@test "(aa) lane=standard suppresses the missing-contract nudge entirely (warn mode, bd never invoked)" {
+    lane_state standard s-lane-aa
+    export CONTRACT_GATE_MODE=warn
+    export FAKE_BD_ACCEPTANCE=""
+    export FAKE_BD_NOTES=""
+    export FAKE_BD_MARKER="$BATS_TEST_TMPDIR/bd-was-called"
+    rm -f "$FAKE_BD_MARKER"
+    run --separate-stderr sh -c 'jq -cn "{tool_name:\"Bash\",session_id:\"s-lane-aa\",tool_input:{command:\"bd close beads_claude_docker-smo --reason done\"}}" | python3 '"$GATE"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+    [ -z "$stderr" ]
+    [ ! -f "$FAKE_BD_MARKER" ]
+}
+
+@test "(ab) lane=express suppresses the missing-contract nudge entirely (warn mode, bd never invoked)" {
+    lane_state express s-lane-ab
+    export CONTRACT_GATE_MODE=warn
+    export FAKE_BD_ACCEPTANCE=""
+    export FAKE_BD_NOTES=""
+    export FAKE_BD_MARKER="$BATS_TEST_TMPDIR/bd-was-called"
+    rm -f "$FAKE_BD_MARKER"
+    run --separate-stderr sh -c 'jq -cn "{tool_name:\"Bash\",session_id:\"s-lane-ab\",tool_input:{command:\"bd close beads_claude_docker-smo --reason done\"}}" | python3 '"$GATE"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+    [ -z "$stderr" ]
+    [ ! -f "$FAKE_BD_MARKER" ]
+}
+
+@test "(ac) lane=standard suppresses even in enforce mode -- allow, not deny" {
+    lane_state standard s-lane-ac
+    export CONTRACT_GATE_MODE=enforce
+    export FAKE_BD_ACCEPTANCE=""
+    export FAKE_BD_NOTES=""
+    export FAKE_BD_MARKER="$BATS_TEST_TMPDIR/bd-was-called"
+    rm -f "$FAKE_BD_MARKER"
+    run --separate-stderr sh -c 'jq -cn "{tool_name:\"Bash\",session_id:\"s-lane-ac\",tool_input:{command:\"bd close beads_claude_docker-smo --reason done\"}}" | python3 '"$GATE"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+    [ -z "$stderr" ]
+    [ ! -f "$FAKE_BD_MARKER" ]
+}
+
+@test "(ad) lane=deep keeps today's behaviour -- the existing warn text still fires" {
+    lane_state deep s-lane-ad
+    export CONTRACT_GATE_MODE=warn
+    export FAKE_BD_ACCEPTANCE=""
+    export FAKE_BD_NOTES=""
+    run --separate-stderr sh -c 'jq -cn "{tool_name:\"Bash\",session_id:\"s-lane-ad\",tool_input:{command:\"bd close beads_claude_docker-smo --reason done\"}}" | python3 '"$GATE"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+    [[ "$stderr" == *"acceptance contract"* ]]
+    [[ "$stderr" == *"beads_claude_docker-smo"* ]]
+}
+
+@test "(ae) no lane state file at all keeps today's behaviour -- the existing warn text still fires" {
+    export LANE_STATE_DIR="$BATS_TEST_TMPDIR/lane-state-empty"
+    export CONTRACT_GATE_MODE=warn
+    export FAKE_BD_ACCEPTANCE=""
+    export FAKE_BD_NOTES=""
+    run --separate-stderr sh -c 'jq -cn "{tool_name:\"Bash\",session_id:\"s-lane-ae\",tool_input:{command:\"bd close beads_claude_docker-smo --reason done\"}}" | python3 '"$GATE"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+    [[ "$stderr" == *"acceptance contract"* ]]
+}
+
+@test "(af) lane state file present but lane field is literally 'unset' keeps today's behaviour" {
+    lane_state unset s-lane-af
+    export CONTRACT_GATE_MODE=warn
+    export FAKE_BD_ACCEPTANCE=""
+    export FAKE_BD_NOTES=""
+    run --separate-stderr sh -c 'jq -cn "{tool_name:\"Bash\",session_id:\"s-lane-af\",tool_input:{command:\"bd close beads_claude_docker-smo --reason done\"}}" | python3 '"$GATE"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+    [[ "$stderr" == *"acceptance contract"* ]]
+}
+
+@test "(ag) a malformed lane state file fails open to today's behaviour, not a crash" {
+    dir="$BATS_TEST_TMPDIR/lane-state"
+    mkdir -p "$dir"
+    export LANE_STATE_DIR="$dir"
+    printf 'not json at all' > "$dir/s-lane-ag.json"
+    export CONTRACT_GATE_MODE=warn
+    export FAKE_BD_ACCEPTANCE=""
+    export FAKE_BD_NOTES=""
+    run --separate-stderr sh -c 'jq -cn "{tool_name:\"Bash\",session_id:\"s-lane-ag\",tool_input:{command:\"bd close beads_claude_docker-smo --reason done\"}}" | python3 '"$GATE"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+    [[ "$stderr" == *"acceptance contract"* ]]
+}
+
+@test "(ah) a hook payload with no session_id keeps today's behaviour (lane cannot be resolved)" {
+    lane_state standard no-session-id-cannot-match
+    export CONTRACT_GATE_MODE=warn
+    export FAKE_BD_ACCEPTANCE=""
+    export FAKE_BD_NOTES=""
+    run --separate-stderr sh -c 'jq -cn "{tool_name:\"Bash\",tool_input:{command:\"bd close beads_claude_docker-smo --reason done\"}}" | python3 '"$GATE"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+    [[ "$stderr" == *"acceptance contract"* ]]
+}
+
+@test "(ai) lane=standard also suppresses a bare 'bd close' -- never resolves --current, never touches bd" {
+    lane_state standard s-lane-ai
+    export CONTRACT_GATE_MODE=warn
+    export FAKE_BD_MARKER="$BATS_TEST_TMPDIR/bd-was-called"
+    rm -f "$FAKE_BD_MARKER"
+    run --separate-stderr sh -c 'jq -cn "{tool_name:\"Bash\",session_id:\"s-lane-ai\",tool_input:{command:\"bd close\"}}" | python3 '"$GATE"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+    [ -z "$stderr" ]
+    [ ! -f "$FAKE_BD_MARKER" ]
+}
