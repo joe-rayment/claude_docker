@@ -62,20 +62,28 @@ make_bd_repo() {
     [ -x "$PRIME_MEMORIES" ]
 }
 
-# ── (1) SessionStart/PreCompact hooks: prime-memories in, bare bd prime out ─
+# ── (1) SessionStart hook: prime-memories in, bare bd prime out, no PreCompact ─
+#
+# beads_claude_docker-mcuw removed the PreCompact hook entries entirely
+# (channel discipline: SessionStart's matchers already include `compact`,
+# and CLAUDE.md is re-read from disk after `/compact`, so PreCompact
+# re-injection was redundant). This case originally required PreCompact to
+# ALSO carry prime-memories; updated to assert the key's absence instead,
+# now that beads_claude_docker-my6v (which this file's freeze belonged to)
+# is verified and closed, opening a new window on this one case.
 
-@test "prime-hook: config/claude-settings.json's SessionStart and PreCompact hooks invoke prime-memories, and no bare 'bd prime' command remains anywhere in the file" {
+@test "prime-hook: config/claude-settings.json's SessionStart hook invokes prime-memories exactly once, PreCompact carries no hooks at all, and no bare 'bd prime' command remains anywhere in the file" {
     run jq -r '[.hooks.SessionStart[]?.hooks[]?.command, .hooks.PreCompact[]?.hooks[]?.command] | map(select(. == "bd prime")) | length' "$SETTINGS"
     [ "$status" -eq 0 ]
     [ "$output" = "0" ]
 
     run jq -r '[.hooks.SessionStart[]?.hooks[]?.command] | map(select(contains("prime-memories"))) | length' "$SETTINGS"
     [ "$status" -eq 0 ]
-    [ "$output" -ge 1 ]
+    [ "$output" = "1" ]
 
-    run jq -r '[.hooks.PreCompact[]?.hooks[]?.command] | map(select(contains("prime-memories"))) | length' "$SETTINGS"
+    run jq -r '(.hooks | has("PreCompact")) | not' "$SETTINGS"
     [ "$status" -eq 0 ]
-    [ "$output" -ge 1 ]
+    [ "$output" = "true" ]
 
     run grep -F '"bd prime"' "$SETTINGS"
     [ "$status" -eq 1 ]
@@ -299,6 +307,40 @@ MD
     [ "$status" -eq 0 ]
     run diff "$BATS_TEST_TMPDIR/fixture-after-1.md" "$fixture"
     [ "$status" -eq 0 ]
+}
+
+# ── (6c2) mode is preserved, not dropped to mktemp's 0600 (verifier finding) ─
+
+@test "prime-hook: normalize_beads_integration_block preserves the original file's mode" {
+    local start end
+    start=$(grep -n '^normalize_beads_integration_block() {' "$ENTRYPOINT_SRC" | head -1 | cut -d: -f1)
+    end=$(grep -n '^normalize_beads_integration_block$' "$ENTRYPOINT_SRC" | head -1 | cut -d: -f1)
+    [ -n "$start" ]
+    [ -n "$end" ]
+    sed -n "${start},$((end - 1))p" "$ENTRYPOINT_SRC" > "$BATS_TEST_TMPDIR/normalize-block-fn.sh"
+
+    local fixture="$BATS_TEST_TMPDIR/mode-fixture-CLAUDE.md"
+    cat > "$fixture" <<'MD'
+# Some Project
+
+<!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:deadbeef -->
+## Beads
+
+Run `bd prime` to see full workflow context.
+<!-- END BEADS INTEGRATION -->
+MD
+    chmod 0644 "$fixture"
+
+    run bash -c "source '$BATS_TEST_TMPDIR/normalize-block-fn.sh' && normalize_beads_integration_block '$fixture'"
+    [ "$status" -eq 0 ]
+    # the block really was rewritten -- otherwise this test would pass
+    # vacuously even on the pre-fix mktemp+mv implementation
+    run grep -F 'beads: rules live in ~/.claude/CLAUDE.md § Beads' "$fixture"
+    [ "$status" -eq 0 ]
+
+    local mode
+    mode=$(stat -c '%a' "$fixture")
+    [ "$mode" = "644" ]
 }
 
 # ── (6d) CLAUDE.md without markers, or missing entirely, is untouched ──────

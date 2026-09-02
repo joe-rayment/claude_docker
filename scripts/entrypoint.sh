@@ -988,11 +988,17 @@ normalize_beads_integration_block() {
             sed -n "$((end_line + 1)),\$p" "$claude_md"
         fi
     } > "$tmp" 2>/dev/null
+    # Write INTO the existing file rather than `mv`-ing the mktemp file over
+    # it: `mv` would swap inodes and silently drop the project CLAUDE.md's
+    # own mode/ownership in favor of mktemp's restrictive 0600 (verifier
+    # finding on beads_claude_docker-mcuw) -- same direct-write style
+    # normalize_bd_prime_hooks already uses for settings.json, just staged
+    # through a temp file first so a mid-build failure can never truncate
+    # the original.
     if [ -s "$tmp" ]; then
-        mv "$tmp" "$claude_md"
-    else
-        rm -f "$tmp"
+        cat "$tmp" > "$claude_md"
     fi
+    rm -f "$tmp"
     return 0
 }
 normalize_beads_integration_block
