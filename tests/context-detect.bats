@@ -110,3 +110,48 @@ run_detect() {
     [ "$status" -eq 0 ]
     [[ "$output" == *"no direct access"* ]]
 }
+
+# beads_claude_docker-jqmd — Snowflake surfaces: config/contexts/snowflake.md
+# and the snowpark-deploy skill no longer wait on a human reply. Four
+# banned phrases from the old "ask the user ... paste ... blocked on
+# their reply" pattern must not survive in either shipped file, the
+# context file has a hard word budget, and knowledge-base/SNOWFLAKE_DEPLOY.md
+# carries a banner stating Claude prepares files/commands and never runs
+# `snow` itself. The regenerated plugin copy is checked byte-identical too.
+
+SNOWFLAKE_BANNED_PHRASES=(
+    'blocked on their reply'
+    'paste the deploy'
+    'paste the output'
+    'ask the user'
+)
+
+@test "context-detect: banned phrases absent from config/contexts/snowflake.md" {
+    for phrase in "${SNOWFLAKE_BANNED_PHRASES[@]}"; do
+        run grep -F -- "$phrase" /workspace/config/contexts/snowflake.md
+        [ "$status" -ne 0 ]
+    done
+}
+
+@test "context-detect: banned phrases absent from config/skills/snowpark-deploy/SKILL.md" {
+    for phrase in "${SNOWFLAKE_BANNED_PHRASES[@]}"; do
+        run grep -F -- "$phrase" /workspace/config/skills/snowpark-deploy/SKILL.md
+        [ "$status" -ne 0 ]
+    done
+}
+
+@test "context-detect: config/contexts/snowflake.md is at most 90 words" {
+    local words
+    words=$(wc -w < /workspace/config/contexts/snowflake.md)
+    [ "$words" -le 90 ]
+}
+
+@test "context-detect: SNOWFLAKE_DEPLOY.md banner in first 5 lines states Claude never runs snow" {
+    run head -5 /workspace/knowledge-base/SNOWFLAKE_DEPLOY.md
+    [ "$status" -eq 0 ]
+    [[ "$output" == *'never runs `snow`'* ]]
+}
+
+@test "context-detect: plugin snowpark-deploy skill copy is byte-identical to config source" {
+    diff -q /workspace/plugin/skills/snowpark-deploy/SKILL.md /workspace/config/skills/snowpark-deploy/SKILL.md
+}
