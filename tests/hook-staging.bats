@@ -188,7 +188,10 @@ sys.exit(1 if found else 0)
     [ "$status" -eq 0 ]
 }
 
-@test "hook-staging: config/claude-settings.json registers bd prime exactly once per event" {
+@test "hook-staging: config/claude-settings.json registers a prime-memories hook exactly once per event" {
+    # beads_claude_docker-zcnb: bd prime -> prime-memories (memories only,
+    # budgeted). The dedup intent is unchanged -- exactly one prime-style
+    # hook per event, no duplicates -- only the command it now names.
     run python3 -c "
 import json, sys
 with open('/workspace/config/claude-settings.json') as fh:
@@ -197,7 +200,7 @@ hooks = s.get('hooks', {})
 bad = []
 for event in ('SessionStart', 'PreCompact'):
     count = sum(1 for entry in hooks.get(event, []) for h in entry.get('hooks', [])
-                if h.get('command', '').strip() == 'bd prime')
+                if 'prime-memories' in h.get('command', ''))
     if count != 1:
         bad.append('%s=%d' % (event, count))
 print(' '.join(bad))
@@ -207,7 +210,10 @@ sys.exit(1 if bad else 0)
     [ -z "$output" ]
 }
 
-@test "hook-staging: home settings.json registers bd prime exactly once per event" {
+@test "hook-staging: home settings.json registers a prime-memories hook exactly once per event" {
+    # beads_claude_docker-zcnb: bd prime -> prime-memories (memories only,
+    # budgeted). The dedup intent is unchanged -- exactly one prime-style
+    # hook per event, no duplicates -- only the command it now names.
     run python3 -c "
 import json, sys
 with open('/home/agent/.claude/settings.json') as fh:
@@ -216,7 +222,7 @@ hooks = s.get('hooks', {})
 bad = []
 for event in ('SessionStart', 'PreCompact'):
     count = sum(1 for entry in hooks.get(event, []) for h in entry.get('hooks', [])
-                if h.get('command', '').strip() == 'bd prime')
+                if 'prime-memories' in h.get('command', ''))
     if count != 1:
         bad.append('%s=%d' % (event, count))
 print(' '.join(bad))

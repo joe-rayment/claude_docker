@@ -117,7 +117,7 @@ setup() {
 @test "plugin-build: bin/ carries exactly the scripts the hooks block invokes via command -v" {
     run bash -c "ls '$PLUGIN_DIR/bin' | sort"
     [ "$status" -eq 0 ]
-    expected=$'bd-guard\ncode-map-prime\ncontext-detect\ncontract-gate\ncost-mirror\ndelegation-gate\ndisk-cleanup\nimage-drift\nlane\nsession-end-audit\ntier-gate\ntier-prime\ntier-reconcile\nworkflow-lint'
+    expected=$'bd-guard\ncode-map-prime\ncontext-detect\ncontract-gate\ncost-mirror\ndelegation-gate\ndisk-cleanup\nimage-drift\nlane\nprime-memories\nsession-end-audit\ntier-gate\ntier-prime\ntier-reconcile\nworkflow-lint'
     [ "$output" = "$expected" ]
 }
 

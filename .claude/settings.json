@@ -1,3 +1,26 @@
 {
-  "hooks": {}
+  "hooks": {
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "command": "prime-memories",
+            "type": "command"
+          }
+        ],
+        "matcher": ""
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "command": "prime-memories",
+            "type": "command"
+          }
+        ],
+        "matcher": ""
+      }
+    ]
+  }
 }

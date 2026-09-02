@@ -216,6 +216,7 @@ COPY --chown=agent:agent scripts/tier-derive.sh /usr/local/bin/tier-derive
 COPY --chown=agent:agent scripts/tier-reconcile.sh /usr/local/bin/tier-reconcile
 COPY --chown=agent:agent scripts/tier-gate.sh /usr/local/bin/tier-gate
 COPY --chown=agent:agent scripts/tier-prime.sh /usr/local/bin/tier-prime
+COPY --chown=agent:agent scripts/prime-memories.sh /usr/local/bin/prime-memories
 COPY --chown=agent:agent scripts/lane.sh /usr/local/bin/lane
 COPY --chown=agent:agent scripts/workflow-lint.sh /usr/local/bin/workflow-lint
 COPY --chown=agent:agent scripts/cost-mirror.py /usr/local/bin/cost-mirror

@@ -162,7 +162,7 @@ bd close <id>         # Complete work
 ```
 
 - **Never assign work to a human, directly or indirectly** — the authoritative rule ships via `config/claude-user-memory.md` (deployed as `~/.claude/CLAUDE.md`) and binds here; if a human decision is genuinely needed after exhausting your own options, ask in chat now. `bd-guard` (PreToolUse) enforces it mechanically; `BD_GUARD_ALLOW=1` overrides its text check only, for genuine false positives (quoted content or code, not real pending user work) — never to park user work in a bead.
-- **Bead filing is lane-scoped. This overrides, by name, the `bd prime` line "**Workflow**: Create beads issue BEFORE writing code, mark in_progress when starting"** — a deep-lane rule here, not a universal one. Express files **no** bead; standard files one only when follow-up genuinely remains after the slice; deep keeps the full protocol — a bead per slice, with `CHECK`/`PASS-IF` acceptance contracts on any non-trivial claim. Beads for genuine future work are filed in any lane: the override targets ceremony before a one-line edit, never real follow-up.
+- **Bead filing is lane-scoped**, not a universal always-file-first rule: express files **no** bead; standard files one only when follow-up genuinely remains after the slice; deep keeps the full protocol — a bead per slice, with `CHECK`/`PASS-IF` acceptance contracts on any non-trivial claim. This targets ceremony before a one-line edit, never real follow-up — beads for genuine future work are filed in any lane.
 - **Storage:** beads runs in **embedded Dolt mode** (no server) — the DB at `.beads/embeddeddolt/` (gitignored) is the source of truth, `.beads/issues.jsonl` a passive git-tracked export, sync riding `refs/dolt/data` ([concepts](https://github.com/gastownhall/beads/blob/main/docs/SYNC_CONCEPTS.md)). `bd doctor` is a confirmed no-op there; repair with `bd init --prefix <p> --quiet --non-interactive && bd import` instead — `knowledge-base/BEADS_TROUBLESHOOTING.md` covers a refusing `bd init`.
 - **Mechanics:** `bd update` flags, never `bd edit` (blocks on `$EDITOR`); reference bead ids in commit messages.
 - **Memory precedence:** project knowledge → `bd remember`, never MEMORY.md files; the harness's auto-memory is user-specific only.
@@ -199,19 +199,7 @@ Curated playbooks live at `/opt/claude-dev/knowledge-base/` (repo: `knowledge-ba
 
 ## Session Completion
 
-**Commit locally, always. Push only when asked, in that moment.** When ending a work session you MUST complete the local steps below — that commit is the terminal state of a successful session, and skipping it is what leaves work unrecorded. Push (`git push`, `bd dolt push`, any remote sync) is opt-in: run it only when explicitly asked right then. An unavailable, unauthenticated, or unreachable remote is a **normal condition** here — report a failed push plainly, don't retry it unprompted, and never downgrade an otherwise-complete session to "incomplete" over it.
-
-**This overrides, by name, the "🚨 SESSION CLOSE PROTOCOL 🚨" checklist (and its "Git workflow" / "Common Workflows" push mentions) that the `bd prime` SessionStart hook injects every session.** That text is compiled into the `bd` binary — verifiable via `strings /usr/local/bin/bd` — so it cannot be fixed at source. Its `git push` step and "work is not done until pushed" framing do not apply here; this section is authoritative.
-
-**MANDATORY WORKFLOW (local):**
-
-1. **File issues** for anything needing follow-up
-2. **Run quality gates** if code changed
-3. **Update issue status** — close finished work
-4. **Commit locally — MANDATORY:** `git add <files>` · `git commit -m "..."` · `git status` (clean tree, current branch)
-5. **Clean up** stashes and pruned branches
-6. **Verify** everything is committed
-7. **Hand off** context for the next session
+Commit locally at the end of every session — that commit is the terminal state of a successful session. Push (`git push`, `bd dolt push`, any remote sync) is opt-in: run it only when the prompt asks for it, right then. An unavailable, unauthenticated, or unreachable remote is normal here — report a failed push plainly, don't retry it unprompted, and never downgrade an otherwise-complete session to "incomplete" over it.
 
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:7510c1e2 -->
 <!-- merged above; markers kept so bd skips re-injection -->

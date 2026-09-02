@@ -46,6 +46,18 @@ This applies wherever `bd` (beads) is used inside the claude-dev container, not 
 
 Where a project ships mechanical enforcement (e.g. this template's `scripts/bd-guard.sh`): human assignees, the `human` label, and a default/`human`-type gate are hard-blocked with no override; user-directed bead text is soft-blocked with a chat redirect, overridable only for genuine false positives (quoted content/code, not real pending user work) via `BD_GUARD_ALLOW=1`.
 
+**Bd essentials:**
+
+```bash
+bd ready                                          # Find available work
+bd show <id>                                      # View issue details
+bd create --title <t> --description <d>           # File new work
+bd update <id> --claim                            # Claim work
+bd close <id>                                      # Complete work
+```
+
+Edit with `bd update` flags, never `bd edit` (blocks on `$EDITOR`).
+
 # Opus Answer Protocol — Hard Brevity
 
 **Scope: this section binds whenever an Opus-family or Mythos-class (Fable) model is generating the visible reply** — main session or subagent; the environment block names your model. Other models skip it. It tightens every other style rule and loosens none.

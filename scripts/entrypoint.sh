@@ -260,7 +260,7 @@ fi
 #       import stay silently broken forever: beads_claude_docker-a2s)
 #       (a teardown/resume snapshot restore may drop in only issues.jsonl —
 #       no config.yaml/embeddeddolt/metadata.json come with it)
-#       → bd init --prefix (idempotent: refuses safely with a non-zero exit
+#       → bd init (with --prefix; idempotent: refuses safely with a non-zero exit
 #         if a Dolt DB already exists here, never reinitializes or touches
 #         issues.jsonl — see `bd help init-safety`), then bd import (upsert
 #         from issues.jsonl). NOT bd doctor --fix --yes: that subcommand is
@@ -399,7 +399,7 @@ ensure_beads() {
         # (A) fresh — initialize
         local prefix
         prefix=$(detect_beads_prefix "$dir")
-        if ! (cd "$dir" && bd init --prefix "$prefix" --quiet) 2>/dev/null; then
+        if ! (cd "$dir" && bd init --prefix "$prefix" --quiet --skip-agents) 2>/dev/null; then
             dev-log error "bd init failed during entrypoint" "prefix=$prefix; beads unavailable in this project" 2>/dev/null || true
         fi
         if [ -d "$dir/.beads" ]; then
@@ -673,7 +673,7 @@ ensure_beads() {
     # so the failing command must stay on the LEFT of `||` — never bare on
     # its own line — or the whole script would exit right here.
     local init_rc=0 import_rc=0 did_destructive_rebuild=0
-    (cd "$dir" && bd init --prefix "$prefix" --quiet --non-interactive) 2>/dev/null || init_rc=$?
+    (cd "$dir" && bd init --prefix "$prefix" --quiet --non-interactive --skip-agents) 2>/dev/null || init_rc=$?
     _beads_restore_export_if_missing "$dir" "$safety_copy"
     (cd "$dir" && bd import) 2>/dev/null || import_rc=$?
     _beads_restore_export_if_missing "$dir" "$safety_copy"
@@ -816,7 +816,7 @@ ensure_beads() {
 
                     rm -rf "$dir/.beads/embeddeddolt" 2>/dev/null || true
                     _beads_restore_export_if_missing "$dir" "$safety_copy"
-                    (cd "$dir" && bd init --prefix "$prefix" --quiet --non-interactive) 2>/dev/null || true
+                    (cd "$dir" && bd init --prefix "$prefix" --quiet --non-interactive --skip-agents) 2>/dev/null || true
                     _beads_restore_export_if_missing "$dir" "$safety_copy"
                     (cd "$dir" && bd import) 2>/dev/null || true
                     _beads_restore_export_if_missing "$dir" "$safety_copy"
@@ -914,6 +914,35 @@ if command -v bd &>/dev/null; then
         dev-log error "bd setup claude failed during entrypoint" 2>/dev/null || true
     fi
 fi
+
+# Rewrite any Claude Code hook command equal to "bd prime" or "bd prime
+# --memories-only" in a project's own .claude/settings.json to
+# prime-memories (memories only, budgeted — scripts/prime-memories.sh).
+# `bd init`/`bd setup claude` above can (re)write a bare "bd prime" hook
+# command into /workspace/.claude/settings.json regardless of the
+# --skip-agents flags added elsewhere in this file (bd setup claude takes
+# no such flag and runs unconditionally); this runs AFTER that, on every
+# start, so the rewrite always wins — for a brand-new project, an
+# existing one whose settings.json predates this change (this repo's own
+# .claude/settings.json included), and any future bd version that
+# changes what it writes there. Idempotent: a file with no "bd prime"
+# hook round-trips through jq unchanged (modulo key ordering), and
+# running this twice on an already-rewritten file leaves the bytes
+# byte-for-byte identical to the first run's output.
+normalize_bd_prime_hooks() {
+    local settings=${1:-/workspace/.claude/settings.json}
+    [ -f "$settings" ] || return 0
+    command -v jq >/dev/null 2>&1 || return 0
+    jq empty "$settings" >/dev/null 2>&1 || return 0
+    local rewritten
+    rewritten=$(jq '
+        (.. | objects | select(has("type") and has("command")) | select(.type == "command") | .command)
+            |= (if . == "bd prime" or . == "bd prime --memories-only" then "prime-memories" else . end)
+    ' "$settings" 2>/dev/null) || return 0
+    [ -n "$rewritten" ] && printf '%s\n' "$rewritten" > "$settings"
+    return 0
+}
+normalize_bd_prime_hooks
 
 # Change to workspace directory (with diagnostic on failure to prevent silent restart loop)
 cd /workspace || {

@@ -597,6 +597,10 @@ scan_cmd() {
   # `bd create`'s quick-capture alias (also takes -l/--labels); `human` is
   # `bd human <id>`, which bd's own injected docs (bd prime) wrongly describe
   # as a way to flag an issue for a person (beads_claude_docker-v5p round 2).
+  # `remember` (beads_claude_docker-zcnb) is checked by the rule-shaped-text
+  # SOFT rule further down, outside the big create/update/…/init gate below —
+  # it needs no entry in that gate's own alternation, but it DOES need to
+  # survive this pre-filter or scan_cmd returns before ever reaching it.
   # A wrapped payload is still literal text inside $cmd_tabs even though it's
   # quoted, so this pre-filter is unaffected by recursion depth — and this is
   # `return`, not `exit`, so a sibling wrapper elsewhere in an outer call
@@ -612,7 +616,7 @@ scan_cmd() {
   # exact bypass that loop was added to close. `\bd create` does not need
   # this: the backslash sits BEFORE "bd", not between "bd" and the
   # following space, so it was already found by the unmodified pattern.
-  printf '%s' "$cmd_tabs" | grep -qE "bd['\"]?[[:space:]]+(create|new|update|assign|close|done|gate|label|tag|q|human|init)" || return 0
+  printf '%s' "$cmd_tabs" | grep -qE "bd['\"]?[[:space:]]+(create|new|update|assign|close|done|gate|label|tag|q|human|init|remember)" || return 0
 
   # Strip command-position noise that would otherwise hide `bd` from the anchors:
   # at the start of the string or right after a ; && || | ( ) separator, remove a
@@ -1332,6 +1336,40 @@ if printf '%s' "$norm_cmd" | grep -qE '(^|[;&|(){])[[:space:]]*bd[[:space:]]+(cl
   fi
 fi
 
+  fi
+
+  # --- SOFT RULE: `bd remember` text that reads as a RULE, not a fact -------
+  # (beads_claude_docker-zcnb) A rule ("Never use git stash", "Always commit
+  # with pathspecs") that lands in `bd remember` instead of a rulebook is
+  # invisible to every OTHER project this container runs — bd remember is
+  # per-repo project memory (facts and lessons), not a channel that ships
+  # anywhere else, while config/claude-user-memory.md IS what ships to every
+  # project (as ~/.claude/CLAUDE.md) and a knowledge-base/ doc is the home
+  # for a solved-once technical playbook. SOFT, not hard: matching on the
+  # first word of free text is a heuristic with real false-positive shapes
+  # (a fact that genuinely happens to start with one of these words), same
+  # rationale as the other prose rules above.
+  #
+  # Deliberately checked here, OUTSIDE the big create/update/…/init gate
+  # above, rather than adding `remember` to that gate's own alternation:
+  # `remember` has none of the structural flags (--assignee/--labels/
+  # gate --type/blocked status) that gate exists to scope segments/masking
+  # for, so it needs no share of that machinery — only the pre-filter above
+  # (which it DOES need, to reach this point at all) and $norm_cmd/$allow,
+  # both already computed unconditionally above this point regardless of
+  # which verb matched.
+  if printf '%s' "$norm_cmd" | grep -qE '(^|[;&|(){])[[:space:]]*bd[[:space:]]+remember([[:space:]]|$)'; then
+    local remember_tail remember_text
+    remember_tail=$(printf '%s' "$norm_cmd" | sed -E 's/^.*bd[[:space:]]+remember[[:space:]]+//')
+    # Strip a LEADING --key <value> (bd remember --key k "text"); a --key
+    # that instead follows the text (bd remember "text" --key k — bd
+    # remember's own --help example order) needs no stripping here since
+    # the text already leads.
+    remember_tail=$(printf '%s' "$remember_tail" | sed -E 's/^--key(=|[[:space:]]+)("[^"]*"|'"'"'[^'"'"']*'"'"'|[^[:space:]]+)[[:space:]]*//')
+    remember_text=$(printf '%s' "$remember_tail" | sed -E 's/^[[:space:]]*"//; s/^[[:space:]]*'"'"'//')
+    if printf '%s' "$remember_text" | grep -qiE "^[[:space:]]*(never|always|rules?|do[[:space:]]+not|don'?t)([[:space:]]|:|,|\$)"; then
+      [ "$allow" = "1" ] || block "BLOCKED (bd-guard): this bd remember text is rule-shaped (starts with Never/Always/Rule(s)/Do not/Don't) rather than a project fact. bd remember holds facts and lessons for THIS project; a rule that should apply everywhere belongs in config/claude-user-memory.md (it ships to every project as ~/.claude/CLAUDE.md), and a solved-once technical recipe belongs in a knowledge-base/ playbook — see CLAUDE.md's Beads section. Move it there, or rewrite this as a fact ('X does Y because Z'). Only override with a 'BD_GUARD_ALLOW=1 ' prefix if this really is a fact that happens to start with one of those words."
+    fi
   fi
 
   # --- Shell-wrapper unwrapping (beads_claude_docker-vgr) --------------------
