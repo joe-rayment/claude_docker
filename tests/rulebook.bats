@@ -99,3 +99,73 @@ setup() {
     [ "$status" -eq 0 ]
     [ -z "$output" ]
 }
+
+# ── beads_claude_docker-b56o: template-drift guard ─────────────────────────
+#
+# Appended by B6. CLAUDE.md (this repo's own, never shipped) may hold only
+# repo-fact headings — a behaviour rule landing here instead of in
+# config/claude-user-memory.md (the file that ships) is invisible to every
+# user project (see .claude/plans/instruction-surface-fix.md, "Finding
+# added 2026-09-02"). This whitelist makes that placement mechanical:
+# adding a heading to CLAUDE.md is a deliberate act that edits this test
+# too. Spellings pinned here are taken from CLAUDE.md after B3 (bw66) plus
+# B6's own rename (Verification -> Acceptance Contracts), drop (Session
+# Completion), and addition (Editing the template).
+
+CLAUDE_MD_HEADINGS_WHITELIST=(
+    '## Environment'
+    '## Config Customization'
+    '## Searching Code — `csearch`'
+    '## Code Map — Structure Queries Before Grep'
+    '## Stay on the Current Branch'
+    '## Delegation Routes'
+    '## Acceptance Contracts'
+    '## Logging'
+    '## Files, Screenshots & Attachments'
+    '## Cleanup'
+    '## Beads — Container-Specific Rules'
+    '## Project Contexts'
+    '## Working Inside a Larger Repo'
+    '## Knowledge Base'
+    '## Experience Testing'
+    '## Quick Reference'
+    '## Editing the template'
+)
+
+# The eight behavioural headings the pre-rewrite CLAUDE.md carried (global
+# rules that now live only in config/claude-user-memory.md) — none may
+# reappear here, under any spelling on this exact list.
+BANNED_CLAUDE_MD_HEADINGS=(
+    'Verification'
+    'Ownership'
+    'Answer Style'
+    'Session Completion'
+    'Noticed Flaws'
+    'Complexity Router'
+    'Model Tiering'
+    'User Constraints'
+)
+
+@test "rulebook: every '## ' heading in CLAUDE.md is on the fixed whitelist" {
+    while IFS= read -r heading; do
+        [ -z "$heading" ] && continue
+        local found=0
+        for allowed in "${CLAUDE_MD_HEADINGS_WHITELIST[@]}"; do
+            if [ "$heading" = "$allowed" ]; then
+                found=1
+                break
+            fi
+        done
+        if [ "$found" -ne 1 ]; then
+            echo "heading not on whitelist: $heading" >&2
+            return 1
+        fi
+    done < <(grep -E '^## ' "$CLAUDE_MD")
+}
+
+@test "rulebook: none of the eight behavioural headings appear as a '## ' heading in CLAUDE.md" {
+    for banned in "${BANNED_CLAUDE_MD_HEADINGS[@]}"; do
+        run grep -Fx -- "## $banned" "$CLAUDE_MD"
+        [ "$status" -ne 0 ]
+    done
+}

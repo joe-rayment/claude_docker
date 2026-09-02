@@ -154,10 +154,12 @@ KB_ACCEPTANCE=/workspace/knowledge-base/ACCEPTANCE_CONTRACTS.md
 KB_README=/workspace/knowledge-base/README.md
 TIER_PRIME=/workspace/scripts/tier-prime.sh
 
-# (h) CLAUDE.md's Verification section documents the acceptance contract
-# (CHECK/PASS-IF/FROZEN) and names all five checks C1-C5.
-@test "(h) CLAUDE.md Verification section documents the acceptance contract and C1-C5" {
-    sed -n '/^## Verification$/,/^## /p' "$CLAUDE_MD" > "$BATS_TEST_TMPDIR/verif-section.md"
+# (h) CLAUDE.md's Acceptance Contracts section (renamed from Verification
+# by beads_claude_docker-b56o -- same section, its body is repo-specific
+# contract mechanics, only the heading changed) documents the acceptance
+# contract (CHECK/PASS-IF/FROZEN) and names all five checks C1-C5.
+@test "(h) CLAUDE.md Acceptance Contracts section documents the acceptance contract and C1-C5" {
+    sed -n '/^## Acceptance Contracts$/,/^## /p' "$CLAUDE_MD" > "$BATS_TEST_TMPDIR/verif-section.md"
     [ -s "$BATS_TEST_TMPDIR/verif-section.md" ]
     for token in CHECK PASS-IF FROZEN C1 C2 C3 C4 C5; do
         run grep -F "$token" "$BATS_TEST_TMPDIR/verif-section.md"
