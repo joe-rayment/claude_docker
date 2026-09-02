@@ -84,9 +84,9 @@ snow snowpark deploy \
      `snow connection test --connection RESOLVER02` pre-check;
    - to run `./deploy.sh` from the project root on their machine;
    - the verification SQL to run afterward, with expected output.
-3. Ask the user to paste the deploy/verify output back. That paste is the
-   only verification available — an environment limitation, not delegable
-   work; keep the task claimed by Claude and blocked on their reply.
+3. The local checks below are the verification available in this
+   environment. Once the files, the commands, and the expected output are
+   delivered in chat, the handoff is complete and the task is done.
 
 What Claude CAN check locally before handoff: YAML is valid
 (`python3 -c 'import yaml,sys; yaml.safe_load(open("snowflake.yml"))'`),

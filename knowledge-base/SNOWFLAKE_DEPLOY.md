@@ -1,5 +1,8 @@
 # Deploying Snowflake Notebooks via CLI
 
+> Playbook for the operator's own machine: Claude prepares the files and
+> commands here but never runs `snow`.
+
 ## The critical thing to know
 
 `--replace` **clears stage package imports and external access integrations**. There is no way around this. You must restore them with `ALTER NOTEBOOK` after every deploy, or the notebook will fail at runtime (`ModuleNotFoundError` for missing imports, silent empty results for missing API access).
