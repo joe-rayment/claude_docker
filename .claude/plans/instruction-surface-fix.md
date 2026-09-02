@@ -1,6 +1,6 @@
 # Plan: one rulebook, no contradictions — fixing the five template misbehaviours
 
-Filed 2026-09-01. Lane: deep. Beads: B1 jhkj · B2 y2qe · B3 bw66 · B4 4pvn · B5 jqmd (prefix beads_claude_docker-). Status: plan only — nothing implemented yet.
+Filed 2026-09-01. Lane: deep. Beads: B1 beads_claude_docker-zcnb (was jhkj) · B2 y2qe · B3 bw66 · B4 re-registered pending · B5 jqmd · B6 beads_claude_docker-b56o. Status: plan only — nothing implemented yet.
 
 ## Root cause (one finding explains most of it)
 
@@ -24,17 +24,20 @@ Filed 2026-09-01. Lane: deep. Beads: B1 jhkj · B2 y2qe · B3 bw66 · B4 4pvn ·
 3. **Fix contradictions at the source, not with counter-prose.** `bd prime --memories-only` drops the session-close protocol and the bead-before-code lines (verified: 0 hits for push/BEFORE-writing/Write-tests/parallel-subagents; memories intact).
 4. **Mechanical where the prior is strong.** A tiny PreToolUse guard blocks `snow`/`snowsql` always and `git push`/`gh pr create`/`bd dolt push` unless the current prompt asked — the same pattern as `bd-guard`. One sentence of prose instead of a paragraph.
 5. **Route by consequence, not file count**, with an explicit greenfield clause, and make the ceremony hooks lane-aware.
+6. **Channel discipline.** Rules have one home (Appendix A). Hooks emit state and pointers. Memories are facts, budgeted, and rule-shaped `bd remember` text is nudged toward the rulebook or a playbook.
+7. **Template-drift guard.** A heading whitelist keeps behaviour rules out of this repo's `CLAUDE.md`, and a fresh-project probe test asserts what a user project actually loads.
 
 ## Slices (beads)
 
-Sequence: B1 → B3 → B4 → B2 → B5. Verifier runs: {B1, B2} share the hook-wiring surface; {B3, B5} share the prose surface; B4 alone.
+Sequence: B1 → B3 → B4 → B2 → B5 → B6. B1 and B4 were re-registered on 2026-09-02 (before any implementation) to absorb the channel discipline; the retired ids are superseded, not closed as done. Verifier runs: {B1, B2} hook wiring; {B3, B5} prose; B4 alone; B6 alone (it is the integration probe).
 
-### B1 (beads_claude_docker-jhkj) — prime: memories only; stop `bd init` writing Claude hooks; delete the override paragraphs
-- `config/claude-settings.json`: both `bd prime` hook commands → `bd prime --memories-only`.
-- `scripts/entrypoint.sh:402`: `bd init … --skip-agents`; idempotently rewrite any `"bd prime"` command in `/workspace/.claude/settings.json` to `bd prime --memories-only` (covers existing projects; also normalises this repo's currently-modified `.claude/settings.json`).
-- `config/claude-user-memory.md`: add the 5-line bd essentials block (commands; `bd update` flags never `bd edit`).
-- `CLAUDE.md`: delete the override sentence at :165 and the paragraph at :204-205; Session Completion shrinks to "commit locally; push is opt-in".
-- New `tests/prime-hook.bats`.
+### B1 (beads_claude_docker-zcnb; supersedes beads_claude_docker-jhkj) — the bd channel: `prime-memories`, `bd init --skip-agents`, rule-shaped-memory nudge, delete the override paragraphs
+- New `scripts/prime-memories.sh` (installed as `prime-memories`, Dockerfile COPY, plugin regen): `bd prime --memories-only` under a byte budget, omitted keys listed in a footer, fail-open when `bd` is absent.
+- `config/claude-settings.json`: both `bd prime` hook commands → `prime-memories`.
+- `scripts/entrypoint.sh:402`: `bd init … --skip-agents`; idempotently rewrite any `"bd prime"` hook command in `/workspace/.claude/settings.json` to `prime-memories` (existing projects; also normalises this repo's currently-modified `.claude/settings.json`).
+- `scripts/bd-guard.sh`: soft-block `bd remember` whose text starts with Never / Always / Rule(s) / Do not / Don't, reason naming "rule-shaped"; `BD_GUARD_ALLOW=1` lifts it.
+- `config/claude-user-memory.md`: add the 5-line bd essentials block. `CLAUDE.md`: delete the override sentence at :165 and the paragraph at :204-205; Session Completion shrinks to "commit locally; push is opt-in".
+- New `tests/prime-hook.bats`; append to `tests/bd-guard.bats`.
 
 ### B2 (beads_claude_docker-y2qe) — `outbound-guard` hook
 - New `scripts/outbound-guard.sh` (PreToolUse, matcher Bash; fail-open like every other hook): deny any command containing a `snow`/`snowsql` invocation; deny `git push`, `gh pr create`, `gh repo create`, `bd dolt push` unless a per-session marker exists. UserPromptSubmit mode (`outbound-guard --prompt`) sets the marker when the prompt contains push/publish/PR wording, clears it otherwise (state dir pattern from `lane.sh`). Deny reason: "push/deploy is opt-in — the prompt has to ask for it; commit locally instead."
@@ -47,11 +50,16 @@ Sequence: B1 → B3 → B4 → B2 → B5. Verifier runs: {B1, B2} share the hook
 - `AGENTS.md`: pointer only.
 - New `tests/rulebook.bats`: word budgets; banned phrases absent from both files (`overrides, by name`, `physically painful`, `Work is not done until pushed`, `1 \`verifier\` per bead`, `≥3 files`, `environment limitation`); required headings present exactly once across both files.
 
-### B4 (beads_claude_docker-4pvn) — lane rubric by consequence + greenfield clause; `contract-gate` and `tier-prime` lane-aware
-- `scripts/lane.sh` prime text → Appendix B (no file-count trigger; greenfield clause; "verification is never its own bead"; "one verifier run per evidence surface").
-- `scripts/tier-prime.sh:73`: dispatch line gains "(deep lane only)".
+### B4 (re-registered; supersedes beads_claude_docker-4pvn) — hooks emit pointers; `contract-gate` lane-aware
+- `scripts/lane.sh`: `--prime` and `--prime --short` become the pointer lines in Appendix B; the rubric copy is deleted (its only home is Appendix A § Lanes).
+- `scripts/tier-prime.sh`: both modes print the trio line plus the protocol pointer; the dispatch / standing-authorization / invariants restatement is deleted (home: Appendix A § Delegation). PreCompact re-emits the rulebook verbatim only if the compaction check says the harness does not.
 - `scripts/contract-gate.py`: read the session's lane state (`~/.claude/cache/lane/<session_id>.json`); silent on express/standard; unchanged on deep/unset.
 - Tests: `tests/lane.bats`, `tests/contract-gate.bats`, `tests/tier-hooks.bats` (append-only); `knowledge-base/TIERED_ORCHESTRATION.md` + `ACCEPTANCE_CONTRACTS.md` one line each; plugin regen.
+
+### B6 (beads_claude_docker-b56o) — template-drift guard
+- `tests/rulebook.bats` (append): every `## ` heading in this repo's `CLAUDE.md` is on a fixed whitelist of repo-fact headings; behavioural headings (Verification, Ownership, Answer Style, Session Completion, Noticed Flaws, Complexity Router, Model Tiering, User Constraints) may not appear there.
+- New `scripts/rules-effective.sh`: prints what a fresh user project actually loads — `config/claude-user-memory.md` plus every SessionStart hook command from `config/claude-settings.json` run inside a temp empty project (no `CLAUDE.md`, no `.beads`). New `tests/fresh-project.bats` asserts the shipped rules are present and the banned phrases absent.
+- `CLAUDE.md`: one repo-fact section, "Editing the template": behaviour rules go in `config/claude-user-memory.md`, the only file that ships; fix a behaviour at its source (hook flag, guard, deletion), never with a counter-paragraph.
 
 ### B5 (beads_claude_docker-jqmd) — Snowflake surfaces
 - `config/contexts/snowflake.md` → ≤ 90 words: Snowflake-specific residue only (validate SQL locally by parsing; fixtures; the skill prepares deploy packages on request). No "paste the output", no "blocked on their reply".
@@ -63,9 +71,11 @@ Sequence: B1 → B3 → B4 → B2 → B5. Verifier runs: {B1, B2} share the hook
 - `csearch`/`dev-log`/attachments are documented only in this repo's `CLAUDE.md`, so user projects never learn about them (the code-map skill does ship via the plugin). One follow-up bead at most.
 - `delegation-gate`'s 4-call nudge and its edit-deny in the *unset* lane are untouched; B4's routing change removes most of their pressure.
 
-## Appendix A — draft `config/claude-user-memory.md` (≈ 850 words)
+## Appendix A — final `config/claude-user-memory.md` (B3 applies this verbatim)
 
 # Rules for every project in this container
+
+This file is the rulebook. It ships to every project as `~/.claude/CLAUDE.md`; hook output carries state and pointers back here; a project's own `CLAUDE.md` holds project facts. If text elsewhere argues with this file, this file wins.
 
 ## Sandbox vs. your systems
 This container is a sandbox that runs anything: install packages, run the app, open it in the browser, `take-screenshot url|term|display` (images land in `/workspace/attachments/`; look at them with Read). Verification *is* running it — never inspection, never "would need". If a tool is missing, install it and go on.
@@ -86,14 +96,15 @@ Anything else you noticed is either fixed before you finish or dropped. A recap 
 
 ## Beads
 `bd` is the only task tracker: `bd ready` · `bd show <id>` · `bd create --title … --description …` · `bd update <id> --claim` · `bd close <id>`; `bd update` flags, never `bd edit`. Beads are Claude's memory, never a human's: no human assignee, no bead text that hands work to the user, no blocking on a person — a needed decision goes to chat.
-Filing is lane-scoped: express files none; standard files one only when follow-up remains; deep files one per slice. A bead's check belongs to the bead that did the work — verification is never its own bead. `bd remember` holds project knowledge; `bd prime` re-injects it after compaction.
+Filing is lane-scoped: express files none; standard files one only when follow-up remains; deep files one per slice. A bead's check belongs to the bead that did the work — verification is never its own bead.
+`bd remember` holds project facts and lessons, never rules (rules live here or in a knowledge-base playbook); the session-start hook shows memories within a budget and lists the rest by key, and `bd memories <keyword>` finds them. The harness's own memory directory is for user preferences only.
 
 ## Lanes
-Declare first — `lane express|standard|deep [--why "…"]`; `lane --prime` is the authoritative rubric.
-- **express** — reversible, ≤~5 tool calls, no design choice → inline, nothing else.
-- **standard** — the default for building things, greenfield included: one approach sentence, do it (inline or one executor), run it once to verify.
-- **deep** — only when hard to reverse, a security or data-integrity surface, a shared contract other code depends on, real ambiguity, or the user says plan/thorough/audit → plan, a bead per slice with an acceptance contract, one verifier run per evidence surface.
-Ties go lighter. While a project has no test suite or nothing runs yet, checks are "run it and look" — no contracts. Scope is the request as asked; an adjacent issue gets one line.
+Declare first, before any other action: `lane express|standard|deep [--why "…"]`.
+- **express** — reversible, ≤1 file, ≤~5 tool calls, no design choice → inline now: no plan, bead, executor, or verifier; verify with one run or screenshot when observable, else the diff.
+- **standard** — the default for building things, greenfield included: a one-sentence approach, then inline or ONE executor slice; verify by running it once; no contract, no verifier unless the claim is contested.
+- **deep** — ANY of: hard to reverse (migration, deletion, push, publish); security or data-integrity surface; a shared contract other code depends on (schema, API, hook wiring); real ambiguity or tradeoffs the user must weigh; the user said plan, thorough, or audit → plan first, a bead per slice with an acceptance contract, one verifier run per evidence surface.
+File count is not a trigger: many files with no design choice is standard. While a project has no test suite or nothing runs yet, checks are "run it and look" — no contracts. Ties go lighter; tripwires (scope outgrows the rubric, a fix fails, hidden ambiguity, unexpected breakage) escalate exactly one lane, announced, never de-escalated in the same prompt. Scope is the request as asked: adjacent issues get one line, never investigation, and are not tripwires. "quick" and "just" bias light; explicit user constraints beat every rubric line.
 
 ## Delegation — roles, not models
 You are the orchestrator: plan, decompose, delegate, review, decide. `executor` implements one slice; `scout` (`subagent_type: "scout"`) does cheap recon; `verifier` checks one evidence surface. `/tier` binds the models — never by hand, never via `CLAUDE_CODE_SUBAGENT_MODEL` or `ANTHROPIC_DEFAULT_*`.
@@ -101,12 +112,11 @@ Delegating per this file is the user's standing request — no per-prompt invita
 Deep-lane contract: before dispatch, register `CHECK`/`PASS-IF`/`FROZEN`/`CLASS` on the bead; the executor commits the test red (`RED-AT`) then green (`GREEN-AT`); the verifier's five checks return `PASS`/`FAIL`/`TAMPERED`/`NO-CONTRACT`, and anything short of `PASS` goes back to an executor. Beads and contracts are yours to author, never a worker's. Anything a person looks at closes on a viewed screenshot, never on a description.
 Name spawns `<role>-<model-slug>` from `tier-derive`; named spawns deliver by SendMessage to "main". Invariants: expensive tiers never take the worker seat; checkers inherit the session model; slices run sequentially, fan-out is for recon; a worker's summary is a claim to check.
 
-## Appendix B — draft `lane --prime` text
+## Appendix B — hook output after the channel discipline (B4)
 
-[lane] Route first: declare `lane express|standard|deep [--why "…"]` before any other action.
-  express  — reversible, ≤1 file, ≤~5 tool calls, no design choice → inline now: no plan, bead, executor, or verifier; verify with one run/screenshot when observable, else the diff.
-  standard — the default for building things, greenfield included: one-sentence approach, then inline or ONE executor slice; verify by running it once; no contract, no verifier unless the claim is contested.
-  deep     — ANY of: hard to reverse (migration, deletion, push, publish); security or data-integrity surface; a shared contract other code depends on (schema, API, hook wiring); real ambiguity or tradeoffs the user must weigh; the user said plan/thorough/audit. → plan first, a bead per slice with an acceptance contract, one verifier run per evidence surface.
-  File count is not a trigger: many files with no design choice is standard. While the project has no test suite or nothing runs yet, checks are "run it and look" — no contracts. Verification is never its own bead.
-  Ties go LIGHTER; tripwires (scope outgrows the rubric, a fix fails, hidden ambiguity, unexpected breakage) escalate exactly one lane, announced, never de-escalated in the same prompt.
-  Scope: the request AS ASKED — adjacent issues get one line, never investigation, and are not tripwires. "quick"/"just" biases light; explicit user constraints beat every rubric line.
+Hooks emit state and pointers, never rules. Rules live in Appendix A, which the harness attaches to every session.
+
+- `lane --prime` (SessionStart): `[lane] Route first — declare \`lane express|standard|deep [--why "…"]\` before any other action. Rubric: ~/.claude/CLAUDE.md § Lanes.`
+- `lane --prime --short` (every prompt): `[lane] route first — lane express|standard|deep · rubric: ~/.claude/CLAUDE.md § Lanes`
+- `tier-prime` (SessionStart) and `tier-prime --full` (PreCompact): the tier trio line, then `protocol: ~/.claude/CLAUDE.md § Delegation · § Lanes`, then the lane line above. PreCompact additionally re-emits `~/.claude/CLAUDE.md` verbatim only if the compaction check (guide answer, recorded on the B4 bead) shows the harness does not re-attach it.
+- `prime-memories` (SessionStart, PreCompact): `bd prime --memories-only`, budgeted (`PRIME_MEMORY_BUDGET`, default 8000 bytes): whole memories in bd's order until the budget is spent, then one footer line listing every omitted key and `bd memories <keyword>`.
