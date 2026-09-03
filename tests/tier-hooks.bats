@@ -2756,8 +2756,8 @@ class _Pinned(_date):
     def today(cls):
         return _date.fromisoformat('$1')
 cm.date = _Pinned
-sys.exit(cm.run_report([]))
-"
+sys.exit(cm.run_report(sys.argv[1:]))
+" "${@:2}"
 }
 
 @test "cost-mirror: lifetime.json is a v4 ledger of session|side|model|bucket rows carrying the rates that priced them" {
@@ -2860,7 +2860,10 @@ sys.exit(cm.run_report([]))
 
 @test "cost-mirror --report: a scanned row is priced from the rates the LEDGER carries, not from today's table" {
     mk_sonnet_projects
-    run python3 "$MIRROR" --report --all
+    # First scan with the clock pinned before SONNET5_INTRO_CUTOFF so the
+    # ledger freezes the intro rates ($2/$10 -> $12); the rescan below runs
+    # on the real clock, which is the point: ledger rates, not today's table.
+    run report_on_date 2026-08-15 --all
     [ "$status" -eq 0 ]
     [[ "$output" == *'$12'* ]]
     LIFETIME="$COST_MIRROR_STATE_DIR/lifetime.json"
@@ -3140,7 +3143,9 @@ mk_epoch_transcript() {
         printf '{"timestamp":"2026-07-29T00:25:00Z","message":{"model":"claude-sonnet-5","usage":{"output_tokens":1000000}}}\n'
         printf '{"isSidechain":true,"timestamp":"2026-07-29T00:55:00Z","message":{"model":"claude-haiku-4-5-20251001","usage":{"output_tokens":1000000}}}\n'
     } > "$TP"
-    run python3 "$MIRROR" --report "$TP"
+    # Clock pinned before SONNET5_INTRO_CUTOFF: the $45 total assumes the
+    # sonnet-5 intro out-rate ($10/MTok), which the real clock left behind.
+    run report_on_date 2026-08-15 "$TP"
     [ "$status" -eq 0 ]
     WORKER_LINE=$(echo "$output" | grep '^worker')
     read -r -a WL <<< "$WORKER_LINE"
