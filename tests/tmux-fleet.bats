@@ -449,8 +449,8 @@ start_scratch_tmux_at() {
 @test "fleet-menu: the exact binding shape lands in the new window with no overlay on any pane" {
     stage_new_shims
     REPO="$(new_scratch_repo new-repo1)"
-    start_scratch_tmux_at "$REPO"
     export CS_NEW_LAUNCH='sleep 47'
+    start_scratch_tmux_at "$REPO"
 
     run tmux -L "$TMUX_SOCK" run-shell "fleet-menu new #{pane_id} #{pane_current_path}"
     [ "$status" -eq 0 ]
@@ -487,8 +487,8 @@ start_scratch_tmux_at() {
 @test "fleet-menu: new brings an open sidebar along into the new window" {
     stage_new_shims
     REPO="$(new_scratch_repo new-repo2)"
-    start_scratch_tmux_at "$REPO"
     export CS_NEW_LAUNCH='sleep 47'
+    start_scratch_tmux_at "$REPO"
     pane0="$(tmux -L "$TMUX_SOCK" display -p -t base '#{pane_id}')"
 
     run tmux -L "$TMUX_SOCK" run-shell "fleet toggle $pane0"
@@ -531,9 +531,9 @@ start_scratch_tmux_at() {
     stage_new_shims
     REPO="$(new_scratch_repo new-repo3)"
     git -C "$REPO" worktree add "$REPO/.claude/worktrees/dup-name" -b dup-name -q
-    start_scratch_tmux_at "$REPO"
     export CS_NEW_LAUNCH='sleep 47'
     export FLEET_MENU_NEW_NAME='dup-name'
+    start_scratch_tmux_at "$REPO"
 
     run tmux -L "$TMUX_SOCK" run-shell "fleet-menu new #{pane_id} #{pane_current_path}"
     [ "$status" -ne 0 ]
@@ -551,8 +551,8 @@ start_scratch_tmux_at() {
 @test "fleet-menu: new session landing is captured as a PNG via take-screenshot term" {
     stage_new_shims
     REPO="$(new_scratch_repo new-repo4)"
-    start_scratch_tmux_at "$REPO"
     export CS_NEW_LAUNCH='sleep 47'
+    start_scratch_tmux_at "$REPO"
 
     run tmux -L "$TMUX_SOCK" run-shell "fleet-menu new #{pane_id} #{pane_current_path}"
     [ "$status" -eq 0 ]
