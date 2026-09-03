@@ -122,7 +122,7 @@ setup() {
 @test "plugin-build: bin/ carries exactly the hook-invoked scripts plus the declared standalone set" {
     run bash -c "ls '$PLUGIN_DIR/bin' | sort"
     [ "$status" -eq 0 ]
-    expected=$'bd-guard\ncode-map-prime\ncontext-detect\ncontract-gate\ncost-mirror\ncs-new\ndelegation-gate\ndisk-cleanup\nfleet-menu\nimage-drift\nlane\noutbound-guard\npeers\nprime-memories\nsession-end-audit\nsession-title\ntier-gate\ntier-prime\ntier-reconcile\nworkflow-lint'
+    expected=$'bd-guard\ncode-map-prime\ncontext-detect\ncontract-gate\ncost-mirror\ncs-new\ndelegation-gate\ndisk-cleanup\nfleet\nfleet-menu\nimage-drift\nlane\noutbound-guard\npeers\nprime-memories\nsession-end-audit\nsession-title\ntier-gate\ntier-prime\ntier-reconcile\nworkflow-lint'
     [ "$output" = "$expected" ]
 }
 
