@@ -272,6 +272,8 @@ show_menu() {
                     else
                         claude --dangerously-skip-permissions
                     fi
+                    # Exiting Claude should drop to shell, not loop back to the menu
+                    return
                 fi
                 ;;
             2)
