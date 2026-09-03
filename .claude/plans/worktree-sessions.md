@@ -16,4 +16,4 @@ Side sessions stop stepping on each other, can be opened from the right-click me
 - Tests never touch the live tmux server: every tmux test runs on `tmux -L <scratch>`.
 
 ## Slices
-F1 beads_claude_docker-nmnb cs-new · F2 beads_claude_docker-f5i6 tmux menu/status/keys (+ review, remove-merged) · F3 beads_claude_docker-7bam peers hook + first-prompt title hook + rulebook sentence · F4 beads_claude_docker-1tym fleet sidebar + usability screenshots · F5 beads_claude_docker-l4z6 docs (WORKTREE_SESSIONS.md, ORCA_SANDBOXED.md, README index, CLAUDE.md quick reference). Sequence F1 → F2 → F3 → F4 → F5. UX slices (F2, F4) close on viewed screenshots.
+F1 beads_claude_docker-nmnb cs-new · F2 beads_claude_docker-f5i6 tmux menu/status/keys (+ review, remove-merged) · F3 beads_claude_docker-7bam peers hook + first-prompt title hook + rulebook sentence · F4 beads_claude_docker-1tym fleet sidebar + usability screenshots · F4b beads_claude_docker-blrl sidebar polish + wiring · F5 beads_claude_docker-l4z6 docs (WORKTREE_SESSIONS.md, ORCA_SANDBOXED.md, README index, CLAUDE.md quick reference). Sequence F1 → F2 → F3 → F4 → F5. UX slices (F2, F4) close on viewed screenshots.
