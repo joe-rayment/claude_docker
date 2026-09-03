@@ -90,25 +90,62 @@ LIVE_AGENT_WINDOW_S=120
 # invocation (always run by an absolute or resolvable path, never sourced).
 SELF="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")"
 
+# CS_NEW_BIN — the cs-new launcher 'fleet go' delegates to for a worktree
+# with no window yet: prefers the exact sibling next to THIS copy of
+# fleet.sh (scripts/cs-new.sh in a checkout, cs-new alongside an
+# installed/staged fleet) over a bare PATH lookup -- the same gap SELF's
+# own comment documents, but inverted on purpose: a test running the
+# edited source checkout must never shell out to a stale
+# /usr/local/bin/cs-new left over from before the last image sync, while
+# in a real deployment the sibling IS the installed/staged copy anyway
+# (same file, same result either way). Falls back to PATH's cs-new only
+# if no sibling script is found next to SELF.
+if [ -f "$(dirname "$SELF")/cs-new.sh" ]; then
+    CS_NEW_BIN="$(dirname "$SELF")/cs-new.sh"
+elif [ -f "$(dirname "$SELF")/cs-new" ]; then
+    CS_NEW_BIN="$(dirname "$SELF")/cs-new"
+else
+    CS_NEW_BIN="cs-new"
+fi
+
 usage() {
     cat <<'EOF'
-Usage: fleet --once | --watch | toggle [pane_id]
+Usage: fleet --once | --watch | rows | go <name|path|@window> | follow | toggle [pane_id]
 
 --once     Print one row per worktree of the repo containing cwd (main
-           tree first): window, branch, dirty count, ahead/behind main,
-           lane, live agents, last-activity age. Outside a git repo:
-           prints a one-line notice and exits 0.
---watch    Like --once, clearing and redrawing every 3s until killed.
+           tree first), then one row per tmux window not represented by
+           a worktree row: window, branch, dirty count, ahead/behind
+           main, lane, live agents, last-activity age. Outside a git
+           repo: prints a one-line notice and exits 0.
+--watch    Like --once, redrawing every 3s until killed: each frame is
+           one buffered write (no flicker), and 'fleet follow' runs once
+           per tick. FLEET_MAX_TICKS=<n> stops the loop after <n> frames
+           (for tests).
+rows       Machine-readable rows behind --once/--watch/go, one per line:
+           <display><TAB><kind><TAB><name><TAB><path><TAB><window_id><TAB><pane_id>
+           (kind is worktree or window; a row's own display text is
+           identical to its 'fleet --once' line).
+go <name|path|@window>
+           Move the server-wide fleet sidebar into the row matching
+           <name|path|@window> (matched against rows' name/path/window_id
+           columns) and select its pane. A worktree row with no window
+           yet is opened first via 'cs-new --open <name>', then followed.
+follow     If the fleet sidebar exists and is not in the ambient current
+           window, move it there (join-pane, detached focus). No-op
+           otherwise.
 toggle [pane_id]
-           If a pane in the target window (pane_id's window, or the
-           ambient current window) is already running the fleet sidebar,
-           kill it. Otherwise split a 34-column pane to the left running
-           'fleet --watch', keeping focus on the original pane. pane_id
-           defaults to the ambient current pane ($TMUX).
+           Server-wide: if the fleet sidebar is already in the target
+           window (pane_id's window, or the ambient current window),
+           close it. If it exists elsewhere on the server, move it here
+           instead of opening a second one. If none exists anywhere,
+           split a 34-column pane to the left running 'fleet --watch',
+           keeping focus on the original pane. pane_id defaults to the
+           ambient current pane ($TMUX).
 
 Env:
   CLAUDE_PROJECTS_DIR   overrides ~/.claude/projects (session transcripts)
   LANE_STATE_DIR        overrides ~/.claude/cache/lane (lane state)
+  FLEET_MAX_TICKS       stop --watch after this many frames (for tests)
 EOF
 }
 
@@ -303,6 +340,136 @@ window_for() {
     printf -- '-'
 }
 
+# find_sidebar_pane — the #{pane_id} of the single server-wide
+# @fleet_sidebar=1 pane, or nothing (still exit 0) if there is none, tmux
+# is unavailable, or we're outside tmux.
+find_sidebar_pane() {
+    [ -n "${TMUX:-}" ] || return 0
+    command -v tmux >/dev/null 2>&1 || return 0
+    tmux list-panes -a -F "#{pane_id}${TAB}#{@fleet_sidebar}" 2>/dev/null | awk -F"$TAB" '$2=="1"{print $1; exit}'
+}
+
+# pane_for_path <path> — "<window_id><TAB><pane_id>" of the best tmux
+# pane server-wide whose current path resolves to <path> (same
+# cd+pwd -P resolution as window_for()): prefers a pane with
+# #{pane_current_command} == claude, else the first match in
+# `list-panes -a` order; the sidebar's own pane (@fleet_sidebar=1) is
+# never a candidate, since it is never the thing 'go'/toggle navigate TO.
+# Empty (still exit 0) if no pane matches.
+pane_for_path() {
+    local path="$1" resolved pid wid pane_path cmd sidebar_flag rp
+    local best_pid="" best_wid="" fb_pid="" fb_wid=""
+    [ -n "${TMUX:-}" ] || return 0
+    command -v tmux >/dev/null 2>&1 || return 0
+    resolved="$(cd "$path" 2>/dev/null && pwd -P)" || resolved="$path"
+    while IFS="$TAB" read -r pid wid pane_path cmd sidebar_flag; do
+        [ -n "$pid" ] || continue
+        [ "$sidebar_flag" = "1" ] && continue
+        rp="$(cd "$pane_path" 2>/dev/null && pwd -P)" || rp="$pane_path"
+        [ "$rp" = "$resolved" ] || continue
+        if [ "$cmd" = "claude" ]; then
+            best_pid="$pid"
+            best_wid="$wid"
+            break
+        fi
+        if [ -z "$fb_pid" ]; then
+            fb_pid="$pid"
+            fb_wid="$wid"
+        fi
+    done < <(tmux list-panes -a -F "#{pane_id}${TAB}#{window_id}${TAB}#{pane_current_path}${TAB}#{pane_current_command}${TAB}#{@fleet_sidebar}" 2>/dev/null)
+    if [ -n "$best_pid" ]; then
+        printf '%s\t%s\n' "$best_wid" "$best_pid"
+    elif [ -n "$fb_pid" ]; then
+        printf '%s\t%s\n' "$fb_wid" "$fb_pid"
+    fi
+}
+
+# all_window_ids — "<session>\t<index>\t<window_id>" for every tmux window
+# on the ambient server, sorted by session name then window index (tmux's
+# own `list-windows -a` order already matches this -- confirmed
+# empirically, not assumed -- the explicit sort just makes it a stated
+# guarantee rather than an incidental one).
+all_window_ids() {
+    tmux list-windows -a -F "#{session_name}${TAB}#{window_index}${TAB}#{window_id}" 2>/dev/null | sort -t "$TAB" -k1,1 -k2,2n
+}
+
+# window_repr_pane <window_id> — "<path><TAB><pane_id>" of a representative
+# pane in <window_id> for display/navigation purposes: the first
+# non-sidebar pane (pane order), falling back to the sidebar pane itself
+# only if that's the window's sole occupant. Empty if the window has no
+# panes at all (shouldn't happen, but tmux queries fail open here too).
+window_repr_pane() {
+    local wid="$1" path pid sidebar_flag fb_pid="" fb_path=""
+    while IFS="$TAB" read -r path pid sidebar_flag; do
+        [ -n "$pid" ] || continue
+        if [ "$sidebar_flag" != "1" ]; then
+            printf '%s\t%s\n' "$path" "$pid"
+            return 0
+        fi
+        [ -z "$fb_pid" ] && { fb_pid="$pid"; fb_path="$path"; }
+    done < <(tmux list-panes -t "$wid" -F "#{pane_current_path}${TAB}#{pane_id}${TAB}#{@fleet_sidebar}" 2>/dev/null)
+    [ -n "$fb_pid" ] && printf '%s\t%s\n' "$fb_path" "$fb_pid"
+}
+
+# window_is_represented <window_id> <resolved-worktree-paths> — 0 if ANY
+# pane in <window_id> (sidebar included) resolves (cd+pwd -P) to one of
+# the newline-separated, already-resolved paths in
+# <resolved-worktree-paths>; 1 otherwise. Deliberately checks every pane,
+# not just window_repr_pane()'s single representative one: after a 'go'
+# or 'follow' joins the sidebar into a worktree's own window, that
+# window's non-sidebar pane is still the worktree match regardless of
+# which pane window_repr_pane() would have picked first.
+window_is_represented() {
+    local wid="$1" resolved_list="$2" path rp
+    while IFS= read -r path; do
+        [ -n "$path" ] || continue
+        rp="$(cd "$path" 2>/dev/null && pwd -P)" || rp="$path"
+        if printf '%s' "$resolved_list" | grep -qxF "$rp"; then
+            return 0
+        fi
+    done < <(tmux list-panes -t "$wid" -F '#{pane_current_path}' 2>/dev/null)
+    return 1
+}
+
+# goto_pane <window_id> <pane_id> — move the server-wide fleet sidebar
+# into <window_id> (join-pane, anchored on <pane_id>, detached focus) if
+# it exists and is elsewhere; no-op on the move if it's already in
+# <window_id>, or if there is no sidebar at all. Always finishes by
+# making <window_id>/<pane_id> the active window/pane.
+goto_pane() {
+    local wid="$1" pid="$2" sidebar_pane sidebar_window
+    sidebar_pane="$(find_sidebar_pane)"
+    if [ -n "$sidebar_pane" ]; then
+        sidebar_window="$(tmux display -p -t "$sidebar_pane" '#{window_id}' 2>/dev/null)" || sidebar_window=""
+        if [ "$sidebar_window" != "$wid" ]; then
+            tmux join-pane -d -hb -l "$SIDEBAR_WIDTH" -s "$sidebar_pane" -t "$pid" 2>/dev/null || true
+            tmux set-option -p -t "$sidebar_pane" @fleet_sidebar 1 2>/dev/null || true
+        fi
+    fi
+    tmux select-window -t "$wid" 2>/dev/null || true
+    tmux select-pane -t "$pid" 2>/dev/null || true
+}
+
+# do_follow — the shared implementation behind 'fleet follow' and each
+# --watch tick: if the sidebar pane exists and is not in the ambient
+# current window, join it there (detached focus, anchored on a
+# non-sidebar pane of that window); no-op (still exit 0) if there is no
+# sidebar, we're outside tmux, or it is already in the current window.
+do_follow() {
+    local sidebar_pane cur_window sidebar_window anchor
+    [ -n "${TMUX:-}" ] || return 0
+    command -v tmux >/dev/null 2>&1 || return 0
+    sidebar_pane="$(find_sidebar_pane)"
+    [ -n "$sidebar_pane" ] || return 0
+    cur_window="$(tmux display -p '#{window_id}' 2>/dev/null)" || return 0
+    sidebar_window="$(tmux display -p -t "$sidebar_pane" '#{window_id}' 2>/dev/null)" || return 0
+    [ "$sidebar_window" != "$cur_window" ] || return 0
+    anchor="$(tmux list-panes -t "$cur_window" -F "#{pane_id}${TAB}#{@fleet_sidebar}" 2>/dev/null | awk -F"$TAB" '$2!="1"{print $1; exit}')"
+    [ -n "$anchor" ] || return 0
+    tmux join-pane -d -hb -l "$SIDEBAR_WIDTH" -s "$sidebar_pane" -t "$anchor" 2>/dev/null || return 0
+    tmux set-option -p -t "$sidebar_pane" @fleet_sidebar 1 2>/dev/null || true
+}
+
 # list_worktrees_with_branch <root> — one line per `git worktree list
 # --porcelain` entry (main worktree first, git's own ordering) as
 # "<path><TAB><branch>"; detached-HEAD worktrees show branch "-".
@@ -337,26 +504,31 @@ list_worktrees_with_branch() {
 # identical offset every data row's branch field does.
 ROW_FMT='%s %s %s %2s %s %s %s %s\n'
 
-# print_table — the --once/--watch body: the one-line notice outside a
-# git repo, else a header row followed by one row per
-# list_worktrees_with_branch entry. Row shape: <marker> <window> <branch>
-# <dirty> <ahead/behind> <lane-letter> <agents> <age> -- marker is '*'
-# when that row's live-agent count is > 0, else ' '; window/branch are
-# pad_trunc()'d to WINDOW_MAX/BRANCH_MAX (fixed width, so branch always
-# starts at the same offset); dirty is right-aligned in a 2-char field.
-print_table() {
-    local root
-    root="$(git rev-parse --show-toplevel 2>/dev/null)"
-    if [ -z "$root" ]; then
-        echo "fleet: not inside a git repository"
-        return 0
-    fi
-    printf "$ROW_FMT" \
-        " " "$(pad_trunc "win" "$WINDOW_MAX")" "$(pad_trunc "branch" "$BRANCH_MAX")" \
-        "+-" "a/b" "lane" "ag" "age"
+# emit_rows <root> — the shared row generator behind 'fleet rows' and
+# print_table (--once/--watch): one TSV line per row, fields
+# "<display><TAB><kind><TAB><name><TAB><path><TAB><window_id><TAB><pane_id>".
+# Worktree rows first, in list_worktrees_with_branch's own (main-first)
+# order -- <display> is byte-identical to the pre-nav print_table row
+# (same ROW_FMT call, same per-field lookups), <name> is basename(path)
+# (what 'cs-new --open <name>' expects), <window_id>/<pane_id> come from
+# pane_for_path() ('-'/'-' if no pane matches). Then one row per tmux
+# window NOT represented by any worktree row (window_is_represented()),
+# in window-index order: <name> is the window's own #{window_name},
+# <path>/<pane_id> from window_repr_pane(), <display> uses the same
+# ROW_FMT with '-' in every worktree-only field and a blank marker (no
+# live-agent concept for a bare window). print_table (cut -f1) is
+# therefore always textually identical to this function's display
+# column for every row it prints -- one row shape, two consumers, no
+# second place a row's text could drift from what --once shows.
+emit_rows() {
+    local root="$1" resolved_paths="" path branch
     while IFS="$TAB" read -r path branch; do
         [ -n "$path" ] || continue
-        local window dirty ab ctx pdir sid mtime lane agents age marker
+        local rp
+        rp="$(cd "$path" 2>/dev/null && pwd -P)" || rp="$path"
+        resolved_paths="$resolved_paths$rp"$'\n'
+
+        local window dirty ab ctx pdir sid mtime lane agents age marker name display pf wid pid
         window="$(window_for "$path")"
         dirty="$(dirty_count "$path")"
         ab="$(ahead_behind "$root" "$branch")"
@@ -376,44 +548,191 @@ print_table() {
         else
             marker="*"
         fi
-        printf "$ROW_FMT" \
+        display="$(printf "$ROW_FMT" \
             "$marker" \
             "$(pad_trunc "$window" "$WINDOW_MAX")" \
             "$(pad_trunc "$branch" "$BRANCH_MAX")" \
-            "$dirty" "$ab" "$(lane_letter "$lane")" "$agents" "$age"
+            "$dirty" "$ab" "$(lane_letter "$lane")" "$agents" "$age")"
+        display="${display%$'\n'}"
+        name="$(basename "$path")"
+        pf="$(pane_for_path "$path")"
+        if [ -n "$pf" ]; then
+            IFS="$TAB" read -r wid pid <<<"$pf"
+        else
+            wid="-"
+            pid="-"
+        fi
+        printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$display" "worktree" "$name" "$path" "$wid" "$pid"
     done < <(list_worktrees_with_branch "$root")
+
+    [ -n "${TMUX:-}" ] || return 0
+    command -v tmux >/dev/null 2>&1 || return 0
+    local sess widx winid
+    while IFS="$TAB" read -r sess widx winid; do
+        [ -n "$winid" ] || continue
+        window_is_represented "$winid" "$resolved_paths" && continue
+        local reprline wpath wpid wname wbranch wdisplay
+        reprline="$(window_repr_pane "$winid")"
+        wpath=""
+        wpid="-"
+        if [ -n "$reprline" ]; then
+            IFS="$TAB" read -r wpath wpid <<<"$reprline"
+        fi
+        wname="$(tmux display -p -t "$winid" '#{window_name}' 2>/dev/null)" || wname="-"
+        [ -n "$wname" ] || wname="-"
+        if [ -n "$wpath" ] && git -C "$wpath" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+            wbranch="$(git -C "$wpath" rev-parse --abbrev-ref HEAD 2>/dev/null)" || wbranch="-"
+            [ -n "$wbranch" ] || wbranch="-"
+        else
+            wbranch="-"
+        fi
+        wdisplay="$(printf "$ROW_FMT" \
+            " " "$(pad_trunc "$wname" "$WINDOW_MAX")" "$(pad_trunc "$wbranch" "$BRANCH_MAX")" \
+            "-" "-" "-" "-" "-")"
+        wdisplay="${wdisplay%$'\n'}"
+        [ -n "$wpath" ] || wpath="-"
+        [ -n "$wpid" ] || wpid="-"
+        printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$wdisplay" "window" "$wname" "$wpath" "$winid" "$wpid"
+    done < <(all_window_ids)
+}
+
+# print_table — the --once/--watch body: the one-line notice outside a
+# git repo, else a header row followed by emit_rows()'s display column
+# (worktree rows, then unrepresented-window rows). Row shape: <marker>
+# <window> <branch> <dirty> <ahead/behind> <lane-letter> <agents> <age>
+# -- marker is '*' when that row's live-agent count is > 0, else ' ';
+# window/branch are pad_trunc()'d to WINDOW_MAX/BRANCH_MAX (fixed width,
+# so branch always starts at the same offset); dirty is right-aligned in
+# a 2-char field.
+print_table() {
+    local root
+    root="$(git rev-parse --show-toplevel 2>/dev/null)"
+    if [ -z "$root" ]; then
+        echo "fleet: not inside a git repository"
+        return 0
+    fi
+    printf "$ROW_FMT" \
+        " " "$(pad_trunc "win" "$WINDOW_MAX")" "$(pad_trunc "branch" "$BRANCH_MAX")" \
+        "+-" "a/b" "lane" "ag" "age"
+    emit_rows "$root" | cut -f1
 }
 
 cmd_once() {
     print_table
 }
 
+# cmd_rows — 'fleet rows': emit_rows()'s raw TSV output, or the same
+# one-line outside-a-git-repo notice --once/--watch fall back to (no
+# rows to emit there either).
+cmd_rows() {
+    local root
+    root="$(git rev-parse --show-toplevel 2>/dev/null)"
+    if [ -z "$root" ]; then
+        echo "fleet: not inside a git repository"
+        return 0
+    fi
+    emit_rows "$root"
+}
+
+# cmd_watch — see usage(). Each tick: 'fleet follow' first (so the
+# sidebar tracks wherever the user navigated to by other means since the
+# last tick), then the WHOLE frame is assembled into one string --
+# ESC[H, then every print_table line with a trailing ESC[K, then a
+# final ESC[J -- and written with exactly one `printf '%s'`, never
+# `clear`, so there is no window between "old frame gone" and "new frame
+# drawn" for the terminal to blink through. FLEET_MAX_TICKS (unset/0 =
+# unbounded) stops the loop after that many frames, for tests.
 cmd_watch() {
+    local max="${FLEET_MAX_TICKS:-0}" n=0 frame line
     while :; do
-        clear
-        print_table
+        do_follow || true
+        frame=$'\e[H'
+        while IFS= read -r line; do
+            frame="${frame}${line}"$'\e[K\n'
+        done < <(print_table)
+        frame="${frame}"$'\e[J'
+        printf '%s' "$frame"
+        n=$((n + 1))
+        if [ "$max" -gt 0 ] && [ "$n" -ge "$max" ]; then
+            return 0
+        fi
         sleep "$REFRESH_INTERVAL_S"
     done
 }
 
-# cmd_toggle [pane_id] — see usage(). Tags the sidebar pane it creates
-# with the pane-scoped user option @fleet_sidebar=1 so a later toggle can
-# find and kill it unambiguously, independent of what process name tmux
-# reports for a running script (a shebang script's #{pane_current_command}
-# is not reliably "fleet").
+# cmd_go <name|path|@window> — see usage(). Resolves <arg> against
+# emit_rows()'s own rows (exact match on name, path, or window_id, in row
+# order -- worktree rows first, then window rows), then either opens a
+# session for a windowless worktree row (cs-new --open, then follow) or
+# moves/selects via goto_pane() for a row that already has one.
+cmd_go() {
+    local arg="${1:-}" root
+    [ -n "$arg" ] || die "usage: fleet go <name|path|@window>"
+    root="$(git rev-parse --show-toplevel 2>/dev/null)" || die "not inside a git repository"
+
+    local disp kind name path wid pid matched=""
+    while IFS="$TAB" read -r disp kind name path wid pid; do
+        [ -n "$kind" ] || continue
+        if [ "$arg" = "$name" ] || [ "$arg" = "$path" ] || [ "$arg" = "$wid" ]; then
+            matched=1
+            break
+        fi
+    done < <(emit_rows "$root")
+    [ -n "$matched" ] || die "no such row: $arg"
+
+    if [ "$kind" = "worktree" ] && [ "$wid" = "-" ]; then
+        "$CS_NEW_BIN" --open "$name" || die "failed to open a session for $name"
+        local pf
+        pf="$(pane_for_path "$path")"
+        if [ -n "$pf" ]; then
+            IFS="$TAB" read -r wid pid <<<"$pf"
+            goto_pane "$wid" "$pid"
+        else
+            do_follow || true
+        fi
+        return 0
+    fi
+
+    [ "$wid" != "-" ] || die "no window for $arg"
+    [ "$pid" != "-" ] || die "no pane for $arg"
+    goto_pane "$wid" "$pid"
+}
+
+# cmd_follow — 'fleet follow': see do_follow()'s own comment.
+cmd_follow() {
+    do_follow
+}
+
+# cmd_toggle [pane_id] — see usage(). Server-wide: closes the
+# @fleet_sidebar pane if it's already in the target window, moves it
+# there (goto_pane-style join) if it exists elsewhere on the server, or
+# opens a new one (today's split-window behavior) if none exists
+# anywhere. Tags the sidebar pane it creates/moves with the pane-scoped
+# user option @fleet_sidebar=1 so a later toggle/go/follow can find it
+# unambiguously, independent of what process name tmux reports for a
+# running script (a shebang script's #{pane_current_command} is not
+# reliably "fleet").
 cmd_toggle() {
-    local pane_id="${1:-}" target_pane cur_window existing_pane new_pane target_path
+    local pane_id="${1:-}" target_pane cur_window existing_pane existing_window new_pane target_path
     if [ -n "$pane_id" ]; then
         target_pane="$pane_id"
     else
         target_pane="$(tmux display -p '#{pane_id}' 2>/dev/null)" || die "not inside a tmux session"
     fi
     cur_window="$(tmux display -p -t "$target_pane" '#{window_id}' 2>/dev/null)" || die "no such pane: $target_pane"
-    existing_pane="$(tmux list-panes -t "$cur_window" -F "#{pane_id}${TAB}#{@fleet_sidebar}" 2>/dev/null | awk -F'\t' '$2=="1"{print $1; exit}')"
+
+    existing_pane="$(find_sidebar_pane)"
     if [ -n "$existing_pane" ]; then
-        tmux kill-pane -t "$existing_pane" 2>/dev/null || die "failed to close fleet sidebar pane: $existing_pane"
+        existing_window="$(tmux display -p -t "$existing_pane" '#{window_id}' 2>/dev/null)" || existing_window=""
+        if [ "$existing_window" = "$cur_window" ]; then
+            tmux kill-pane -t "$existing_pane" 2>/dev/null || die "failed to close fleet sidebar pane: $existing_pane"
+            return 0
+        fi
+        tmux join-pane -d -hb -l "$SIDEBAR_WIDTH" -s "$existing_pane" -t "$target_pane" 2>/dev/null || die "failed to move fleet sidebar pane: $existing_pane"
+        tmux set-option -p -t "$existing_pane" @fleet_sidebar 1 2>/dev/null || true
         return 0
     fi
+
     # split-window's default cwd (with no -c) is only the SPLIT-FROM
     # pane's path when the split is requested from inside an attached
     # client; run-shell/external invocations (exactly how tests, hooks,
@@ -448,6 +767,16 @@ case "$1" in
         ;;
     --watch)
         cmd_watch
+        ;;
+    rows)
+        cmd_rows
+        ;;
+    go)
+        shift
+        cmd_go "$@"
+        ;;
+    follow)
+        cmd_follow
         ;;
     toggle)
         shift

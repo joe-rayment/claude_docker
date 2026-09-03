@@ -11,12 +11,18 @@ die() { err "$*"; exit 1; }
 usage() {
     cat <<'EOF'
 Usage: cs-new [name]
+       cs-new --open <name>
 
 Creates a git worktree at .claude/worktrees/<name> (branched from the
 current tree's HEAD) and opens a Claude Code session there: in a new
 tmux window if $TMUX is set, otherwise in the foreground. <name>
 defaults to a generated <adjective>-<noun>, unique against existing
 worktrees and (inside tmux) window names on the current server.
+
+--open <name>  Skip worktree creation: launch the same session (same
+               launch command, same env) in the EXISTING worktree
+               .claude/worktrees/<name>. Fails non-zero, with no git
+               writes at all, if that worktree does not exist.
 
 Env:
   CS_NEW_LAUNCH   overrides the launched command (default: claude
@@ -25,10 +31,15 @@ Env:
 EOF
 }
 
+OPEN_MODE=0
 case "${1:-}" in
     -h|--help)
         usage
         exit 0
+        ;;
+    --open)
+        OPEN_MODE=1
+        shift
         ;;
 esac
 
@@ -86,20 +97,29 @@ generate_unique_name() {
     done
 }
 
-if [ -z "$name" ]; then
-    name="$(generate_unique_name)"
-else
+if [ "$OPEN_MODE" -eq 1 ]; then
+    [ -n "$name" ] || die "--open requires a worktree name"
     case "$name" in
         */*) die "name must not contain '/': $name" ;;
     esac
-    name_conflicts "$name" && die "worktree/session name already in use: $name"
+    path="$root/.claude/worktrees/$name"
+    [ -d "$path" ] || die "no such worktree: $name"
+else
+    if [ -z "$name" ]; then
+        name="$(generate_unique_name)"
+    else
+        case "$name" in
+            */*) die "name must not contain '/': $name" ;;
+        esac
+        name_conflicts "$name" && die "worktree/session name already in use: $name"
+    fi
+
+    path="$root/.claude/worktrees/$name"
+    mkdir -p "$root/.claude/worktrees"
+    git -C "$root" worktree add "$path" -b "$name" || die "failed to create worktree at $path"
+
+    echo "cs-new: $name -> $path"
 fi
-
-path="$root/.claude/worktrees/$name"
-mkdir -p "$root/.claude/worktrees"
-git -C "$root" worktree add "$path" -b "$name" || die "failed to create worktree at $path"
-
-echo "cs-new: $name -> $path"
 
 if [ -n "${CS_NEW_LAUNCH:-}" ]; then
     launch_cmd="$CS_NEW_LAUNCH"
