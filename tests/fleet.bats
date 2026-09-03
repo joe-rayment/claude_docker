@@ -302,13 +302,19 @@ run_fleet_once() {
     setup_fleet_fixture
     run_fleet_once
     [ "$status" -eq 0 ]
-    run grep -E '^\*[ ]+-[ ]+wb[ ]' <<<"$output"
+    # bats' `run` overwrites $output on every call (see the "Contract-owner
+    # fix" note on the four-row test above) -- capture the table once so
+    # each of the four greps below reads it, not the previous grep's own
+    # (narrower) stdout.
+    local table
+    table="$output"
+    run grep -E '^\*[ ]+-[ ]+wb[ ]' <<<"$table"
     [ "$status" -eq 0 ]
-    run grep -E '^ {2}mainw\+' <<<"$output"
+    run grep -E '^ {2}mainw\+' <<<"$table"
     [ "$status" -eq 0 ]
-    run grep -E '^ {2}wawin' <<<"$output"
+    run grep -E '^ {2}wawin' <<<"$table"
     [ "$status" -eq 0 ]
-    run grep -E '^ {2}wcwin' <<<"$output"
+    run grep -E '^ {2}wcwin' <<<"$table"
     [ "$status" -eq 0 ]
 }
 
@@ -331,14 +337,20 @@ run_fleet_once() {
 
     run_fleet_once
     [ "$status" -eq 0 ]
+    # capture once: a `run grep` immediately below would otherwise
+    # overwrite $output with its own (narrower) stdout before the
+    # 34-column check re-reads it (see the "Contract-owner fix" note on
+    # the four-row test above).
+    local table
+    table="$output"
 
     # both fields truncate to their WINDOW_MAX/BRANCH_MAX width (6) with a
     # trailing '+': the shared first-5-chars prefix of window and branch
     # here is "this-" for both, so each truncated field reads "this-+".
-    run grep -E '^ {2}this-\+[ ]+this-\+[ ]' <<<"$output"
+    run grep -E '^ {2}this-\+[ ]+this-\+[ ]' <<<"$table"
     [ "$status" -eq 0 ]
 
-    run bash -c "printf '%s\n' \"\$1\" | awk '{ if (length(\$0) > 34) print }'" _ "$output"
+    run bash -c "printf '%s\n' \"\$1\" | awk '{ if (length(\$0) > 34) print }'" _ "$table"
     [ "$status" -eq 0 ]
     [ -z "$output" ]
 }
@@ -509,7 +521,11 @@ capture_with_retry() {
     # letter, so exact spacing/words can't be hardcoded here the way the
     # pre-blrl "deep"/"standard" full-word substrings could.
     for expect in 'wawin[ ]+wa[ ]+1[ ]+2/1[ ]+d[ ]+0' '-[ ]+wb[ ]+2[ ]+1/0[ ]+s[ ]+2[ ]+e,s' 'wcwin[ ]+wc[ ]+0[ ]+0/0[ ]+-[ ]+0'; do
-        run grep -E "$expect" "$cap1"
+        # -e disambiguates a pattern beginning with a literal '-' (the
+        # "-...wb..." case below, window field '-' with no matching pane)
+        # from an option flag -- this system's `grep` is ugrep, which
+        # (unlike GNU grep) rejects a leading-dash pattern passed bare.
+        run grep -E -e "$expect" "$cap1"
         [ "$status" -eq 0 ]
     done
 
@@ -529,7 +545,7 @@ capture_with_retry() {
         > "$cap2"
 
     for expect in 'wawin[ ]+wa[ ]+1[ ]+2/1[ ]+d[ ]+0' '-[ ]+wb[ ]+2[ ]+1/0[ ]+s[ ]+2[ ]+e,s' 'wcwin[ ]+wc[ ]+0[ ]+0/0[ ]+-[ ]+0'; do
-        run grep -E "$expect" "$cap2"
+        run grep -E -e "$expect" "$cap2"
         [ "$status" -eq 0 ]
     done
 
