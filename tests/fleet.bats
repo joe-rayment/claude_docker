@@ -651,13 +651,27 @@ wait_for() {
 
     # 'fleet --once' (header stripped) is textually identical to rows'
     # own display column, for every row including the two window rows --
-    # both are built by the same underlying row generator.
+    # both are built by the same underlying row generator. Contract-owner
+    # fix (beads_claude_docker-bj6x, test hardening pre-authorized in its
+    # own brief now that vyzk is verified): --once and rows are two
+    # SEPARATE 'fleet' invocations here, and the age field ("<n>s") is
+    # wall-clock-derived, so a real second ticking over between the two
+    # processes could flip e.g. "3s" to "4s" and fail this comparison for
+    # a reason that has nothing to do with the row-generator identity the
+    # test exists to check. Normalise each row's trailing age field (the
+    # last whitespace-delimited token, always the very end of the line
+    # per ROW_FMT) to a fixed placeholder on both sides before comparing
+    # -- this only masks a value that is EXPECTED to differ by process,
+    # never any of the fields the test actually cares about (window,
+    # branch, dirty, ahead/behind, lane, agents all stay byte-exact).
     run_fleet_once
     [ "$status" -eq 0 ]
-    local once_data rows_display
+    local once_data rows_display once_norm rows_norm
     once_data="$(printf '%s\n' "$output" | tail -n +2)"
     rows_display="$(printf '%s\n' "$rows" | cut -f1)"
-    [ "$once_data" = "$rows_display" ]
+    once_norm="$(printf '%s\n' "$once_data" | sed -E 's/[0-9]+[smhd]$/AGE/; s/-$/AGE/')"
+    rows_norm="$(printf '%s\n' "$rows_display" | sed -E 's/[0-9]+[smhd]$/AGE/; s/-$/AGE/')"
+    [ "$once_norm" = "$rows_norm" ]
 
     run bash -c "printf '%s\n' \"\$1\" | awk '{ if (length(\$0) > 34) print }'" _ "$once_data"
     [ "$status" -eq 0 ]
@@ -867,4 +881,247 @@ PY
     [ "$(wc -c < "$png2")" -ge 20000 ]
 
     echo "fleet nav screenshots: rows=$png1 post-go=$png2"
+}
+
+# ── fleet rows: window_claimed_by_worktree (beads_claude_docker-bj6x) ─────
+# Added alongside the sidebar-interaction slice below: emit_rows() used to
+# decide "is this tmux window already covered by a worktree row" via
+# window_is_represented() -- ANY pane in the window matching a worktree's
+# path, checked across every pane of that window. That swallowed a SECOND
+# window sharing a worktree's path (a Hide-parked pane, a plain shell
+# window opened at the main tree) into the first window's own row, making
+# the second one unreachable from the sidebar once the status bar (which
+# used to list windows) is gone. Fixed by narrowing the test to "is this
+# window pane_for_path()'s own CHOSEN representative for that worktree
+# row" (window_claimed_by_worktree()) -- a second window at the same path
+# now gets its own window row instead of vanishing. Existing fixture
+# counts elsewhere in this file are untouched: none of them puts a SECOND
+# window at a path a worktree row already claims (setup_fleet_fixture's
+# mainwin/wawin/wcwin, and the rows test's extrawin/gitwin, are each at a
+# distinct path), so this narrowing changes zero pre-existing row counts.
+@test "fleet rows: a second window sharing a worktree's path gets its own window row instead of vanishing" {
+    setup_fleet_fixture
+    # mainwin (created by start_scratch_tmux) is already pane_for_path()'s
+    # chosen representative for ROOT's own worktree row. A second window
+    # at the SAME path (ROOT) must not be absorbed into that row.
+    tmux -L "$TMUX_SOCK" new-window -n mainwin2 -c "$ROOT" -t base
+    tmux -L "$TMUX_SOCK" select-window -t base:mainwin
+
+    run env -u TMUX TMUX="$FAKE_TMUX" CLAUDE_PROJECTS_DIR="$CLAUDE_PROJECTS_DIR" LANE_STATE_DIR="$LANE_STATE_DIR" \
+        bash -c "cd '$ROOT' && exec '$FLEET' rows"
+    [ "$status" -eq 0 ]
+    local rows
+    rows="$output"
+    [ "$(printf '%s\n' "$rows" | grep -c .)" -eq 5 ]
+
+    local row5
+    row5="$(printf '%s\n' "$rows" | sed -n 5p)"
+    [ "$(printf '%s' "$row5" | cut -f2)" = "window" ]
+    [ "$(printf '%s' "$row5" | cut -f3)" = "mainwin2" ]
+    run bash -c "cd '$ROOT' && pwd -P"
+    [ "$(printf '%s' "$row5" | cut -f4)" = "$output" ]
+}
+
+# ── fleet sidebar interaction: cursor, keys, mouse, footer ────────────────
+# Added for beads_claude_docker-bj6x (G3 of .claude/plans/fleet-nav.md):
+# on a real tty (the sidebar pane 'fleet toggle' opens IS one, attached or
+# not -- tmux always allocates a pty for a pane), cmd_watch puts the
+# terminal in raw mode with SGR mouse tracking on and runs an interactive
+# loop: a cursor row (tracked by row identity across refreshes), keyboard
+# (Up/k, Down/j, Enter, n, r, q) and mouse (wheel, left-click) navigation,
+# and a footer of key hints. Off a tty (every existing --watch test above
+# that redirects stdout, confirmed empirically to run with a non-tty
+# stdin in this container: `bash -c '[ -t 0 ] && ... || ...'` prints "NOT
+# a tty" here) the ORIGINAL dumb redraw loop still runs unchanged, with no
+# terminal control sequence beyond the frame itself -- FROZEN alongside
+# the rest of this file per this bead's own acceptance contract from its
+# RED commit onward.
+#
+# Key delivery confirmed empirically (not assumed) against a real scratch
+# tmux pane running a raw-mode byte reader before writing the assertions
+# below: 'tmux send-keys ... Down' / 'Up' arrive as the plain CSI
+# sequences ESC[B / ESC[A (not the SS3 ESC O B/A an application-cursor-mode
+# terminal would use), 'Enter' arrives as a bare CR (\r), and
+# 'send-keys -l' of a literal SGR mouse sequence arrives byte-for-byte
+# unchanged.
+
+# capture_sidebar <capture-file-base> <pane> — capture-pane -e (raw, for
+# the eventual PNG's `cat`) into <capture-file-base>, plus a `cat -v`
+# ESC-visualized twin at <capture-file-base>.vis (ESC becomes the two
+# characters "^[") so the greps below never have to embed a raw control
+# byte in this source file to find e.g. the reverse-video marker ESC[7m.
+capture_sidebar() {
+    tmux -L "$TMUX_SOCK" capture-pane -e -p -t "$2" > "$1"
+    cat -v "$1" > "$1.vis"
+}
+
+# sidebar_cursor_on <capture-file-base> <pane> <needle> — true once a
+# FRESH capture's lone ESC[7m-marked line contains <needle>; false (and
+# leaves a fresh capture behind either way) otherwise. Used as a wait_for
+# condition so the test polls for the redraw to actually land instead of
+# racing a fixed sleep against the sidebar's own input-driven redraw.
+sidebar_cursor_on() {
+    capture_sidebar "$1" "$2"
+    grep -qF '^[[7m' "$1.vis" || return 1
+    grep -F '^[[7m' "$1.vis" | grep -q -- "$3"
+}
+
+# sidebar_gone <socket> — true once no @fleet_sidebar=1 pane remains
+# anywhere on <socket>'s server.
+sidebar_gone() {
+    local n
+    n="$(tmux -L "$1" list-panes -a -F '#{@fleet_sidebar}' 2>/dev/null | grep -c '^1$')"
+    [ "$n" -eq 0 ]
+}
+
+@test "fleet sidebar: Down moves the cursor to the second row; capture-pane -e shows exactly one reverse-video row and the key-hint footer" {
+    setup_fleet_fixture
+
+    run env -u TMUX TMUX="$FAKE_TMUX" "$FLEET" toggle
+    [ "$status" -eq 0 ]
+    local sidebar_pane
+    sidebar_pane="$(tmux -L "$TMUX_SOCK" list-panes -a -F '#{pane_id} #{@fleet_sidebar}' | awk '$2=="1"{print $1}')"
+    [ -n "$sidebar_pane" ]
+
+    # let the first frame render (raw tty mode entered, initial redraw
+    # done) before driving input.
+    sleep 1
+
+    local cap="$BATS_TEST_TMPDIR/cursor-down.txt"
+    tmux -L "$TMUX_SOCK" send-keys -t "$sidebar_pane" Down
+    wait_for 25 sidebar_cursor_on "$cap" "$sidebar_pane" wa
+
+    # exactly one reverse-video row.
+    local n7m
+    n7m="$(grep -cF '^[[7m' "$cap.vis")"
+    [ "$n7m" -eq 1 ]
+
+    # the reverse-video row is the SECOND row (worktree wa, per
+    # setup_fleet_fixture's main/wa/wb/wc ordering), not the first (main).
+    local hl_line
+    hl_line="$(grep -F '^[[7m' "$cap.vis")"
+    [[ "$hl_line" == *"wa"* ]]
+    [[ "$hl_line" != *"main"* ]]
+
+    # footer line: key hints, contains go/new/close.
+    run grep -F 'Enter:go n:new r:refresh q:close' "$cap"
+    [ "$status" -eq 0 ]
+
+    local png="/workspace/attachments/fleet-bj6x-cursor-$$.png"
+    rm -f "$png"
+    capture_with_retry "$png" "cat $cap"
+    [ -f "$png" ]
+    [ "$(wc -c < "$png")" -ge 20000 ]
+    echo "fleet sidebar cursor screenshot: $png"
+}
+
+@test "fleet sidebar: Down then Enter jumps to the second row's window, sidebar alongside, its pane active" {
+    setup_fleet_fixture
+
+    run env -u TMUX TMUX="$FAKE_TMUX" "$FLEET" toggle
+    [ "$status" -eq 0 ]
+    local sidebar_pane
+    sidebar_pane="$(tmux -L "$TMUX_SOCK" list-panes -a -F '#{pane_id} #{@fleet_sidebar}' | awk '$2=="1"{print $1}')"
+    [ -n "$sidebar_pane" ]
+    local wa_pane
+    wa_pane="$(tmux -L "$TMUX_SOCK" list-panes -t base:wawin -F '#{pane_id}')"
+    [ -n "$wa_pane" ]
+
+    sleep 1
+    local cap="$BATS_TEST_TMPDIR/downenter.txt"
+    tmux -L "$TMUX_SOCK" send-keys -t "$sidebar_pane" Down
+    wait_for 25 sidebar_cursor_on "$cap" "$sidebar_pane" wa
+
+    tmux -L "$TMUX_SOCK" send-keys -t "$sidebar_pane" Enter
+    wait_for 25 bash -c "[ \"\$(tmux -L '$TMUX_SOCK' display -p -t '$sidebar_pane' '#{window_name}')\" = wawin ]"
+
+    run tmux -L "$TMUX_SOCK" display -p -t "$sidebar_pane" '#{window_name}'
+    [ "$output" = "wawin" ]
+    run tmux -L "$TMUX_SOCK" list-panes -t base:wawin -F '#{pane_active} #{pane_id}'
+    [[ "$output" == *"1 $wa_pane"* ]]
+}
+
+@test "fleet sidebar: SGR left-click on the third row's line opens/jumps to that row's window" {
+    export CS_NEW_LAUNCH='sleep 47'
+    setup_fleet_fixture
+
+    run env -u TMUX TMUX="$FAKE_TMUX" "$FLEET" toggle
+    [ "$status" -eq 0 ]
+    local sidebar_pane
+    sidebar_pane="$(tmux -L "$TMUX_SOCK" list-panes -a -F '#{pane_id} #{@fleet_sidebar}' | awk '$2=="1"{print $1}')"
+    [ -n "$sidebar_pane" ]
+
+    sleep 1
+    # header is line 1, first row (main) line 2, second row (wa) line 3,
+    # third row (wb) line 4 -- no scroll (4 rows, well under body_height).
+    # wb has NO tmux window in this fixture, so the click exercises the
+    # "open a session in a worktree with none yet" branch of go_to_row().
+    tmux -L "$TMUX_SOCK" send-keys -t "$sidebar_pane" -l $'\e[<0;2;4M'
+    tmux -L "$TMUX_SOCK" send-keys -t "$sidebar_pane" -l $'\e[<0;2;4m'
+
+    wait_for 50 bash -c "tmux -L '$TMUX_SOCK' list-windows -F '#{window_name}' | grep -qx wb"
+    wait_for 25 bash -c "[ \"\$(tmux -L '$TMUX_SOCK' display -p -t '$sidebar_pane' '#{window_name}')\" = wb ]"
+
+    run tmux -L "$TMUX_SOCK" list-windows -F '#{window_name} #{pane_current_path}'
+    [[ "$output" == *"wb $WB"* ]]
+    run tmux -L "$TMUX_SOCK" display -p -t "$sidebar_pane" '#{window_name}'
+    [ "$output" = "wb" ]
+}
+
+@test "fleet sidebar: 'n' creates a new worktree session under .claude/worktrees/, with a window and the sidebar following" {
+    export CS_NEW_LAUNCH="env > '$BATS_TEST_TMPDIR/new-env.txt'; sleep 47"
+    setup_fleet_fixture
+
+    local before
+    before=("$ROOT"/.claude/worktrees/*)
+
+    run env -u TMUX TMUX="$FAKE_TMUX" "$FLEET" toggle
+    [ "$status" -eq 0 ]
+    local sidebar_pane
+    sidebar_pane="$(tmux -L "$TMUX_SOCK" list-panes -a -F '#{pane_id} #{@fleet_sidebar}' | awk '$2=="1"{print $1}')"
+    [ -n "$sidebar_pane" ]
+
+    sleep 1
+    tmux -L "$TMUX_SOCK" send-keys -t "$sidebar_pane" n
+
+    wait_for 50 bash -c "[ -s '$BATS_TEST_TMPDIR/new-env.txt' ]"
+    run grep -x "BEADS_DIR=$ROOT/.beads" "$BATS_TEST_TMPDIR/new-env.txt"
+    [ "$status" -eq 0 ]
+
+    local after new_name before_names after_names
+    after=("$ROOT"/.claude/worktrees/*)
+    [ "${#after[@]}" -eq $((${#before[@]} + 1)) ]
+    before_names="$(printf '%s\n' "${before[@]##*/}" | sort)"
+    after_names="$(printf '%s\n' "${after[@]##*/}" | sort)"
+    new_name="$(comm -13 <(printf '%s\n' "$before_names") <(printf '%s\n' "$after_names"))"
+    [ -n "$new_name" ]
+    [ "$(printf '%s\n' "$new_name" | grep -c .)" -eq 1 ]
+
+    local win_output
+    win_output="$(tmux -L "$TMUX_SOCK" list-windows -F '#{window_name}')"
+    run grep -qx "$new_name" <<<"$win_output"
+    [ "$status" -eq 0 ]
+
+    wait_for 25 bash -c "[ \"\$(tmux -L '$TMUX_SOCK' display -p -t '$sidebar_pane' '#{window_name}')\" = '$new_name' ]"
+    run tmux -L "$TMUX_SOCK" display -p -t "$sidebar_pane" '#{window_name}'
+    [ "$output" = "$new_name" ]
+}
+
+@test "fleet sidebar: 'q' restores the tty and closes the pane -- no @fleet_sidebar pane remains" {
+    ROOT="$(new_scratch_repo repo)"
+    start_scratch_tmux "$ROOT" 120 35
+    FAKE_TMUX="$(fake_tmux_env "$TMUX_SOCK")"
+
+    run env -u TMUX TMUX="$FAKE_TMUX" "$FLEET" toggle
+    [ "$status" -eq 0 ]
+    local sidebar_pane
+    sidebar_pane="$(tmux -L "$TMUX_SOCK" list-panes -a -F '#{pane_id} #{@fleet_sidebar}' | awk '$2=="1"{print $1}')"
+    [ -n "$sidebar_pane" ]
+
+    sleep 1
+    tmux -L "$TMUX_SOCK" send-keys -t "$sidebar_pane" q
+    wait_for 25 sidebar_gone "$TMUX_SOCK"
+
+    run bash -c "tmux -L '$TMUX_SOCK' list-panes -a -F '#{@fleet_sidebar}' | grep -c '^1\$'"
+    [ "$output" -eq 0 ]
 }
