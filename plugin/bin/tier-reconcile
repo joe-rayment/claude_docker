@@ -45,12 +45,28 @@
 #     exactly as they are.
 #
 # TIER_SETTINGS and TIER_AGENTS_DIR override the paths (used by the test suite).
+#
+# PostModelSwitch/ConfigChange (Claude Code >= 2.1.251) pipe a JSON payload
+# on stdin; PostModelSwitch's carries a `to_model` field naming the switch
+# target, read here and preferred over settings .model because the switch
+# may not have been persisted to disk yet when the hook fires. Stdin is
+# read only when NOT a tty (`[ ! -t 0 ]`), so a manual/interactive run never
+# blocks waiting on input; empty, non-JSON, or to_model-less stdin all fall
+# through to the settings-.model behavior unchanged.
 
 set -u
 SETTINGS="${TIER_SETTINGS:-$HOME/.claude/settings.json}"
 AGENTS="${TIER_AGENTS_DIR:-$HOME/.claude/agents}"
 EXEC_MD="$AGENTS/executor.md"
 SCOUT_MD="$AGENTS/scout.md"
+
+to_model=""
+if [ ! -t 0 ]; then
+    payload=$(cat 2>/dev/null)
+    if [ -n "$payload" ]; then
+        to_model=$(printf '%s' "$payload" | jq -r 'if type == "object" then (.to_model // empty) else empty end' 2>/dev/null)
+    fi
+fi
 
 [ -f "$SETTINGS" ] || exit 0
 command -v jq >/dev/null 2>&1 || exit 0
@@ -131,6 +147,7 @@ pinned=$(jq -r '.env.TIER_EXPLICIT_PIN // empty' "$SETTINGS" 2>/dev/null)
 [ "$pinned" = "1" ] && exit 0
 
 model=$(jq -r '.model // empty' "$SETTINGS" 2>/dev/null)
+[ -n "$to_model" ] && model="$to_model"
 [ -n "$model" ] || exit 0
 
 # `tier-set overdrive` parks .env.TIER_OVERDRIVE="1" to lift the worker cap.

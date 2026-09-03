@@ -138,9 +138,13 @@ reason.
   **SessionStart tier-reconcile hook** is what guarantees every session's
   executor/scout are consistent with `.model` from that session's *first*
   spawn — the files are synced before anything spawns.
-- The **UserPromptSubmit** run of the same hook keeps the files (and the
-  purge) current on disk mid-session after a `/model` change, but because
-  of the snapshot its effect on spawns lands in the next session.
+- The **PostModelSwitch** and **ConfigChange** (matcher `user_settings`)
+  runs of the same hook keep the files (and the purge) current on disk
+  mid-session after a `/model`/`/fast`/`--model` switch or a settings-file
+  edit, but because of the snapshot their effect on spawns lands in the
+  next session. PostModelSwitch's stdin carries a `to_model` field, which
+  `tier-reconcile` prefers over `.model` since the switch may not be
+  persisted to disk yet when the hook fires.
 - **The running orchestrator** (settings `.model` is only its default) and
   the `model: inherit` agents (verifier/oracle) that track it move **only
   via `/model`** — a file write cannot move a running session's own model.
@@ -299,12 +303,15 @@ Three small POSIX scripts (installed in `/usr/local/bin`, repo `scripts/`):
   without probing; off-ladder/custom ids are probed with downward fallback
   (see *Graceful degradation* below). If an agent file is missing or has no
   `model:` line it says so ("slot NOT bound") and continues with the rest.
-- **`tier-reconcile`** — the SessionStart + UserPromptSubmit hook. Contract:
-  purge legacy vars first (always); then stop if pinned, `.model` empty, or
-  off-ladder; else derive the trio from `.model` and rewrite
-  executor.md/scout.md `model:` lines **only on diff**. Never touches
-  `.model`. Silent on stdout (a UserPromptSubmit hook's stdout would be
-  injected into the prompt). Idempotent and fast.
+- **`tier-reconcile`** — the SessionStart + PostModelSwitch + ConfigChange
+  (matcher `user_settings`) hook. Contract: purge legacy vars first
+  (always); then stop if pinned, `.model` empty, or off-ladder; else derive
+  the trio from `.model` (or from stdin's `to_model`, when PostModelSwitch
+  supplies one, in preference to `.model`) and rewrite executor.md/scout.md
+  `model:` lines **only on diff**. Never touches `.model`. Silent on stdout
+  (its stdout would otherwise be injected into whatever triggered the
+  hook). Idempotent and fast. Only reads stdin when not a tty, so a manual
+  run never blocks.
 
 Shell sugar in `.zshrc` drives the same engine: `tier <top>` (= `tier-set`
 + launch) and `tier-show` (= `tier-set show`).
@@ -1266,6 +1273,6 @@ Revision log (each reversible via git on the listed files):
 
 Claude Code's native advisor tool (`/advisor`, `advisorModel`, ≥2.1.170, Fable-capable) covers the oracle's mid-task consult role — but it is Anthropic-API-only, so on this container's OAuth/subscription sessions it is unavailable. Decision: **oracle remains the consult path here** (fresh-context, user-invoked, panel-capable); revisit if the container moves to API auth. `advisorModel`, where used, must stay ≥ the session's top tier.
 
-## Hook-trigger migration (pending image ≥ 2.1.251)
+## Hook-trigger migration (beads_claude_docker-v4p)
 
-`tier-reconcile` runs on every UserPromptSubmit only because 2.1.247 has no model-change event. Claude Code 2.1.251 added `PostModelSwitch`/`ConfigChange` hooks — once a host rebuild lands ≥2.1.251, move reconcile there and drop the per-prompt run (keep SessionStart). Tracked as bead beads_claude_docker-v4p.
+`tier-reconcile` used to run on every UserPromptSubmit because Claude Code 2.1.247 had no model-change event. Claude Code 2.1.251 added `PostModelSwitch` (fires after `/model`, `/fast`, `--model` at startup, or an automatic switch; stdin carries `from_model`/`to_model`/`triggered_by`) and `ConfigChange` (fires on a config-file change; stdin carries `config_source`/`changed_keys`) hooks; `tier-reconcile` is now registered on both instead of the per-prompt run, with SessionStart kept as the floor case. ConfigChange is matched to `user_settings` only. **Residual risk:** a container still running Claude Code < 2.1.251 reconciles only at SessionStart — a `/model` change mid-session won't refresh the executor/scout bindings until the next session starts.

@@ -14,10 +14,6 @@
           },
           {
             "type": "command",
-            "command": "command -v tier-reconcile >/dev/null 2>&1 && tier-reconcile >/dev/null 2>&1; true"
-          },
-          {
-            "type": "command",
             "command": "command -v cost-mirror >/dev/null 2>&1 && exec cost-mirror; [ -x \"$HOME/.claude/hooks/cost-mirror\" ] && exec \"$HOME/.claude/hooks/cost-mirror\"; exit 0"
           },
           {
@@ -70,6 +66,28 @@
           {
             "type": "command",
             "command": "command -v peers >/dev/null 2>&1 && exec peers; exit 0"
+          }
+        ]
+      }
+    ],
+    "PostModelSwitch": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "command -v tier-reconcile >/dev/null 2>&1 && tier-reconcile >/dev/null 2>&1; true"
+          }
+        ]
+      }
+    ],
+    "ConfigChange": [
+      {
+        "matcher": "user_settings",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "command -v tier-reconcile >/dev/null 2>&1 && tier-reconcile >/dev/null 2>&1; true"
           }
         ]
       }
