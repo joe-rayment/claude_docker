@@ -1072,10 +1072,18 @@ sidebar_gone() {
     wait_for 50 bash -c "tmux -L '$TMUX_SOCK' list-windows -F '#{window_name}' | grep -qx wb"
     wait_for 25 bash -c "[ \"\$(tmux -L '$TMUX_SOCK' display -p -t '$sidebar_pane' '#{window_name}')\" = wb ]"
 
-    run tmux -L "$TMUX_SOCK" list-windows -F '#{window_name} #{pane_current_path}'
-    [[ "$output" == *"wb $WB"* ]]
+    # the launched pane (not the sidebar, which also joins this window) is
+    # at the new worktree's own path.
+    run bash -c "tmux -L '$TMUX_SOCK' list-panes -t base:wb -F '#{pane_current_path}' | grep -qxF '$WB'"
+    [ "$status" -eq 0 ]
     run tmux -L "$TMUX_SOCK" display -p -t "$sidebar_pane" '#{window_name}'
     [ "$output" = "wb" ]
+
+    # ...but keep_focus (action_go, beads_claude_docker-fwyc) keeps the
+    # ACTIVE pane in that window the sidebar's own, not the freshly
+    # launched session's.
+    run tmux -L "$TMUX_SOCK" list-panes -t base:wb -F '#{pane_active} #{pane_id}'
+    [[ "$output" == *"1 $sidebar_pane"* ]]
 }
 
 @test "fleet sidebar: 'n' creates a new worktree session under .claude/worktrees/, with a window and the sidebar following" {

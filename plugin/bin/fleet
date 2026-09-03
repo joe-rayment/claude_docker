@@ -451,13 +451,20 @@ window_claimed_by_worktree() {
     printf '%s' "$claimed_list" | grep -qxF "$wid"
 }
 
-# goto_pane <window_id> <pane_id> — move the server-wide fleet sidebar
-# into <window_id> (join-pane, anchored on <pane_id>, detached focus) if
-# it exists and is elsewhere; no-op on the move if it's already in
-# <window_id>, or if there is no sidebar at all. Always finishes by
-# making <window_id>/<pane_id> the active window/pane.
+# goto_pane <window_id> <pane_id> [keep_focus] — move the server-wide
+# fleet sidebar into <window_id> (join-pane, anchored on <pane_id>,
+# detached focus) if it exists and is elsewhere; no-op on the move if
+# it's already in <window_id>, or if there is no sidebar at all. Always
+# finishes by making <window_id> the active window (so it comes into
+# view); which PANE ends up active within it depends on <keep_focus>:
+# empty/unset (the default, and cmd_go's 'fleet go' behavior -- a
+# deliberate one-shot jump) selects <pane_id> itself, same as always. Set
+# (action_go's sidebar Enter/click -- browsing, not jumping) selects the
+# sidebar pane instead, so the target window comes into view without
+# stealing keyboard focus off the sidebar; falls back to selecting
+# <pane_id> if there is no sidebar pane to keep focus on.
 goto_pane() {
-    local wid="$1" pid="$2" sidebar_pane sidebar_window
+    local wid="$1" pid="$2" keep_focus="$3" sidebar_pane sidebar_window
     sidebar_pane="$(find_sidebar_pane)"
     if [ -n "$sidebar_pane" ]; then
         sidebar_window="$(tmux display -p -t "$sidebar_pane" '#{window_id}' 2>/dev/null)" || sidebar_window=""
@@ -467,7 +474,11 @@ goto_pane() {
         fi
     fi
     tmux select-window -t "$wid" 2>/dev/null || true
-    tmux select-pane -t "$pid" 2>/dev/null || true
+    if [ -n "$keep_focus" ] && [ -n "$sidebar_pane" ]; then
+        tmux select-pane -t "$sidebar_pane" 2>/dev/null || true
+    else
+        tmux select-pane -t "$pid" 2>/dev/null || true
+    fi
 }
 
 # do_follow — the shared implementation behind 'fleet follow' and each
@@ -754,13 +765,16 @@ cursor_down() {
 # action_go — Enter, or a left-click resolved by mouse_click_row(): act
 # on the row currently under WATCH_CURSOR via go_to_row(), then refresh
 # (the go may have opened a session or moved windows around, so the
-# cached rows -- window/pane ids in particular -- can be stale).
+# cached rows -- window/pane ids in particular -- can be stale). Passes
+# keep_focus=1 -- this is sidebar browsing (switch the window into view,
+# stay on the sidebar to move on to the next row), not the one-shot jump
+# 'fleet go' (cmd_go) makes.
 action_go() {
     [ "${#WATCH_ROWS[@]}" -gt 0 ] || return 0
     [ "$WATCH_CURSOR" -ge 0 ] && [ "$WATCH_CURSOR" -lt "${#WATCH_ROWS[@]}" ] || return 0
     local disp kind name path wid pid
     IFS="$TAB" read -r disp kind name path wid pid <<<"${WATCH_ROWS[$WATCH_CURSOR]}"
-    go_to_row "$kind" "$name" "$path" "$wid" "$pid" 2>/dev/null || true
+    go_to_row "$kind" "$name" "$path" "$wid" "$pid" 1 2>/dev/null || true
     do_follow || true
     refresh_rows
 }
@@ -1033,17 +1047,21 @@ cmd_watch_interactive() {
     done
 }
 
-# go_to_row <kind> <name> <path> <wid> <pid> — the shared body behind
-# 'fleet go' and the sidebar's own Enter/left-click action, given an
-# already-resolved row (no emit_rows() re-run, so the interactive loop's
-# cursor actions never pay for a fresh git/tmux sweep just to act on a
-# row it already has cached): opens a session for a windowless worktree
-# row (cs-new --open, then follow) or moves/selects via goto_pane() for a
-# row that already has one. Prints via err() and returns 1 on failure
-# instead of exiting, so a caller running inside the interactive loop
-# survives a failed go and keeps looping.
+# go_to_row <kind> <name> <path> <wid> <pid> [keep_focus] — the shared
+# body behind 'fleet go' and the sidebar's own Enter/left-click action,
+# given an already-resolved row (no emit_rows() re-run, so the
+# interactive loop's cursor actions never pay for a fresh git/tmux sweep
+# just to act on a row it already has cached): opens a session for a
+# windowless worktree row (cs-new --open, then follow) or moves/selects
+# via goto_pane() for a row that already has one. <keep_focus> passes
+# straight through to goto_pane() -- empty/unset for 'fleet go' (cmd_go
+# passes nothing, so the target pane still gets keyboard focus, unchanged);
+# set for the sidebar's own action_go (keep the sidebar focused while the
+# target window comes into view). Prints via err() and returns 1 on
+# failure instead of exiting, so a caller running inside the interactive
+# loop survives a failed go and keeps looping.
 go_to_row() {
-    local kind="$1" name="$2" path="$3" wid="$4" pid="$5"
+    local kind="$1" name="$2" path="$3" wid="$4" pid="$5" keep_focus="${6:-}"
 
     if [ "$kind" = "worktree" ] && [ "$wid" = "-" ]; then
         "$CS_NEW_BIN" --open "$name" || { err "failed to open a session for $name"; return 1; }
@@ -1051,7 +1069,7 @@ go_to_row() {
         pf="$(pane_for_path "$path")"
         if [ -n "$pf" ]; then
             IFS="$TAB" read -r wid pid <<<"$pf"
-            goto_pane "$wid" "$pid"
+            goto_pane "$wid" "$pid" "$keep_focus"
         else
             do_follow || true
         fi
@@ -1066,7 +1084,7 @@ go_to_row() {
         err "no pane for $name"
         return 1
     fi
-    goto_pane "$wid" "$pid"
+    goto_pane "$wid" "$pid" "$keep_focus"
 }
 
 # cmd_go <name|path|@window> — see usage(). Resolves <arg> against
