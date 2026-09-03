@@ -1,6 +1,10 @@
 # Plan: fleet navigation — sidebar drives, toolbar goes, New session lands
 
-Filed 2026-09-03. Lane: deep. Supersedes the UX decisions of `worktree-sessions.md` (F2/F4b) after one day of real use.
+Filed 2026-09-03. Lane: deep. Status: IMPLEMENTED 2026-09-03 — see Outcome. Supersedes the UX decisions of `worktree-sessions.md` (F2/F4b) after one day of real use.
+
+## Outcome (2026-09-03)
+
+All four slices landed on main red-commit-first and passed an independent verifier: G1 vyzk (2639b0c → c661e2e) · G2 8wy7 (ac2e783 → f68d76c, contract-owner test fix 0891050) · G3 bj6x (da77723 → 746391f) · G4 3c20 (f24911a → 2c8f229, contract-owner test fix 3b0becb). Screenshots viewed for every slice; termshot cannot render the reverse-video cursor row (SGR 7), so that is evidenced by a capture-pane -e assertion. Applied live: scripts copied to /usr/local/bin, config/tmux.conf sourced on the running server (status off, bindings unchanged). The baked image stays stale until `./claude-dev --rebuild`. dd3o's proposed fix landed in G4's test hardening; the bead stays open until the flake is seen absent.
 
 ## What is wrong (root causes, verified live on a scratch `tmux -L` server)
 
