@@ -282,3 +282,57 @@ wait_for() {
     [ -f /workspace/plugin/bin/cs-new ]
     diff -q /workspace/plugin/bin/cs-new /workspace/scripts/cs-new.sh
 }
+
+# ── --open (beads_claude_docker-vyzk, G1 of .claude/plans/fleet-nav.md) ──
+# 'cs-new --open <name>' launches the same session as today, into an
+# EXISTING worktree, without creating one. FROZEN alongside the rest of
+# this file per vyzk's own acceptance contract from its RED commit
+# onward.
+
+@test "cs-new -h: usage mentions --open" {
+    run "$CS_NEW" -h
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"--open"* ]]
+}
+
+@test "cs-new --open: no name argument exits non-zero" {
+    REPO="$(new_scratch_repo repo10)"
+    run bash -c "cd '$REPO' && env -u TMUX '$CS_NEW' --open"
+    [ "$status" -ne 0 ]
+}
+
+@test "cs-new --open: a missing worktree exits non-zero without touching git" {
+    REPO="$(new_scratch_repo repo9)"
+    local before
+    before="$(git -C "$REPO" worktree list --porcelain | grep -c '^worktree ')"
+    run bash -c "cd '$REPO' && env -u TMUX '$CS_NEW' --open does-not-exist"
+    [ "$status" -ne 0 ]
+    [ -n "$output" ]
+    local after
+    after="$(git -C "$REPO" worktree list --porcelain | grep -c '^worktree ')"
+    [ "$after" -eq "$before" ]
+    [ ! -d "$REPO/.claude/worktrees/does-not-exist" ]
+}
+
+@test "cs-new --open: launches into a window named <name> with cwd = the worktree and BEADS_DIR set, creating no new worktree" {
+    REPO="$(new_scratch_repo repo8)"
+    ( cd "$REPO" && env -u TMUX CS_NEW_LAUNCH='true' "$CS_NEW" preopened )
+    register_cleanup "$REPO" "$REPO/.claude/worktrees/preopened" "preopened"
+
+    start_scratch_tmux
+    fake_tmux="$(fake_tmux_env "$TMUX_SOCK")"
+    local envfile="$BATS_TEST_TMPDIR/open-env.txt"
+    ( cd "$REPO" && env -u TMUX TMUX="$fake_tmux" CS_NEW_LAUNCH="env > '$envfile'; sleep 47" "$CS_NEW" --open preopened ) >"$BATS_TEST_TMPDIR/out8.log" 2>&1 &
+    CS_NEW_PID=$!
+    wait_for 50 bash -c "tmux -L '$TMUX_SOCK' list-windows -F '#{window_name}' 2>/dev/null | grep -qx preopened"
+
+    run tmux -L "$TMUX_SOCK" list-windows -F '#{window_name} #{pane_current_path}'
+    [[ "$output" == *"preopened $REPO/.claude/worktrees/preopened"* ]]
+
+    wait_for 50 bash -c "[ -s '$envfile' ]"
+    run grep -x "BEADS_DIR=$REPO/.beads" "$envfile"
+    [ "$status" -eq 0 ]
+
+    names=("$REPO"/.claude/worktrees/*)
+    [ "${#names[@]}" -eq 1 ]
+}

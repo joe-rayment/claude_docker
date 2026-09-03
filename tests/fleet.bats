@@ -563,3 +563,308 @@ capture_with_retry() {
 
     echo "fleet sidebar screenshots: 120x35=$png1 200x50=$png2"
 }
+
+# ── fleet nav: rows / go / follow / toggle-anywhere / buffered frame ──────
+# Added for beads_claude_docker-vyzk (G1 of .claude/plans/fleet-nav.md):
+# 'fleet rows' (machine-readable rows behind --once/--watch, worktree rows
+# then one row per tmux window not represented by a worktree row), 'fleet
+# go <name|path|@window>' (moves the server-wide sidebar to the matching
+# row's window/pane, or opens one via 'cs-new --open' for a worktree with
+# none yet), 'fleet follow' (sidebar tracks the ambient current window),
+# 'fleet toggle' made server-wide (close if here, move if elsewhere, open
+# if none), and --watch's flicker-free single-printf buffered frame
+# (FLEET_MAX_TICKS bounds the loop for tests). FROZEN alongside the rest
+# of this file per vyzk's own acceptance contract from its RED commit
+# onward. No existing assertion above was touched: every tmux window this
+# file's own fixtures create already has a matching worktree path, so the
+# new "one row per unrepresented window" rule adds zero rows to any
+# pre-existing scenario -- confirmed by inspection of setup_fleet_fixture
+# (mainwin/wawin/wcwin's cwd are each exactly ROOT/WA/WC) and re-derived
+# empirically (a scratch probe against pad_trunc()/ROW_FMT, not just read
+# off the source) for the exact window-row field widths asserted below.
+
+# wait_for <max_tries> <cmd...> — polls every 0.2s (up to max_tries times)
+# until <cmd...> exits 0. Independently duplicated from
+# tests/worktree-sessions.bats's own helper of the same name/shape, per
+# this codebase's existing convention of small per-file helpers rather
+# than cross-file sharing (see e.g. new_scratch_repo/fake_tmux_env, each
+# defined separately in fleet.bats, worktree-sessions.bats and
+# tmux-fleet.bats already).
+wait_for() {
+    local max_tries="$1"
+    shift
+    local i=0
+    while [ "$i" -lt "$max_tries" ]; do
+        if "$@"; then
+            return 0
+        fi
+        sleep 0.2
+        i=$((i + 1))
+    done
+    return 1
+}
+
+@test "fleet rows: worktree rows then one row per unrepresented tmux window; TSV shape; display matches fleet --once" {
+    setup_fleet_fixture
+    OTHER="$(new_scratch_repo other)"
+    tmux -L "$TMUX_SOCK" new-window -n extrawin -c "$BATS_TEST_TMPDIR" -t base
+    tmux -L "$TMUX_SOCK" new-window -n gitwin -c "$OTHER" -t base
+    tmux -L "$TMUX_SOCK" select-window -t base:mainwin
+
+    run env -u TMUX TMUX="$FAKE_TMUX" CLAUDE_PROJECTS_DIR="$CLAUDE_PROJECTS_DIR" LANE_STATE_DIR="$LANE_STATE_DIR" \
+        bash -c "cd '$ROOT' && exec '$FLEET' rows"
+    [ "$status" -eq 0 ]
+    local rows
+    rows="$output"
+    [ "$(printf '%s\n' "$rows" | grep -c .)" -eq 6 ]
+
+    # first four rows are the worktree rows, in list_worktrees_with_branch's
+    # own (main-first) order -- unchanged from --once's existing contract.
+    local worktree_kinds
+    worktree_kinds="$(printf '%s\n' "$rows" | head -n4 | cut -f2)"
+    [ "$(printf '%s\n' "$worktree_kinds" | sort -u)" = "worktree" ]
+
+    # row 5: the "extrawin" window (cwd outside any worktree and outside
+    # any git repo) -- kind/name/path/window_id/pane_id fields, plus the
+    # display column's window/branch fields (branch '-': not a git repo).
+    local row5
+    row5="$(printf '%s\n' "$rows" | sed -n 5p)"
+    [ "$(printf '%s' "$row5" | cut -f2)" = "window" ]
+    [ "$(printf '%s' "$row5" | cut -f3)" = "extrawin" ]
+    run bash -c "cd '$BATS_TEST_TMPDIR' && pwd -P"
+    [ "$(printf '%s' "$row5" | cut -f4)" = "$output" ]
+    [[ "$(printf '%s' "$row5" | cut -f5)" == @* ]]
+    [[ "$(printf '%s' "$row5" | cut -f6)" == %* ]]
+    run grep -E '^ {2}extra\+[ ]+-[ ]+-[ ]+-[ ]+-[ ]+-[ ]+-$' <<<"$(printf '%s' "$row5" | cut -f1)"
+    [ "$status" -eq 0 ]
+
+    # row 6: the "gitwin" window (cwd = a DIFFERENT git repo, not one of
+    # ROOT's worktrees) -- branch resolves ("main"), everything else '-'.
+    local row6
+    row6="$(printf '%s\n' "$rows" | sed -n 6p)"
+    [ "$(printf '%s' "$row6" | cut -f2)" = "window" ]
+    [ "$(printf '%s' "$row6" | cut -f3)" = "gitwin" ]
+    run bash -c "cd '$OTHER' && pwd -P"
+    [ "$(printf '%s' "$row6" | cut -f4)" = "$output" ]
+    run grep -E '^ {2}gitwin[ ]+main[ ]+-[ ]+-[ ]+-[ ]+-[ ]+-$' <<<"$(printf '%s' "$row6" | cut -f1)"
+    [ "$status" -eq 0 ]
+
+    # 'fleet --once' (header stripped) is textually identical to rows'
+    # own display column, for every row including the two window rows --
+    # both are built by the same underlying row generator.
+    run_fleet_once
+    [ "$status" -eq 0 ]
+    local once_data rows_display
+    once_data="$(printf '%s\n' "$output" | tail -n +2)"
+    rows_display="$(printf '%s\n' "$rows" | cut -f1)"
+    [ "$once_data" = "$rows_display" ]
+
+    run bash -c "printf '%s\n' \"\$1\" | awk '{ if (length(\$0) > 34) print }'" _ "$once_data"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+}
+
+@test "fleet go: moves the sidebar into an existing worktree window, selects its pane, leaves no pane in copy-mode" {
+    setup_fleet_fixture
+
+    run env -u TMUX TMUX="$FAKE_TMUX" "$FLEET" toggle
+    [ "$status" -eq 0 ]
+    local sidebar_pane
+    sidebar_pane="$(tmux -L "$TMUX_SOCK" list-panes -a -F '#{pane_id} #{@fleet_sidebar}' | awk '$2=="1"{print $1}')"
+    [ -n "$sidebar_pane" ]
+
+    local wa_pane
+    wa_pane="$(tmux -L "$TMUX_SOCK" list-panes -t base:wawin -F '#{pane_id}')"
+    [ -n "$wa_pane" ]
+
+    run env -u TMUX TMUX="$FAKE_TMUX" bash -c "cd '$ROOT' && exec '$FLEET' go wa"
+    [ "$status" -eq 0 ]
+
+    run tmux -L "$TMUX_SOCK" display -p -t "$sidebar_pane" '#{window_name}'
+    [ "$output" = "wawin" ]
+
+    run tmux -L "$TMUX_SOCK" list-panes -t base:wawin -F '#{pane_active} #{pane_id}'
+    [[ "$output" == *"1 $wa_pane"* ]]
+
+    run tmux -L "$TMUX_SOCK" display -p -t "$sidebar_pane" '#{pane_width} #{pane_at_left}'
+    [ "$output" = "34 1" ]
+
+    run bash -c "tmux -L '$TMUX_SOCK' list-panes -a -F '#{pane_in_mode}' | grep -vx 0"
+    [ "$status" -ne 0 ]
+    [ -z "$output" ]
+}
+
+@test "fleet go: a worktree with no window opens one via cs-new --open, and the sidebar follows it" {
+    setup_fleet_fixture
+
+    run env -u TMUX TMUX="$FAKE_TMUX" "$FLEET" toggle
+    [ "$status" -eq 0 ]
+    local sidebar_pane
+    sidebar_pane="$(tmux -L "$TMUX_SOCK" list-panes -a -F '#{pane_id} #{@fleet_sidebar}' | awk '$2=="1"{print $1}')"
+    [ -n "$sidebar_pane" ]
+
+    local envfile="$BATS_TEST_TMPDIR/wb-env.txt"
+    run env -u TMUX TMUX="$FAKE_TMUX" CLAUDE_PROJECTS_DIR="$CLAUDE_PROJECTS_DIR" LANE_STATE_DIR="$LANE_STATE_DIR" \
+        bash -c "cd '$ROOT' && CS_NEW_LAUNCH=\"env > '$envfile'; sleep 47\" exec '$FLEET' go wb"
+    [ "$status" -eq 0 ]
+
+    run tmux -L "$TMUX_SOCK" list-windows -F '#{window_name} #{pane_current_path}'
+    [[ "$output" == *"wb $WB"* ]]
+
+    wait_for 50 bash -c "[ -s '$envfile' ]"
+    run grep -x "BEADS_DIR=$ROOT/.beads" "$envfile"
+    [ "$status" -eq 0 ]
+
+    run tmux -L "$TMUX_SOCK" display -p -t "$sidebar_pane" '#{window_name}'
+    [ "$output" = "wb" ]
+}
+
+@test "fleet follow: moves the sidebar to the window made current by 'tmux select-window'; no-op once already there" {
+    ROOT="$(new_scratch_repo repo)"
+    WA="$(add_worktree "$ROOT" wa 0)"
+    start_scratch_tmux "$ROOT" 120 35
+    tmux -L "$TMUX_SOCK" new-window -n wawin -c "$WA" -t base
+    tmux -L "$TMUX_SOCK" select-window -t base:mainwin
+    FAKE_TMUX="$(fake_tmux_env "$TMUX_SOCK")"
+
+    run env -u TMUX TMUX="$FAKE_TMUX" "$FLEET" toggle
+    [ "$status" -eq 0 ]
+    local sidebar_pane before_window
+    sidebar_pane="$(tmux -L "$TMUX_SOCK" list-panes -a -F '#{pane_id} #{@fleet_sidebar}' | awk '$2=="1"{print $1}')"
+    [ -n "$sidebar_pane" ]
+    before_window="$(tmux -L "$TMUX_SOCK" display -p -t "$sidebar_pane" '#{window_id}')"
+
+    tmux -L "$TMUX_SOCK" select-window -t base:wawin
+
+    run env -u TMUX TMUX="$FAKE_TMUX" "$FLEET" follow
+    [ "$status" -eq 0 ]
+
+    local sidebar_pane2 sidebar_window
+    sidebar_pane2="$(tmux -L "$TMUX_SOCK" list-panes -a -F '#{pane_id} #{@fleet_sidebar}' | awk '$2=="1"{print $1}')"
+    [ "$sidebar_pane2" = "$sidebar_pane" ]
+    sidebar_window="$(tmux -L "$TMUX_SOCK" display -p -t "$sidebar_pane" '#{window_id}')"
+    [ "$sidebar_window" != "$before_window" ]
+    run tmux -L "$TMUX_SOCK" display -p -t "$sidebar_pane" '#{window_name}'
+    [ "$output" = "wawin" ]
+
+    local panes_before panes_after
+    panes_before="$(tmux -L "$TMUX_SOCK" list-panes -a | wc -l)"
+
+    run env -u TMUX TMUX="$FAKE_TMUX" "$FLEET" follow
+    [ "$status" -eq 0 ]
+
+    local sidebar_pane3 sidebar_window2
+    sidebar_pane3="$(tmux -L "$TMUX_SOCK" list-panes -a -F '#{pane_id} #{@fleet_sidebar}' | awk '$2=="1"{print $1}')"
+    [ "$sidebar_pane3" = "$sidebar_pane" ]
+    sidebar_window2="$(tmux -L "$TMUX_SOCK" display -p -t "$sidebar_pane" '#{window_id}')"
+    [ "$sidebar_window2" = "$sidebar_window" ]
+    panes_after="$(tmux -L "$TMUX_SOCK" list-panes -a | wc -l)"
+    [ "$panes_after" -eq "$panes_before" ]
+}
+
+@test "fleet toggle: server-wide -- from a window without the sidebar while open elsewhere it moves (not a new pane); from the window that has it, kills it" {
+    ROOT="$(new_scratch_repo repo)"
+    WA="$(add_worktree "$ROOT" wa 0)"
+    start_scratch_tmux "$ROOT" 120 35
+    tmux -L "$TMUX_SOCK" new-window -n wawin -c "$WA" -t base
+    tmux -L "$TMUX_SOCK" select-window -t base:mainwin
+    FAKE_TMUX="$(fake_tmux_env "$TMUX_SOCK")"
+
+    run env -u TMUX TMUX="$FAKE_TMUX" "$FLEET" toggle
+    [ "$status" -eq 0 ]
+    local sidebar_pane panes_after_open
+    sidebar_pane="$(tmux -L "$TMUX_SOCK" list-panes -a -F '#{pane_id} #{@fleet_sidebar}' | awk '$2=="1"{print $1}')"
+    [ -n "$sidebar_pane" ]
+    panes_after_open="$(tmux -L "$TMUX_SOCK" list-panes -a | wc -l)"
+
+    local wa_pane
+    wa_pane="$(tmux -L "$TMUX_SOCK" list-panes -t base:wawin -F '#{pane_id}')"
+
+    run env -u TMUX TMUX="$FAKE_TMUX" "$FLEET" toggle "$wa_pane"
+    [ "$status" -eq 0 ]
+
+    local sidebar_pane2 panes_after_move
+    sidebar_pane2="$(tmux -L "$TMUX_SOCK" list-panes -a -F '#{pane_id} #{@fleet_sidebar}' | awk '$2=="1"{print $1}')"
+    [ "$sidebar_pane2" = "$sidebar_pane" ]
+    panes_after_move="$(tmux -L "$TMUX_SOCK" list-panes -a | wc -l)"
+    [ "$panes_after_move" -eq "$panes_after_open" ]
+    run tmux -L "$TMUX_SOCK" display -p -t "$sidebar_pane" '#{window_name}'
+    [ "$output" = "wawin" ]
+
+    run env -u TMUX TMUX="$FAKE_TMUX" "$FLEET" toggle "$wa_pane"
+    [ "$status" -eq 0 ]
+    run bash -c "tmux -L '$TMUX_SOCK' list-panes -a -F '#{@fleet_sidebar}' | grep -c '^1\$'"
+    [ "$output" -eq 0 ]
+}
+
+@test "fleet --watch: FLEET_MAX_TICKS bounds the loop; frames are single buffered writes with no clear/2J/3J" {
+    ROOT="$(new_scratch_repo repo)"
+    local out="$BATS_TEST_TMPDIR/watch-out.bin"
+    # 'timeout 20' guards against a --watch that doesn't honor
+    # FLEET_MAX_TICKS looping forever and hanging the whole suite -- a
+    # correct implementation exits well inside this (~3s: one
+    # REFRESH_INTERVAL_S sleep between 2 ticks).
+    run timeout 20 bash -c "cd '$ROOT' && env -u TMUX FLEET_MAX_TICKS=2 '$FLEET' --watch > '$out'"
+    [ "$status" -eq 0 ]
+
+    run python3 - "$out" <<'PY'
+import sys
+data = open(sys.argv[1], 'rb').read().decode()
+ESC = '\x1b'
+assert ESC + '[2J' not in data, "found ESC[2J (a clear sequence)"
+assert ESC + '[3J' not in data, "found ESC[3J (a clear sequence)"
+frames = data.split(ESC + '[H')
+assert frames[0] == '', "unexpected data before the first ESC[H: %r" % frames[0]
+frames = frames[1:]
+assert len(frames) == 2, "expected exactly 2 frames, got %d" % len(frames)
+for f in frames:
+    assert f.endswith(ESC + '[J'), "frame doesn't end with ESC[J: %r" % f
+    body = f[:-len(ESC + '[J')]
+    lines = body.split('\n')
+    assert lines[-1] == '', "frame body doesn't end with a newline before ESC[J: %r" % lines[-1]
+    for line in lines[:-1]:
+        assert line.endswith(ESC + '[K'), "line missing trailing ESC[K: %r" % line
+print("watch-frames-ok")
+PY
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"watch-frames-ok"* ]]
+}
+
+@test "fleet nav screenshots: sidebar table with a window row, and the post-go pane layout (take-screenshot term)" {
+    setup_fleet_fixture
+    tmux -L "$TMUX_SOCK" new-window -n extrawin -c "$BATS_TEST_TMPDIR" -t base
+    tmux -L "$TMUX_SOCK" select-window -t base:mainwin
+
+    run env -u TMUX TMUX="$FAKE_TMUX" "$FLEET" toggle
+    [ "$status" -eq 0 ]
+    sleep 1
+
+    local sidebar_pane
+    sidebar_pane="$(tmux -L "$TMUX_SOCK" list-panes -a -F '#{pane_id} #{@fleet_sidebar}' | awk '$2=="1"{print $1}')"
+    [ -n "$sidebar_pane" ]
+
+    local cap1="$BATS_TEST_TMPDIR/nav-rows-capture.txt"
+    tmux -L "$TMUX_SOCK" capture-pane -pJ -t "$sidebar_pane" > "$cap1"
+    run grep -F 'extra' "$cap1"
+    [ "$status" -eq 0 ]
+
+    local png1="/workspace/attachments/fleet-vyzk-rows-$$.png"
+    rm -f "$png1"
+    capture_with_retry "$png1" "cat $cap1"
+    [ -f "$png1" ]
+    [ "$(wc -c < "$png1")" -ge 20000 ]
+
+    run env -u TMUX TMUX="$FAKE_TMUX" bash -c "cd '$ROOT' && exec '$FLEET' go wa"
+    [ "$status" -eq 0 ]
+
+    local cap2="$BATS_TEST_TMPDIR/nav-post-go-panes.txt"
+    tmux -L "$TMUX_SOCK" list-panes -a -F '#{window_name} #{pane_id} #{pane_active} #{pane_width} #{@fleet_sidebar}' > "$cap2"
+
+    local png2="/workspace/attachments/fleet-vyzk-postgo-$$.png"
+    rm -f "$png2"
+    capture_with_retry "$png2" "cat $cap2"
+    [ -f "$png2" ]
+    [ "$(wc -c < "$png2")" -ge 20000 ]
+
+    echo "fleet nav screenshots: rows=$png1 post-go=$png2"
+}
