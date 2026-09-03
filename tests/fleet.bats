@@ -12,15 +12,22 @@
 # already established) -- no direct code dependency on either script.
 #
 # FROZEN per 1tym's acceptance contract from its RED commit until 1tym's
-# own verification completes.
+# own verification completes -- with one bead-owner-authorized addition
+# after GREEN (see beads_claude_docker-1tym's notes): the project-dir
+# slug rule ('.' and '_' both replaced, not just '/') was independently
+# reconfirmed by the bead owner via their own live `claude -p` probe, who
+# asked for a test pinning that exact example; the last test below (added
+# post-GREEN) is that pin. No other test in this file was touched.
 #
 # Slug rule confirmed EMPIRICALLY, not just against the plan doc's own
 # example: a real `claude -p` session opened at
 # /tmp/fleetprobe/aaa/.claude/worktrees/bbb produced project dir
 # -tmp-fleetprobe-aaa--claude-worktrees-bbb (double dash where '/' meets
-# '.' -- '.' is replaced too, not just '/'). fleet.sh's slug_for_path()
-# implements this as "replace every character that is not
-# [A-Za-z0-9_-] with '-'".
+# '.' -- '.' is replaced too, not just '/'); a second probe with
+# underscores in both path components (.../a_b/.claude/worktrees/c_d)
+# produced .../a-b--claude-worktrees-c-d, confirming '_' is replaced too,
+# not preserved. fleet.sh's slug_for_path() implements this as "replace
+# every character that is not [A-Za-z0-9] with '-'".
 #
 # Every tmux test runs on a scratch `tmux -L fleet-test-<pid>-<rand>`
 # server loaded with config/tmux.conf, never the live server this session
@@ -242,6 +249,39 @@ run_fleet_once() {
     [ "$status" -eq 0 ]
     [ "$(printf '%s\n' "$output" | grep -c .)" -eq 1 ]
     [[ "$output" == *"not inside a git repository"* ]]
+}
+
+# Added post-GREEN, bead-owner-authorized (see the file header and
+# beads_claude_docker-1tym's notes): pins the project-dir slug rule
+# against a worktree whose name contains '.', the same shape as the bead
+# owner's own live-session probe (…/.claude/worktrees/slug.probe ->
+# project dir …-claude-worktrees-slug-probe). A live session isn't
+# available inside a bats test, so this pins the rule at the boundary
+# that's actually observable here: fleet.sh's own slug_for_path()
+# (re-derived independently below via the exact confirmed transform, not
+# imported from fleet.sh) must compute the SAME project dir fleet.sh
+# itself uses internally, since only then does a lane fixture written
+# under that computed dir get picked up -- if slug_for_path() disagreed
+# (e.g. by leaving '.' unreplaced), fleet --once would report lane '-'
+# instead of "deep" and this test would fail.
+@test "fleet --once: lane resolves for a worktree path containing '.' (project-dir slug rule)" {
+    export CLAUDE_PROJECTS_DIR="$BATS_TEST_TMPDIR/projects"
+    export LANE_STATE_DIR="$BATS_TEST_TMPDIR/lane-state"
+    mkdir -p "$CLAUDE_PROJECTS_DIR" "$LANE_STATE_DIR"
+
+    ROOT="$(new_scratch_repo repo)"
+    WD="$(add_worktree "$ROOT" "slug.probe" 0)"
+
+    local slug
+    slug="$(printf '%s' "$WD" | sed 's/[^A-Za-z0-9]/-/g')"
+    mkdir -p "$CLAUDE_PROJECTS_DIR/$slug"
+    printf '{}\n' > "$CLAUDE_PROJECTS_DIR/$slug/sess-dot.jsonl"
+    printf '{"lane":"deep"}\n' > "$LANE_STATE_DIR/sess-dot.json"
+
+    run bash -c "cd '$WD' && exec '$FLEET' --once"
+    [ "$status" -eq 0 ]
+    run grep -E '^- slug\.probe [0-9]+ 0/0 deep 0 [0-9]+s$' <<<"$output"
+    [ "$status" -eq 0 ]
 }
 
 # ── toggle ───────────────────────────────────────────────────────────────

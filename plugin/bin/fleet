@@ -19,12 +19,15 @@
 # Lane and live-agent data come from Claude's own transcript layout, not
 # this repo's: project dir = $CLAUDE_PROJECTS_DIR/<slug> (default
 # ~/.claude/projects), slug = the worktree's absolute path with every
-# character that is not [A-Za-z0-9_-] replaced by '-'. Confirmed
-# empirically against a live session (not just the plan doc's own
+# character that is not [A-Za-z0-9] replaced by '-'. Confirmed
+# empirically against live sessions (not just the plan doc's own
 # example): a probe session opened at /tmp/fleetprobe/aaa/.claude/worktrees/bbb
-# produced project dir -tmp-fleetprobe-aaa--claude-worktrees-bbb -- note
-# the DOUBLE dash where '/' meets '.', i.e. '.' is replaced too, not just
-# '/'. The newest *.jsonl directly under that project dir is the worktree's
+# produced project dir -tmp-fleetprobe-aaa--claude-worktrees-bbb (note the
+# DOUBLE dash where '/' meets '.', i.e. '.' is replaced too, not just
+# '/'), and a second probe with underscores in both path components
+# (.../a_b/.claude/worktrees/c_d) produced .../a-b--claude-worktrees-c-d,
+# confirming '_' is replaced too, not preserved. The newest *.jsonl
+# directly under that project dir is the worktree's
 # session; its basename (sans .jsonl) is the session id and its mtime is
 # the last-activity age. Lane: $LANE_STATE_DIR/<session id>.json's .lane
 # field (default ~/.claude/cache/lane), '-' if absent/unreadable. Live
@@ -110,11 +113,12 @@ role_letter() {
 }
 
 # slug_for_path <abs-path> — the ~/.claude/projects/<slug> directory name
-# for <abs-path>: every character that is not [A-Za-z0-9_-] becomes '-'
-# (see the header comment for the empirical confirmation that '.' is
-# included, not just '/').
+# for <abs-path>: every character that is not [A-Za-z0-9] becomes '-' (see
+# the header comment for the empirical confirmation that '.' and '_' are
+# included, not just '/' -- an existing '-' passes through unchanged
+# either way, since replacing '-' with '-' is a no-op).
 slug_for_path() {
-    printf '%s' "$1" | sed -E 's/[^A-Za-z0-9_-]/-/g'
+    printf '%s' "$1" | sed 's/[^A-Za-z0-9]/-/g'
 }
 
 projects_root() {
