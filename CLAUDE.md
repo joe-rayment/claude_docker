@@ -118,7 +118,7 @@ Curated playbooks live at `/opt/claude-dev/knowledge-base/` (repo: `knowledge-ba
 | `hx` / `vim` | Helix editor |
 | `csn` / `cs-new [name]` | New worktree session under `.claude/worktrees/` |
 | `fleet-menu` (prefix N H R J V M S) | New/Hide/Restore/Jump/Review/Remove merged/Sidebar |
-| `fleet` | Worktree sidebar (`--once`, `--watch`, `toggle`) |
+| `fleet` | Worktree sidebar — navigate: Enter/click jump, n new, q close (`--once`, `--watch`, `toggle`) |
 
 ## Editing the template
 
