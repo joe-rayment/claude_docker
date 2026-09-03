@@ -8,6 +8,66 @@ set -euo pipefail
 err() { printf 'cs-new: %s\n' "$*" >&2; }
 die() { err "$*"; exit 1; }
 
+# SELF — this script's own absolute path, used by FLEET_BIN below to
+# find its sibling fleet script regardless of cwd.
+SELF="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")"
+
+# FLEET_BIN — the 'fleet' launcher cs-new calls (fleet follow, once the
+# new window exists) so an open sidebar joins the fresh session right
+# away. Prefers the exact sibling next to THIS copy of cs-new.sh
+# (scripts/fleet.sh in a checkout, fleet alongside an installed/staged
+# cs-new) over a bare PATH lookup -- same anti-staleness rationale as
+# fleet.sh's own CS_NEW_BIN (see its comment): a test running the edited
+# source checkout must never shell out to a stale /usr/local/bin/fleet
+# left over from before the last image sync, while in a real deployment
+# the sibling IS the installed/staged copy anyway (same file, same
+# result either way). Falls back to PATH's fleet only if no sibling
+# script is found next to SELF.
+if [ -f "$(dirname "$SELF")/fleet.sh" ]; then
+    FLEET_BIN="$(dirname "$SELF")/fleet.sh"
+elif [ -f "$(dirname "$SELF")/fleet" ]; then
+    FLEET_BIN="$(dirname "$SELF")/fleet"
+else
+    FLEET_BIN="fleet"
+fi
+
+# seed_trust <root> <worktree> — best-effort: if $HOME/.claude.json
+# exists and <root> is already trusted there, copy that trust to
+# <worktree> too (same code the user already trusted, one directory
+# deeper) via jq to a temp file in the same directory, then `mv -f` over
+# the original, preserving its mode. Merges into any existing object at
+# <worktree> rather than clobbering it. Does nothing -- and never
+# creates the file -- if $HOME, the file, jq, or the root's trust entry
+# is missing, or the file doesn't parse: worst case the folder-trust
+# dialog just shows once more.
+#
+# Best-effort only: Claude Code re-reads this file at its own startup,
+# and a concurrently running Claude process can rewrite it between our
+# read and our mv, silently losing the seed -- acceptable.
+seed_trust() {
+    local root="$1" worktree="$2" claude_json trusted tmp mode
+    [ -n "${HOME:-}" ] || return 0
+    claude_json="$HOME/.claude.json"
+    [ -f "$claude_json" ] || return 0
+    command -v jq >/dev/null 2>&1 || return 0
+
+    trusted="$(jq -r --arg root "$root" '.projects[$root].hasTrustDialogAccepted // false' "$claude_json" 2>/dev/null)" || trusted=""
+    [ "$trusted" = "true" ] || return 0
+
+    tmp="$(mktemp "$claude_json.XXXXXX" 2>/dev/null)" || return 0
+    if jq --indent 2 --arg wt "$worktree" \
+        '.projects[$wt] = ((.projects[$wt] // {}) + {hasTrustDialogAccepted: true})' \
+        "$claude_json" > "$tmp" 2>/dev/null
+    then
+        mode="$(stat -c '%a' "$claude_json" 2>/dev/null)" || mode=""
+        [ -n "$mode" ] && chmod "$mode" "$tmp" 2>/dev/null
+        mv -f "$tmp" "$claude_json" 2>/dev/null || rm -f "$tmp"
+    else
+        rm -f "$tmp"
+    fi
+    return 0
+}
+
 usage() {
     cat <<'EOF'
 Usage: cs-new [name]
@@ -121,6 +181,12 @@ else
     echo "cs-new: $name -> $path"
 fi
 
+# Best-effort, both modes alike: give the worktree the same folder trust
+# root already has, one directory deeper, so the new session doesn't
+# land on a "Do you trust this folder?" dialog (default answer "No,
+# exit", which would just close the window -- beads_claude_docker-8wy7).
+seed_trust "$root" "$path"
+
 if [ -n "${CS_NEW_LAUNCH:-}" ]; then
     launch_cmd="$CS_NEW_LAUNCH"
 else
@@ -130,6 +196,9 @@ fi
 if [ -n "${TMUX:-}" ]; then
     tmux new-window -n "$name" -c "$path" -e "BEADS_DIR=$root/.beads" -- "$launch_cmd"
     tmux select-window -t "$name" 2>/dev/null || true
+    # An open sidebar should join the fresh session immediately rather
+    # than waiting for the next --watch tick or a manual jump.
+    "$FLEET_BIN" follow >/dev/null 2>&1 || true
 else
     cd "$path"
     exec env BEADS_DIR="$root/.beads" bash -c "$launch_cmd"

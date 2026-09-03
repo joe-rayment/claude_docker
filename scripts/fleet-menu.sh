@@ -25,18 +25,37 @@ die() { err "$*"; exit 1; }
 TAB=$'\t'
 
 # FLEET_BIN — the 'fleet' script cmd_sidebar delegates to. Prefers PATH
-# (the installed /usr/local/bin/fleet, matching every other cross-script
-# invocation's own convention -- e.g. cmd_new's bare `cs-new`), falling
-# back to the script sitting right next to this one when 'fleet' isn't on
-# PATH -- the same gap fleet.sh's own SELF comment documents for its
-# --watch re-invocation: a container that hasn't re-synced /usr/local/bin
-# since the last image build, or this script run straight from a
+# (the installed /usr/local/bin/fleet), falling back to the script
+# sitting right next to this one when 'fleet' isn't on PATH -- the same
+# gap fleet.sh's own SELF comment documents for its --watch
+# re-invocation: a container that hasn't re-synced /usr/local/bin since
+# the last image build, or this script run straight from a
 # checkout/test. Resolved once at load time since it never changes for
 # the life of one invocation.
 if command -v fleet >/dev/null 2>&1; then
     FLEET_BIN="fleet"
 else
     FLEET_BIN="$(dirname "$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")")/fleet.sh"
+fi
+
+# CS_NEW_BIN — the cs-new launcher cmd_new runs. Prefers the exact
+# sibling next to THIS copy of fleet-menu.sh (scripts/cs-new.sh in a
+# checkout, cs-new alongside an installed/staged fleet-menu) over a bare
+# PATH lookup -- inverted from FLEET_BIN's own precedence on purpose,
+# the same anti-staleness rationale fleet.sh's own CS_NEW_BIN documents:
+# a test running the edited source checkout must never shell out to a
+# stale /usr/local/bin/cs-new left over from before the last image sync
+# (confirmed to actually be stale during beads_claude_docker-8wy7's own
+# implementation -- lacked --open entirely), while in a real deployment
+# the sibling IS the installed/staged copy anyway (same file, same
+# result either way). Falls back to PATH's cs-new only if no sibling
+# script is found next to SELF.
+if [ -f "$(dirname "$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")")/cs-new.sh" ]; then
+    CS_NEW_BIN="$(dirname "$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")")/cs-new.sh"
+elif [ -f "$(dirname "$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")")/cs-new" ]; then
+    CS_NEW_BIN="$(dirname "$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")")/cs-new"
+else
+    CS_NEW_BIN="cs-new"
 fi
 
 # PANE_ID / PANE_PATH / REST — set by parse_pane_args, called at the top
@@ -95,8 +114,9 @@ pane". Omit them (as every direct/manual invocation does) to fall back
 to that ambient resolution.
 
 Subcommands:
-  new                       Create a worktree session (run-shell cs-new)
-                            in the current pane's repo root.
+  new                       Create a worktree session (runs cs-new
+                            synchronously) in the current pane's repo
+                            root.
   hide                      Break the current pane out into its own
                             (backgrounded) window, keeping the current
                             window's name so it's visible in the status
@@ -303,7 +323,43 @@ cmd_new() {
     parse_pane_args "$@"
     local root
     root="$(resolve_root)"
-    tmux run-shell -b -c "$root" "cs-new"
+    # Run cs-new synchronously, right here in the (outer) run-shell that
+    # fired this binding -- no nested run-shell, no -b. A nested
+    # backgrounded run-shell has no target pane, so tmux paints its
+    # captured stdout+stderr (git's "Preparing worktree.../HEAD is now
+    # at..." plus cs-new's own "cs-new: <name> -> <path>") as a
+    # view-mode overlay on whatever pane is current when the job
+    # finishes -- which is the brand-new Claude pane, hiding its
+    # folder-trust dialog underneath (beads_claude_docker-8wy7). Capturing
+    # output into a variable instead means nothing reaches this script's
+    # own stdout/stderr on success, so the outer run-shell has nothing to
+    # display either. $TMUX is already set in this run-shell's own
+    # environment (inherited from the tmux server process), so cs-new
+    # takes its tmux branch and returns as soon as the new window exists
+    # -- it does not block on however long the launched session runs.
+    local name_args=()
+    if [ -n "${FLEET_MENU_NEW_NAME:-}" ]; then
+        name_args=("$FLEET_MENU_NEW_NAME")
+    fi
+    local out status=0
+    out="$(cd "$root" && "$CS_NEW_BIN" "${name_args[@]}" 2>&1)" || status=$?
+    if [ "$status" -ne 0 ]; then
+        local first_line
+        first_line="$(printf '%s' "$out" | grep -m1 . || true)"
+        # -p (print to the calling client rather than the pane-targeted
+        # status line) matters here: without it, display-message needs a
+        # resolvable attached client for the target pane, which a
+        # run-shell context doesn't reliably have. -p instead writes to
+        # this (still-connected, since run-shell with no -b blocks the
+        # issuing client until the job finishes) invocation's own
+        # stdout, which is exactly the channel the outer run-shell
+        # relays straight back to the client that fired the binding --
+        # confirmed empirically not to reopen the pane-overlay bug this
+        # fix exists for, since that only happens for BACKGROUNDED
+        # (-b) jobs whose issuing client has already disconnected.
+        tmux display-message -p "fleet-menu new: ${first_line:-cs-new exited $status}"
+        return 1
+    fi
 }
 
 cmd_hide() {
