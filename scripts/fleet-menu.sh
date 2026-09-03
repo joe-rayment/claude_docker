@@ -24,9 +24,60 @@ die() { err "$*"; exit 1; }
 # this real tab byte instead of writing \t directly.
 TAB=$'\t'
 
+# PANE_ID / PANE_PATH / REST — set by parse_pane_args, called at the top
+# of every cmd_* function. config/tmux.conf's bindings invoke fleet-menu
+# via `tmux run-shell`, which spawns the script with no TMUX_PANE set --
+# so a bare ambient `tmux display -p` (no -t) inside the script falls
+# back to tmux's own best guess at "the current pane" (the session's
+# last select-pane/select-window state) rather than the exact pane that
+# fired the binding. Bindings work around this by passing tmux formats
+# that expand at fire-time: `fleet-menu hide #{pane_id}`, and for the
+# subcommands that also need a repo root, `fleet-menu new #{pane_id}
+# #{pane_current_path}`. Both are optional leading args -- a pane id
+# always looks like %N and a repo-root path always starts with / (never
+# ambiguous with --print or a plain window/worktree name) -- so every
+# existing direct invocation (including every test in
+# tests/tmux-fleet.bats that doesn't pass them) is unaffected and keeps
+# falling back to ambient `tmux display -p` resolution.
+PANE_ID=""
+PANE_PATH=""
+REST=()
+parse_pane_args() {
+    PANE_ID=""
+    PANE_PATH=""
+    REST=()
+    if [ $# -gt 0 ]; then
+        case "$1" in
+            %[0-9]*)
+                PANE_ID="$1"
+                shift
+                ;;
+        esac
+    fi
+    if [ -n "$PANE_ID" ] && [ $# -gt 0 ]; then
+        case "$1" in
+            /*)
+                PANE_PATH="$1"
+                shift
+                ;;
+        esac
+    fi
+    REST=("$@")
+}
+
 usage() {
     cat <<'EOF'
 Usage: fleet-menu <subcommand> [args...]
+
+Every subcommand takes two optional LEADING args, ahead of its own
+[args...] below: a pane id (%N) and, for the subcommands that need a
+repo root (new, review, remove-merged), that pane's current path.
+config/tmux.conf's bindings pass these as `#{pane_id}` / `#{pane_current_path}`
+(tmux expands the format at fire-time) because run-shell spawns fleet-menu
+with no TMUX_PANE set, so a bare ambient `tmux display -p` inside the
+script would otherwise fall back to its own best guess at "the current
+pane". Omit them (as every direct/manual invocation does) to fall back
+to that ambient resolution.
 
 Subcommands:
   new                       Create a worktree session (run-shell cs-new)
@@ -67,11 +118,52 @@ EOF
 
 # ── shared helpers ──────────────────────────────────────────────────────
 
-# current_pane_path — the invoking pane's cwd, via the ambient tmux
-# context (no explicit target: see the header comment on why that's safe
-# and test-friendly).
+# current_pane_path — PANE_PATH if the caller passed one explicitly
+# (bindings do, via #{pane_current_path} -- see parse_pane_args above),
+# else PANE_ID's own path via an explicit tmux -t (bindings that only
+# pass a pane id), else the ambient "current" pane via a bare
+# `tmux display -p` (every direct invocation with no leading args, e.g.
+# every existing test in tests/tmux-fleet.bats).
 current_pane_path() {
+    if [ -n "$PANE_PATH" ]; then
+        printf '%s\n' "$PANE_PATH"
+        return 0
+    fi
+    if [ -n "$PANE_ID" ]; then
+        tmux display -p -t "$PANE_ID" '#{pane_current_path}' 2>/dev/null || die "no such pane: $PANE_ID"
+        return 0
+    fi
     tmux display -p '#{pane_current_path}' 2>/dev/null || die "not inside a tmux session (or scratch server unreachable)"
+}
+
+# current_pane_id — PANE_ID if the caller passed one explicitly, else the
+# ambient "current" pane id.
+current_pane_id() {
+    if [ -n "$PANE_ID" ]; then
+        printf '%s\n' "$PANE_ID"
+        return 0
+    fi
+    tmux display -p '#{pane_id}' 2>/dev/null || die "not inside a tmux session"
+}
+
+# current_window_id — the window id for PANE_ID if the caller passed one
+# explicitly (via an explicit tmux -t), else the ambient "current" window.
+current_window_id() {
+    if [ -n "$PANE_ID" ]; then
+        tmux display -p -t "$PANE_ID" '#{window_id}' 2>/dev/null || die "no such pane: $PANE_ID"
+        return 0
+    fi
+    tmux display -p '#{window_id}' 2>/dev/null || die "not inside a tmux session"
+}
+
+# current_window_name — the window name for PANE_ID if the caller passed
+# one explicitly, else the ambient "current" window's name.
+current_window_name() {
+    if [ -n "$PANE_ID" ]; then
+        tmux display -p -t "$PANE_ID" '#{window_name}' 2>/dev/null || die "no such pane: $PANE_ID"
+        return 0
+    fi
+    tmux display -p '#{window_name}' 2>/dev/null || die "not inside a tmux session"
 }
 
 # git_root <path> — <path>'s git worktree toplevel, or empty + non-zero
@@ -125,7 +217,7 @@ merged_worktrees() {
     local root="$1" merged
     merged="$(git -C "$root" branch --merged main --format='%(refname:short)' 2>/dev/null || true)"
     list_worktrees "$root" | while IFS=$'\t' read -r name branch path; do
-        if printf '%s\n' "$merged" | grep -qx -- "$branch"; then
+        if printf '%s\n' "$merged" | grep -qFx -- "$branch"; then
             printf '%s\t%s\t%s\n' "$name" "$branch" "$path"
         fi
     done
@@ -190,22 +282,25 @@ menu_key() {
 # ── subcommands ──────────────────────────────────────────────────────────
 
 cmd_new() {
+    parse_pane_args "$@"
     local root
     root="$(resolve_root)"
     tmux run-shell -b -c "$root" "cs-new"
 }
 
 cmd_hide() {
+    parse_pane_args "$@"
     local cur_pane cur_win_name
-    cur_pane="$(tmux display -p '#{pane_id}' 2>/dev/null)" || die "not inside a tmux session"
-    cur_win_name="$(tmux display -p '#{window_name}' 2>/dev/null)" || die "not inside a tmux session"
+    cur_pane="$(current_pane_id)"
+    cur_win_name="$(current_window_name)"
     tmux break-pane -d -s "$cur_pane" -n "$cur_win_name"
 }
 
 cmd_restore() {
+    parse_pane_args "$@"
     local cur
-    cur="$(tmux display -p '#{window_id}' 2>/dev/null)" || die "not inside a tmux session"
-    case "${1:-}" in
+    cur="$(current_window_id)"
+    case "${REST[0]:-}" in
         --print)
             tmux list-windows -F "#{window_id}${TAB}#{window_name}" 2>/dev/null | awk -F'\t' -v cur="$cur" '$1!=cur'
             ;;
@@ -224,7 +319,7 @@ cmd_restore() {
             ;;
         *)
             local target
-            target="$(resolve_window_target "$1")" || die "no such window (or ambiguous name): $1"
+            target="$(resolve_window_target "${REST[0]}")" || die "no such window (or ambiguous name): ${REST[0]}"
             [ "$target" != "$cur" ] || die "cannot restore the current window into itself"
             tmux join-pane -h -s "$target" -t "$cur"
             ;;
@@ -232,7 +327,8 @@ cmd_restore() {
 }
 
 cmd_jump() {
-    case "${1:-}" in
+    parse_pane_args "$@"
+    case "${REST[0]:-}" in
         --print)
             tmux list-windows -F "#{window_id}${TAB}#{window_name}${TAB}#{pane_current_path}" 2>/dev/null \
                 | while IFS=$'\t' read -r wid wname wpath; do
@@ -254,16 +350,17 @@ cmd_jump() {
             ;;
         *)
             local target
-            target="$(resolve_window_target "$1")" || die "no such window (or ambiguous name): $1"
+            target="$(resolve_window_target "${REST[0]}")" || die "no such window (or ambiguous name): ${REST[0]}"
             tmux select-window -t "$target"
             ;;
     esac
 }
 
 cmd_review() {
+    parse_pane_args "$@"
     local root
     root="$(resolve_root)"
-    case "${1:-}" in
+    case "${REST[0]:-}" in
         --print)
             list_worktrees "$root" | while IFS=$'\t' read -r name branch path; do
                 ahead="$(git -C "$root" rev-list --count "main..$branch" 2>/dev/null || echo 0)"
@@ -273,7 +370,7 @@ cmd_review() {
         "")
             local items=() name branch path i=0
             while IFS=$'\t' read -r name branch path; do
-                items+=("$name ($branch)" "$(menu_key "$i")" "run-shell \"fleet-menu review $(printf '%q' "$name")\"")
+                items+=("$name ($branch)" "$(menu_key "$i")" "run-shell \"fleet-menu review #{pane_id} #{pane_current_path} $(printf '%q' "$name")\"")
                 i=$((i + 1))
             done < <(list_worktrees "$root")
             if [ "${#items[@]}" -eq 0 ]; then
@@ -284,7 +381,7 @@ cmd_review() {
             ;;
         *)
             local rec branch
-            rec="$(worktree_record "$root" "$1")" || die "no such worktree: $1"
+            rec="$(worktree_record "$root" "${REST[0]}")" || die "no such worktree: ${REST[0]}"
             branch="$(printf '%s' "$rec" | cut -f2)"
             show_review_popup "$root" "$branch"
             ;;
@@ -292,16 +389,17 @@ cmd_review() {
 }
 
 cmd_remove_merged() {
+    parse_pane_args "$@"
     local root
     root="$(resolve_root)"
-    case "${1:-}" in
+    case "${REST[0]:-}" in
         --print)
             merged_worktrees "$root" | cut -f1,2
             ;;
         "")
             local items=() name branch path i=0
             while IFS=$'\t' read -r name branch path; do
-                items+=("$name ($branch)" "$(menu_key "$i")" "run-shell \"fleet-menu remove-merged $(printf '%q' "$name")\"")
+                items+=("$name ($branch)" "$(menu_key "$i")" "run-shell \"fleet-menu remove-merged #{pane_id} #{pane_current_path} $(printf '%q' "$name")\"")
                 i=$((i + 1))
             done < <(merged_worktrees "$root")
             if [ "${#items[@]}" -eq 0 ]; then
@@ -312,14 +410,14 @@ cmd_remove_merged() {
             ;;
         *)
             local rec branch path
-            rec="$(worktree_record "$root" "$1")" || die "no such worktree: $1"
+            rec="$(worktree_record "$root" "${REST[0]}")" || die "no such worktree: ${REST[0]}"
             branch="$(printf '%s' "$rec" | cut -f2)"
             path="$(printf '%s' "$rec" | cut -f3)"
-            git -C "$root" branch --merged main --format='%(refname:short)' 2>/dev/null | grep -qx -- "$branch" \
+            git -C "$root" branch --merged main --format='%(refname:short)' 2>/dev/null | grep -qFx -- "$branch" \
                 || die "refusing to remove unmerged branch: $branch"
             git -C "$root" worktree remove "$path" || die "git worktree remove failed for $path"
             git -C "$root" branch -d "$branch" || die "git branch -d failed for $branch"
-            echo "fleet-menu: removed worktree $1 (branch $branch)"
+            echo "fleet-menu: removed worktree ${REST[0]} (branch $branch)"
             ;;
     esac
 }

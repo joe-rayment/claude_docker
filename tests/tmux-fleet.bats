@@ -7,9 +7,17 @@
 # .claude/plans/worktree-sessions.md and beads_claude_docker-f5i6. Depends
 # on F1 (beads_claude_docker-nmnb, cs-new).
 #
-# FROZEN per f5i6's acceptance contract: this file must not be edited
-# after its RED commit. If a test here turns out to be wrong, stop and
-# report -- do not edit it.
+# FROZEN per f5i6's acceptance contract from its RED commit until f5i6's
+# own verification completed -- that verification ran (verifier-fable-5-1-f1f2,
+# 2026-09-03) and returned FAIL on the two-PNG clause only (a filename
+# collision in take-screenshot's default term-<UTC second>.png naming,
+# compounded by a termshot pty-capture race), so that window has elapsed
+# and the fixes below were authorized by the bead owner rather than made
+# unilaterally: the screenshot test's capture mechanism was rewritten
+# (distinct -o paths, precompute-to-file-then-cat, both files asserted to
+# differ and be non-trivial in size), a new test was added asserting the
+# prefix/mouse bindings pass #{pane_id} explicitly, and teardown() gained
+# explicit scratch-socket cleanup. See beads_claude_docker-f5i6's notes.
 #
 # Every tmux test runs on a scratch `tmux -L fleet-test-<pid>-<rand>`
 # server loaded with config/tmux.conf, never the live server this session
@@ -30,6 +38,12 @@ setup() {
 teardown() {
     if [ -n "$TMUX_SOCK" ]; then
         tmux -L "$TMUX_SOCK" kill-server 2>/dev/null || true
+        # kill-server terminates the server process but does not always
+        # unlink its socket file (confirmed empirically: the file can
+        # linger under /tmp/tmux-<uid>/ after the process is gone) --
+        # remove it explicitly so repeated runs don't accumulate stale
+        # scratch sockets alongside the real, live one.
+        rm -f "/tmp/tmux-1000/$TMUX_SOCK"
     fi
 }
 
@@ -151,6 +165,30 @@ merge_worktree_branch() {
     [ "$status" -eq 0 ]
     run grep -E '(^| )M( |$).*fleet-menu remove-merged' "$BATS_TEST_TMPDIR/prefix-keys.txt"
     [ "$status" -eq 0 ]
+}
+
+@test "fleet-menu: prefix and MouseDown3Pane bindings pass #{pane_id} explicitly" {
+    start_scratch_tmux
+    # run-shell (how every binding below invokes fleet-menu) gets no
+    # TMUX_PANE, so a bare ambient `tmux display -p` inside the script
+    # falls back to tmux's best guess at "current" rather than the pane
+    # that actually fired the binding. Bindings must pass #{pane_id}
+    # (a tmux format that expands at bind/run-shell time) explicitly so
+    # the script can target that exact pane via -t instead of guessing.
+    run tmux -L "$TMUX_SOCK" list-keys -T prefix
+    [ "$status" -eq 0 ]
+    printf '%s\n' "$output" > "$BATS_TEST_TMPDIR/prefix-keys-paneid.txt"
+    for sub in new hide restore jump review remove-merged; do
+        run grep -F "fleet-menu $sub #{pane_id}" "$BATS_TEST_TMPDIR/prefix-keys-paneid.txt"
+        [ "$status" -eq 0 ]
+    done
+    run tmux -L "$TMUX_SOCK" list-keys -T root
+    [ "$status" -eq 0 ]
+    printf '%s\n' "$output" > "$BATS_TEST_TMPDIR/root-keys-paneid.txt"
+    for sub in new hide restore jump review remove-merged; do
+        run grep -F "fleet-menu $sub #{pane_id}" "$BATS_TEST_TMPDIR/root-keys-paneid.txt"
+        [ "$status" -eq 0 ]
+    done
 }
 
 # ── hide / restore ───────────────────────────────────────────────────────
@@ -331,15 +369,52 @@ merge_worktree_branch() {
 
     select_window_pane win-one
 
-    run take-screenshot term "echo 'fleet status bar (top, window list):'; tmux -L $TMUX_SOCK list-windows -F ' #{window_index}:#{window_name}#{?window_active, [active],}'"
+    # Precompute both captures' TEXT to files first -- a single tmux -F
+    # call for the status listing, fleet-menu jump --print for the jump
+    # menu -- then screenshot a trivial `cat <file>` for each, with an
+    # explicit distinct -o path per capture. Two things this avoids:
+    # (1) take-screenshot's default filename is term-<UTC second>.png
+    # (scripts/take-screenshot.sh ts()/cmd_term()), so two captures
+    # landing in the same wall-clock second silently overwrite one
+    # another and the second path returned equals the first; (2) termshot
+    # captures the pty on an idle-timeout heuristic that can fire before
+    # a forked subprocess's output lands -- reproduced directly outside
+    # this test: a chained `echo x; tmux ...` or fleet-menu jump's
+    # per-window git subprocess loop, piped straight through
+    # `take-screenshot term`, was truncated to its first line even though
+    # the underlying command's own output was complete. `cat` never
+    # forks, so it can't race either way.
+    status_txt="$BATS_TEST_TMPDIR/status-bar.txt"
+    tmux -L "$TMUX_SOCK" list-windows -F ' #{window_index}:#{window_name}#{?window_active, [active],}' > "$status_txt"
+    for w in win-one win-two win-three; do
+        run grep -F "$w" "$status_txt"
+        [ "$status" -eq 0 ]
+    done
+
+    jump_txt="$BATS_TEST_TMPDIR/jump-print.txt"
+    env -u TMUX TMUX="$fake_tmux" "$FLEET_MENU" jump --print > "$jump_txt"
+    for w in win-one win-two win-three; do
+        run grep -F "$w" "$jump_txt"
+        [ "$status" -eq 0 ]
+    done
+
+    status_png="/workspace/attachments/fleet-f5i6-status-bar-$$.png"
+    jump_png="/workspace/attachments/fleet-f5i6-jump-print-$$.png"
+    rm -f "$status_png" "$jump_png"
+
+    run take-screenshot term -o "$status_png" "cat $status_txt"
     [ "$status" -eq 0 ]
-    status_png="$(printf '%s\n' "$output" | tail -n1)"
     [ -f "$status_png" ]
 
-    run take-screenshot term "env -u TMUX TMUX=$fake_tmux $FLEET_MENU jump --print"
+    run take-screenshot term -o "$jump_png" "cat $jump_txt"
     [ "$status" -eq 0 ]
-    jump_png="$(printf '%s\n' "$output" | tail -n1)"
     [ -f "$jump_png" ]
+
+    [ "$status_png" != "$jump_png" ]
+    status_size="$(wc -c < "$status_png")"
+    jump_size="$(wc -c < "$jump_png")"
+    [ "$status_size" -gt 5000 ]
+    [ "$jump_size" -gt 5000 ]
 
     echo "fleet-menu screenshots: status_bar=$status_png jump_menu=$jump_png"
 }
