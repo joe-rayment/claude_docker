@@ -3,9 +3,10 @@
 # tmux-fleet.bats — scripts/fleet-menu.sh, installed as fleet-menu, plus
 # config/tmux.conf's status bar / MouseDown3Pane extension / prefix
 # keybindings for the worktree-session fleet: New worktree session / Hide
-# / Restore… / Jump… / Review… / Remove merged…. See
-# .claude/plans/worktree-sessions.md and beads_claude_docker-f5i6. Depends
-# on F1 (beads_claude_docker-nmnb, cs-new).
+# / Restore… / Jump… / Review… / Remove merged… / Sidebar. See
+# .claude/plans/worktree-sessions.md, beads_claude_docker-f5i6 and
+# beads_claude_docker-blrl (F4b, the Sidebar item + prefix S + fleet-menu
+# sidebar subcommand). Depends on F1 (beads_claude_docker-nmnb, cs-new).
 #
 # FROZEN per f5i6's acceptance contract from its RED commit until f5i6's
 # own verification completed -- that verification ran (verifier-fable-5-1-f1f2,
@@ -18,6 +19,13 @@
 # differ and be non-trivial in size), a new test was added asserting the
 # prefix/mouse bindings pass #{pane_id} explicitly, and teardown() gained
 # explicit scratch-socket cleanup. See beads_claude_docker-f5i6's notes.
+#
+# FROZEN again per blrl's own acceptance contract from blrl's RED commit
+# onward: the MouseDown3Pane label test and the pane_id-passing test's
+# subcommand loop were extended to cover the new Sidebar item/binding
+# (both honest additions, not replacements, per blrl's own authorization
+# to update this file), and one new test was added exercising `fleet-menu
+# sidebar`'s delegation to `fleet toggle` end to end.
 #
 # Every tmux test runs on a scratch `tmux -L fleet-test-<pid>-<rand>`
 # server loaded with config/tmux.conf, never the live server this session
@@ -135,7 +143,7 @@ merge_worktree_branch() {
 
 # ── right-click menu / prefix keys ──────────────────────────────────────
 
-@test "fleet-menu: MouseDown3Pane binding contains the six new item labels" {
+@test "fleet-menu: MouseDown3Pane binding contains the six new item labels plus Sidebar" {
     start_scratch_tmux
     run tmux -L "$TMUX_SOCK" list-keys -T root
     [ "$status" -eq 0 ]
@@ -146,9 +154,10 @@ merge_worktree_branch() {
     [[ "$output" == *"Jump"* ]]
     [[ "$output" == *"Review"* ]]
     [[ "$output" == *"Remove merged"* ]]
+    [[ "$output" == *"Sidebar"* ]]
 }
 
-@test "fleet-menu: list-keys shows prefix bindings for N H R J V M mapped to fleet-menu commands" {
+@test "fleet-menu: list-keys shows prefix bindings for N H R J V M S mapped to fleet-menu commands" {
     start_scratch_tmux
     run tmux -L "$TMUX_SOCK" list-keys -T prefix
     [ "$status" -eq 0 ]
@@ -165,6 +174,8 @@ merge_worktree_branch() {
     [ "$status" -eq 0 ]
     run grep -E '(^| )M( |$).*fleet-menu remove-merged' "$BATS_TEST_TMPDIR/prefix-keys.txt"
     [ "$status" -eq 0 ]
+    run grep -E '(^| )S( |$).*fleet-menu sidebar' "$BATS_TEST_TMPDIR/prefix-keys.txt"
+    [ "$status" -eq 0 ]
 }
 
 @test "fleet-menu: prefix and MouseDown3Pane bindings pass #{pane_id} explicitly" {
@@ -178,14 +189,14 @@ merge_worktree_branch() {
     run tmux -L "$TMUX_SOCK" list-keys -T prefix
     [ "$status" -eq 0 ]
     printf '%s\n' "$output" > "$BATS_TEST_TMPDIR/prefix-keys-paneid.txt"
-    for sub in new hide restore jump review remove-merged; do
+    for sub in new hide restore jump review remove-merged sidebar; do
         run grep -F "fleet-menu $sub #{pane_id}" "$BATS_TEST_TMPDIR/prefix-keys-paneid.txt"
         [ "$status" -eq 0 ]
     done
     run tmux -L "$TMUX_SOCK" list-keys -T root
     [ "$status" -eq 0 ]
     printf '%s\n' "$output" > "$BATS_TEST_TMPDIR/root-keys-paneid.txt"
-    for sub in new hide restore jump review remove-merged; do
+    for sub in new hide restore jump review remove-merged sidebar; do
         run grep -F "fleet-menu $sub #{pane_id}" "$BATS_TEST_TMPDIR/root-keys-paneid.txt"
         [ "$status" -eq 0 ]
     done
@@ -333,6 +344,31 @@ merge_worktree_branch() {
     [ -d "$REPO/.claude/worktrees/stays-unmerged" ]
     run git -C "$REPO" branch --list stays-unmerged
     [ -n "$output" ]
+}
+
+# ── sidebar ──────────────────────────────────────────────────────────────
+
+@test "fleet-menu: sidebar delegates to fleet toggle, opening then closing a 34-column pane" {
+    start_scratch_tmux
+    fake_tmux="$(fake_tmux_env "$TMUX_SOCK")"
+
+    local before
+    before="$(tmux -L "$TMUX_SOCK" list-panes -t base | wc -l)"
+    [ "$before" -eq 1 ]
+
+    run env -u TMUX TMUX="$fake_tmux" "$FLEET_MENU" sidebar
+    [ "$status" -eq 0 ]
+
+    run bash -c "tmux -L '$TMUX_SOCK' list-panes -t base -F '#{pane_id} #{pane_width} #{@fleet_sidebar}' | awk '\$3==\"1\"'"
+    [ "$status" -eq 0 ]
+    [ -n "$output" ]
+    [ "$(printf '%s\n' "$output" | awk '{print $2}')" -eq 34 ]
+
+    run env -u TMUX TMUX="$fake_tmux" "$FLEET_MENU" sidebar
+    [ "$status" -eq 0 ]
+
+    run bash -c "tmux -L '$TMUX_SOCK' list-panes -t base | wc -l"
+    [ "$output" -eq 1 ]
 }
 
 # ── staging (Dockerfile + plugin) ────────────────────────────────────────

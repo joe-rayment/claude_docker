@@ -1,23 +1,41 @@
 #!/usr/bin/env bats
 
 # fleet.bats — scripts/fleet.sh, installed as fleet: 'fleet --once' prints
-# one row per worktree of the repo containing cwd (main tree first) --
-# window, branch, dirty count, ahead/behind main, lane, live agents,
-# last-activity age, each row within 34 columns; 'fleet --watch' redraws
-# every 3s; 'fleet toggle [pane_id]' opens/closes a 34-column left sidebar
-# pane running the watch loop. See .claude/plans/worktree-sessions.md and
-# beads_claude_docker-1tym (F4). Depends on F1 (beads_claude_docker-nmnb,
-# cs-new) and F3 (beads_claude_docker-7bam, peers/session-title) only in
-# spirit (fleet reads the same transcript layout peers/lane/cost-mirror
-# already established) -- no direct code dependency on either script.
+# a header row ('win branch +- a/b lane ag age') followed by one row per
+# worktree of the repo containing cwd (main tree first) -- a leading '*'
+# marker (live agents > 0) or ' ', window, branch, dirty count,
+# ahead/behind main, a single-letter lane code (same abbreviation
+# convention as the agent-role letters), live agents, last-activity age,
+# each row within 34 columns. window/branch are fixed-width (WINDOW_MAX /
+# BRANCH_MAX): padded when shorter, truncated with a trailing '+' when
+# longer, so branch always starts at the same column offset. 'fleet
+# --watch' redraws every 3s; 'fleet toggle [pane_id]' opens/closes a
+# 34-column left sidebar pane running the watch loop. See
+# .claude/plans/worktree-sessions.md, beads_claude_docker-1tym (F4) and
+# beads_claude_docker-blrl (F4b, the header/alignment/marker polish).
+# Depends on F1 (beads_claude_docker-nmnb, cs-new) and F3
+# (beads_claude_docker-7bam, peers/session-title) only in spirit (fleet
+# reads the same transcript layout peers/lane/cost-mirror already
+# established) -- no direct code dependency on either script.
 #
 # FROZEN per 1tym's acceptance contract from its RED commit until 1tym's
-# own verification completes -- with one bead-owner-authorized addition
-# after GREEN (see beads_claude_docker-1tym's notes): the project-dir
-# slug rule ('.' and '_' both replaced, not just '/') was independently
-# reconfirmed by the bead owner via their own live `claude -p` probe, who
-# asked for a test pinning that exact example; the last test below (added
-# post-GREEN) is that pin. No other test in this file was touched.
+# own verification completed, and per blrl's acceptance contract from
+# blrl's own RED commit onward. 1tym's own addition (bead-owner-authorized,
+# after 1tym's GREEN, before blrl started): the project-dir slug rule ('.'
+# and '_' both replaced, not just '/') was independently reconfirmed by
+# the bead owner via their own live `claude -p` probe, who asked for a
+# test pinning that exact example; the "lane resolves ... containing '.'"
+# test below is that pin. blrl's own changes (this bead, made honestly in
+# its own RED commit per its acceptance contract's explicit authorization
+# to update this FROZEN file's exact-line assertions into field regexes
+# plus alignment checks): the four-row test's per-row assertions became
+# regexes matching the new marker/padded-column/lane-letter row shape; a
+# header-first check was folded into that same test; a dedicated
+# branch-offset-alignment test, a truncation test, and a dedicated
+# agent-marker test were added; the screenshot test's substring greps
+# were updated for the new row shape; a companion underscore slug case
+# was added next to the existing dot one. No other test's assertions were
+# touched.
 #
 # Slug rule confirmed EMPIRICALLY, not just against the plan doc's own
 # example: a real `claude -p` session opened at
@@ -198,30 +216,43 @@ run_fleet_once() {
 
 # ── --once: fixture scenario ────────────────────────────────────────────
 
-@test "fleet --once: four rows (main + three worktrees), every field correct per row" {
+@test "fleet --once: header row first, then four data rows (main + three worktrees), every field correct per row" {
     setup_fleet_fixture
     run_fleet_once
     [ "$status" -eq 0 ]
-    # Contract-owner fix: bats' `run` overwrites $output on every call, so the
-    # chained greps below must read the table captured once here, not the
-    # previous grep's own stdout.
+    # Contract-owner fix (kept from the pre-blrl test): bats' `run`
+    # overwrites $output on every call, so the chained greps below must
+    # read the table captured once here, not the previous grep's own
+    # stdout.
     local table
     table="$output"
 
+    # header row first, then exactly four data rows.
     local n
     n="$(printf '%s\n' "$table" | grep -c .)"
-    [ "$n" -eq 4 ]
+    [ "$n" -eq 5 ]
+    local header
+    header="$(printf '%s\n' "$table" | sed -n 1p)"
+    [[ "$header" == *"win"* ]]
+    [[ "$header" == *"branch"* ]]
+    [[ "$header" == *"lane"* ]]
+    [[ "$header" == *"ag"* ]]
+    [[ "$header" == *"age"* ]]
 
-    run grep -Fx "mainwin main 0 - - 0 -" <<<"$table"
+    # per-row field regexes (not exact-line): marker, padded window,
+    # padded branch, right-aligned dirty, ahead/behind, lane letter,
+    # agents, age. Whitespace runs (`[ ]+`) absorb the exact pad_trunc()
+    # column widths rather than hardcoding them a second time here.
+    run grep -E '^ {2}mainw\+[ ]+main[ ]+0[ ]+-[ ]+-[ ]+0[ ]+-$' <<<"$table"
     [ "$status" -eq 0 ]
 
-    run grep -E '^wawin wa 1 2/1 deep 0 [0-9]+s$' <<<"$table"
+    run grep -E '^ {2}wawin[ ]+wa[ ]+1[ ]+2/1[ ]+d[ ]+0[ ]+[0-9]+s$' <<<"$table"
     [ "$status" -eq 0 ]
 
-    run grep -E '^- wb 2 1/0 standard 2 e,s [0-9]+s$' <<<"$table"
+    run grep -E '^\*[ ]+-[ ]+wb[ ]+2[ ]+1/0[ ]+s[ ]+2[ ]+e,s[ ]+[0-9]+s$' <<<"$table"
     [ "$status" -eq 0 ]
 
-    run grep -Fx "wcwin wc 0 0/0 - 0 -" <<<"$table"
+    run grep -E '^ {2}wcwin[ ]+wc[ ]+0[ ]+0/0[ ]+-[ ]+0[ ]+-$' <<<"$table"
     [ "$status" -eq 0 ]
 }
 
@@ -229,7 +260,7 @@ run_fleet_once() {
     setup_fleet_fixture
     run_fleet_once
     [ "$status" -eq 0 ]
-    run grep -E '^- wb ' <<<"$output"
+    run grep -E '^\*[ ]+-[ ]+wb[ ]' <<<"$output"
     [ "$status" -eq 0 ]
 }
 
@@ -238,6 +269,76 @@ run_fleet_once() {
     run_fleet_once
     [ "$status" -eq 0 ]
     run bash -c "printf '%s\n' \"\$1\" | awk '{ if (length(\$0) > 34) print NR\": \"length(\$0)\": \"\$0 }'" _ "$output"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+}
+
+# Derives the branch column's offset from the header row (where "branch"
+# starts, 1-indexed) rather than hardcoding WINDOW_MAX's current value a
+# second time, then confirms every one of the four data rows' branch
+# value begins at that exact same offset -- the core alignment guarantee
+# pad_trunc()'s fixed-width window/marker prefix exists to provide.
+@test "fleet --once: the branch column begins at the same offset on every row" {
+    setup_fleet_fixture
+    run_fleet_once
+    [ "$status" -eq 0 ]
+    local header offset data n
+    header="$(printf '%s\n' "$output" | sed -n 1p)"
+    offset="$(awk -v h="$header" 'BEGIN{print index(h, "branch")}')"
+    [ "$offset" -gt 0 ]
+    data="$(printf '%s\n' "$output" | tail -n +2)"
+    n="$(printf '%s\n' "$data" | grep -c .)"
+    [ "$n" -eq 4 ]
+    for want in main wa wb wc; do
+        run bash -c 'printf "%s\n" "$1" | awk -v off="$2" -v w="$3" "substr(\$0, off, length(w)) == w { found=1 } END { exit !found }"' _ "$data" "$offset" "$want"
+        [ "$status" -eq 0 ]
+    done
+}
+
+# Confirms the row for the worktree with two live agents (wb) carries the
+# leading '*' marker, and the other three (no live agents) carry a plain
+# leading space instead -- the "someone is working there" signal.
+@test "fleet --once: a row with live agents (count > 0) carries a leading '*' marker; others don't" {
+    setup_fleet_fixture
+    run_fleet_once
+    [ "$status" -eq 0 ]
+    run grep -E '^\*[ ]+-[ ]+wb[ ]' <<<"$output"
+    [ "$status" -eq 0 ]
+    run grep -E '^ {2}mainw\+' <<<"$output"
+    [ "$status" -eq 0 ]
+    run grep -E '^ {2}wawin' <<<"$output"
+    [ "$status" -eq 0 ]
+    run grep -E '^ {2}wcwin' <<<"$output"
+    [ "$status" -eq 0 ]
+}
+
+# Over-long window and branch names truncate to their fixed column width
+# with a trailing visible '+' marker rather than pushing later columns
+# out of alignment or the row past 34 columns.
+@test "fleet --once: an over-long window or branch name truncates with a visible '+' marker" {
+    export CLAUDE_PROJECTS_DIR="$BATS_TEST_TMPDIR/projects"
+    export LANE_STATE_DIR="$BATS_TEST_TMPDIR/lane-state"
+    mkdir -p "$CLAUDE_PROJECTS_DIR" "$LANE_STATE_DIR"
+
+    ROOT="$(new_scratch_repo repo)"
+    local longbranch="this-is-a-very-long-branch-name-indeed"
+    local longwindow="this-is-a-very-long-window-name-too"
+    WD="$(add_worktree "$ROOT" "$longbranch" 0)"
+    start_scratch_tmux "$ROOT" 120 35
+    tmux -L "$TMUX_SOCK" new-window -n "$longwindow" -c "$WD" -t base
+    tmux -L "$TMUX_SOCK" select-window -t base:mainwin
+    FAKE_TMUX="$(fake_tmux_env "$TMUX_SOCK")"
+
+    run_fleet_once
+    [ "$status" -eq 0 ]
+
+    # both fields truncate to their WINDOW_MAX/BRANCH_MAX width (6) with a
+    # trailing '+': the shared first-5-chars prefix of window and branch
+    # here is "this-" for both, so each truncated field reads "this-+".
+    run grep -E '^ {2}this-\+[ ]+this-\+[ ]' <<<"$output"
+    [ "$status" -eq 0 ]
+
+    run bash -c "printf '%s\n' \"\$1\" | awk '{ if (length(\$0) > 34) print }'" _ "$output"
     [ "$status" -eq 0 ]
     [ -z "$output" ]
 }
@@ -280,7 +381,38 @@ run_fleet_once() {
 
     run bash -c "cd '$WD' && exec '$FLEET' --once"
     [ "$status" -eq 0 ]
-    run grep -E '^- slug\.probe [0-9]+ 0/0 deep 0 [0-9]+s$' <<<"$output"
+    # branch "slug.probe" (10 chars) exceeds BRANCH_MAX (6) and truncates
+    # to its first 5 chars + '+': "slug.+".
+    run grep -E '^ {2}-[ ]+slug\.\+[ ]+0[ ]+0/0[ ]+d[ ]+0[ ]+[0-9]+s$' <<<"$output"
+    [ "$status" -eq 0 ]
+}
+
+# Companion to the '.' case above, added for beads_claude_docker-blrl:
+# pins the SAME slug rule for '_', both independently (the exact literal
+# example from the bead brief, which must never be exercised against the
+# real repo since it would create an actual worktree there) and via a
+# live fleet --once run against a scratch worktree whose path contains
+# underscores in both the repo-root and worktree-name components, the
+# same shape as the canonical example.
+@test "fleet --once: lane resolves for a worktree path containing '_' (project-dir slug rule)" {
+    [ "$(printf '%s' "/workspace/.claude/worktrees/a_b" | sed 's/[^A-Za-z0-9]/-/g')" = "-workspace--claude-worktrees-a-b" ]
+
+    export CLAUDE_PROJECTS_DIR="$BATS_TEST_TMPDIR/projects"
+    export LANE_STATE_DIR="$BATS_TEST_TMPDIR/lane-state"
+    mkdir -p "$CLAUDE_PROJECTS_DIR" "$LANE_STATE_DIR"
+
+    ROOT="$(new_scratch_repo a_b)"
+    WD="$(add_worktree "$ROOT" "c_d" 0)"
+
+    local slug
+    slug="$(printf '%s' "$WD" | sed 's/[^A-Za-z0-9]/-/g')"
+    mkdir -p "$CLAUDE_PROJECTS_DIR/$slug"
+    printf '{}\n' > "$CLAUDE_PROJECTS_DIR/$slug/sess-us.jsonl"
+    printf '{"lane":"express"}\n' > "$LANE_STATE_DIR/sess-us.json"
+
+    run bash -c "cd '$WD' && exec '$FLEET' --once"
+    [ "$status" -eq 0 ]
+    run grep -E '^ {2}-[ ]+c_d[ ]+0[ ]+0/0[ ]+e[ ]+0[ ]+[0-9]+s$' <<<"$output"
     [ "$status" -eq 0 ]
 }
 
@@ -372,8 +504,12 @@ capture_with_retry() {
         <(tmux -L "$TMUX_SOCK" capture-pane -p -t "$main_pane") \
         > "$cap1"
 
-    for expect in "wa 1 2/1 deep 0" "wb 2 1/0 standard 2 e,s" "wc 0 0/0 - 0"; do
-        run grep -F "$expect" "$cap1"
+    # field-regex substrings (not exact-string): the new row shape pads
+    # window/branch to a fixed width and abbreviates lane to a single
+    # letter, so exact spacing/words can't be hardcoded here the way the
+    # pre-blrl "deep"/"standard" full-word substrings could.
+    for expect in 'wawin[ ]+wa[ ]+1[ ]+2/1[ ]+d[ ]+0' '-[ ]+wb[ ]+2[ ]+1/0[ ]+s[ ]+2[ ]+e,s' 'wcwin[ ]+wc[ ]+0[ ]+0/0[ ]+-[ ]+0'; do
+        run grep -E "$expect" "$cap1"
         [ "$status" -eq 0 ]
     done
 
@@ -392,13 +528,13 @@ capture_with_retry() {
         <(tmux -L "$TMUX_SOCK" capture-pane -p -t "$main_pane") \
         > "$cap2"
 
-    for expect in "wa 1 2/1 deep 0" "wb 2 1/0 standard 2 e,s" "wc 0 0/0 - 0"; do
-        run grep -F "$expect" "$cap2"
+    for expect in 'wawin[ ]+wa[ ]+1[ ]+2/1[ ]+d[ ]+0' '-[ ]+wb[ ]+2[ ]+1/0[ ]+s[ ]+2[ ]+e,s' 'wcwin[ ]+wc[ ]+0[ ]+0/0[ ]+-[ ]+0'; do
+        run grep -E "$expect" "$cap2"
         [ "$status" -eq 0 ]
     done
 
-    local png1="/workspace/attachments/fleet-1tym-120x35-$$.png"
-    local png2="/workspace/attachments/fleet-1tym-200x50-$$.png"
+    local png1="/workspace/attachments/fleet-blrl-120x35-$$.png"
+    local png2="/workspace/attachments/fleet-blrl-200x50-$$.png"
     rm -f "$png1" "$png2"
 
     capture_with_retry "$png1" "cat $cap1"
