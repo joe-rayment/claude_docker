@@ -336,3 +336,117 @@ wait_for() {
     names=("$REPO"/.claude/worktrees/*)
     [ "${#names[@]}" -eq 1 ]
 }
+
+# ── folder-trust seeding + fleet follow (beads_claude_docker-8wy7, G2 of
+# .claude/plans/fleet-nav.md) ────────────────────────────────────────────
+# A freshly created (or --open'd) worktree used to land on Claude Code's
+# own folder-trust dialog, whose default answer ("No, exit") closed the
+# window straight away, because trust in $HOME/.claude.json is keyed by
+# exact path and isn't inherited by .claude/worktrees/<name> from the
+# trusted root. Fix: cs-new copies the root's own trust entry to the
+# worktree's own entry, best-effort, before launching either way; and,
+# inside tmux, calls 'fleet follow' once the new window exists so an open
+# sidebar joins it immediately. FROZEN alongside the rest of this file
+# per 8wy7's own acceptance contract from its RED commit onward.
+
+# write_claude_json <path> <text> — writes <text> to <path> at mode 644,
+# matching how Claude Code itself leaves the file (JSON.stringify(...,
+# null, 2), fs.writeFileSync).
+write_claude_json() {
+    printf '%s' "$2" > "$1"
+    chmod 644 "$1"
+}
+
+@test "cs-new: seeds trust for the new worktree when root is already trusted, preserving unrelated data" {
+    REPO="$(new_scratch_repo trust-repo1)"
+    HOMEDIR="$BATS_TEST_TMPDIR/home1"
+    mkdir -p "$HOMEDIR"
+    write_claude_json "$HOMEDIR/.claude.json" "$(printf '{\n  "unrelatedTopLevel": 7,\n  "projects": {\n    "%s": {\n      "hasTrustDialogAccepted": true,\n      "otherField": "keepme"\n    },\n    "/some/other/path": {\n      "hasTrustDialogAccepted": false\n    }\n  }\n}\n' "$REPO")"
+    cp "$HOMEDIR/.claude.json" "$BATS_TEST_TMPDIR/orig1.json"
+
+    ( cd "$REPO" && env -u TMUX HOME="$HOMEDIR" CS_NEW_LAUNCH='true' "$CS_NEW" trust-wt1 )
+    register_cleanup "$REPO" "$REPO/.claude/worktrees/trust-wt1" "trust-wt1"
+
+    run jq -r --arg wt "$REPO/.claude/worktrees/trust-wt1" '.projects[$wt].hasTrustDialogAccepted' "$HOMEDIR/.claude.json"
+    [ "$output" = "true" ]
+
+    run jq -S --arg wt "$REPO/.claude/worktrees/trust-wt1" 'del(.projects[$wt])' "$HOMEDIR/.claude.json"
+    [ "$status" -eq 0 ]
+    printf '%s\n' "$output" > "$BATS_TEST_TMPDIR/after-del1.json"
+    jq -S . "$BATS_TEST_TMPDIR/orig1.json" > "$BATS_TEST_TMPDIR/orig1-sorted.json"
+    diff "$BATS_TEST_TMPDIR/after-del1.json" "$BATS_TEST_TMPDIR/orig1-sorted.json"
+
+    run sed -n '2p' "$HOMEDIR/.claude.json"
+    [[ "$output" == '  '* ]]
+    [[ "$output" != '   '* ]]
+}
+
+@test "cs-new --open: also seeds trust for the existing worktree" {
+    REPO="$(new_scratch_repo trust-repo2)"
+    ( cd "$REPO" && env -u TMUX CS_NEW_LAUNCH='true' "$CS_NEW" trust-wt2 )
+    register_cleanup "$REPO" "$REPO/.claude/worktrees/trust-wt2" "trust-wt2"
+
+    HOMEDIR="$BATS_TEST_TMPDIR/home2"
+    mkdir -p "$HOMEDIR"
+    write_claude_json "$HOMEDIR/.claude.json" "$(printf '{\n  "projects": {\n    "%s": {\n      "hasTrustDialogAccepted": true\n    }\n  }\n}\n' "$REPO")"
+
+    ( cd "$REPO" && env -u TMUX HOME="$HOMEDIR" CS_NEW_LAUNCH='true' "$CS_NEW" --open trust-wt2 )
+
+    run jq -r --arg wt "$REPO/.claude/worktrees/trust-wt2" '.projects[$wt].hasTrustDialogAccepted' "$HOMEDIR/.claude.json"
+    [ "$output" = "true" ]
+}
+
+@test "cs-new: creates no trust file when \$HOME/.claude.json does not exist" {
+    REPO="$(new_scratch_repo trust-repo3)"
+    HOMEDIR="$BATS_TEST_TMPDIR/home3"
+    mkdir -p "$HOMEDIR"
+
+    ( cd "$REPO" && env -u TMUX HOME="$HOMEDIR" CS_NEW_LAUNCH='true' "$CS_NEW" trust-wt3 )
+    register_cleanup "$REPO" "$REPO/.claude/worktrees/trust-wt3" "trust-wt3"
+
+    [ ! -e "$HOMEDIR/.claude.json" ]
+}
+
+@test "cs-new: leaves the trust file byte-identical when root itself is not trusted" {
+    REPO="$(new_scratch_repo trust-repo4)"
+    HOMEDIR="$BATS_TEST_TMPDIR/home4"
+    mkdir -p "$HOMEDIR"
+    write_claude_json "$HOMEDIR/.claude.json" "$(printf '{\n  "projects": {\n    "%s": {\n      "hasTrustDialogAccepted": false\n    }\n  }\n}\n' "$REPO")"
+    cp "$HOMEDIR/.claude.json" "$BATS_TEST_TMPDIR/orig4.json"
+
+    ( cd "$REPO" && env -u TMUX HOME="$HOMEDIR" CS_NEW_LAUNCH='true' "$CS_NEW" trust-wt4 )
+    register_cleanup "$REPO" "$REPO/.claude/worktrees/trust-wt4" "trust-wt4"
+
+    diff "$HOMEDIR/.claude.json" "$BATS_TEST_TMPDIR/orig4.json"
+}
+
+@test "cs-new: inside tmux, calls 'fleet follow' so an open sidebar joins the new window" {
+    REPO="$(new_scratch_repo trust-repo5)"
+    start_scratch_tmux
+    fake_tmux="$(fake_tmux_env "$TMUX_SOCK")"
+
+    run env -u TMUX TMUX="$fake_tmux" /workspace/scripts/fleet.sh toggle
+    [ "$status" -eq 0 ]
+    sidebar_pane="$(tmux -L "$TMUX_SOCK" list-panes -a -F '#{pane_id} #{@fleet_sidebar}' | awk '$2=="1"{print $1}')"
+    [ -n "$sidebar_pane" ]
+
+    ( cd "$REPO" && env -u TMUX TMUX="$fake_tmux" CS_NEW_LAUNCH='sleep 47' "$CS_NEW" follow-wt ) >"$BATS_TEST_TMPDIR/out-follow.log" 2>&1 &
+    CS_NEW_PID=$!
+    register_cleanup "$REPO" "$REPO/.claude/worktrees/follow-wt" "follow-wt"
+    wait_for 50 bash -c "tmux -L '$TMUX_SOCK' list-windows -F '#{window_name}' 2>/dev/null | grep -qx follow-wt"
+
+    # Deliberately a SHORT poll (well under fleet --watch's own
+    # REFRESH_INTERVAL_S=3 tick) rather than 50 tries like the wait above:
+    # the sidebar pane is itself running 'fleet --watch', whose own
+    # per-tick do_follow() would eventually move it into the new window
+    # all by itself given enough wall-clock time, which would make this
+    # test pass even without cs-new's own explicit 'fleet follow' call
+    # (confirmed empirically -- a 50-try/0.2s poll here passed against a
+    # cs-new build with no fleet-follow call at all). Polling for under a
+    # tick's worth of time isolates cs-new's own (synchronous, no-sleep)
+    # call as the only thing that can make this succeed this fast.
+    wait_for 10 bash -c "tmux -L '$TMUX_SOCK' display -p -t '$sidebar_pane' '#{window_name}' 2>/dev/null | grep -qx follow-wt"
+
+    run tmux -L "$TMUX_SOCK" display -p -t "$sidebar_pane" '#{window_name}'
+    [ "$output" = "follow-wt" ]
+}

@@ -27,6 +27,23 @@
 # to update this file), and one new test was added exercising `fleet-menu
 # sidebar`'s delegation to `fleet toggle` end to end.
 #
+# FROZEN again per beads_claude_docker-8wy7's own acceptance contract
+# from its RED commit onward (G2 of .claude/plans/fleet-nav.md): a new
+# "── new (lands in the session) ──" section was added exercising `fleet-menu
+# new`'s fix -- cmd_new now runs cs-new synchronously instead of a nested
+# backgrounded run-shell, so it must be driven through a REAL `tmux
+# run-shell "fleet-menu new #{pane_id} #{pane_current_path}"` (the exact
+# binding shape, not a direct $FLEET_MENU invocation like every test
+# above) for the pane-overlay assertions to mean anything. Since that
+# relies on PATH resolving the bare `fleet-menu`/`cs-new`/`fleet` names
+# tmux's own run-shell looks up, stage_new_shims() puts freshly-symlinked
+# copies of this checkout's scripts ahead of /usr/local/bin's (possibly
+# stale, confirmed stale at the time this bead landed) installed copies
+# on $PATH before the scratch server starts -- a scratch tmux server's
+# run-shell children inherit the OS environment (PATH included) of
+# whatever process started the server, confirmed empirically before
+# writing these tests.
+#
 # Every tmux test runs on a scratch `tmux -L fleet-test-<pid>-<rand>`
 # server loaded with config/tmux.conf, never the live server this session
 # is attached to. $TMUX is already set in the ambient environment the
@@ -36,6 +53,7 @@
 # already established for cs-new).
 
 FLEET_MENU=/workspace/scripts/fleet-menu.sh
+FLEET=/workspace/scripts/fleet.sh
 REPO_ROOT=/workspace
 
 setup() {
@@ -123,6 +141,54 @@ add_worktree() {
 # own checked-out branch (main), so it shows up as merged.
 merge_worktree_branch() {
     git -C "$1" merge -q -m "merge $2" "$2"
+}
+
+# wait_for <max_tries> <cmd...> — polls every 0.2s (up to max_tries times)
+# until <cmd...> exits 0. Matches tests/worktree-sessions.bats's own
+# helper of the same name.
+wait_for() {
+    local max_tries="$1"
+    shift
+    local i=0
+    while [ "$i" -lt "$max_tries" ]; do
+        if "$@"; then
+            return 0
+        fi
+        sleep 0.2
+        i=$((i + 1))
+    done
+    return 1
+}
+
+# stage_new_shims — creates $BATS_TEST_TMPDIR/shimbin with fleet-menu/
+# cs-new/fleet symlinked to THIS checkout's scripts (bare names, matching
+# what /usr/local/bin and plugin/bin both install as) and prepends it to
+# $PATH. Only the "new" tests below need this: they drive fleet-menu
+# through a REAL `tmux run-shell "fleet-menu ..."`, which resolves the
+# bare command via PATH exactly like config/tmux.conf's own binding does
+# -- so without this, a scratch server would silently exercise whatever
+# is staged at /usr/local/bin/fleet-menu instead of this edited checkout.
+# Must be called before start_scratch_tmux: a scratch server's run-shell
+# children inherit the PATH (and every other env var) of the process
+# that started the server, not of whatever invokes run-shell later.
+stage_new_shims() {
+    local dir="$BATS_TEST_TMPDIR/shimbin"
+    mkdir -p "$dir"
+    ln -sf /workspace/scripts/fleet-menu.sh "$dir/fleet-menu"
+    ln -sf /workspace/scripts/cs-new.sh "$dir/cs-new"
+    ln -sf /workspace/scripts/fleet.sh "$dir/fleet"
+    export PATH="$dir:$PATH"
+}
+
+# start_scratch_tmux_at <cwd> — like start_scratch_tmux, but the initial
+# pane's cwd is <cwd> instead of $BATS_TEST_TMPDIR. The "new" tests below
+# need the pane that fires the binding to already be inside the scratch
+# repo, since #{pane_current_path} (what config/tmux.conf's real binding
+# passes as fleet-menu's repo-root arg) reflects the pane's actual cwd at
+# creation time. Sets $TMUX_SOCK.
+start_scratch_tmux_at() {
+    TMUX_SOCK="fleet-test-$$-${RANDOM}"
+    tmux -L "$TMUX_SOCK" -f "$REPO_ROOT/config/tmux.conf" new-session -d -s base -c "$1" -x 120 -y 35
 }
 
 # ── config load / status bar ────────────────────────────────────────────
@@ -369,6 +435,152 @@ merge_worktree_branch() {
 
     run bash -c "tmux -L '$TMUX_SOCK' list-panes -t base | wc -l"
     [ "$output" -eq 1 ]
+}
+
+# ── new (lands in the session, beads_claude_docker-8wy7 / G2) ──────────
+# cmd_new used to run cs-new via a nested backgrounded run-shell with no
+# target pane; at completion tmux painted its captured stdout+stderr as a
+# view-mode overlay on whatever pane was current -- the brand-new Claude
+# pane, hiding its folder-trust dialog underneath (default answer "No,
+# exit", which closed the window). Fix: run cs-new synchronously with its
+# output captured into a variable, so on success nothing is left for the
+# outer run-shell to paint anywhere.
+
+@test "fleet-menu: the exact binding shape lands in the new window with no overlay on any pane" {
+    stage_new_shims
+    REPO="$(new_scratch_repo new-repo1)"
+    start_scratch_tmux_at "$REPO"
+    export CS_NEW_LAUNCH='sleep 47'
+
+    run tmux -L "$TMUX_SOCK" run-shell "fleet-menu new #{pane_id} #{pane_current_path}"
+    [ "$status" -eq 0 ]
+
+    run tmux -L "$TMUX_SOCK" list-windows -F '#{window_name} #{window_active}'
+    printf '%s\n' "$output" > "$BATS_TEST_TMPDIR/windows1.txt"
+    [ "$(wc -l < "$BATS_TEST_TMPDIR/windows1.txt")" -eq 2 ]
+    run grep -F "zsh 0" "$BATS_TEST_TMPDIR/windows1.txt"
+    [ "$status" -eq 0 ]
+
+    names=("$REPO"/.claude/worktrees/*)
+    [ "${#names[@]}" -eq 1 ]
+    wt_name="$(basename "${names[0]}")"
+
+    run grep -F "$wt_name 1" "$BATS_TEST_TMPDIR/windows1.txt"
+    [ "$status" -eq 0 ]
+
+    run tmux -L "$TMUX_SOCK" list-panes -a -F '#{pane_id} #{pane_current_path}'
+    printf '%s\n' "$output" > "$BATS_TEST_TMPDIR/panes1.txt"
+    run grep -F "$REPO/.claude/worktrees/$wt_name" "$BATS_TEST_TMPDIR/panes1.txt"
+    [ "$status" -eq 0 ]
+
+    run bash -c "tmux -L '$TMUX_SOCK' list-panes -a -F '#{pane_in_mode}' | grep -vx 0"
+    [ "$status" -ne 0 ]
+    [ -z "$output" ]
+
+    for p in $(tmux -L "$TMUX_SOCK" list-panes -a -F '#{pane_id}'); do
+        run tmux -L "$TMUX_SOCK" capture-pane -p -t "$p"
+        [[ "$output" != *"HEAD is now at"* ]]
+        [[ "$output" != *"cs-new:"* ]]
+    done
+}
+
+@test "fleet-menu: new brings an open sidebar along into the new window" {
+    stage_new_shims
+    REPO="$(new_scratch_repo new-repo2)"
+    start_scratch_tmux_at "$REPO"
+    export CS_NEW_LAUNCH='sleep 47'
+    pane0="$(tmux -L "$TMUX_SOCK" display -p -t base '#{pane_id}')"
+
+    run tmux -L "$TMUX_SOCK" run-shell "fleet toggle $pane0"
+    [ "$status" -eq 0 ]
+    sidebar_pane="$(tmux -L "$TMUX_SOCK" list-panes -a -F '#{pane_id} #{@fleet_sidebar}' | awk '$2=="1"{print $1}')"
+    [ -n "$sidebar_pane" ]
+
+    run tmux -L "$TMUX_SOCK" run-shell "fleet-menu new #{pane_id} #{pane_current_path}"
+    [ "$status" -eq 0 ]
+
+    # Poll by the worktree's OWN name (not just "any second window"): a
+    # pre-fix cmd_new returns from this run-shell almost instantly too
+    # (it only kicks off a nested BACKGROUNDED run-shell, not waits for
+    # it), so asserting on window state read immediately afterward would
+    # false-pass by comparing the sidebar's still-unmoved window against
+    # itself, before the real new window even exists yet (confirmed
+    # empirically while writing this test).
+    names=("$REPO"/.claude/worktrees/*)
+    [ "${#names[@]}" -eq 1 ]
+    wt_name="$(basename "${names[0]}")"
+    wait_for 15 bash -c "tmux -L '$TMUX_SOCK' list-windows -F '#{window_name}' 2>/dev/null | grep -qx '$wt_name'"
+
+    new_window="$(tmux -L "$TMUX_SOCK" list-windows -F '#{window_id} #{window_name}' | awk -v n="$wt_name" '$2==n{print $1}')"
+    [ -n "$new_window" ]
+    run tmux -L "$TMUX_SOCK" display -p -t "$new_window" '#{window_active}'
+    [ "$output" = "1" ]
+
+    sidebar_window="$(tmux -L "$TMUX_SOCK" display -p -t "$sidebar_pane" '#{window_id}')"
+    [ "$sidebar_window" = "$new_window" ]
+
+    run tmux -L "$TMUX_SOCK" display -p -t "$sidebar_pane" '#{pane_width}'
+    [ "$output" -eq 34 ]
+
+    run bash -c "tmux -L '$TMUX_SOCK' list-panes -t '$new_window' -F '#{pane_id} #{pane_active} #{@fleet_sidebar}' | awk '\$3!=\"1\"'"
+    [ -n "$output" ]
+    [ "$(printf '%s\n' "$output" | awk '{print $2}')" -eq 1 ]
+}
+
+@test "fleet-menu: a forced cs-new failure leaves no new window and surfaces the error without a pane overlay" {
+    stage_new_shims
+    REPO="$(new_scratch_repo new-repo3)"
+    git -C "$REPO" worktree add "$REPO/.claude/worktrees/dup-name" -b dup-name -q
+    start_scratch_tmux_at "$REPO"
+    export CS_NEW_LAUNCH='sleep 47'
+    export FLEET_MENU_NEW_NAME='dup-name'
+
+    run tmux -L "$TMUX_SOCK" run-shell "fleet-menu new #{pane_id} #{pane_current_path}"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"fleet-menu new:"* ]]
+    [[ "$output" == *"already in use"* ]]
+
+    run tmux -L "$TMUX_SOCK" list-windows -F '#{window_name}'
+    [ "$(printf '%s\n' "$output" | wc -l)" -eq 1 ]
+
+    run bash -c "tmux -L '$TMUX_SOCK' list-panes -a -F '#{pane_in_mode}' | grep -vx 0"
+    [ "$status" -ne 0 ]
+    [ -z "$output" ]
+}
+
+@test "fleet-menu: new session landing is captured as a PNG via take-screenshot term" {
+    stage_new_shims
+    REPO="$(new_scratch_repo new-repo4)"
+    start_scratch_tmux_at "$REPO"
+    export CS_NEW_LAUNCH='sleep 47'
+
+    run tmux -L "$TMUX_SOCK" run-shell "fleet-menu new #{pane_id} #{pane_current_path}"
+    [ "$status" -eq 0 ]
+
+    names=("$REPO"/.claude/worktrees/*)
+    wt_name="$(basename "${names[0]}")"
+
+    state_txt="$BATS_TEST_TMPDIR/new-state.txt"
+    {
+        tmux -L "$TMUX_SOCK" list-windows -F '#{window_index}:#{window_name}#{?window_active, [active],}'
+        echo
+        tmux -L "$TMUX_SOCK" list-panes -a -F '#{pane_id} #{window_name} #{pane_current_command} #{pane_active} #{pane_in_mode}'
+    } > "$state_txt"
+
+    run grep -F "$wt_name [active]" "$state_txt"
+    [ "$status" -eq 0 ]
+    run grep -E "^%[0-9]+ $wt_name sleep 1 0\$" "$state_txt"
+    [ "$status" -eq 0 ]
+
+    png="/workspace/attachments/fleet-8wy7-new-state-$$.png"
+    rm -f "$png"
+    run take-screenshot term -o "$png" "cat $state_txt"
+    [ "$status" -eq 0 ]
+    [ -f "$png" ]
+    size="$(wc -c < "$png")"
+    [ "$size" -gt 20000 ]
+
+    echo "fleet-menu new screenshot: $png"
 }
 
 # ── staging (Dockerfile + plugin) ────────────────────────────────────────
