@@ -2,7 +2,7 @@
 bats_require_minimum_version 1.5.0   # `run --separate-stderr` (tier-set cost)
 # tier-hooks.bats — the spend-enforcement / tier-reminder hooks:
 #   tier-gate      PreToolUse[Agent]     default-cheap model for generic spawns
-#   tier-reconcile UserPromptSubmit/SessionStart  agent bindings track .model
+#   tier-reconcile PostModelSwitch/ConfigChange/SessionStart  agent bindings track .model
 #   workflow-lint  PreToolUse[Workflow]  deny scripts whose agent() omits model
 #   cost-mirror    UserPromptSubmit      by-model session spend line
 #   tier-prime     SessionStart/PreCompact  tier trio + protocol restatement
@@ -881,6 +881,70 @@ tr_env() {  # merge .env.<key> = <value> into the fixture settings
     [ "$(fm_of "$LIVE_AGENTS/scout.md")" = "$before_model_s" ]
 }
 
+# ── tier-reconcile: to_model stdin override (beads_claude_docker-v4p) ──────
+# PostModelSwitch fires with a JSON stdin payload carrying `to_model` before
+# settings.json's own .model necessarily reflects the switch — reconcile
+# must honour that field over (or in the absence of) settings .model.
+
+tier_reconcile_with_stdin() {  # $1 = raw stdin payload (may be empty)
+    printf '%s' "$1" > "$BATS_TEST_TMPDIR/tr-stdin.json"
+    run env TIER_SETTINGS="$TR" TIER_AGENTS_DIR="$TR_AGENTS" TIER_DERIVE="$DERIVE" \
+        sh "$RECON" < "$BATS_TEST_TMPDIR/tr-stdin.json"
+}
+
+@test "tier-reconcile: a to_model field on stdin reconciles to that model even while settings .model differs" {
+    tier_reconcile_fixture claude-fable-5
+    printf -- '---\nname: executor\nmodel: claude-fable-5\n---\nDo the slice.\n' > "$TR_AGENTS/executor.md"
+    tier_reconcile_with_stdin '{"hook_event_name":"PostModelSwitch","from_model":"claude-fable-5","to_model":"haiku","triggered_by":"user"}'
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+    [ "$(fm_of "$TR_AGENTS/executor.md")" = "claude-haiku-4-5-20251001" ]
+    [ "$(fm_of "$TR_AGENTS/scout.md")" = "claude-haiku-4-5-20251001" ]
+    # settings.json itself is untouched -- .model still names the old top
+    jq -e '.model == "claude-fable-5"' "$TR"
+}
+
+@test "tier-reconcile: empty stdin behaves exactly as today -- derives from settings .model" {
+    tier_reconcile_fixture claude-fable-5
+    tier_reconcile_with_stdin ''
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+    [ "$(fm_of "$TR_AGENTS/executor.md")" = "claude-sonnet-5" ]
+}
+
+@test "tier-reconcile: non-JSON stdin is ignored -- falls back to settings .model" {
+    tier_reconcile_fixture claude-fable-5
+    tier_reconcile_with_stdin 'not json at all'
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+    [ "$(fm_of "$TR_AGENTS/executor.md")" = "claude-sonnet-5" ]
+}
+
+@test "tier-reconcile: JSON stdin without a to_model field is ignored -- falls back to settings .model" {
+    tier_reconcile_fixture claude-fable-5
+    tier_reconcile_with_stdin '{"hook_event_name":"ConfigChange","config_source":"user_settings","changed_keys":["model"]}'
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+    [ "$(fm_of "$TR_AGENTS/executor.md")" = "claude-sonnet-5" ]
+}
+
+@test "tier-reconcile: an empty-string to_model is ignored -- falls back to settings .model" {
+    tier_reconcile_fixture claude-fable-5
+    tier_reconcile_with_stdin '{"to_model":""}'
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+    [ "$(fm_of "$TR_AGENTS/executor.md")" = "claude-sonnet-5" ]
+}
+
+@test "tier-reconcile: to_model is still pin-aware -- TIER_EXPLICIT_PIN skips derivation entirely" {
+    tier_reconcile_fixture claude-fable-5
+    tr_env TIER_EXPLICIT_PIN 1
+    before_e=$(cat "$TR_AGENTS/executor.md")
+    tier_reconcile_with_stdin '{"to_model":"haiku"}'
+    [ "$status" -eq 0 ]
+    [ "$(cat "$TR_AGENTS/executor.md")" = "$before_e" ]
+}
+
 # ── tier-prime ───────────────────────────────────────────────────────────────
 
 setup_prime_agents() {
@@ -1045,12 +1109,29 @@ setup_prime_agents() {
     [[ "$output" != *"[lane]"* ]]
 }
 
-@test "config/claude-settings.json: UserPromptSubmit resets the lane before the tier reconciler runs" {
+@test "config/claude-settings.json: UserPromptSubmit resets the lane first; tier-reconcile no longer runs per-prompt (beads_claude_docker-v4p)" {
     jq -e '[.hooks.UserPromptSubmit[].hooks[].command] | any(contains("lane --reset"))' "$SETTINGS_JSON"
-    run jq -r '[.hooks.UserPromptSubmit[].hooks[].command] | map(select(contains("lane --reset") or contains("tier-reconcile"))) | length' "$SETTINGS_JSON"
-    [ "$output" = "2" ]
     run jq -r '[.hooks.UserPromptSubmit[].hooks[].command] | map(contains("lane --reset")) | index(true)' "$SETTINGS_JSON"
     [ "$output" = "0" ]
+    run jq -r '[.hooks.UserPromptSubmit[].hooks[].command] | map(select(contains("tier-reconcile"))) | length' "$SETTINGS_JSON"
+    [ "$output" = "0" ]
+}
+
+@test "config/claude-settings.json: tier-reconcile is registered under PostModelSwitch (beads_claude_docker-v4p)" {
+    run jq -r '[.hooks.PostModelSwitch[]?.hooks[]?.command] | map(select(contains("tier-reconcile"))) | length' "$SETTINGS_JSON"
+    [ "$output" = "1" ]
+}
+
+@test "config/claude-settings.json: tier-reconcile is registered under ConfigChange matched to user_settings only (beads_claude_docker-v4p)" {
+    run jq -r '[.hooks.ConfigChange[] | select(.hooks[].command | contains("tier-reconcile"))] | length' "$SETTINGS_JSON"
+    [ "$output" = "1" ]
+    run jq -r '.hooks.ConfigChange[] | select(.hooks[].command | contains("tier-reconcile")) | .matcher' "$SETTINGS_JSON"
+    [ "$output" = "user_settings" ]
+}
+
+@test "config/claude-settings.json: tier-reconcile still runs at SessionStart (beads_claude_docker-v4p)" {
+    run jq -r '[.hooks.SessionStart[].hooks[].command] | map(select(contains("tier-reconcile"))) | length' "$SETTINGS_JSON"
+    [ "$output" = "1" ]
 }
 
 @test "config/claude-settings.json: the dispatch echo sources its tail from lane, keeping the static tail as the pre-lane fallback" {

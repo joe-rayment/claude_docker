@@ -280,6 +280,26 @@ sys.exit(1 if missing else 0)
     grep -q "2 file" "$CAPTURE"
 }
 
+@test "hook-staging: plugin/hooks/hooks.json carries tier-reconcile under PostModelSwitch/ConfigChange/SessionStart, not UserPromptSubmit (beads_claude_docker-v4p)" {
+    PLUGIN_HOOKS=/workspace/plugin/hooks/hooks.json
+    run jq -r '[.hooks.PostModelSwitch[]?.hooks[]?.command] | map(select(contains("tier-reconcile"))) | length' "$PLUGIN_HOOKS"
+    [ "$output" = "1" ]
+    run jq -r '[.hooks.ConfigChange[]?.hooks[]?.command] | map(select(contains("tier-reconcile"))) | length' "$PLUGIN_HOOKS"
+    [ "$output" = "1" ]
+    run jq -r '[.hooks.SessionStart[]?.hooks[]?.command] | map(select(contains("tier-reconcile"))) | length' "$PLUGIN_HOOKS"
+    [ "$output" = "1" ]
+    run jq -r '[.hooks.UserPromptSubmit[]?.hooks[]?.command] | map(select(contains("tier-reconcile"))) | length' "$PLUGIN_HOOKS"
+    [ "$output" = "0" ]
+}
+
+@test "hook-staging: TIERED_ORCHESTRATION.md documents PostModelSwitch/ConfigChange as tier-reconcile's triggers, not per-prompt UserPromptSubmit (beads_claude_docker-v4p)" {
+    KB=/workspace/knowledge-base/TIERED_ORCHESTRATION.md
+    run grep -c "SessionStart + UserPromptSubmit hook" "$KB"
+    [ "$status" -eq 1 ]
+    grep -q "PostModelSwitch" "$KB"
+    grep -q "ConfigChange" "$KB"
+}
+
 @test "hook-staging: session-end-audit.sh emits nothing when the tree is clean" {
     REPO="$BATS_TEST_TMPDIR/clean-repo"
     mkdir -p "$REPO"
