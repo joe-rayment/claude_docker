@@ -44,6 +44,21 @@
 # whatever process started the server, confirmed empirically before
 # writing these tests.
 #
+# FROZEN again per beads_claude_docker-3c20's own acceptance contract
+# from its RED commit onward (G4 of .claude/plans/fleet-nav.md): the
+# status bar goes off (`set -g status off` in config/tmux.conf), so
+# "status is on with status-position top" became "status is off" (plus a
+# check that no status-position/status-left/status-right lines remain),
+# and the status-bar-and-jump-menu screenshot test was replaced by a
+# sidebar-rows screenshot (the sidebar, not a status row, is now the
+# place parked windows are visible). A new test diffs the MouseDown3Pane
+# and prefix N/H/R/J/V/M/S key tables against HEAD's tmux.conf via `tmux
+# list-keys` on its own scratch server, since the acceptance contract
+# requires those bindings stay byte-for-byte unchanged. The jump --print
+# test's window setup was hardened (poll pane_current_path before
+# reading git state off each window) for the pre-existing dd3o flake;
+# dd3o itself stays open, nothing else about that test changed.
+#
 # Every tmux test runs on a scratch `tmux -L fleet-test-<pid>-<rand>`
 # server loaded with config/tmux.conf, never the live server this session
 # is attached to. $TMUX is already set in the ambient environment the
@@ -199,12 +214,50 @@ start_scratch_tmux_at() {
     [ "$status" -eq 0 ]
 }
 
-@test "fleet-menu: status is on with status-position top" {
+@test "fleet-menu: status is off" {
     start_scratch_tmux
-    run tmux -L "$TMUX_SOCK" show-options -g status
-    [ "$output" = "status on" ]
-    run tmux -L "$TMUX_SOCK" show-options -g status-position
-    [ "$output" = "status-position top" ]
+    run tmux -L "$TMUX_SOCK" show-options -gv status
+    [ "$output" = "off" ]
+    run grep -E '^[[:space:]]*set -g status-position' "$REPO_ROOT/config/tmux.conf"
+    [ "$status" -ne 0 ]
+    run grep -E '^[[:space:]]*set -g status-left' "$REPO_ROOT/config/tmux.conf"
+    [ "$status" -ne 0 ]
+    run grep -E '^[[:space:]]*set -g status-right' "$REPO_ROOT/config/tmux.conf"
+    [ "$status" -ne 0 ]
+}
+
+@test "fleet-menu: MouseDown3Pane and prefix N/H/R/J/V/M/S bindings match HEAD's tmux.conf via tmux list-keys" {
+    # Status is going off in this bead's own commit, but the bindings
+    # (right-click menu + prefix keys) must stay byte-for-byte identical
+    # to whatever HEAD (i.e. before this bead's changes land) shipped --
+    # loads HEAD's config/tmux.conf on its own scratch server and diffs
+    # both key tables against the working tree's.
+    local head_conf="$BATS_TEST_TMPDIR/head-tmux.conf"
+    git -C "$REPO_ROOT" show HEAD:config/tmux.conf > "$head_conf"
+
+    local head_sock="fleet-test-head-$$-${RANDOM}"
+    tmux -L "$head_sock" -f "$head_conf" new-session -d -s base -c "$BATS_TEST_TMPDIR"
+    run tmux -L "$head_sock" list-keys -T root
+    [ "$status" -eq 0 ]
+    printf '%s\n' "$output" > "$BATS_TEST_TMPDIR/head-root-keys.txt"
+    run tmux -L "$head_sock" list-keys -T prefix
+    [ "$status" -eq 0 ]
+    printf '%s\n' "$output" > "$BATS_TEST_TMPDIR/head-prefix-keys.txt"
+    tmux -L "$head_sock" kill-server 2>/dev/null || true
+    rm -f "/tmp/tmux-1000/$head_sock"
+
+    start_scratch_tmux
+    run tmux -L "$TMUX_SOCK" list-keys -T root
+    [ "$status" -eq 0 ]
+    printf '%s\n' "$output" > "$BATS_TEST_TMPDIR/current-root-keys.txt"
+    run tmux -L "$TMUX_SOCK" list-keys -T prefix
+    [ "$status" -eq 0 ]
+    printf '%s\n' "$output" > "$BATS_TEST_TMPDIR/current-prefix-keys.txt"
+
+    run diff "$BATS_TEST_TMPDIR/head-root-keys.txt" "$BATS_TEST_TMPDIR/current-root-keys.txt"
+    [ "$status" -eq 0 ]
+    run diff "$BATS_TEST_TMPDIR/head-prefix-keys.txt" "$BATS_TEST_TMPDIR/current-prefix-keys.txt"
+    [ "$status" -eq 0 ]
 }
 
 # ── right-click menu / prefix keys ──────────────────────────────────────
@@ -333,6 +386,15 @@ start_scratch_tmux_at() {
     tmux -L "$TMUX_SOCK" new-window -n on-main -c "$REPO"
     tmux -L "$TMUX_SOCK" new-window -n on-feature -c "$REPO/.claude/worktrees/feature-x"
     tmux -L "$TMUX_SOCK" new-window -n non-git -c "$BATS_TEST_TMPDIR"
+    # Hardening for the beads_claude_docker-dd3o flake: a freshly created
+    # window's pane_current_path can still read as its parent's cwd for a
+    # moment before the shell finishes chdir'ing, so poll each window's
+    # own pane_current_path until it matches what it was created with,
+    # before asking jump --print to read git state off of it. Not
+    # otherwise changed -- dd3o itself stays open.
+    wait_for 25 bash -c "[ \"\$(tmux -L '$TMUX_SOCK' display -p -t on-main '#{pane_current_path}')\" = '$REPO' ]"
+    wait_for 25 bash -c "[ \"\$(tmux -L '$TMUX_SOCK' display -p -t on-feature '#{pane_current_path}')\" = '$REPO/.claude/worktrees/feature-x' ]"
+    wait_for 25 bash -c "[ \"\$(tmux -L '$TMUX_SOCK' display -p -t non-git '#{pane_current_path}')\" = '$BATS_TEST_TMPDIR' ]"
     fake_tmux="$(fake_tmux_env "$TMUX_SOCK")"
     run env -u TMUX TMUX="$fake_tmux" "$FLEET_MENU" jump --print
     [ "$status" -eq 0 ]
@@ -597,72 +659,50 @@ start_scratch_tmux_at() {
 
 # ── screenshots ──────────────────────────────────────────────────────────
 
-@test "fleet-menu: status bar and jump menu are captured as PNGs via take-screenshot term" {
-    start_scratch_tmux
-    tmux -L "$TMUX_SOCK" new-window -n win-one -c "$BATS_TEST_TMPDIR"
-    tmux -L "$TMUX_SOCK" new-window -n win-two -c "$BATS_TEST_TMPDIR"
-    tmux -L "$TMUX_SOCK" new-window -n win-three -c "$BATS_TEST_TMPDIR"
-    win_two_id="$(tmux -L "$TMUX_SOCK" list-windows -F '#{window_id} #{window_name}' | awk '$2=="win-two"{print $1}')"
-    tmux -L "$TMUX_SOCK" split-window -h -t "$win_two_id" -c "$BATS_TEST_TMPDIR"
-    select_window_pane "$win_two_id" 1
+@test "fleet-menu: sidebar rows are captured as a PNG via take-screenshot term with status off (beads_claude_docker-3c20)" {
+    # Supersedes the old status-bar screenshot (removed with the status
+    # bar itself, f5i6): the sidebar now carries the same "what's on this
+    # server" job the status bar used to, so the evidence shot is of the
+    # sidebar's own rows plus a line proving the status bar is off.
+    REPO="$(new_scratch_repo sidebar-repo)"
+    start_scratch_tmux_at "$REPO"
+    tmux -L "$TMUX_SOCK" new-window -n win-one -c "$REPO"
+    tmux -L "$TMUX_SOCK" new-window -n win-two -c "$REPO"
+    select_window_pane base
+    pane0="$(tmux -L "$TMUX_SOCK" display -p -t base '#{pane_id}')"
     fake_tmux="$(fake_tmux_env "$TMUX_SOCK")"
 
-    # Hide one pane out of win-two, then restore it -- the scenario the
-    # PASS-IF asks the status-bar screenshot to reflect.
-    env -u TMUX TMUX="$fake_tmux" "$FLEET_MENU" hide
-    parked_id="$(tmux -L "$TMUX_SOCK" list-windows -F '#{window_id} #{window_name}' | awk -v a="$win_two_id" '$2=="win-two" && $1!=a{print $1}')"
-    [ -n "$parked_id" ]
-    select_window_pane "$win_two_id" 0
-    env -u TMUX TMUX="$fake_tmux" "$FLEET_MENU" restore "$parked_id"
+    run env -u TMUX TMUX="$fake_tmux" "$FLEET" toggle "$pane0"
+    [ "$status" -eq 0 ]
+    sidebar_pane="$(tmux -L "$TMUX_SOCK" list-panes -a -F '#{pane_id} #{@fleet_sidebar}' | awk '$2=="1"{print $1}')"
+    [ -n "$sidebar_pane" ]
 
-    select_window_pane win-one
+    # Precompute the capture TEXT to a file first (sidebar rows plus the
+    # status-off proof), then screenshot a trivial `cat <file>` -- see
+    # the (removed) status-bar test's own comment history for why: a
+    # forking command piped straight into `take-screenshot term` can be
+    # truncated by termshot's idle-timeout heuristic; `cat` never forks.
+    sidebar_txt="$BATS_TEST_TMPDIR/sidebar-rows.txt"
+    {
+        tmux -L "$TMUX_SOCK" capture-pane -p -t "$sidebar_pane"
+        echo
+        echo "status: $(tmux -L "$TMUX_SOCK" show-options -gv status)"
+    } > "$sidebar_txt"
 
-    # Precompute both captures' TEXT to files first -- a single tmux -F
-    # call for the status listing, fleet-menu jump --print for the jump
-    # menu -- then screenshot a trivial `cat <file>` for each, with an
-    # explicit distinct -o path per capture. Two things this avoids:
-    # (1) take-screenshot's default filename is term-<UTC second>.png
-    # (scripts/take-screenshot.sh ts()/cmd_term()), so two captures
-    # landing in the same wall-clock second silently overwrite one
-    # another and the second path returned equals the first; (2) termshot
-    # captures the pty on an idle-timeout heuristic that can fire before
-    # a forked subprocess's output lands -- reproduced directly outside
-    # this test: a chained `echo x; tmux ...` or fleet-menu jump's
-    # per-window git subprocess loop, piped straight through
-    # `take-screenshot term`, was truncated to its first line even though
-    # the underlying command's own output was complete. `cat` never
-    # forks, so it can't race either way.
-    status_txt="$BATS_TEST_TMPDIR/status-bar.txt"
-    tmux -L "$TMUX_SOCK" list-windows -F ' #{window_index}:#{window_name}#{?window_active, [active],}' > "$status_txt"
-    for w in win-one win-two win-three; do
-        run grep -F "$w" "$status_txt"
+    for w in win-one win-two; do
+        run grep -F "$w" "$sidebar_txt"
         [ "$status" -eq 0 ]
     done
-
-    jump_txt="$BATS_TEST_TMPDIR/jump-print.txt"
-    env -u TMUX TMUX="$fake_tmux" "$FLEET_MENU" jump --print > "$jump_txt"
-    for w in win-one win-two win-three; do
-        run grep -F "$w" "$jump_txt"
-        [ "$status" -eq 0 ]
-    done
-
-    status_png="/workspace/attachments/fleet-f5i6-status-bar-$$.png"
-    jump_png="/workspace/attachments/fleet-f5i6-jump-print-$$.png"
-    rm -f "$status_png" "$jump_png"
-
-    run take-screenshot term -o "$status_png" "cat $status_txt"
+    run grep -F "status: off" "$sidebar_txt"
     [ "$status" -eq 0 ]
-    [ -f "$status_png" ]
 
-    run take-screenshot term -o "$jump_png" "cat $jump_txt"
+    sidebar_png="/workspace/attachments/fleet-3c20-sidebar-$$.png"
+    rm -f "$sidebar_png"
+    run take-screenshot term -o "$sidebar_png" "cat $sidebar_txt"
     [ "$status" -eq 0 ]
-    [ -f "$jump_png" ]
+    [ -f "$sidebar_png" ]
+    size="$(wc -c < "$sidebar_png")"
+    [ "$size" -gt 20000 ]
 
-    [ "$status_png" != "$jump_png" ]
-    status_size="$(wc -c < "$status_png")"
-    jump_size="$(wc -c < "$jump_png")"
-    [ "$status_size" -gt 5000 ]
-    [ "$jump_size" -gt 5000 ]
-
-    echo "fleet-menu screenshots: status_bar=$status_png jump_menu=$jump_png"
+    echo "fleet-menu sidebar screenshot: $sidebar_png"
 }

@@ -73,3 +73,29 @@ setup() {
     run grep -F -- "fleet-menu" "$CLAUDE_MD"
     [ "$status" -eq 0 ]
 }
+
+# ── beads_claude_docker-3c20: status bar off, sidebar re-pinned ────────────
+
+@test "docs-worktree: WORKTREE_SESSIONS.md documents the sidebar's Enter/follow/q navigation and trust seeding" {
+    run grep -F -- "Enter" "$WORKTREE_MD"
+    [ "$status" -eq 0 ]
+    run grep -F -- "follow" "$WORKTREE_MD"
+    [ "$status" -eq 0 ]
+    run grep -F -- "q" "$WORKTREE_MD"
+    [ "$status" -eq 0 ]
+    run grep -F -- "trust" "$WORKTREE_MD"
+    [ "$status" -eq 0 ]
+}
+
+@test "docs-worktree: WORKTREE_SESSIONS.md no longer mentions a status bar" {
+    run grep -F -- "status bar" "$WORKTREE_MD"
+    [ "$status" -ne 0 ]
+}
+
+@test "docs-worktree: CLAUDE.md's fleet row describes navigation" {
+    run grep -F -- "fleet\`" "$CLAUDE_MD"
+    [ "$status" -eq 0 ]
+    local fleet_row
+    fleet_row="$(grep -F -- "fleet\`" "$CLAUDE_MD" | head -1)"
+    [[ "$fleet_row" == *"navigate"* || "$fleet_row" == *"jump"* ]]
+}
