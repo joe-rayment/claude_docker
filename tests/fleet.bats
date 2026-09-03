@@ -195,21 +195,26 @@ run_fleet_once() {
     setup_fleet_fixture
     run_fleet_once
     [ "$status" -eq 0 ]
+    # Contract-owner fix: bats' `run` overwrites $output on every call, so the
+    # chained greps below must read the table captured once here, not the
+    # previous grep's own stdout.
+    local table
+    table="$output"
 
     local n
-    n="$(printf '%s\n' "$output" | grep -c .)"
+    n="$(printf '%s\n' "$table" | grep -c .)"
     [ "$n" -eq 4 ]
 
-    run grep -Fx "mainwin main 0 - - 0 -" <<<"$output"
+    run grep -Fx "mainwin main 0 - - 0 -" <<<"$table"
     [ "$status" -eq 0 ]
 
-    run grep -E '^wawin wa 1 2/1 deep 0 [0-9]+s$' <<<"$output"
+    run grep -E '^wawin wa 1 2/1 deep 0 [0-9]+s$' <<<"$table"
     [ "$status" -eq 0 ]
 
-    run grep -E '^- wb 2 1/0 standard 2 e,s [0-9]+s$' <<<"$output"
+    run grep -E '^- wb 2 1/0 standard 2 e,s [0-9]+s$' <<<"$table"
     [ "$status" -eq 0 ]
 
-    run grep -Fx "wcwin wc 0 0/0 - 0 -" <<<"$output"
+    run grep -Fx "wcwin wc 0 0/0 - 0 -" <<<"$table"
     [ "$status" -eq 0 ]
 }
 
