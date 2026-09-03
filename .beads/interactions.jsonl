@@ -251,3 +251,4 @@
 {"id":"int-9ff1c0d7","kind":"field_change","created_at":"2026-09-03T17:08:55.082678468Z","actor":"claude","issue_id":"beads_claude_docker-bj6x","extra":{"field":"status","new_value":"closed","old_value":"in_progress","reason":"Closed"}}
 {"id":"int-a78f3131","kind":"field_change","created_at":"2026-09-03T17:25:18.75425959Z","actor":"claude","issue_id":"beads_claude_docker-3c20","extra":{"field":"status","new_value":"closed","old_value":"in_progress","reason":"Closed"}}
 {"id":"int-a0671fd9","kind":"field_change","created_at":"2026-09-03T17:50:55.780288343Z","actor":"claude","issue_id":"beads_claude_docker-dd3o","extra":{"field":"status","new_value":"closed","old_value":"open","reason":"Closed"}}
+{"id":"int-8feae6e7","kind":"field_change","created_at":"2026-09-03T18:00:29.914492428Z","actor":"claude","issue_id":"beads_claude_docker-703","extra":{"field":"status","new_value":"closed","old_value":"in_progress","reason":"Closed"}}
