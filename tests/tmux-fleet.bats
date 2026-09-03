@@ -666,8 +666,8 @@ start_scratch_tmux_at() {
     # sidebar's own rows plus a line proving the status bar is off.
     REPO="$(new_scratch_repo sidebar-repo)"
     start_scratch_tmux_at "$REPO"
-    tmux -L "$TMUX_SOCK" new-window -n win-one -c "$REPO"
-    tmux -L "$TMUX_SOCK" new-window -n win-two -c "$REPO"
+    tmux -L "$TMUX_SOCK" new-window -n w-one -c "$REPO"
+    tmux -L "$TMUX_SOCK" new-window -n w-two -c "$REPO"
     select_window_pane base
     pane0="$(tmux -L "$TMUX_SOCK" display -p -t base '#{pane_id}')"
     fake_tmux="$(fake_tmux_env "$TMUX_SOCK")"
@@ -682,14 +682,23 @@ start_scratch_tmux_at() {
     # the (removed) status-bar test's own comment history for why: a
     # forking command piped straight into `take-screenshot term` can be
     # truncated by termshot's idle-timeout heuristic; `cat` never forks.
+    # The sidebar's first frame lands only after its git/tmux lookups
+    # finish, so poll the capture until both window rows are present
+    # (contract-owner fix: the original single capture raced the render).
     sidebar_txt="$BATS_TEST_TMPDIR/sidebar-rows.txt"
-    {
-        tmux -L "$TMUX_SOCK" capture-pane -p -t "$sidebar_pane"
-        echo
-        echo "status: $(tmux -L "$TMUX_SOCK" show-options -gv status)"
-    } > "$sidebar_txt"
+    for _ in $(seq 1 50); do
+        {
+            tmux -L "$TMUX_SOCK" capture-pane -p -t "$sidebar_pane"
+            echo
+            echo "status: $(tmux -L "$TMUX_SOCK" show-options -gv status)"
+        } > "$sidebar_txt"
+        if grep -qF "w-two" "$sidebar_txt"; then
+            break
+        fi
+        sleep 0.2
+    done
 
-    for w in win-one win-two; do
+    for w in w-one w-two; do
         run grep -F "$w" "$sidebar_txt"
         [ "$status" -eq 0 ]
     done
