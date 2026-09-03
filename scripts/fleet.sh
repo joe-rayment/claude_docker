@@ -108,6 +108,21 @@ else
     CS_NEW_BIN="cs-new"
 fi
 
+# FLEET_MENU_BIN -- the fleet-menu launcher the sidebar's own 'n' (new
+# worktree session) key delegates to, so the sidebar gets the exact same
+# synchronous-cs-new/no-overlay/trust-seed/follow path 'fleet-menu new'
+# already gives the right-click menu and prefix-N binding. Same
+# sibling-over-PATH precedence and anti-staleness rationale as CS_NEW_BIN
+# above (falls back to PATH's fleet-menu only if no sibling script sits
+# next to SELF).
+if [ -f "$(dirname "$SELF")/fleet-menu.sh" ]; then
+    FLEET_MENU_BIN="$(dirname "$SELF")/fleet-menu.sh"
+elif [ -f "$(dirname "$SELF")/fleet-menu" ]; then
+    FLEET_MENU_BIN="$(dirname "$SELF")/fleet-menu"
+else
+    FLEET_MENU_BIN="fleet-menu"
+fi
+
 usage() {
     cat <<'EOF'
 Usage: fleet --once | --watch | rows | go <name|path|@window> | follow | toggle [pane_id]
@@ -119,8 +134,14 @@ Usage: fleet --once | --watch | rows | go <name|path|@window> | follow | toggle 
            repo: prints a one-line notice and exits 0.
 --watch    Like --once, redrawing every 3s until killed: each frame is
            one buffered write (no flicker), and 'fleet follow' runs once
-           per tick. FLEET_MAX_TICKS=<n> stops the loop after <n> frames
-           (for tests).
+           per tick. On a tty, also interactive: Up/k and Down/j (or the
+           wheel) move a highlighted cursor row, Enter or a left click
+           jumps to it ('go'), 'n' opens a new worktree session, 'r'
+           refreshes now, 'q' closes the pane -- a footer line lists
+           these. Off a tty (piped/redirected), no input is read and no
+           terminal control sequence beyond the frame itself is emitted.
+           FLEET_MAX_TICKS=<n> stops the loop after <n> frames (for
+           tests).
 rows       Machine-readable rows behind --once/--watch/go, one per line:
            <display><TAB><kind><TAB><name><TAB><path><TAB><window_id><TAB><pane_id>
            (kind is worktree or window; a row's own display text is
@@ -411,24 +432,23 @@ window_repr_pane() {
     [ -n "$fb_pid" ] && printf '%s\t%s\n' "$fb_path" "$fb_pid"
 }
 
-# window_is_represented <window_id> <resolved-worktree-paths> — 0 if ANY
-# pane in <window_id> (sidebar included) resolves (cd+pwd -P) to one of
-# the newline-separated, already-resolved paths in
-# <resolved-worktree-paths>; 1 otherwise. Deliberately checks every pane,
-# not just window_repr_pane()'s single representative one: after a 'go'
-# or 'follow' joins the sidebar into a worktree's own window, that
-# window's non-sidebar pane is still the worktree match regardless of
-# which pane window_repr_pane() would have picked first.
-window_is_represented() {
-    local wid="$1" resolved_list="$2" path rp
-    while IFS= read -r path; do
-        [ -n "$path" ] || continue
-        rp="$(cd "$path" 2>/dev/null && pwd -P)" || rp="$path"
-        if printf '%s' "$resolved_list" | grep -qxF "$rp"; then
-            return 0
-        fi
-    done < <(tmux list-panes -t "$wid" -F '#{pane_current_path}' 2>/dev/null)
-    return 1
+# window_claimed_by_worktree <window_id> <claimed-window-ids> — 0 if
+# <window_id> is one of the newline-separated window ids in
+# <claimed-window-ids> (exact match), 1 otherwise. <claimed-window-ids>
+# is the set of window_ids emit_rows() actually chose (via
+# pane_for_path()) for its worktree rows -- NOT every window with a pane
+# whose path happens to match a worktree. Replaces the old
+# window_is_represented() (which matched on ANY pane's path anywhere in
+# the window): that any-pane-path test swallowed a second window sharing
+# a worktree's path (a Hide-parked pane, a plain shell window opened at
+# the main tree) into the worktree's own single row, making it
+# unreachable from the sidebar once the status bar is gone. Narrowing to
+# "is this window pane_for_path()'s own pick" means a window like that
+# now gets its own window row instead of vanishing.
+window_claimed_by_worktree() {
+    local wid="$1" claimed_list="$2"
+    [ -n "$wid" ] || return 1
+    printf '%s' "$claimed_list" | grep -qxF "$wid"
 }
 
 # goto_pane <window_id> <pane_id> — move the server-wide fleet sidebar
@@ -512,7 +532,7 @@ ROW_FMT='%s %s %s %2s %s %s %s %s\n'
 # (same ROW_FMT call, same per-field lookups), <name> is basename(path)
 # (what 'cs-new --open <name>' expects), <window_id>/<pane_id> come from
 # pane_for_path() ('-'/'-' if no pane matches). Then one row per tmux
-# window NOT represented by any worktree row (window_is_represented()),
+# window NOT claimed by any worktree row (window_claimed_by_worktree()),
 # in window-index order: <name> is the window's own #{window_name},
 # <path>/<pane_id> from window_repr_pane(), <display> uses the same
 # ROW_FMT with '-' in every worktree-only field and a blank marker (no
@@ -521,12 +541,9 @@ ROW_FMT='%s %s %s %2s %s %s %s %s\n'
 # column for every row it prints -- one row shape, two consumers, no
 # second place a row's text could drift from what --once shows.
 emit_rows() {
-    local root="$1" resolved_paths="" path branch
+    local root="$1" claimed_window_ids="" path branch
     while IFS="$TAB" read -r path branch; do
         [ -n "$path" ] || continue
-        local rp
-        rp="$(cd "$path" 2>/dev/null && pwd -P)" || rp="$path"
-        resolved_paths="$resolved_paths$rp"$'\n'
 
         local window dirty ab ctx pdir sid mtime lane agents age marker name display pf wid pid
         window="$(window_for "$path")"
@@ -562,6 +579,9 @@ emit_rows() {
             wid="-"
             pid="-"
         fi
+        if [ "$wid" != "-" ]; then
+            claimed_window_ids="$claimed_window_ids$wid"$'\n'
+        fi
         printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$display" "worktree" "$name" "$path" "$wid" "$pid"
     done < <(list_worktrees_with_branch "$root")
 
@@ -570,7 +590,7 @@ emit_rows() {
     local sess widx winid
     while IFS="$TAB" read -r sess widx winid; do
         [ -n "$winid" ] || continue
-        window_is_represented "$winid" "$resolved_paths" && continue
+        window_claimed_by_worktree "$winid" "$claimed_window_ids" && continue
         local reprline wpath wpid wname wbranch wdisplay
         reprline="$(window_repr_pane "$winid")"
         wpath=""
@@ -596,6 +616,15 @@ emit_rows() {
     done < <(all_window_ids)
 }
 
+# header_line — the header row shared by print_table (--once/--watch's
+# dumb loop) and the interactive loop's own redraw(): same ROW_FMT call,
+# same pad_trunc() widths, so both ever produce that text from one place.
+header_line() {
+    printf "$ROW_FMT" \
+        " " "$(pad_trunc "win" "$WINDOW_MAX")" "$(pad_trunc "branch" "$BRANCH_MAX")" \
+        "+-" "a/b" "lane" "ag" "age"
+}
+
 # print_table — the --once/--watch body: the one-line notice outside a
 # git repo, else a header row followed by emit_rows()'s display column
 # (worktree rows, then unrepresented-window rows). Row shape: <marker>
@@ -611,9 +640,7 @@ print_table() {
         echo "fleet: not inside a git repository"
         return 0
     fi
-    printf "$ROW_FMT" \
-        " " "$(pad_trunc "win" "$WINDOW_MAX")" "$(pad_trunc "branch" "$BRANCH_MAX")" \
-        "+-" "a/b" "lane" "ag" "age"
+    header_line
     emit_rows "$root" | cut -f1
 }
 
@@ -634,15 +661,33 @@ cmd_rows() {
     emit_rows "$root"
 }
 
-# cmd_watch — see usage(). Each tick: 'fleet follow' first (so the
-# sidebar tracks wherever the user navigated to by other means since the
-# last tick), then the WHOLE frame is assembled into one string --
-# ESC[H, then every print_table line with a trailing ESC[K, then a
-# final ESC[J -- and written with exactly one `printf '%s'`, never
-# `clear`, so there is no window between "old frame gone" and "new frame
-# drawn" for the terminal to blink through. FLEET_MAX_TICKS (unset/0 =
-# unbounded) stops the loop after that many frames, for tests.
+# cmd_watch — see usage(). Dispatches on whether stdin is a tty: a real
+# terminal (what the sidebar pane tmux opens gives us) gets the
+# interactive loop (cmd_watch_interactive); anything else
+# (piped/redirected -- tests, or any non-interactive capture of --watch's
+# output) gets today's plain redraw loop (cmd_watch_dumb) unchanged,
+# emitting no terminal control sequence beyond the frame itself: 'read
+# -t' on a non-tty stdin returns EOF immediately, so the interactive
+# loop's input read would busy-loop there instead of ticking every
+# REFRESH_INTERVAL_S.
 cmd_watch() {
+    if [ -t 0 ]; then
+        cmd_watch_interactive
+    else
+        cmd_watch_dumb
+    fi
+}
+
+# cmd_watch_dumb — the original --watch body, unchanged: each tick,
+# 'fleet follow' first (so the sidebar tracks wherever the user
+# navigated to by other means since the last tick), then the WHOLE frame
+# is assembled into one string -- ESC[H, then every print_table line
+# with a trailing ESC[K, then a final ESC[J -- and written with exactly
+# one `printf '%s'`, never `clear`, so there is no window between "old
+# frame gone" and "new frame drawn" for the terminal to blink through.
+# FLEET_MAX_TICKS (unset/0 = unbounded) stops the loop after that many
+# frames, for tests.
+cmd_watch_dumb() {
     local max="${FLEET_MAX_TICKS:-0}" n=0 frame line
     while :; do
         do_follow || true
@@ -660,11 +705,374 @@ cmd_watch() {
     done
 }
 
+# ── interactive --watch: cursor, keys, mouse, footer (beads_claude_docker-bj6x) ──
+# The tty branch of cmd_watch: a cursor row tracked by (kind, name)
+# identity across refreshes, keyboard + SGR mouse navigation, and a
+# footer of key hints. Cached UI state lives in cmd_watch_interactive's
+# own locals -- WATCH_ROWS (array of emit_rows' raw TSV lines),
+# WATCH_CURSOR (index into it), WATCH_SCROLL (index of the first visible
+# row) and WATCH_ROOT (the repo root) -- and every helper below
+# reads/writes them directly via bash's ordinary dynamic scoping (the
+# same idiom list_worktrees_with_branch's own nested flush() already
+# uses in this file), rather than threading them through as arguments on
+# every call.
+
+# cleanup_tty — restore what cmd_watch_interactive changed about the
+# terminal: canonical/echo input back on, a visible cursor, mouse
+# tracking off. Deliberately plain 'stty sane' rather than a saved+
+# restored `stty -g` snapshot: this runs both from action_quit (still
+# inside cmd_watch_interactive's own call frame) and, via the EXIT trap,
+# possibly after that frame has already returned -- at which point any
+# would-be-saved settings captured in a now-gone local are unreachable
+# (confirmed empirically: a function's `local` does not survive for its
+# own `trap ... EXIT` to read once the function has returned) -- so
+# 'sane' is the only restore that is correct from both call sites.
+# Idempotent: safe to run twice (once explicitly, once more via the
+# trap).
+cleanup_tty() {
+    stty sane 2>/dev/null
+    tput cnorm 2>/dev/null
+    printf '\e[?1000l\e[?1006l'
+}
+
+# cursor_up / cursor_down — move WATCH_CURSOR one row, clamped to
+# [0, last row]; no-op on an empty row set. Never touch WATCH_SCROLL
+# directly (redraw() derives it from WATCH_CURSOR every frame) and never
+# run a git/tmux subprocess -- pure in-memory cursor movement.
+cursor_up() {
+    [ "${#WATCH_ROWS[@]}" -gt 0 ] || return 0
+    [ "$WATCH_CURSOR" -gt 0 ] && WATCH_CURSOR=$((WATCH_CURSOR - 1))
+    return 0
+}
+
+cursor_down() {
+    [ "${#WATCH_ROWS[@]}" -gt 0 ] || return 0
+    [ "$WATCH_CURSOR" -lt $((${#WATCH_ROWS[@]} - 1)) ] && WATCH_CURSOR=$((WATCH_CURSOR + 1))
+    return 0
+}
+
+# action_go — Enter, or a left-click resolved by mouse_click_row(): act
+# on the row currently under WATCH_CURSOR via go_to_row(), then refresh
+# (the go may have opened a session or moved windows around, so the
+# cached rows -- window/pane ids in particular -- can be stale).
+action_go() {
+    [ "${#WATCH_ROWS[@]}" -gt 0 ] || return 0
+    [ "$WATCH_CURSOR" -ge 0 ] && [ "$WATCH_CURSOR" -lt "${#WATCH_ROWS[@]}" ] || return 0
+    local disp kind name path wid pid
+    IFS="$TAB" read -r disp kind name path wid pid <<<"${WATCH_ROWS[$WATCH_CURSOR]}"
+    go_to_row "$kind" "$name" "$path" "$wid" "$pid" 2>/dev/null || true
+    do_follow || true
+    refresh_rows
+}
+
+# action_new — 'n': the same synchronous, overlay-free new-worktree-session
+# path the right-click menu's "New worktree session" item and prefix-N
+# already run, via the sibling-resolved FLEET_MENU_BIN (output swallowed
+# -- cmd_new's own display-message already reports a failure). It brings
+# the sidebar along on its own (cs-new -> fleet follow), so this only
+# needs to refresh the cached rows afterward.
+action_new() {
+    "$FLEET_MENU_BIN" new "${TMUX_PANE:-}" "$WATCH_ROOT" >/dev/null 2>&1 || true
+    do_follow || true
+    refresh_rows
+}
+
+# action_refresh — 'r': re-run 'fleet follow' and re-fetch rows right
+# now, without waiting for the next tick.
+action_refresh() {
+    do_follow || true
+    refresh_rows
+}
+
+# action_quit — 'q': restore the terminal ourselves right away (don't
+# rely on the EXIT trap alone -- kill-pane below can tear this process
+# down before a signal-driven trap is guaranteed to have run) and kill
+# our own pane.
+action_quit() {
+    cleanup_tty
+    tmux kill-pane -t "${TMUX_PANE:-}" 2>/dev/null || true
+    WATCH_QUIT=1
+}
+
+# mouse_click_row <y> — <y> is the SGR sequence's 1-based row within the
+# pane (1 = header). Maps it to a WATCH_ROWS index via the current
+# WATCH_SCROLL and the pane's own height (tput lines, fallback 24, minus
+# the header and footer lines) and, if it lands on an actual row (not
+# the header, the footer, or a blank line past the last row), moves the
+# cursor there and acts exactly like Enter.
+mouse_click_row() {
+    local y="$1" plines body_height idx
+    case "$y" in ''|*[!0-9]*) return 0 ;; esac
+    [ "$y" -ge 2 ] || return 0
+    plines="$(tput lines 2>/dev/null)"; [ -n "$plines" ] || plines=24
+    body_height=$((plines - 2))
+    [ "$body_height" -ge 1 ] || body_height=1
+    [ $((y - 2)) -lt "$body_height" ] || return 0
+    idx=$((WATCH_SCROLL + y - 2))
+    [ "$idx" -ge 0 ] && [ "$idx" -lt "${#WATCH_ROWS[@]}" ] || return 0
+    WATCH_CURSOR="$idx"
+    action_go
+}
+
+# handle_escape — called right after an ESC byte is read: collects the
+# rest of the sequence a byte at a time (read -rsn1 -t 0.05 -- ample for
+# bytes tmux/send-keys deliver in one write) until a terminating letter.
+# Recognizes plain arrow keys (ESC[A / ESC[B) and SGR mouse reports
+# (ESC[<Pb;Px;PyM press / ...m release; Pb 0 = left button, 64/65 =
+# wheel up/down); anything else is drained to its own terminator (or
+# until reads start timing out) and ignored, so an unrecognized sequence
+# never leaks stray bytes into the next read as a bogus key. Only button
+# PRESS (the 'M' terminator) triggers an action -- the matching release
+# ('m') a real click (or the test's own SGR pair) also sends is
+# deliberately a no-op, so one click doesn't fire 'go' twice.
+handle_escape() {
+    local c1 c2 ch params="" term=""
+    IFS= read -rsn1 -t 0.05 c1 || return 0
+    [ "$c1" = "[" ] || return 0
+    IFS= read -rsn1 -t 0.05 c2 || return 0
+    case "$c2" in
+        A) cursor_up; return 0 ;;
+        B) cursor_down; return 0 ;;
+        '<')
+            while IFS= read -rsn1 -t 0.05 ch; do
+                case "$ch" in
+                    M|m) term="$ch"; break ;;
+                    *) params="$params$ch" ;;
+                esac
+            done
+            [ "$term" = "M" ] || return 0
+            local b x y
+            IFS=';' read -r b x y <<<"$params"
+            case "$b" in
+                64) cursor_up ;;
+                65) cursor_down ;;
+                0) mouse_click_row "$y" ;;
+            esac
+            ;;
+        *)
+            while IFS= read -rsn1 -t 0.05 ch; do
+                case "$ch" in
+                    [A-Za-z]) break ;;
+                esac
+            done
+            ;;
+    esac
+}
+
+# handle_key <key> — dispatches one byte (or, for ESC, a whole escape
+# sequence) read by cmd_watch_interactive's own loop. Every branch either
+# is, or ends by calling, one of the cursor_*/action_* helpers above; any
+# other key is silently ignored.
+handle_key() {
+    local key="$1"
+    case "$key" in
+        $'\e') handle_escape ;;
+        k) cursor_up ;;
+        j) cursor_down ;;
+        $'\r'|$'\n'|'') action_go ;;
+        n) action_new ;;
+        r) action_refresh ;;
+        q) action_quit ;;
+        *) : ;;
+    esac
+}
+
+# refresh_rows — re-run emit_rows() into WATCH_ROWS, preserving the
+# cursor's ROW (not just its numeric position) across the refresh: the
+# (kind, name) of the row under WATCH_CURSOR before the re-fetch is
+# looked up again after, by exact match. Found -> the cursor follows
+# that row even if its index shifted. Not found (the row disappeared) ->
+# WATCH_CURSOR keeps its old numeric value, clamped to the new row
+# count, as the nearest available row. Only called from the tick, 'r',
+# or after an action -- never from a pure cursor move -- so Up/Down's
+# own redraw never pays for this function's emit_rows() sweep.
+refresh_rows() {
+    local prev_kind="" prev_name="" line k n idx found=-1
+    if [ "${#WATCH_ROWS[@]}" -gt 0 ] && [ "$WATCH_CURSOR" -ge 0 ] && [ "$WATCH_CURSOR" -lt "${#WATCH_ROWS[@]}" ]; then
+        IFS="$TAB" read -r _ prev_kind prev_name _ _ _ <<<"${WATCH_ROWS[$WATCH_CURSOR]}"
+    fi
+
+    WATCH_ROWS=()
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        WATCH_ROWS+=("$line")
+    done < <(emit_rows "$WATCH_ROOT")
+
+    if [ -n "$prev_kind" ] || [ -n "$prev_name" ]; then
+        idx=0
+        for line in "${WATCH_ROWS[@]}"; do
+            IFS="$TAB" read -r _ k n _ _ _ <<<"$line"
+            if [ "$k" = "$prev_kind" ] && [ "$n" = "$prev_name" ]; then
+                found="$idx"
+                break
+            fi
+            idx=$((idx + 1))
+        done
+    fi
+
+    if [ "$found" -ge 0 ]; then
+        WATCH_CURSOR="$found"
+    elif [ "${#WATCH_ROWS[@]}" -eq 0 ]; then
+        WATCH_CURSOR=0
+    elif [ "$WATCH_CURSOR" -ge "${#WATCH_ROWS[@]}" ]; then
+        WATCH_CURSOR=$((${#WATCH_ROWS[@]} - 1))
+    elif [ "$WATCH_CURSOR" -lt 0 ]; then
+        WATCH_CURSOR=0
+    fi
+}
+
+# redraw — build and write one frame from the CACHED WATCH_ROWS (no
+# git/tmux data subprocess here -- only tput for the pane's current
+# size): header line, then the visible row window (WATCH_SCROLL scrolled
+# just far enough to keep WATCH_CURSOR on screen), then a footer of key
+# hints on the pane's last line. Same buffered single-printf, ESC[H ..
+# ESC[K-per-line .. ESC[J shape as cmd_watch_dumb's own frame -- never
+# `clear`. The cursor row alone is padded to the pane's full width and
+# wrapped in ESC[7m/ESC[0m (exactly one reverse-video row per frame);
+# every other row is left exactly as emit_rows produced it, same as
+# print_table.
+redraw() {
+    local cols plines body_height total idx shown disp line frame
+
+    cols="$(tput cols 2>/dev/null)"; [ -n "$cols" ] || cols="$SIDEBAR_WIDTH"
+    plines="$(tput lines 2>/dev/null)"; [ -n "$plines" ] || plines=24
+    body_height=$((plines - 2))
+    [ "$body_height" -ge 1 ] || body_height=1
+
+    total="${#WATCH_ROWS[@]}"
+    if [ "$total" -eq 0 ]; then
+        WATCH_CURSOR=0
+    else
+        [ "$WATCH_CURSOR" -ge 0 ] || WATCH_CURSOR=0
+        [ "$WATCH_CURSOR" -lt "$total" ] || WATCH_CURSOR=$((total - 1))
+    fi
+
+    [ "$WATCH_SCROLL" -ge 0 ] || WATCH_SCROLL=0
+    [ "$WATCH_SCROLL" -le "$WATCH_CURSOR" ] || WATCH_SCROLL="$WATCH_CURSOR"
+    [ "$WATCH_CURSOR" -lt $((WATCH_SCROLL + body_height)) ] || WATCH_SCROLL=$((WATCH_CURSOR - body_height + 1))
+    if [ "$total" -gt "$body_height" ]; then
+        [ "$WATCH_SCROLL" -le $((total - body_height)) ] || WATCH_SCROLL=$((total - body_height))
+    else
+        WATCH_SCROLL=0
+    fi
+
+    frame=$'\e[H'
+    frame="${frame}$(header_line)"$'\e[K\n'
+
+    idx="$WATCH_SCROLL"
+    shown=0
+    while [ "$shown" -lt "$body_height" ]; do
+        if [ "$idx" -lt "$total" ]; then
+            disp="$(cut -f1 <<<"${WATCH_ROWS[$idx]}")"
+            if [ "$idx" -eq "$WATCH_CURSOR" ]; then
+                line=$'\e[7m'"$(pad_trunc "$disp" "$cols")"$'\e[0m'
+            else
+                line="$disp"
+            fi
+        else
+            line=""
+        fi
+        frame="${frame}${line}"$'\e[K\n'
+        idx=$((idx + 1))
+        shown=$((shown + 1))
+    done
+
+    frame="${frame}Enter:go n:new r:refresh q:close"$'\e[K'
+    frame="${frame}"$'\e[J'
+    printf '%s' "$frame"
+}
+
+# cmd_watch_interactive — the tty branch of cmd_watch (see cmd_watch's
+# own comment). Puts the terminal in raw mode (echo/canonical input off,
+# cursor hidden, SGR mouse tracking on) with an EXIT trap that always
+# restores it, renders the first frame, then loops reading one byte at a
+# time: 'read -rsn1 -t REFRESH_INTERVAL_S' timing out (exit status > 128)
+# IS the 3s refresh tick (do_follow + refresh_rows + redraw); any other
+# non-zero exit status (EOF -- stdin closed under us) ends the loop; a
+# successful read dispatches through handle_key and always redraws
+# (cheaply, from cache -- see redraw()'s own comment) unless the key was
+# 'q', which already tore the pane down via action_quit().
+cmd_watch_interactive() {
+    local WATCH_ROOT
+    WATCH_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
+    if [ -z "$WATCH_ROOT" ]; then
+        # No meaningful navigation outside a git repo -- the dumb loop
+        # already handles this case (one-line notice, no rows) without
+        # ever needing raw tty/mouse mode.
+        cmd_watch_dumb
+        return
+    fi
+
+    local -a WATCH_ROWS=()
+    local WATCH_CURSOR=0 WATCH_SCROLL=0 WATCH_QUIT=0
+
+    trap cleanup_tty EXIT
+    stty -echo -icanon min 1 2>/dev/null
+    tput civis 2>/dev/null
+    printf '\e[?1000h\e[?1006h'
+
+    do_follow || true
+    refresh_rows
+    redraw
+
+    local key rc
+    while :; do
+        IFS= read -rsn1 -t "$REFRESH_INTERVAL_S" key
+        rc=$?
+        if [ "$rc" -gt 128 ]; then
+            do_follow || true
+            refresh_rows
+            redraw
+            continue
+        elif [ "$rc" -ne 0 ]; then
+            return 0
+        fi
+        handle_key "$key"
+        [ "$WATCH_QUIT" -eq 1 ] && return 0
+        redraw
+    done
+}
+
+# go_to_row <kind> <name> <path> <wid> <pid> — the shared body behind
+# 'fleet go' and the sidebar's own Enter/left-click action, given an
+# already-resolved row (no emit_rows() re-run, so the interactive loop's
+# cursor actions never pay for a fresh git/tmux sweep just to act on a
+# row it already has cached): opens a session for a windowless worktree
+# row (cs-new --open, then follow) or moves/selects via goto_pane() for a
+# row that already has one. Prints via err() and returns 1 on failure
+# instead of exiting, so a caller running inside the interactive loop
+# survives a failed go and keeps looping.
+go_to_row() {
+    local kind="$1" name="$2" path="$3" wid="$4" pid="$5"
+
+    if [ "$kind" = "worktree" ] && [ "$wid" = "-" ]; then
+        "$CS_NEW_BIN" --open "$name" || { err "failed to open a session for $name"; return 1; }
+        local pf
+        pf="$(pane_for_path "$path")"
+        if [ -n "$pf" ]; then
+            IFS="$TAB" read -r wid pid <<<"$pf"
+            goto_pane "$wid" "$pid"
+        else
+            do_follow || true
+        fi
+        return 0
+    fi
+
+    if [ "$wid" = "-" ]; then
+        err "no window for $name"
+        return 1
+    fi
+    if [ "$pid" = "-" ]; then
+        err "no pane for $name"
+        return 1
+    fi
+    goto_pane "$wid" "$pid"
+}
+
 # cmd_go <name|path|@window> — see usage(). Resolves <arg> against
 # emit_rows()'s own rows (exact match on name, path, or window_id, in row
-# order -- worktree rows first, then window rows), then either opens a
-# session for a windowless worktree row (cs-new --open, then follow) or
-# moves/selects via goto_pane() for a row that already has one.
+# order -- worktree rows first, then window rows), then acts via
+# go_to_row().
 cmd_go() {
     local arg="${1:-}" root
     [ -n "$arg" ] || die "usage: fleet go <name|path|@window>"
@@ -680,22 +1088,7 @@ cmd_go() {
     done < <(emit_rows "$root")
     [ -n "$matched" ] || die "no such row: $arg"
 
-    if [ "$kind" = "worktree" ] && [ "$wid" = "-" ]; then
-        "$CS_NEW_BIN" --open "$name" || die "failed to open a session for $name"
-        local pf
-        pf="$(pane_for_path "$path")"
-        if [ -n "$pf" ]; then
-            IFS="$TAB" read -r wid pid <<<"$pf"
-            goto_pane "$wid" "$pid"
-        else
-            do_follow || true
-        fi
-        return 0
-    fi
-
-    [ "$wid" != "-" ] || die "no window for $arg"
-    [ "$pid" != "-" ] || die "no pane for $arg"
-    goto_pane "$wid" "$pid"
+    go_to_row "$kind" "$name" "$path" "$wid" "$pid" || die "failed to go to $arg"
 }
 
 # cmd_follow — 'fleet follow': see do_follow()'s own comment.
