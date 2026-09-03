@@ -2575,11 +2575,21 @@ def run_report_all(since_days, csv_path=None):
         })
 
     if not session_rows:
-        scope = f" modified in the last {since_days}d" if since_days is not None else ""
-        # an asked-for CSV is still written (header only) before failing: a
-        # requested artifact that simply isn't there is worse than an empty one
+        # A delegate-only ledger (no native transcripts, live or dead, but
+        # real delegate spend on record -- e.g. right after delegation from
+        # a fresh volume where no ~/.claude/projects transcript has ever
+        # existed) is not "nothing to report": render just the delegated
+        # segment and exit 0 rather than failing on session_rows being
+        # empty (beads_claude_docker-703). An asked-for CSV still gets
+        # written (header only, since there's no native ledger_rows/csv_rows
+        # to include here) either way.
+        delegate_rows = _delegate_rows(lifetime_data)
         if csv_path:
             write_rows_csv([], csv_path)
+        if delegate_rows:
+            print_delegate_segment(lifetime_data)
+            return 0
+        scope = f" modified in the last {since_days}d" if since_days is not None else ""
         print(
             f"cost-mirror --report --all: no transcript files found under "
             f"{os.path.join(_projects_dir(), '*', '*.jsonl')}{scope}",
