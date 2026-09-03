@@ -25,8 +25,12 @@
 #                                 wrapped as {"hooks": ...} (unmodified commands —
 #                                 see NOTE below)
 #   bin/<name>                   the PATH scripts those hooks invoke via
-#                                 `command -v <name>`, resolved through the
-#                                 Dockerfile's COPY mapping (the same parser
+#                                 `command -v <name>`, plus a small explicit
+#                                 STANDALONE_NAMES set of user-facing CLI
+#                                 tools (e.g. cs-new) that ship in bin/
+#                                 without being hook-invoked; resolved
+#                                 through the Dockerfile's COPY mapping
+#                                 (the same parser
 #                                 scripts/image-drift.py:copy_entries() owns
 #                                 as the single source of truth for that
 #                                 mapping — reused here by dynamic import,
@@ -230,6 +234,14 @@ def walk(obj):
 
 walk(hooks_block)
 
+# Standalone user-facing CLI tools that ship in the plugin's bin/ even
+# though nothing in claude-settings.json's hooks block invokes them via
+# `command -v` -- they're run directly by a person (e.g. via a shell
+# alias), not by a hook. Keep this list small and explicit rather than
+# inferring it from anywhere else that could drift.
+STANDALONE_NAMES = {"cs-new"}
+names |= STANDALONE_NAMES
+
 bin_dir = os.path.join(plugin_dir, "bin")
 os.makedirs(bin_dir, exist_ok=True)
 
@@ -254,7 +266,7 @@ if missing:
         file=sys.stderr,
     )
 
-print(f"build-plugin: bin/ carries {len(shipped)} hook-invoked scripts: {', '.join(shipped)}")
+print(f"build-plugin: bin/ carries {len(shipped)} scripts (hook-invoked + standalone): {', '.join(shipped)}")
 PYEOF
 
 echo "build-plugin: regenerated $PLUGIN_DIR"

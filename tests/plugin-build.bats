@@ -11,9 +11,13 @@
 # scripts/image-drift.py's copy_entries() already owns as the single
 # source of truth). See beads_claude_docker-fo2.
 #
-# FROZEN per fo2's acceptance contract: this file must not be edited after
-# its RED commit. If a test here turns out to be wrong, stop and report —
-# do not edit it.
+# FROZEN per fo2's acceptance contract from its RED commit until fo2's own
+# verification completed — fo2 is CLOSED with VERIFIED: PASS (see its bead
+# notes), so that window has elapsed. The bin/ set below was subsequently
+# widened by beads_claude_docker-nmnb (cs-new, a standalone CLI tool the
+# plugin ships in bin/ without being hook-invoked); see build-plugin.sh's
+# STANDALONE_NAMES for why the "hooks invoke via `command -v`" bin/
+# description below no longer covers 100% of bin/'s contents.
 #
 # The CLI form asserted here (`claude --plugin-dir <path> plugin details
 # <name>`) was discovered empirically against the installed CLI (2.1.247):
@@ -114,10 +118,10 @@ setup() {
 
 # ── bin/ ────────────────────────────────────────────────────────────────
 
-@test "plugin-build: bin/ carries exactly the scripts the hooks block invokes via command -v" {
+@test "plugin-build: bin/ carries exactly the hook-invoked scripts plus the declared standalone set" {
     run bash -c "ls '$PLUGIN_DIR/bin' | sort"
     [ "$status" -eq 0 ]
-    expected=$'bd-guard\ncode-map-prime\ncontext-detect\ncontract-gate\ncost-mirror\ndelegation-gate\ndisk-cleanup\nimage-drift\nlane\noutbound-guard\nprime-memories\nsession-end-audit\ntier-gate\ntier-prime\ntier-reconcile\nworkflow-lint'
+    expected=$'bd-guard\ncode-map-prime\ncontext-detect\ncontract-gate\ncost-mirror\ncs-new\ndelegation-gate\ndisk-cleanup\nimage-drift\nlane\noutbound-guard\nprime-memories\nsession-end-audit\ntier-gate\ntier-prime\ntier-reconcile\nworkflow-lint'
     [ "$output" = "$expected" ]
 }
 

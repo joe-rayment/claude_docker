@@ -211,6 +211,7 @@ COPY --chown=agent:agent scripts/dev-log.sh /usr/local/bin/dev-log
 COPY --chown=agent:agent scripts/start-professor.sh /usr/local/bin/start-professor.sh
 COPY --chown=agent:agent scripts/take-screenshot.sh /usr/local/bin/take-screenshot
 COPY --chown=agent:agent scripts/csearch.sh /usr/local/bin/csearch
+COPY --chown=agent:agent scripts/cs-new.sh /usr/local/bin/cs-new
 COPY --chown=agent:agent scripts/tier-set.sh /usr/local/bin/tier-set
 COPY --chown=agent:agent scripts/tier-derive.sh /usr/local/bin/tier-derive
 COPY --chown=agent:agent scripts/tier-reconcile.sh /usr/local/bin/tier-reconcile

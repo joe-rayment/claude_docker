@@ -30,6 +30,7 @@ workspace/
 .mcp.json
 .claude/logs/
 .claude/settings.local.json
+.claude/worktrees/
 
 # Python
 __pycache__/

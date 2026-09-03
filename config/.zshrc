@@ -65,6 +65,10 @@ _claude_in_tmux() {
 cs()  { _claude_in_tmux claude --dangerously-skip-permissions "$@" }
 csd() { _claude_in_tmux claude --dangerously-skip-permissions --debug "$@" }
 cn()  { _claude_in_tmux claude "$@" }
+# cs-new (scripts/cs-new.sh) opens its own worktree-scoped side session and
+# already branches on $TMUX itself (new window if set, foreground if not),
+# so — unlike cs/csd/cn — it does NOT go through _claude_in_tmux.
+alias csn=cs-new
 
 # ── Tiered orchestration: /tier (slash command) is the primary interface ────
 # The engine is /usr/local/bin/tier-set (repo: scripts/tier-set.sh). You pick
