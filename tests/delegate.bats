@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+bats_require_minimum_version 1.5.0   # `run --separate-stderr` (beads_claude_docker-703)
 
 # delegate.bats — scripts/delegate.sh: routes config, `check` health table,
 # `run` (ephemeral worktree, scrubbed-env opencode invocation, JSON
@@ -757,6 +758,44 @@ make_receipt() {
     [ -n "$TOTAL_LINE" ]
     [ -n "$DELEGATED_LINE" ]
     [ "$DELEGATED_LINE" -gt "$TOTAL_LINE" ]
+}
+
+@test "cost-mirror --report: a delegate-only ledger (no transcripts at all) exits 0 and renders the delegated segment (beads_claude_docker-703)" {
+    # Real scenario after delegation from a fresh volume: the lifetime
+    # ledger holds delegate rows but no ~/.claude/projects transcript ever
+    # existed. run_report_all must not early-exit on "no transcript files
+    # found" when there is real delegate spend to show.
+    export COST_MIRROR_STATE_DIR="$BATS_TEST_TMPDIR/cm-state-delegate-only"
+    PROJDIR="$BATS_TEST_TMPDIR/cm-projects-empty"
+    mkdir -p "$PROJDIR"
+    export COST_MIRROR_PROJECTS_DIR="$PROJDIR"
+
+    RECEIPT="$BATS_TEST_TMPDIR/receipt.json"
+    make_receipt "$RECEIPT" "glm-1700000045-only1" "openrouter/z-ai/glm-5.2" 0.0456 200 100
+    run python3 "$MIRROR" --ingest-delegate-receipt "$RECEIPT"
+    [ "$status" -eq 0 ]
+
+    run --separate-stderr python3 "$MIRROR" --report
+    [ "$status" -eq 0 ]
+    report_output="$output"
+    report_err="$stderr"
+    [[ "$report_output" == *"delegated:"* ]]
+    [[ "$report_output" == *"openrouter/z-ai/glm-5.2"* ]]
+    [[ "$report_output" == *'$0.05'* ]]
+    [[ "$report_output" != *"Traceback"* ]]
+    [[ "$report_err" != *"Traceback"* ]]
+    [[ "$report_err" != *"no transcript files found"* ]]
+
+    REPORT_TXT="$BATS_TEST_TMPDIR/delegate-only-report.txt"
+    printf '%s\n' "$report_output" >"$REPORT_TXT"
+    png="/workspace/attachments/cost-mirror-703-$$.png"
+    run take-screenshot term -o "$png" "cat $REPORT_TXT"
+    [ "$status" -eq 0 ]
+    [ -f "$png" ]
+    size="$(wc -c < "$png")"
+    [ "$size" -gt 15000 ]
+
+    echo "cost-mirror delegate-only report screenshot: $png"
 }
 
 @test "cost-mirror --ingest-delegate-receipt: malformed or missing receipt exits nonzero, stderr names it, ledger untouched" {
