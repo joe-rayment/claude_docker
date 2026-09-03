@@ -23,6 +23,10 @@
           {
             "type": "command",
             "command": "e=$(grep -m1 '^model:' \"$HOME/.claude/agents/executor.md\" 2>/dev/null | sed 's/^model:[[:space:]]*//'); s=$(grep -m1 '^model:' \"$HOME/.claude/agents/scout.md\" 2>/dev/null | sed 's/^model:[[:space:]]*//'); d=$(command -v lane >/dev/null 2>&1 && lane --prime --short 2>/dev/null); if [ -n \"$d\" ]; then d=\" \u00b7 $d\"; else d=\" \u2014 dispatch: recon\u2192scout \u00b7 slices\u2192executor \u00b7 claims\u2192verifier \u00b7 trivial\u2192inline\"; fi; [ -n \"$e\" ] && echo \"[tier] worker=$e recon=${s:-?}$d\"; true"
+          },
+          {
+            "type": "command",
+            "command": "command -v session-title >/dev/null 2>&1 && exec session-title; exit 0"
           }
         ]
       }
@@ -62,6 +66,10 @@
           {
             "type": "command",
             "command": "r=$(git rev-parse --show-toplevel 2>/dev/null); [ -n \"$r\" ] && [ -x \"$r/scripts/cost-mirror.py\" ] && { timeout 3 python3 \"$r/scripts/cost-mirror.py\" --refresh-pricing >/dev/null 2>&1 & exit 0; }; c=$(command -v cost-mirror 2>/dev/null) && timeout 1 \"$c\" --help </dev/null 2>/dev/null | grep -q refresh-pricing && { timeout 3 \"$c\" --refresh-pricing >/dev/null 2>&1 & exit 0; }; exit 0"
+          },
+          {
+            "type": "command",
+            "command": "command -v peers >/dev/null 2>&1 && exec peers; exit 0"
           }
         ]
       }
