@@ -68,7 +68,9 @@ dirty file count, ahead/behind `main`, a one-letter lane code
 (`e`/`s`/`d`/`-`), live agent count with role letters (`e`xecutor,
 `s`cout, `v`erifier), and last-activity age. Lane and agent data come
 from that worktree's own session transcript under `~/.claude/projects/`,
-not this repo.
+not this repo. For the main tree, which holds many sessions, those three
+columns follow its most recently active session; a worktree has one, so
+they are exact.
 
 ## Testing
 
