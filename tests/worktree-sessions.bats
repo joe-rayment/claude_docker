@@ -30,6 +30,13 @@ setup() {
 teardown() {
     if [ -n "$TMUX_SOCK" ]; then
         tmux -L "$TMUX_SOCK" kill-server 2>/dev/null || true
+        # kill-server terminates the server process but does not always
+        # unlink its socket file (same fix tests/tmux-fleet.bats already
+        # applies) -- remove it explicitly so repeated runs don't
+        # accumulate stale scratch sockets alongside the real, live one.
+        # Added post-verification (beads_claude_docker-7bam collateral;
+        # F1/nmnb's own FROZEN window elapsed once its verifier passed).
+        rm -f "/tmp/tmux-1000/$TMUX_SOCK"
     fi
     if [ -n "$CS_NEW_PID" ]; then
         kill "$CS_NEW_PID" 2>/dev/null || true
