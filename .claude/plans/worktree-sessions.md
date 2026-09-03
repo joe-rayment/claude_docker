@@ -1,6 +1,12 @@
 # Plan: worktree-per-session, tmux ergonomics, peers, sidebar
 
-Filed 2026-09-03. Lane: deep. Status: filed — executing.
+Filed 2026-09-03. Lane: deep. Status: IMPLEMENTED 2026-09-03 — see Outcome.
+
+## Outcome (2026-09-03)
+
+All six slices landed on main red-commit-first and were verified: F1 nmnb (38be250) · F2 f5i6 (5c41d29, fix 89d9059) · F3 7bam (77227cd) · F4 1tym (bfaeceb, c754d19) · F4b blrl (2041fd8) · F5 l4z6 (0480872, f10c627). Independent verifiers passed F1, F2, F3, F4; F4b was accepted over a mechanical TAMPERED that rested only on the executor's disclosed post-RED fixes to its own tests (verifier confirmed nothing weakened); F5 was checked by the orchestrator after the verifier spawn hit the account session limit. Sidebar go/no-go: GO after one round of polish (header, aligned columns, agent marker); it is wired into the menu (Sidebar) and prefix S.
+
+Live on this container without a rebuild: cs-new, fleet-menu, fleet, peers and session-title copied to /usr/local/bin; config/tmux.conf applied to the live server (status bar at the top, menu items, prefix keys). Not live until `./claude-dev --rebuild` (or the next config sync): the peers and session-title hooks in ~/.claude/settings.json, and the baked script copies. Follow-up filed: dd3o (a flaky window-setup test in tmux-fleet.bats).
 
 ## Goal
 Side sessions stop stepping on each other, can be opened from the right-click menu with no name to think up, can be hidden and brought back without the mouse, announce each other at session start, and (if it proves usable) show up in a live sidebar. Nothing leaves the mounted folder: worktrees live under `/workspace/.claude/worktrees/`.
