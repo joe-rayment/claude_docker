@@ -1015,7 +1015,7 @@ sidebar_gone() {
     echo "fleet sidebar cursor screenshot: $png"
 }
 
-@test "fleet sidebar: Down then Enter jumps to the second row's window, sidebar alongside, its pane active" {
+@test "fleet sidebar: Down then Enter switches to the second row's window but keeps the sidebar pane active, no copy-mode" {
     setup_fleet_fixture
 
     run env -u TMUX TMUX="$FAKE_TMUX" "$FLEET" toggle
@@ -1035,10 +1035,20 @@ sidebar_gone() {
     tmux -L "$TMUX_SOCK" send-keys -t "$sidebar_pane" Enter
     wait_for 25 bash -c "[ \"\$(tmux -L '$TMUX_SOCK' display -p -t '$sidebar_pane' '#{window_name}')\" = wawin ]"
 
+    # the WINDOW switched to the target (wawin comes into view)...
     run tmux -L "$TMUX_SOCK" display -p -t "$sidebar_pane" '#{window_name}'
     [ "$output" = "wawin" ]
+
+    # ...but the sidebar's own Enter/click keeps keyboard focus ON THE
+    # SIDEBAR (action_go's keep_focus=1): the sidebar pane is the active
+    # one in that window, not the target pane wa_pane.
     run tmux -L "$TMUX_SOCK" list-panes -t base:wawin -F '#{pane_active} #{pane_id}'
-    [[ "$output" == *"1 $wa_pane"* ]]
+    [[ "$output" == *"1 $sidebar_pane"* ]]
+    [[ "$output" != *"1 $wa_pane"* ]]
+
+    run bash -c "tmux -L '$TMUX_SOCK' list-panes -a -F '#{pane_in_mode}' | grep -vx 0"
+    [ "$status" -ne 0 ]
+    [ -z "$output" ]
 }
 
 @test "fleet sidebar: SGR left-click on the third row's line opens/jumps to that row's window" {
