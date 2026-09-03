@@ -9,12 +9,29 @@
 # Columns: window (the tmux pane whose current path is that worktree, '-'
 # if none) · branch · dirty count (git status --porcelain line count) ·
 # ahead/behind main (git rev-list --left-right --count, '-' for main
-# itself) · lane · live agents · last-activity age. Column budget: 34,
-# matching the sidebar pane width `fleet toggle` opens -- enforced by
-# truncating the two unbounded fields (window, branch) to WINDOW_MAX /
-# BRANCH_MAX; every other field is bounded by its own small vocabulary
-# (lane: express/standard/deep/-, agents: small counts, age: short units)
-# and is left untruncated by design.
+# itself) · lane · live agents · last-activity age. A dim/plain header row
+# ('win branch +- a/b lane ag age') prints first so the fields are
+# self-describing. Column budget: 34, matching the sidebar pane width
+# `fleet toggle` opens -- enforced by giving window/branch a genuinely
+# FIXED width (WINDOW_MAX / BRANCH_MAX, padded via pad_trunc() when
+# shorter, truncated with a trailing '+' marker when longer) so branch
+# always starts at the same offset regardless of a row's actual content;
+# every other field is bounded by its own small vocabulary (lane collapses
+# to a single letter in the table itself, same convention as the
+# executor/scout/verifier role letters below -- the full word is still
+# what LANE_STATE_DIR's json carries, only the compact table abbreviates
+# it; agents: small counts, age: short units) and is left unpadded by
+# design: there is not enough of a 34-column budget left, once window,
+# branch, and a live-agent row's leading marker are accounted for, to also
+# fix-width dirty/ahead-behind/lane/agents/age without either crushing
+# window/branch to a couple of characters or dropping information
+# (role letters, dirty counts) outright -- so only the two fields whose
+# job IS identification (window, branch) get the fixed-width treatment
+# the offset guarantee actually needs.
+#
+# Rows whose live-agent count is > 0 carry a leading '*' marker (a plain
+# ' ' otherwise) so "someone is working there" is visible without reading
+# the agents column.
 #
 # Lane and live-agent data come from Claude's own transcript layout, not
 # this repo's: project dir = $CLAUDE_PROJECTS_DIR/<slug> (default
@@ -54,8 +71,13 @@ die() { err "$*"; exit 1; }
 
 TAB=$'\t'
 BASE_BRANCH="main"
-WINDOW_MAX=8
-BRANCH_MAX=10
+# WINDOW_MAX / BRANCH_MAX: fixed display width of the window/branch
+# columns (see pad_trunc()) -- shrunk from the pre-header 8/10 so a padded
+# (not just truncated) window+branch prefix still leaves room for the
+# dirty/ahead-behind/lane/agents/age fields within SIDEBAR_WIDTH; see the
+# header comment above for the full budget rationale.
+WINDOW_MAX=6
+BRANCH_MAX=6
 SIDEBAR_WIDTH=34
 REFRESH_INTERVAL_S=3
 LIVE_AGENT_WINDOW_S=120
@@ -90,14 +112,18 @@ Env:
 EOF
 }
 
-# trunc <string> <max> — <string>, cut to its first <max> characters if
-# longer; unchanged (no padding) if not.
-trunc() {
+# pad_trunc <string> <width> — <string> forced to EXACTLY <width>
+# characters: left-justified and space-padded if shorter or equal,
+# truncated to its first <width>-1 characters plus a trailing '+' marker
+# if longer. Unlike the old trunc() (cut-if-longer, otherwise unchanged
+# length), this always returns exactly <width> chars -- the guarantee
+# print_table's header/branch column-offset alignment depends on.
+pad_trunc() {
     local s="$1" n="$2"
     if [ "${#s}" -gt "$n" ]; then
-        printf '%s' "${s:0:$n}"
+        printf '%s+' "${s:0:$((n - 1))}"
     else
-        printf '%s' "$s"
+        printf '%-*s' "$n" "$s"
     fi
 }
 
@@ -109,6 +135,22 @@ role_letter() {
         scout) printf 's' ;;
         verifier) printf 'v' ;;
         *) printf '%s' "${1:0:1}" ;;
+    esac
+}
+
+# lane_letter <lane> — single-letter code for the compact table's lane
+# column, the same abbreviation convention role_letter() already uses for
+# agent roles: express->e, standard->s, deep->d, anything else (including
+# '-', the "no session" case) -> '-'. The full lane word is still what
+# lane_for_session() returns and what LANE_STATE_DIR's json carries; only
+# the table display is abbreviated, to fit SIDEBAR_WIDTH (see the file
+# header comment).
+lane_letter() {
+    case "$1" in
+        express) printf 'e' ;;
+        standard) printf 's' ;;
+        deep) printf 'd' ;;
+        *) printf -- '-' ;;
     esac
 }
 
@@ -289,8 +331,19 @@ list_worktrees_with_branch() {
     flush
 }
 
+# ROW_FMT — shared by the header and every data row so the header's
+# window/branch labels are padded through the exact same pad_trunc() call
+# data rows use, guaranteeing the header's "branch" label starts at the
+# identical offset every data row's branch field does.
+ROW_FMT='%s %s %s %2s %s %s %s %s\n'
+
 # print_table — the --once/--watch body: the one-line notice outside a
-# git repo, else one row per list_worktrees_with_branch entry.
+# git repo, else a header row followed by one row per
+# list_worktrees_with_branch entry. Row shape: <marker> <window> <branch>
+# <dirty> <ahead/behind> <lane-letter> <agents> <age> -- marker is '*'
+# when that row's live-agent count is > 0, else ' '; window/branch are
+# pad_trunc()'d to WINDOW_MAX/BRANCH_MAX (fixed width, so branch always
+# starts at the same offset); dirty is right-aligned in a 2-char field.
 print_table() {
     local root
     root="$(git rev-parse --show-toplevel 2>/dev/null)"
@@ -298,9 +351,12 @@ print_table() {
         echo "fleet: not inside a git repository"
         return 0
     fi
+    printf "$ROW_FMT" \
+        " " "$(pad_trunc "win" "$WINDOW_MAX")" "$(pad_trunc "branch" "$BRANCH_MAX")" \
+        "+-" "a/b" "lane" "ag" "age"
     while IFS="$TAB" read -r path branch; do
         [ -n "$path" ] || continue
-        local window dirty ab ctx pdir sid mtime lane agents age
+        local window dirty ab ctx pdir sid mtime lane agents age marker
         window="$(window_for "$path")"
         dirty="$(dirty_count "$path")"
         ab="$(ahead_behind "$root" "$branch")"
@@ -315,10 +371,16 @@ print_table() {
             agents="0"
             age="-"
         fi
-        printf '%s %s %s %s %s %s %s\n' \
-            "$(trunc "$window" "$WINDOW_MAX")" \
-            "$(trunc "$branch" "$BRANCH_MAX")" \
-            "$dirty" "$ab" "$lane" "$agents" "$age"
+        if [ "$agents" = "0" ]; then
+            marker=" "
+        else
+            marker="*"
+        fi
+        printf "$ROW_FMT" \
+            "$marker" \
+            "$(pad_trunc "$window" "$WINDOW_MAX")" \
+            "$(pad_trunc "$branch" "$BRANCH_MAX")" \
+            "$dirty" "$ab" "$(lane_letter "$lane")" "$agents" "$age"
     done < <(list_worktrees_with_branch "$root")
 }
 

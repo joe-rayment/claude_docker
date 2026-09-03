@@ -24,6 +24,21 @@ die() { err "$*"; exit 1; }
 # this real tab byte instead of writing \t directly.
 TAB=$'\t'
 
+# FLEET_BIN — the 'fleet' script cmd_sidebar delegates to. Prefers PATH
+# (the installed /usr/local/bin/fleet, matching every other cross-script
+# invocation's own convention -- e.g. cmd_new's bare `cs-new`), falling
+# back to the script sitting right next to this one when 'fleet' isn't on
+# PATH -- the same gap fleet.sh's own SELF comment documents for its
+# --watch re-invocation: a container that hasn't re-synced /usr/local/bin
+# since the last image build, or this script run straight from a
+# checkout/test. Resolved once at load time since it never changes for
+# the life of one invocation.
+if command -v fleet >/dev/null 2>&1; then
+    FLEET_BIN="fleet"
+else
+    FLEET_BIN="$(dirname "$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")")/fleet.sh"
+fi
+
 # PANE_ID / PANE_PATH / REST — set by parse_pane_args, called at the top
 # of every cmd_* function. config/tmux.conf's bindings invoke fleet-menu
 # via `tmux run-shell`, which spawns the script with no TMUX_PANE set --
@@ -113,6 +128,9 @@ Subcommands:
                             change) if the target branch is not merged
                             into main. --print lists the merged candidates
                             (name, branch) only.
+  sidebar                   Toggle the fleet sidebar in the current
+                            window: delegates straight to `fleet toggle
+                            <pane_id>` (see scripts/fleet.sh).
 EOF
 }
 
@@ -388,6 +406,17 @@ cmd_review() {
     esac
 }
 
+cmd_sidebar() {
+    parse_pane_args "$@"
+    local pane_id
+    if [ -n "$PANE_ID" ]; then
+        pane_id="$PANE_ID"
+    else
+        pane_id="$(current_pane_id)"
+    fi
+    "$FLEET_BIN" toggle "$pane_id"
+}
+
 cmd_remove_merged() {
     parse_pane_args "$@"
     local root
@@ -441,6 +470,7 @@ case "$sub" in
     jump)          cmd_jump "$@" ;;
     review)        cmd_review "$@" ;;
     remove-merged) cmd_remove_merged "$@" ;;
+    sidebar)       cmd_sidebar "$@" ;;
     *)
         err "unknown subcommand: $sub"
         usage
