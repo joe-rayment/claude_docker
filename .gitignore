@@ -4,3 +4,12 @@
 *.db
 .beads-credential-key
 .beads/proxieddb/
+
+# claude_orca template runtime artifacts (never committed)
+.claude-dev/
+/claude-dev
+.mcp.json
+attachments/
+.claude/logs/
+.claude/settings.local.json
+.DS_Store
