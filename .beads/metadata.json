@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "claude_orca",
+  "project_id": "5ee3bec2-92c9-4578-a985-8bff35f78811"
+}
