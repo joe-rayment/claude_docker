@@ -396,6 +396,21 @@ Orca CLI mode is ON for $root (.claude-dev/sandbox.json: orca.cli).
 WARN
     fi
 
+    # V2b (claude-orca-qt9.8): which credential store this folder uses.
+    # Strictly additive -- a row for the CWD project, never an exit code.
+    # The generator is what fails closed on a malformed value; anything
+    # that is not exactly true reads as denied here, so this row can
+    # never claim sharing that the profile does not actually grant.
+    local keychain="false"
+    if [ -f "$root/.claude-dev/sandbox.json" ] && command -v jq >/dev/null 2>&1; then
+        keychain="$(jq -r '.orca.keychain // false' "$root/.claude-dev/sandbox.json" 2>/dev/null || true)"
+    fi
+    if [ "$keychain" = "true" ]; then
+        echo "  keychain: shared with macOS (orca.keychain=true)"
+    else
+        echo "  keychain: denied (folder-local credentials)"
+    fi
+
     echo ""
     echo "Sandbox self-test ($root):"
     local results="$root/.claude-dev/state/selftest.json"
