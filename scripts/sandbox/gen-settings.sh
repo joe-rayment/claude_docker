@@ -9,7 +9,21 @@
 #
 # Usage:
 #   gen-settings.sh --primary <dir> --worktree <dir> --real-home <dir> \
-#       --host <CLAUDE_ORCA_HOME> --sandbox-json <file>
+#       --host <CLAUDE_ORCA_HOME> --sandbox-json <file> [--gh-token-present]
+#
+# --gh-token-present (S5, claude-orca-3sk.17): the caller found a GitHub
+# token on the host (`gh auth token`) and will pass it into srt as
+# GH_TOKEN, so emit the credentials block that makes srt mask it -- the
+# sandboxed process sees a sentinel, and the host proxy substitutes the
+# real value only on egress to github.com/api.github.com. Omitted when
+# there is no token: an entry naming an unset variable buys nothing, and
+# the settings must stay schema-valid either way. srt rejects credential
+# masking without network.tlsTerminate (sentinel->real substitution must
+# run over a connection whose upstream identity it verified), so the
+# credentials block always brings an empty tlsTerminate -- srt then
+# generates an ephemeral CA and points the sandboxed child's trust store
+# at it. The alternative it offers, credentials.allowPlaintextInject,
+# would put the real token on the cleartext path; not taken.
 #
 # Exit 0 with the JSON on stdout; exit 2 with a one-line reason on stderr
 # for any malformed or out-of-scope input.
@@ -55,9 +69,11 @@ worktree=""
 real_home=""
 host=""
 sandbox_json=""
+gh_token_present=0
 
 while [ $# -gt 0 ]; do
     case "$1" in
+        --gh-token-present) gh_token_present=1; shift ;;
         --primary)      primary="$2"; shift 2 ;;
         --worktree)     worktree="$2"; shift 2 ;;
         --real-home)    real_home="$2"; shift 2 ;;
@@ -188,7 +204,17 @@ allow_read_json="$(to_json_array "${allow_read[@]}")"
 deny_read_json="$(to_json_array "$real_home")"
 allowed_domains_json="$(to_json_array "${allowed_domains[@]}")"
 
+# S5: masked GH_TOKEN, or nothing at all. injectHosts names two hosts that
+# are always in DEFAULT_DOMAINS -- srt rejects an injectHosts entry that is
+# not reachable via allowedDomains.
+if [ "$gh_token_present" -eq 1 ]; then
+    credentials_json='{"envVars":[{"name":"GH_TOKEN","mode":"mask","injectHosts":["github.com","api.github.com"]}]}'
+else
+    credentials_json='null'
+fi
+
 jq -n \
+    --argjson credentials "$credentials_json" \
     --argjson allowWrite "$allow_write_json" \
     --argjson denyWrite "$deny_write_json" \
     --argjson allowRead "$allow_read_json" \
@@ -208,7 +234,12 @@ jq -n \
             allowWrite: $allowWrite,
             denyWrite: $denyWrite
         },
+        credentials: $credentials,
         enableWeakerNetworkIsolation: true,
         allowAppleEvents: false,
         allowPty: true
-    }'
+    }
+    | if .credentials == null
+      then del(.credentials)
+      else .network.tlsTerminate = {}
+      end'

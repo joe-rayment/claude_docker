@@ -159,6 +159,35 @@ cmd_rc_uninstall() {
     echo "Removed claude_orca shell hook from ~/.zprofile, ~/.zshrc and ~/.bash_profile"
 }
 
+# S5 (claude-orca-3sk.17): the sandbox runs with GIT_CONFIG_GLOBAL pointed
+# at <project>/.claude-dev/home/.gitconfig, so a fresh sandbox has no git
+# identity at all and every commit fails. Copy exactly user.name and
+# user.email from the host's global config -- nothing else, and never over
+# an existing file: no credential helper, no signing key, no host-only
+# paths follow the identity in.
+seed_git_identity() {
+    local dir="$1" gc="$1/.claude-dev/home/.gitconfig" name email
+    if [ -f "$gc" ]; then
+        return 0
+    fi
+
+    name="$(git config --global --get user.name 2>/dev/null || true)"
+    email="$(git config --global --get user.email 2>/dev/null || true)"
+    [ -n "$name" ] || [ -n "$email" ] || return 0
+
+    local body="[user]
+"
+    if [ -n "$name" ]; then
+        body="$body	name = $name
+"
+    fi
+    if [ -n "$email" ]; then
+        body="$body	email = $email
+"
+    fi
+    printf '%s' "$body" > "$gc"
+}
+
 cmd_register() {
     local dir="${1:-$PWD}"
     [ -d "$dir" ] || { echo "Error: directory does not exist: $dir" >&2; exit 1; }
@@ -174,6 +203,8 @@ cmd_register() {
 {"version":1,"network":{"extraAllowedDomains":[]},"filesystem":{"extraAllowWrite":[]},"orca":{"cli":false}}
 JSON
     fi
+
+    seed_git_identity "$dir"
 
     seed_gitignore "$dir"
     mkdir -p "$dir/attachments"
