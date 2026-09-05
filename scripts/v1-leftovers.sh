@@ -11,6 +11,10 @@
 # Usage:
 #   v1-leftovers.sh --check    exit 0 and print a one-line report when
 #                              leftovers exist; exit 1 (silent) when clean
+#   v1-leftovers.sh --path     print just the path when it exists; exit 1
+#                              (silent) when clean -- so a caller can name
+#                              it before deleting it without hard-coding
+#                              the one path this template may not name
 #   v1-leftovers.sh --remove   remove ~/.claude-orca and report what went
 #
 # Never interactive: the bootstrap arrives over a pipe, so "offer" here
@@ -28,6 +32,11 @@ cmd_check() {
     return 0
 }
 
+cmd_path() {
+    [ -e "$V1_HOME" ] || return 1
+    printf '%s\n' "$V1_HOME"
+}
+
 cmd_remove() {
     if [ ! -e "$V1_HOME" ]; then
         echo "No v1 leftovers: $V1_HOME does not exist"
@@ -40,6 +49,7 @@ cmd_remove() {
 
 case "${1:---check}" in
     --check)  cmd_check ;;
+    --path)   cmd_path ;;
     --remove) cmd_remove ;;
-    *)        echo "Usage: v1-leftovers.sh [--check|--remove]" >&2; exit 2 ;;
+    *)        echo "Usage: v1-leftovers.sh [--check|--path|--remove]" >&2; exit 2 ;;
 esac

@@ -9,7 +9,7 @@ the details. Start with [../README.md](../README.md) for setup and daily use.
 
 | Page | Read it when |
 |---|---|
-| [SANDBOX.md](SANDBOX.md) | You need the trust boundary, the write/read/network scope, what the 13 self-test probes assert, or how to audit the generated Seatbelt profile. Also: the bash 3.2 rule every script here obeys. |
+| [SANDBOX.md](SANDBOX.md) | You need the trust boundary, the write/read/network scope, what the 17 self-test probes assert, or how to audit the generated Seatbelt profile. Also: the bash 3.2 rule every script here obeys. |
 | [ORCA_INTEGRATION.md](ORCA_INTEGRATION.md) | Status dots or sub-agent rows stopped moving, the session-history panel is empty, worktrees land somewhere unexpected, or you are considering the opt-in Orca CLI mode. |
 | [CONFIG_SYNC.md](CONFIG_SYNC.md) | A hook, agent, command or skill is missing or stale in a project; you want a local override that survives; you want to know where `/tier` state actually lives. |
 | [TEARDOWN_RECOVERY.md](TEARDOWN_RECOVERY.md) | Before `claude-dev --teardown` or `--uninstall`, and when restoring beads from a snapshot afterwards. |

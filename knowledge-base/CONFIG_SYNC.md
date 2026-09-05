@@ -15,18 +15,24 @@ repo config/                    -->  <project>/.claude-dev/home/.claude/
   .zshrc                        -->  <project>/.claude-dev/home/.zshrc
 ```
 
-Invocation: `config-sync --project <primary checkout> --host ~/.claude-orca`.
-The source is always `$HOST/template/config` — the host-owned clone — never
-the project's own copy.
+Invocation: `config-sync --project <primary checkout> --host
+<project>/.claude-dev`. The source is always `$HOST/template/config` — the
+host-owned clone inside the folder — never the project's own copy.
 
 ## The checksum gate
 
 A sync is a no-op unless `config/**` changed. The gate is a sorted sha1 over
 every file's **relative path and its content** (so a rename with identical
-bytes still counts), stored in
-`<project>/.claude-dev/state/config-hash`. A matching hash exits 0 without
-touching anything; that is a success, not a skip, and callers do not need to
-tell the two apart.
+bytes still counts), stored in `<project>/.claude-dev/run/config-hash`.
+A matching hash exits 0 without touching anything; that is a success, not a
+skip, and callers do not need to tell the two apart.
+
+`run/`, not `state/`: `state/` is write-denied to both sandbox layers
+because the host feeds its contents to `sandbox-exec` and `srt`, and a
+linked worktree's wrapper runs the sync too. The hash decides only whether
+work is repeated, so an agent that could rewrite it could at worst force or
+skip a re-sync of files it can already read — no authority is stored there.
+See [SANDBOX.md](SANDBOX.md) for the `run/` versus `state/` split.
 
 Because it is content-addressed and not timestamped, hand-edits inside
 `.claude-dev/home/.claude/` survive until the template changes — and are
@@ -56,13 +62,22 @@ ignored (the base file stands) rather than failing the sync.
 Everything else — `agents/`, `commands/`, `skills/` — is a full mirror:
 removed in the template means removed in the project.
 
+## Orca's own entries
+
+With `HOME` redirected into the folder, `settings.json` is also the file
+Orca's hook installer writes. Each sync reads the previous file first and
+re-attaches every Orca-managed hook entry it finds (identified by a hook
+command mentioning `/.orca/agent-hooks/`) plus Orca's half of the statusline
+chain. Nothing Orca wrote is invented or dropped by the sync — see
+[ORCA_INTEGRATION.md](ORCA_INTEGRATION.md).
+
 ## Tier state
 
 `/tier` cannot rewrite agent frontmatter: `.claude/agents/**` is
 write-denied inside the sandbox by `srt`'s mandatory list. So the binding is
 **state, not files**:
 
-- `tier-set` writes `<project>/.claude-dev/state/tier.json` —
+- `tier-set` writes `<project>/.claude-dev/run/tier.json` —
   `{top, worker, recon, pinned, overdrive, updated}` — and mirrors the
   session model into `settings.local.json`'s `.model`.
 - `tier-gate` (PreToolUse on the `Agent` tool) reads that file and **injects
@@ -76,7 +91,7 @@ write-denied inside the sandbox by `srt`'s mandatory list. So the binding is
 `tier-gate` **fails open** everywhere — malformed input, missing `jq`, no
 `tier.json` and no settings fallback all mean "spawn unchanged". A tier that
 seems to be ignored is a state-file problem: `cat
-.claude-dev/state/tier.json` before suspecting the hook.
+.claude-dev/run/tier.json` before suspecting the hook.
 
 See [TIERED_ORCHESTRATION.md](TIERED_ORCHESTRATION.md) for what the tiers
 mean and [HOOK_AUTHORING.md](HOOK_AUTHORING.md) for writing new hooks.

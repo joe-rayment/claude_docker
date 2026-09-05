@@ -4,48 +4,73 @@ Two destructive commands, one snapshot mechanism between them.
 
 ## `claude-dev --teardown`
 
-Removes **one project's** `claude_orca` artifacts: `<project>/.claude-dev/`
-(sandbox home, tmp, state, generated `srt` settings, `srt-debug-*.log`,
-delegate job dirs) and the project's registration on the host side. Your
-code, your git history and `.beads/issues.jsonl` are untouched.
+The install **is** the folder now, so teardown removes it whole:
+
+- `<project>/.claude-dev/` — the template clone, `srt`, Claude Code,
+  `app/Orca.app`, `bin/`, the sandbox `home` and `tmp`, `state/`, `run/`,
+  `sandbox.json`, delegate job dirs.
+- `<project>/claude-dev` — the launcher stub in the project root.
+- `<project>/Orca.app` — the generated launcher bundle, and only ours: it
+  is identified by the bundle id `dev.onorca.sandboxed.<slug>`, so a real
+  Orca you happen to keep in the folder is left alone.
+- The lines `claude-dev register` seeded into `.gitignore`, and nothing
+  else in that file. Your own patterns come back byte-identical, marker
+  block included.
+
+Your code, your git history and `.beads/` are untouched. `--purge-beads`
+removes `.beads/` as well, and says so.
 
 Before deleting anything, teardown takes a **beads snapshot**:
 
 ```
-~/.claude-orca/state/<project>/<timestamp>/
+<project>/.claude-dev-snapshots/<timestamp>/
 ```
 
-`<project>` is the folder's slug, `<timestamp>` is a local-time
-`YYYYMMDD-HHMMSS` stamp. The snapshot holds
+`<timestamp>` is a local-time `YYYYMMDD-HHMMSS` stamp. The snapshot holds
 `issues.jsonl` (the passive, git-tracked export) plus `metadata.json`, which
-is what a rebuild actually needs — not the embedded Dolt directory, which is
-disposable and rebuildable.
+is what a rebuild actually needs — not the embedded database directory,
+which is disposable and rebuildable.
+
+**Why beside the folder rather than inside it.** In v2 there is no central
+install and nothing outside the project to put state in, so the snapshot
+directory is a *sibling* of `.claude-dev`, not a child: teardown deletes
+`.claude-dev` whole, and anything inside it would go with it. Being in the
+project also means the snapshots move, copy and back up with the project.
+They are gitignored, so they never enter your history.
 
 ## `claude-dev --uninstall`
 
-Removes the **host-side install**. It tears down the project you are standing
-in, strips the marker-delimited lines from `~/.zprofile`, `~/.zshrc` and
-`~/.bash_profile` (equivalent to `claude-dev rc-uninstall`, which restores
-those files byte-for-byte), and then deletes `~/.claude-orca` outright. Your
-code and git history are left alone.
+Teardown, plus everything this template put outside the folder:
 
-`~/.claude-orca/state/` goes with it: **the snapshots live inside the thing
-being deleted.** Copy out whatever you still want first —
+- the marker-delimited block in `~/.zprofile`, `~/.zshrc` and
+  `~/.bash_profile` (equivalent to `claude-dev rc-uninstall`, which restores
+  those files byte-for-byte);
+- a pre-v2 central install at `~/.claude-orca`, if this machine still has
+  one. The path is **printed before it is removed** — the one thing this
+  command deletes outside the project is always named on the way past.
+  `claude-dev --remove-v1` does that part alone, for a machine with no
+  bootstrapped folder left to run `--uninstall` from.
 
-```bash
-cp -R ~/.claude-orca/state ~/claude-orca-snapshots
-```
+It refuses to run unless the launcher it was invoked through really lives in
+a `<project>/.claude-dev` install: `rm -rf` is not the place to guess.
 
-Order matters if you want both: teardown each project first (so each gets a
-snapshot), copy `state/` somewhere safe, then uninstall.
+**Snapshots survive an uninstall**, because they sit beside `.claude-dev`
+rather than inside it. Nothing in this command touches
+`.claude-dev-snapshots/`, your code, or your git history.
 
 ## Restore
 
-`claude-dev register <dir>` looks for the newest snapshot under
-`~/.claude-orca/state/<project>/` and, when the project's beads database is
-missing or empty, restores `issues.jsonl` and `metadata.json` before the
-first session. The embedded Dolt database is then rebuilt from the JSONL by
-`bd` on the next run:
+A teardown takes the launcher with it, so coming back means re-running the
+bootstrap one-liner from inside the folder. Its last step is
+`claude-dev register`, which looks for the newest directory under
+`<project>/.claude-dev-snapshots/` and restores `issues.jsonl` and
+`metadata.json` from it — **only when the project has none of its own**.
+That case is unambiguous: there is nothing there to lose. A project that
+still carries beads data keeps it, and is never overwritten with a possibly
+older snapshot.
+
+The embedded database is then rebuilt from the JSONL by `bd` on the next
+run:
 
 ```bash
 cd <project> && bd init --prefix <p> --quiet --non-interactive && bd import
@@ -59,11 +84,11 @@ that pair (notably: if `bd init` refuses with "already initialized", remove
 
 ## What is not backed up
 
-- The embedded Dolt database (`.beads/embeddeddolt/`) — rebuildable.
+- The embedded database (`.beads/embeddeddolt/`) — rebuildable.
 - The sandbox `HOME` (`.claude-dev/home/`), including
   `.claude/.credentials.json`. **You log in again after a teardown.** That
-  is deliberate: a credential file is not something to copy into a host-owned
-  state directory.
+  is deliberate: with the Keychain cut, the credential file is the whole
+  credential store, and it is meant to live and die with the folder.
 - `settings.local.json`. It lives in the sandbox home, so a teardown takes
   your local overrides with it. Keep anything you care about in the
   template's `config/` instead, where it is version-controlled.
@@ -73,13 +98,14 @@ that pair (notably: if `bd init` refuses with "already initialized", remove
 
 ## Recovering without the launcher
 
-Every snapshot is plain files. If `claude-dev` itself is gone:
+Every snapshot is plain files. If `.claude-dev` is already gone:
 
 ```bash
-ls ~/.claude-orca/state/<project>/            # pick a timestamp
-cp ~/.claude-orca/state/<project>/<ts>/issues.jsonl <project>/.beads/
+ls <project>/.claude-dev-snapshots/                       # pick a timestamp
+cp <project>/.claude-dev-snapshots/<ts>/issues.jsonl <project>/.beads/
 cd <project> && bd init --prefix <p> --quiet --non-interactive && bd import
 ```
 
-And to leave no trace at all, after that: `rm -rf ~/.claude-orca` plus the
-marker-delimited block in `~/.zshrc` and `~/.bash_profile`.
+And to leave no trace at all, after that: delete
+`<project>/.claude-dev-snapshots/` and the marker-delimited block in
+`~/.zprofile`, `~/.zshrc` and `~/.bash_profile`.

@@ -350,3 +350,45 @@ probe the user sees in `claude-dev --doctor`.
   allowed under `(allow default)`); only the Keychain family is denied by name.
 - Slice V2b carries the contract for the Keychain denial and the inner-layer `keychain-denied`
   probe now being guaranteed by the outer layer.
+
+### 9.5 Status at 2026-09-05 (v2 complete)
+
+All six v2 slices are in on `main`; `./run-tests.sh` is **711 green, 0 skipped**.
+
+What landed, by slice: **V1** the per-folder layout — bootstrap and launcher rewritten around
+`<project>/.claude-dev/{template,srt,claude,app,bin,home,tmp,state,run}`, the Orca DMG pinned by
+`ORCA_VERSION`, Claude Code by `CLAUDE_CODE_VERSION`, the `./claude-dev` stub, a generic rc block,
+and a grep gate keeping `~/.claude-orca` out of every script but `v1-leftovers.sh`. **V2** the
+layer-1 Seatbelt profile generator, `orca-launch`, the `Orca.app` launcher bundle, and
+`host-owned-paths.sh` as the single deny list feeding both generators. **V2b** the Keychain
+denial, the `orca.keychain` switch and the doctor row. **V2c** `.claude-dev/run` as the one
+sandbox-writable directory under `.claude-dev`, `sandbox.json` on the deny list, and the
+ancestor-metadata rule. **V2d** the per-launch `srt` settings directory outside the project, and
+`run/config-hash`. **V3** the four layer-1 probes (17 in total), the doctor's Orca section, the
+run-it block and `./claude-dev open`. **V4** config-sync preserving Orca-managed hook entries and
+the statusline chain in the shared `settings.json`; `orca.transcriptSymlink` retired to a warning.
+**V5** the lifecycle and the docs: `--update` now also relinks `.claude-dev/bin` from the pulled
+template (`scripts/link-bin.sh`, shared with `bootstrap.sh` — a folder that only ever runs
+`--update` was otherwise stuck with the bin/ of the day it was bootstrapped), `--uninstall` prints
+then removes a pre-v2 `~/.claude-orca`, and README, SANDBOX, ORCA_INTEGRATION, CONFIG_SYNC,
+TEARDOWN_RECOVERY and the CLAUDE.md/AGENTS.md project sections describe the two-layer folder-local
+design instead of v1's central one.
+
+**Still unproven — every one of these needs a real Mac** (Linux CI stubs `hdiutil`, `sandbox-exec`
+and the app itself, so the suite says nothing about them):
+
+1. **Electron's `appData` under a redirected `HOME`.** Node's `os.homedir()` follows `HOME`;
+   whether Electron's `app.getPath('appData')` does is the open question §9.1 flagged. The
+   `orca-data-in-folder` probe is the check; the documented fallback is an
+   `orca.profileExceptions.allowWrite` for the real `~/Library/Application Support/orca` only.
+2. **`hdiutil` and `PlistBuddy`.** The DMG attach/detach and the binary-plist version read are
+   both stubbed here; `install-orca.sh` has an awk fallback for XML plists that has never met a
+   real binary one.
+3. **Electron under `sandbox-exec`.** Whether the GUI comes up at all under `(allow default)` plus
+   the filesystem denials — WindowServer, GPU, fonts and the pasteboard are allowed by name in the
+   profile, but nothing has run it.
+4. **Keychain-less sign-in.** Orca's `runtime-auth-file-storage` and Claude Code's
+   `.credentials.json` fallback, with the Keychain mach services denied for the whole tree.
+5. **Go TLS under credential masking.** `gh`, `bd` and `dolt` verify against Security.framework
+   roots and ignore `SSL_CERT_FILE`; if `gh auth status` fails under the proxy's ephemeral CA,
+   masking becomes opt-in in `sandbox.json` and the token is passed through unmasked.

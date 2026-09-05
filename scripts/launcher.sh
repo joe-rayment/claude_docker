@@ -708,6 +708,14 @@ cmd_update() {
     echo "==> Installing Orca at the template's pinned version"
     "$SCRIPT_DIR/install-orca.sh" "$HOST_DIR"
 
+    # V5 (claude-orca-qt9.5): the folder's launcher surface, relinked from
+    # the PULLED template's own list. An entry point added upstream
+    # (orca-launch, in V2) has to reach folders that only ever run
+    # --update, or `./claude-dev open` and the double-click bundle stay
+    # broken here until someone re-runs the bootstrap one-liner.
+    echo "==> Relinking $HOST_DIR/bin"
+    "$SCRIPT_DIR/link-bin.sh" "$HOST_DIR"
+
     # The rc block carries the template's shellrc verbatim, so a pulled fix
     # to it only reaches the user's shells if the block is rewritten here.
     cmd_rc_install >/dev/null
@@ -791,14 +799,27 @@ cmd_uninstall() {
     esac
 
     echo "Removing $resolved"
+
+    # V5 (claude-orca-qt9.5): "uninstall" has to mean it. A machine
+    # bootstrapped before v2 also carries the central install, and leaving
+    # it behind leaves a stale `claude-dev` on PATH that would register
+    # projects the old way. Printed first, then removed -- so the one
+    # thing this command deletes outside this folder is named on the way
+    # past, never silently. (--remove-v1 stays, for the folder-less case.)
+    #
+    # Before the teardown below, not after: the teardown deletes the
+    # template clone this very script and v1-leftovers.sh are running
+    # from, so anything that needs a helper has to happen while it is
+    # still on disk.
+    local v1_path
+    v1_path="$("$SCRIPT_DIR/v1-leftovers.sh" --path 2>/dev/null || true)"
+    if [ -n "$v1_path" ]; then
+        echo "Also removing the pre-v2 central install at $v1_path"
+        "$SCRIPT_DIR/v1-leftovers.sh" --remove >/dev/null
+    fi
+
     cmd_teardown "$PROJECT_SELF"
     cmd_rc_uninstall
-
-    local leftover
-    leftover="$("$SCRIPT_DIR/v1-leftovers.sh" --check 2>/dev/null || true)"
-    if [ -n "$leftover" ]; then
-        echo "$leftover"
-    fi
     echo "claude_orca uninstalled. Open a new shell to drop the hook from this session."
 }
 

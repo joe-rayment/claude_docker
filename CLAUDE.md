@@ -68,29 +68,38 @@ bats tests/docs.bats     # one file
 ```
 
 Tests are bats-core, and they run on Linux as well as macOS: the suite stubs
-`brew`, `gh`, `npm` and `srt`, and exercises the wrapper's logic rather than
-Seatbelt itself. The Seatbelt behaviour is checked on a real Mac by the
-13-probe self-test (`claude-dev --doctor`), which `bootstrap.sh` runs at
-registration and refuses to hand off without.
+`brew`, `gh`, `npm`, `curl`, `hdiutil` and `srt`, and exercises the scripts'
+logic rather than Seatbelt itself. The Seatbelt behaviour is checked on a
+real Mac by the 17-probe self-test (`claude-dev --doctor`), which
+registration runs and refuses to hand off without.
 
 ## Architecture Overview
 
-One command (`gh api … bootstrap.sh | bash`) installs a host-owned tree under
-`~/.claude-orca` (template clone, pinned `@anthropic-ai/sandbox-runtime`,
-`bin/claude-dev`) and adds one marker-delimited line to the user's shell rc.
-That line re-execs any login shell started inside a registered project into
-Apple's Seatbelt sandbox via `srt`, *before* any agent binary runs — so every
-terminal Orca (onorca.dev) opens in the folder is sandboxed, whichever CLI it
-launches. The generated profile scopes writes to the project folder and the
-current worktree, denies reading the real home, and allowlists egress through
-`srt`'s proxy. Inside, `HOME` is `<project>/.claude-dev/home`, whose
-`.claude` config dir is populated from this repo's `config/` by a
-checksum-gated sync; the hook/guard suite (lane, tier, bd-guard,
-outbound-guard, auth-guard, contract-gate, cost-mirror…) runs from there,
-with Orca's own managed hooks merged in for status dots and sub-agent rows.
-`/tier` state lives in `.claude-dev/state/tier.json` and is injected into
-sub-agent spawns by a `PreToolUse` hook, because agent files are write-denied
-inside the sandbox.
+One command (`gh api … bootstrap.sh | bash`), run from inside a project
+folder, installs everything **into that folder**: `<project>/.claude-dev/`
+carries the template clone, a pinned `@anthropic-ai/sandbox-runtime`
+(`srt`), a pinned Claude Code, `app/Orca.app` from the pinned release DMG,
+and `bin/`. There is no central install.
+
+Two Seatbelt layers confine it. **Layer 1**: `Orca.app` in the project root
+is a generated launcher bundle that runs `.claude-dev/bin/orca-launch`,
+which regenerates `.claude-dev/state/orca.sb`, redirects `HOME` and `TMPDIR`
+into the folder, and `exec`s `sandbox-exec` on the folder's own Orca — so
+the app sees the project folder and nothing else under `/Users`. **Layer
+2**: one marker-delimited block in the user's shell rc walks up from `$PWD`
+to `.claude-dev/bin/claude-orca-shell` and re-execs any login shell into
+`srt` *before* any agent binary runs, scoping writes to the project and the
+current worktree, denying the real home, and allowlisting egress through
+`srt`'s proxy. `scripts/sandbox/host-owned-paths.sh` is the one list of
+host-executed paths inside the folder that both layers write-deny.
+
+Inside, `HOME` is `<project>/.claude-dev/home`, whose `.claude` config dir
+is populated from this repo's `config/` by a checksum-gated sync that
+preserves Orca's own managed hook entries (status dots, sub-agent rows). The
+hook/guard suite (lane, tier, bd-guard, outbound-guard, auth-guard,
+contract-gate, cost-mirror…) runs from there. `/tier` state lives in
+`.claude-dev/run/tier.json` and is injected into sub-agent spawns by a
+`PreToolUse` hook, because agent files are write-denied inside the sandbox.
 
 ## Conventions & Patterns
 
@@ -100,8 +109,13 @@ inside the sandbox.
   build in the suite enforce it.
 - **Paths come from `scripts/lib/paths.sh`.** Never hard-code `~/.claude`,
   the host dir, or a project path; resolve through the helpers so the same
-  script works from the repo copy and from the `~/.claude-orca/template/bin`
-  symlink.
+  script works from a repo checkout and from the
+  `<project>/.claude-dev/template` clone a folder actually runs.
+- **`run/` holds results, `state/` holds authority.** Anything the host
+  feeds to `sandbox-exec` or `srt` lives in `.claude-dev/state` and is
+  write-denied to both layers; what the sandbox itself writes (tier state,
+  self-test results, debug captures, the config-sync hash) lives in
+  `.claude-dev/run`.
 - **Frozen contracts.** A bead's `FROZEN` files are frozen from its `RED-AT`
   commit onward: the test is committed red first, the implementation second,
   and the test is never edited to make an implementation pass.

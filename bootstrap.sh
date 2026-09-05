@@ -77,12 +77,9 @@ echo "==> Verifying tools"
 
 # The wrappers, as relative symlinks into the template clone: a `--update`
 # pull picks up fixes with no re-bootstrap, and the whole folder stays
-# movable. orca-launch lands V2 and may dangle until then -- the link is
-# created anyway so the PATH entry never changes shape.
-mkdir -p "$HOST/bin"
-ln -sfn "../template/scripts/launcher.sh"              "$HOST/bin/claude-dev"
-ln -sfn "../template/scripts/sandbox/claude-orca-root"  "$HOST/bin/claude-orca-root"
-ln -sfn "../template/scripts/sandbox/claude-orca-shell" "$HOST/bin/claude-orca-shell"
-ln -sfn "../template/scripts/sandbox/orca-launch"       "$HOST/bin/orca-launch"
+# movable. V5 (claude-orca-qt9.5): the list lives in link-bin.sh, which
+# `claude-dev --update` re-runs from the pulled template -- so an entry
+# point added upstream reaches existing folders too.
+"$HOST/template/scripts/link-bin.sh" "$HOST"
 
 exec "$HOST/bin/claude-dev" register "$PROJECT"
