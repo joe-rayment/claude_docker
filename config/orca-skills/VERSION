@@ -1,0 +1,13 @@
+Orca 1.4.197
+
+Pinned snapshot of the `orca-cli` and `orchestration` skill stubs shipped
+by that Orca release (S9, claude-orca-3sk.20). Both are discovery stubs:
+the version-matched usage guide is served by the `orca` binary itself
+(`orca skills get <name>`), so a stub that lags the installed app costs a
+stale trigger list, never a stale command surface.
+
+Installed into <project>/.claude-dev/home/.claude/skills/ by
+scripts/sandbox/claude-orca-shell ONLY while .claude-dev/sandbox.json has
+{"orca":{"cli":true}} -- they are deliberately NOT under config/skills/,
+which config-sync.sh mirrors unconditionally. Re-pin by re-copying both
+SKILL.md files from a newer Orca and bumping the line above.
