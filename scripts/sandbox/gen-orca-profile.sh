@@ -43,6 +43,17 @@
 #   [orca.profileExceptions block, if sandbox.json has one]
 #   deny write <host-owned paths>   LAST, so nothing above re-opens one
 #
+# What LAYER 1 -- this profile: the Orca app, and every terminal it opens
+# -- may WRITE (V2d, claude-orca-qt9.9): <project>, /private/var/folders
+# (the per-user temp dir), /dev, and nothing else; minus the host-owned
+# paths denied last, .claude-dev/state and .claude-dev/sandbox.json among
+# them. The wrapper runs HERE, which settles where each launch's srt
+# settings file goes: not under .claude-dev/state (write-denied, so the
+# launch would fail on the write), and not under .claude-dev/run or
+# .claude-dev/tmp (writable here, but writable to layer 2 as well, and
+# that file is what defines layer 2) -- a private per-launch directory
+# under the per-user temp dir instead. See claude-orca-shell.
+#
 # Exit 0 with the profile on stdout; exit 2 with a one-line reason on
 # stderr for any malformed or out-of-scope input -- an invalid exception
 # fails the launch closed, never silently dropped or silently widened.

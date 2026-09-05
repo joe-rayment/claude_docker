@@ -119,7 +119,7 @@ load helpers/setup
     [ "$status" -eq 0 ]
     [ -f "$dest/CLAUDE.md" ]
     [ -x "$dest/statusline.sh" ]
-    [ -f "$PROJECT_DIR/.claude-dev/state/config-hash" ]
+    [ -f "$PROJECT_DIR/.claude-dev/run/config-hash" ]
 
     # __HOST__ is always rewritten to a real, absolute host path -- never
     # left as a literal placeholder for Claude Code to choke on.

@@ -149,7 +149,12 @@ assert_links_into_template() {
     [[ "$output" != *"NOT_REACHED"* ]]
     [[ "$output" != *"REFUSING"* ]]
     grep -qF '=== srt invocation ===' "$STUB_LOG"
-    grep -qF "$primary/.claude-dev/state/srt-" "$STUB_LOG"
+    # V2d (claude-orca-qt9.9): the settings file srt is handed lives in a
+    # private per-launch directory outside the folder, never under the
+    # folder's own host-owned tree.
+    layout_settings="$(grep -A1 -Fx -- '--settings' "$STUB_LOG" | sed -n 2p)"
+    [ -f "$layout_settings" ]
+    [ "${layout_settings#$primary/}" = "$layout_settings" ]
 
     # Outside a bootstrapped folder: a no-op, nothing exec'd.
     : > "$STUB_LOG"
