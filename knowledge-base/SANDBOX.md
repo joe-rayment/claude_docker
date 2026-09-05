@@ -187,7 +187,7 @@ denials under `/Users` and `/Volumes`, the metadata allowances for every
 ancestor of the folder, `deny write /`, the folder itself, the temp and
 `/dev` allowances, your `orca.profileExceptions`, and finally the
 host-owned deny block. The Keychain mach services are denied by name near
-the top unless `orca.keychain` is true.
+the bottom, after every filesystem rule, unless `orca.keychain` is true.
 
 **Layer 2** — `claude-orca-shell` runs the self-test with `SRT_DEBUG=true`
 and captures `srt`'s stderr, which is the Seatbelt profile *it* generated,
