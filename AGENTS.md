@@ -125,3 +125,55 @@ bd prime                # Refresh Beads context
 
 **Architecture in one line:** issues live in a local Dolt DB; sync uses `refs/dolt/data` on your git remote; `.beads/issues.jsonl` is a passive export. See https://github.com/gastownhall/beads/blob/main/docs/SYNC_CONCEPTS.md for details and anti-patterns.
 <!-- END BEADS CODEX SETUP -->
+
+<!-- BEGIN PROJECT SECTIONS -->
+## Build & Test
+
+```bash
+./run-tests.sh           # the whole suite
+bats tests/*.bats        # the same thing, directly
+bats tests/docs.bats     # one file
+```
+
+Tests are bats-core, and they run on Linux as well as macOS: the suite stubs
+`brew`, `gh`, `npm` and `srt`, and exercises the wrapper's logic rather than
+Seatbelt itself. The Seatbelt behaviour is checked on a real Mac by the
+13-probe self-test (`claude-dev --doctor`), which `bootstrap.sh` runs at
+registration and refuses to hand off without.
+
+## Architecture Overview
+
+One command (`gh api … bootstrap.sh | bash`) installs a host-owned tree under
+`~/.claude-orca` (template clone, pinned `@anthropic-ai/sandbox-runtime`,
+`bin/claude-dev`) and adds one marker-delimited line to the user's shell rc.
+That line re-execs any login shell started inside a registered project into
+Apple's Seatbelt sandbox via `srt`, *before* any agent binary runs — so every
+terminal Orca (onorca.dev) opens in the folder is sandboxed, whichever CLI it
+launches. The generated profile scopes writes to the project folder and the
+current worktree, denies reading the real home, and allowlists egress through
+`srt`'s proxy. Inside, `HOME` is `<project>/.claude-dev/home`, whose
+`.claude` config dir is populated from this repo's `config/` by a
+checksum-gated sync; the hook/guard suite (lane, tier, bd-guard,
+outbound-guard, auth-guard, contract-gate, cost-mirror…) runs from there,
+with Orca's own managed hooks merged in for status dots and sub-agent rows.
+`/tier` state lives in `.claude-dev/state/tier.json` and is injected into
+sub-agent spawns by a `PreToolUse` hook, because agent files are write-denied
+inside the sandbox.
+
+## Conventions & Patterns
+
+- **bash 3.2.** macOS ships 3.2.57 and the wrapper runs before anything newer
+  is on PATH. No associative arrays, no `mapfile`, no `${x^^}`, no `+=` onto
+  an empty array under `set -u`. `scripts/lint-bash32.sh` and a real 3.2
+  build in the suite enforce it.
+- **Paths come from `scripts/lib/paths.sh`.** Never hard-code `~/.claude`,
+  the host dir, or a project path; resolve through the helpers so the same
+  script works from the repo copy and from the `~/.claude-orca/template/bin`
+  symlink.
+- **Frozen contracts.** A bead's `FROZEN` files are frozen from its `RED-AT`
+  commit onward: the test is committed red first, the implementation second,
+  and the test is never edited to make an implementation pass.
+- **Nothing unsandboxed executes anything agent-writable.** Config the
+  sandbox can write (`sandbox.json`, `settings.local.json`) is read as
+  validated data, never sourced or run by the host side.
+<!-- END PROJECT SECTIONS -->
