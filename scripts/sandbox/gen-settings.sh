@@ -143,19 +143,6 @@ while IFS= read -r p; do
     extra_write_paths+=("$resolved")
 done < <(jq -r '.[]' <<<"$extra_write_json")
 
-# S9 (claude-orca-3sk.20): the opt-in Orca CLI mode. `orca` talks to the
-# running app over a Unix socket under the REAL home's Orca runtime dir --
-# the same path the wrapper exports as ORCA_USER_DATA_PATH -- which the
-# denyRead of $real_home otherwise closes. Reachability is a remote
-# control for an UNSANDBOXED app (see config/orca-cli-addendum.md), so it
-# is off unless sandbox.json says otherwise, and a non-boolean value is
-# rejected rather than coerced: fail closed, like every other extra here.
-if ! jq -e '(.orca.cli // false) | type == "boolean"' "$sandbox_json" >/dev/null 2>&1; then
-    die "orca.cli must be a boolean"
-fi
-orca_cli="$(jq -r '.orca.cli // false' "$sandbox_json")"
-ORCA_RUNTIME_DIR="$real_home/Library/Application Support/orca"
-
 # --- scope derivation ----------------------------------------------------
 
 if [ "$primary" = "$worktree" ]; then
@@ -181,15 +168,6 @@ fi
 # non-empty array is unaffected -- verified against a real bash-3.2.57
 # build in tests/shell-entry.bats.
 allow_write+=(${extra_write_paths[@]+"${extra_write_paths[@]}"})
-
-# S9: the socket allowance and the read allowance are one decision -- srt
-# needs both (connect(2) plus a readable path to it), and neither is
-# useful alone. Appended last so the base allowRead list keeps its order.
-allow_unix_sockets=()
-if [ "$orca_cli" = "true" ]; then
-    allow_unix_sockets=("$ORCA_RUNTIME_DIR")
-    allow_read+=("$ORCA_RUNTIME_DIR")
-fi
 
 allowed_domains=("${DEFAULT_DOMAINS[@]}")
 while IFS= read -r d; do
@@ -227,7 +205,6 @@ deny_write_json="$(to_json_array "${deny_write[@]}")"
 allow_read_json="$(to_json_array "${allow_read[@]}")"
 deny_read_json="$(to_json_array "$real_home")"
 allowed_domains_json="$(to_json_array "${allowed_domains[@]}")"
-allow_unix_sockets_json="$(to_json_array ${allow_unix_sockets[@]+"${allow_unix_sockets[@]}"})"
 
 # S5: masked GH_TOKEN, or nothing at all. injectHosts names two hosts that
 # are always in DEFAULT_DOMAINS -- srt rejects an injectHosts entry that is
@@ -245,14 +222,13 @@ jq -n \
     --argjson allowRead "$allow_read_json" \
     --argjson denyRead "$deny_read_json" \
     --argjson allowedDomains "$allowed_domains_json" \
-    --argjson allowUnixSockets "$allow_unix_sockets_json" \
     '{
         network: {
             allowedDomains: $allowedDomains,
             deniedDomains: [],
             strictAllowlist: true,
             allowLocalBinding: true,
-            allowUnixSockets: $allowUnixSockets
+            allowUnixSockets: []
         },
         filesystem: {
             denyRead: $denyRead,

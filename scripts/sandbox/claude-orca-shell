@@ -235,13 +235,6 @@ if [ "$MODE" = "print-settings" ]; then
     exit 0
 fi
 
-# S9 (claude-orca-3sk.20): the opt-in Orca CLI mode, read AFTER
-# gen-settings.sh has accepted this sandbox.json -- that script is the
-# validator (a non-boolean orca.cli already exited 2 above), so anything
-# other than a literal true here is off.
-ORCA_CLI_MODE="$(jq -r '.orca.cli // false' "$SANDBOX_JSON" 2>/dev/null || true)"
-[ "$ORCA_CLI_MODE" = "true" ] || ORCA_CLI_MODE="false"
-
 # --- env block (single source of truth for run/--print-env) -------------
 
 SANDBOX_HOME="$PRIMARY/.claude-dev/home"
@@ -272,13 +265,6 @@ CLAUDE_ORCA_REAL_HOME=$REAL_HOME
 CLAUDE_ORCA_ROOT=$PRIMARY
 PATH=$ENV_PATH
 EOF
-    # S9: reported, never synthesised -- this is the host's own value being
-    # passed through, and only while the mode that makes it usable is on.
-    # Deliberately outside the block above, which tests/sandbox-config.bats
-    # pins to an exact line count for the default (mode-off) case.
-    if [ "$ORCA_CLI_MODE" = "true" ] && [ -n "${ORCA_CLI_COMMAND:-}" ]; then
-        printf 'ORCA_CLI_COMMAND=%s\n' "$ORCA_CLI_COMMAND"
-    fi
 }
 
 if [ "$MODE" = "print-env" ]; then
@@ -323,64 +309,6 @@ ORCA_MERGE="$SANDBOX_DIR/../orca-hooks-merge.sh"
 if [ -x "$ORCA_MERGE" ]; then
     "$ORCA_MERGE" --real-home "$REAL_HOME" --config-dir "$ENV_CLAUDE_CONFIG_DIR" || \
         echo "[claude-orca] Orca hook merge skipped (see above)" >&2
-fi
-
-# S9 (claude-orca-3sk.20): while the Orca CLI mode is on, install the
-# pinned orca-cli/orchestration skill stubs and append the rulebook
-# addendum; remove both the moment it goes off, leaving no residue. Runs
-# AFTER config-sync above on purpose -- config-sync mirrors config/skills/**
-# wholesale (rm -rf) and rewrites CLAUDE.md from the template, so anything
-# added before it would be wiped whenever the template content changes.
-# The stubs live in config/orca-skills/, NOT config/skills/, precisely so
-# that mirror never installs them unconditionally.
-ORCA_SKILLS_SRC="$TEMPLATE_DIR/config/orca-skills"
-ORCA_ADDENDUM_SRC="$TEMPLATE_DIR/config/orca-cli-addendum.md"
-ORCA_ADDENDUM_BEGIN="<!-- >>> claude_orca orca-cli >>> -->"
-ORCA_ADDENDUM_END="<!-- <<< claude_orca orca-cli <<< -->"
-CONFIG_MEMORY="$ENV_CLAUDE_CONFIG_DIR/CLAUDE.md"
-
-# Prints $1 with any existing marker block removed, and with trailing
-# blank lines trimmed -- so strip-then-append is exactly idempotent
-# instead of growing a blank line per launch.
-orca_addendum_stripped() {
-    awk -v b="$ORCA_ADDENDUM_BEGIN" -v e="$ORCA_ADDENDUM_END" '
-        $0 == b { skip = 1; next }
-        $0 == e { skip = 0; next }
-        skip == 0 { print }
-    ' "$1" | awk '
-        /^[[:space:]]*$/ { blanks = blanks "\n"; next }
-        { printf "%s%s\n", blanks, $0; blanks = "" }
-    '
-}
-
-if [ "$ORCA_CLI_MODE" = "true" ] && [ -d "$ORCA_SKILLS_SRC" ]; then
-    mkdir -p "$ENV_CLAUDE_CONFIG_DIR/skills"
-    for orca_skill in orca-cli orchestration; do
-        if [ -d "$ORCA_SKILLS_SRC/$orca_skill" ]; then
-            rm -rf "$ENV_CLAUDE_CONFIG_DIR/skills/$orca_skill"
-            cp -R "$ORCA_SKILLS_SRC/$orca_skill" "$ENV_CLAUDE_CONFIG_DIR/skills/$orca_skill"
-            if [ -f "$ORCA_SKILLS_SRC/VERSION" ]; then
-                cp "$ORCA_SKILLS_SRC/VERSION" "$ENV_CLAUDE_CONFIG_DIR/skills/$orca_skill/VERSION"
-            fi
-        fi
-    done
-    if [ -f "$CONFIG_MEMORY" ] && [ -f "$ORCA_ADDENDUM_SRC" ]; then
-        {
-            orca_addendum_stripped "$CONFIG_MEMORY"
-            echo ""
-            printf '%s\n' "$ORCA_ADDENDUM_BEGIN"
-            cat "$ORCA_ADDENDUM_SRC"
-            printf '%s\n' "$ORCA_ADDENDUM_END"
-        } > "$CONFIG_MEMORY.orca-tmp"
-        mv "$CONFIG_MEMORY.orca-tmp" "$CONFIG_MEMORY"
-    fi
-else
-    rm -rf "$ENV_CLAUDE_CONFIG_DIR/skills/orca-cli" \
-           "$ENV_CLAUDE_CONFIG_DIR/skills/orchestration"
-    if [ -f "$CONFIG_MEMORY" ] && grep -qF "$ORCA_ADDENDUM_BEGIN" "$CONFIG_MEMORY"; then
-        orca_addendum_stripped "$CONFIG_MEMORY" > "$CONFIG_MEMORY.orca-tmp"
-        mv "$CONFIG_MEMORY.orca-tmp" "$CONFIG_MEMORY"
-    fi
 fi
 
 # S6: Orca reads $CLAUDE_CONFIG_DIR/projects from its OWN process env, not
@@ -434,17 +362,6 @@ export PATH="$ENV_PATH"
 # to github.com/api.github.com.
 if [ -n "$GH_TOKEN_HOST" ]; then
     export GH_TOKEN="$GH_TOKEN_HOST"
-fi
-
-# S9: ORCA_CLI_COMMAND is deliberately NOT filtered -- Orca sets it for
-# managed sessions and both installed skill stubs resolve the binary from
-# it, so with the mode on it must reach the sandboxed agent byte-identical
-# (nothing above rewrites the inherited environment; this is the whole
-# mechanism). With the mode off the socket is not in allowUnixSockets, so
-# the variable is dropped rather than left pointing at a control channel
-# nothing inside can open.
-if [ "$ORCA_CLI_MODE" != "true" ]; then
-    unset ORCA_CLI_COMMAND
 fi
 
 if [ "$MODE" = "selftest" ]; then
