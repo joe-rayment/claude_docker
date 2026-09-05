@@ -116,26 +116,9 @@ esac
 exceptions_read=""
 exceptions_write=""
 
-# The Keychain is unreachable from this folder unless the project asks
-# for it: default false, `true` opts back in, anything else is refused
-# rather than coerced (a truthy string must never read as "yes").
-keychain="false"
-
 if [ -f "$sandbox_json" ]; then
     jq -e . "$sandbox_json" >/dev/null 2>&1 \
         || die "sandbox.json is not valid JSON: $sandbox_json"
-
-    keychain_type="$(jq -r '
-        if (type == "object") and ((.orca? | type) == "object") and (.orca | has("keychain"))
-        then (.orca.keychain | type)
-        else "absent"
-        end' "$sandbox_json" 2>/dev/null)" \
-        || die "sandbox.json: unable to read orca.keychain"
-    case "$keychain_type" in
-        absent)  keychain="false" ;;
-        boolean) keychain="$(jq -r '.orca.keychain' "$sandbox_json")" ;;
-        *) die "orca.keychain must be a boolean, got $keychain_type" ;;
-    esac
     exc="$(jq -c '.orca.profileExceptions // {}' "$sandbox_json" 2>/dev/null)" \
         || die "sandbox.json: unable to read orca.profileExceptions"
     jq -e 'type == "object"' <<<"$exc" >/dev/null 2>&1 \
@@ -246,38 +229,3 @@ while IFS= read -r entry; do
     [ -z "$entry" ] && continue
     rule 'deny file-write*' "$entry"
 done < <(host_owned_paths "$project")
-
-# --- services, appended after the filesystem rules ----------------------
-
-echo ""
-if [ "$keychain" = "true" ]; then
-    echo "; Keychain services: reachable, by request (sandbox.json orca.keychain)."
-else
-    echo ";; -- services --"
-    echo "; (allow default) above leaves every Mach service reachable, so this"
-    echo "; block is what closes the Keychain to everything in this folder:"
-    echo "; securityd's classic Mach service and its XPC endpoint, CryptoTokenKit,"
-    echo "; and the authorization prompt. Set orca.keychain to true in"
-    echo "; .claude-dev/sandbox.json to opt back in -- that hands the folder the"
-    echo "; user's own stored credentials, so it is off by default."
-    echo ";"
-    echo "; Provenance: com.apple.SecurityServer and com.apple.securityd.xpc are"
-    echo "; the two names srt's own generator allows (macos-sandbox-utils.ts:1012"
-    echo "; and :888). com.apple.ctkd and com.apple.security.agent appear in"
-    echo "; neither srt nor anything runnable here: this container is Linux, so"
-    echo "; their effect is UNVERIFIED and the Mac probes (V3) are what confirm"
-    echo "; it. Denying a service name that does not exist costs nothing."
-    echo ";"
-    echo "; Never denied, deliberately, and never named below: com.apple.trustd"
-    echo "; and com.apple.trustd.agent (TLS verification -- srt:895),"
-    echo "; com.apple.pasteboard.1 (copy and paste has to keep working),"
-    echo "; WindowServer and CoreDisplay (there is no window without them),"
-    echo "; cfprefsd (preferences), com.apple.fonts and com.apple.FontObjectsServer"
-    echo "; (srt:878-879), com.apple.coreservices.launchservicesd (srt:889)."
-    echo "; All of them stay reachable through (allow default)."
-    for svc in com.apple.SecurityServer com.apple.securityd.xpc \
-               com.apple.ctkd com.apple.security.agent; do
-        printf '(deny mach-lookup (global-name %s))\n' "$(sbpl_str "$svc")"
-    done
-    echo ";; -- end services --"
-fi
