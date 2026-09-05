@@ -115,7 +115,7 @@ git-hooks-audit"
     primary="$(abspath "$PROJECT_DIR")"
     doctor="$ORCA_HOST/bin/claude-dev"
     wrapper="$ORCA_HOST/bin/claude-orca-shell"
-    results="$primary/.claude-dev/state/selftest.json"
+    results="$primary/.claude-dev/run/selftest.json"
 
     # absent
     rm -f "$results"

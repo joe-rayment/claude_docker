@@ -205,13 +205,16 @@ make_v2_project() {
     for want in "$p/claude-dev" "$p/Orca.app" "$p/.claude-dev/bin" \
                 "$p/.claude-dev/template" "$p/.claude-dev/app" \
                 "$p/.claude-dev/srt" "$p/.claude-dev/claude" \
-                "$p/.claude-dev/state" "$p/orca.yaml" "$p/.worktreeinclude" \
+                "$p/.claude-dev/state" "$p/.claude-dev/sandbox.json" \
+                "$p/orca.yaml" "$p/.worktreeinclude" \
                 "$p/.envrc" "$p/.beads/hooks"; do
         grep -qxF "$want" <<<"$entries"
     done
-    # sandbox.json is data the wrapper validates, never something the
-    # host executes -- it stays writable.
-    ! grep -qxF "$p/.claude-dev/sandbox.json" <<<"$entries"
+    # V2c (claude-orca-qt9.7): sandbox.json is validated data, never
+    # executed -- but its orca.profileExceptions and extraAllowWrite
+    # widen both layers at the next launch, so it is write-denied too.
+    # Only .claude-dev/run stays writable from inside.
+    ! grep -qxF "$p/.claude-dev/run" <<<"$entries"
 
     run "$REPO_ROOT/scripts/sandbox/gen-settings.sh" \
         --primary "$p" --worktree "$p" --real-home "$rh" \

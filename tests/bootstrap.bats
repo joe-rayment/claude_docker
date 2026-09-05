@@ -178,6 +178,6 @@ FAKE
     [[ "$output" != *"Next: open this folder in Orca"* ]]
     [[ "$output" == *"write-outside-denied"* ]]
 
-    run jq -e '.summary.fail == 1' "$PROJECT_DIR/.claude-dev/state/selftest.json"
+    run jq -e '.summary.fail == 1' "$PROJECT_DIR/.claude-dev/run/selftest.json"
     [ "$status" -eq 0 ]
 }

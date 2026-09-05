@@ -23,6 +23,15 @@
 #                                   network and writes.
 #   deny read+write /Users /Volumes every user's files, every disk
 #   deny read+write <real home>     only when it sits outside both
+#   allow file-read-metadata        one (literal) each for /Users, the
+#     /Users, <real home>, and      real home and every directory between
+#     every ancestor of <project>   the project and the root: opening
+#                                   anything in the folder stat()s every
+#                                   parent on the way to it, and those
+#                                   parents are inside the tree just
+#                                   denied. Metadata only, never a
+#                                   subpath, so nothing inside them is
+#                                   readable.
 #   deny write /                    nothing anywhere is writable ...
 #   allow read+write <project>      ... except this folder: the app's
 #                                   whole world (HOME and TMPDIR point
@@ -196,6 +205,37 @@ case "$real_home" in
         rule 'deny file-write*' "$real_home"
         ;;
 esac
+
+echo ""
+echo "; 1c. Path resolution through what was just denied. Reaching anything"
+echo ";     in the folder means stat()ing every directory on the way to it,"
+echo ";     and on a Mac that path runs through /Users (and through the real"
+echo ";     home, when the folder lives under it): without this the folder"
+echo ";     is unreachable by its own absolute path. (literal ...) is the"
+echo ";     directory ENTRY only -- never a subpath -- so nothing INSIDE"
+echo ";     these directories becomes readable, and file-read-metadata is"
+echo ";     not file-read*: names and stat(2), never contents."
+meta_paths="/Users
+$real_home"
+_meta_walk="$(dirname "$project")"
+while [ "$_meta_walk" != "/" ] && [ -n "$_meta_walk" ]; do
+    meta_paths="$meta_paths
+$_meta_walk"
+    _meta_walk="$(dirname "$_meta_walk")"
+done
+printf '(allow file-read-metadata'
+_meta_seen=""
+while IFS= read -r entry; do
+    [ -z "$entry" ] && continue
+    case "$_meta_seen" in
+        *"|$entry|"*) continue ;;
+    esac
+    _meta_seen="$_meta_seen|$entry|"
+    printf ' (literal %s)' "$(sbpl_str "$entry")"
+done <<META
+$meta_paths
+META
+printf ')\n'
 
 echo ""
 echo "; 2. Nothing anywhere on this machine is writable ..."

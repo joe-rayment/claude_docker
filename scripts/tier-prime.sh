@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # tier-prime -- SessionStart hook. Prints the tier trio from
-# .claude-dev/state/tier.json (S4, claude-orca-3sk.4, replaces the old
+# .claude-dev/run/tier.json (S4, claude-orca-3sk.4, replaces the old
 # frontmatter-reading version -- see .claude/plans/orca-port.md S3.6 and
 # scripts/tier-set.sh's header). MUST fail open: never non-zero, never
 # blocking; a missing tier.json (or missing jq) prints an <unbound>

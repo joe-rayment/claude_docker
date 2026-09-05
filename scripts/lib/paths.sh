@@ -13,8 +13,16 @@
 #                          binary's detection from $PWD. Exit 1, no output,
 #                          if neither resolves (not inside a bootstrapped
 #                          project and no override given).
-#   tier_state_file     -- "$(claude_orca_root)/.claude-dev/state/tier.json".
+#   run_dir             -- "$(claude_orca_root)/.claude-dev/run" -- the
+#                          one directory under .claude-dev that the
+#                          SANDBOX writes (tier.json, selftest.json, the
+#                          srt-debug captures). state/ next to it is
+#                          host-written and write-denied in both layers,
+#                          so anything an in-sandbox writer produces
+#                          belongs here (V2c, plans/orca-port.md S9.2).
 #                          Exit 1, no output, if claude_orca_root fails.
+#   tier_state_file     -- "$(run_dir)/tier.json". Exit 1, no output, if
+#                          run_dir fails.
 #   template_dir        -- this file's own directory's grandparent (i.e.
 #                          scripts/lib/paths.sh -> the repo/template root),
 #                          resolved through symlinks -- independent of which
@@ -40,10 +48,16 @@ claude_orca_root() {
     claude-orca-root
 }
 
-tier_state_file() {
+run_dir() {
     local root
     root="$(claude_orca_root)" || return 1
-    printf '%s\n' "$root/.claude-dev/state/tier.json"
+    printf '%s\n' "$root/.claude-dev/run"
+}
+
+tier_state_file() {
+    local run
+    run="$(run_dir)" || return 1
+    printf '%s\n' "$run/tier.json"
 }
 
 # Resolves $1, following symlinks -- shared by template_dir/host_dir so both

@@ -32,16 +32,28 @@
 #   .claude-dev/claude      the pinned Claude Code install
 #   .claude-dev/state       generated profiles/settings the host feeds to
 #                           sandbox-exec and srt -- writable = escapable
+#   .claude-dev/sandbox.json the folder's own sandbox knobs (V2c)
 #   orca.yaml               per-repo setup commands Orca runs unsandboxed
 #   .worktreeinclude        consumed by Orca when it creates a worktree
 #   .envrc                  sourced by direnv in unsandboxed shells
 #   .beads/hooks            hook scripts bd runs
 #
-# What is deliberately NOT on it: .claude-dev/sandbox.json, which is the
-# project's own knob for extra domains and write paths. It is read as
-# validated DATA ONLY (gen-settings.sh, gen-orca-profile.sh both fail
-# closed on anything malformed or out of scope), never executed, so it
-# stays editable from inside the folder.
+# Why sandbox.json is on it (V2c, claude-orca-qt9.7): it is never
+# executed -- both generators read it as validated data and fail closed on
+# anything malformed or out of scope -- but what it CONTAINS is
+# orca.profileExceptions, filesystem.extraAllowWrite and
+# network.extraAllowedDomains, each of which widens one of the two
+# sandbox layers at the next launch. An agent that could edit it could
+# hand itself the real home, one launch later. Reads stay allowed (this
+# list is write-only), so the file keeps working exactly as documented;
+# the user edits it from outside the sandbox, which is where the
+# authority to widen a sandbox belongs.
+#
+# What is deliberately NOT on it: .claude-dev/run, the one directory
+# under .claude-dev that the sandbox itself writes (tier.json,
+# selftest.json, the srt-debug captures -- see lib/paths.sh run_dir()).
+# Nothing in there is host-executed or host-trusted; it holds results,
+# not authority.
 
 host_owned_paths() {
     local project="${1:-}"
@@ -56,6 +68,7 @@ host_owned_paths() {
         "$project/.claude-dev/srt" \
         "$project/.claude-dev/claude" \
         "$project/.claude-dev/state" \
+        "$project/.claude-dev/sandbox.json" \
         "$project/orca.yaml" \
         "$project/.worktreeinclude" \
         "$project/.envrc" \

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # tier-set -- /tier backend (S4, claude-orca-3sk.4). Binds the model tier by
-# writing .claude-dev/state/tier.json {top, worker, recon, pinned, overdrive,
+# writing .claude-dev/run/tier.json {top, worker, recon, pinned, overdrive,
 # updated} and .model in <config dir>/settings.local.json -- NEVER
 # agents/*.md: srt write-denies .claude/agents under cwd (see
 # .claude/plans/orca-port.md S3.1, S3.6), so the binding lives in hook-read

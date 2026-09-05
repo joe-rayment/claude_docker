@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # tier-reconcile -- SessionStart/PostModelSwitch/ConfigChange hook. Keeps
-# .claude-dev/state/tier.json's top/worker/recon in sync with the bound
+# .claude-dev/run/tier.json's top/worker/recon in sync with the bound
 # model, and purges legacy picker-corrupting env vars from
 # <config dir>/settings.local.json's .env block. S4 (claude-orca-3sk.4)
 # replaces the old frontmatter-rewriting version -- see scripts/tier-set.sh's

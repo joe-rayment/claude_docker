@@ -231,7 +231,11 @@ cmd_register() {
     local project_name
     project_name="$(derive_project_name "$dir")"
 
-    mkdir -p "$dir/.claude-dev/home" "$dir/.claude-dev/tmp" "$dir/.claude-dev/state"
+    # V2c (claude-orca-qt9.7): run/ is the one directory under
+    # .claude-dev the sandbox itself writes (tier.json, selftest.json,
+    # srt-debug captures); state/ stays host-written and write-denied.
+    mkdir -p "$dir/.claude-dev/home" "$dir/.claude-dev/tmp" \
+             "$dir/.claude-dev/state" "$dir/.claude-dev/run"
 
     # Defaults only if absent -- never reset a project's own edits.
     if [ ! -f "$dir/.claude-dev/sandbox.json" ]; then
@@ -283,7 +287,7 @@ JSON
         return 0
     fi
 
-    local results="$dir/.claude-dev/state/selftest.json"
+    local results="$dir/.claude-dev/run/selftest.json"
     if [ -f "$results" ]; then
         doctor_print_probes "$results"
     fi
@@ -413,7 +417,7 @@ WARN
 
     echo ""
     echo "Sandbox self-test ($root):"
-    local results="$root/.claude-dev/state/selftest.json"
+    local results="$root/.claude-dev/run/selftest.json"
 
     if [ ! -f "$results" ]; then
         echo "  not run -- run 'claude-dev register' or 'claude-orca-shell --selftest --root $root'"

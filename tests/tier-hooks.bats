@@ -21,8 +21,11 @@ RECON="$REPO_ROOT/scripts/tier-reconcile.sh"
 setup() {
     export CLAUDE_ORCA_ROOT="$BATS_TEST_TMPDIR/root"
     export CLAUDE_CONFIG_DIR="$BATS_TEST_TMPDIR/root/.claude"
-    mkdir -p "$CLAUDE_ORCA_ROOT/.claude-dev/state" "$CLAUDE_CONFIG_DIR/agents"
-    STATE_FILE="$CLAUDE_ORCA_ROOT/.claude-dev/state/tier.json"
+    # V2c (claude-orca-qt9.7): tier.json moved to the agent-writable
+    # .claude-dev/run -- tier-set runs INSIDE the sandbox, and state/ is
+    # write-denied there.
+    mkdir -p "$CLAUDE_ORCA_ROOT/.claude-dev/run" "$CLAUDE_CONFIG_DIR/agents"
+    STATE_FILE="$CLAUDE_ORCA_ROOT/.claude-dev/run/tier.json"
     LOCAL_SETTINGS="$CLAUDE_CONFIG_DIR/settings.local.json"
     BASE_SETTINGS="$CLAUDE_CONFIG_DIR/settings.json"
 }

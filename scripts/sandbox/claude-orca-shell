@@ -24,12 +24,12 @@
 # claude-orca-root's detection from --cwd/$PWD when omitted): runs
 # scripts/sandbox/selftest.sh's 13 probes inside the sandbox (S3, see
 # .claude/plans/orca-port.md S3) and writes
-# <primary>/.claude-dev/state/selftest.json. Exits with the self-test's
+# <primary>/.claude-dev/run/selftest.json. Exits with the self-test's
 # own exit code (0 = all probes PASS/N/A, 1 = at least one FAIL). If srt
 # itself can't even start -- no results JSON appears -- writes a
 # synthetic single-probe "srt-launch" FAIL result instead and exits 1.
 # srt's stderr (SRT_DEBUG=true, the generated Seatbelt profile) is saved
-# to <primary>/.claude-dev/state/srt-debug-<sha1>.log for audit.
+# to <primary>/.claude-dev/run/srt-debug-<sha1>.log for audit.
 #
 # Auth (S5, claude-orca-3sk.17): --check also reports
 # "auth: credentials present|absent" for Claude Code's own
@@ -328,7 +328,11 @@ fi
 
 # --- MODE = run / selftest: side effects start here -----------------------
 
-mkdir -p "$SANDBOX_HOME" "$SANDBOX_TMP" "$PRIMARY/.claude-dev/state"
+# .claude-dev/run is the agent-writable half of the folder's own state
+# (V2c, plans/orca-port.md S9.2): what the SANDBOX writes goes there,
+# state/ stays host-written and write-denied in both layers.
+mkdir -p "$SANDBOX_HOME" "$SANDBOX_TMP" "$PRIMARY/.claude-dev/state" \
+         "$PRIMARY/.claude-dev/run"
 
 # Host side, before exec/selftest: keep the primary checkout's config dir
 # current with this template's config/ (S7, claude-orca-3sk.7). Best-effort
@@ -485,8 +489,8 @@ if [ "$MODE" = "selftest" ]; then
         export CLAUDE_ORCA_SELFTEST_TRACE
     fi
 
-    RESULTS_JSON="$PRIMARY/.claude-dev/state/selftest.json"
-    DEBUG_LOG="$PRIMARY/.claude-dev/state/srt-debug-$(sha1_of "$WORKTREE").log"
+    RESULTS_JSON="$PRIMARY/.claude-dev/run/selftest.json"
+    DEBUG_LOG="$PRIMARY/.claude-dev/run/srt-debug-$(sha1_of "$WORKTREE").log"
     SELFTEST_SCRIPT="$HOST/template/scripts/sandbox/selftest.sh"
 
     rm -f "$RESULTS_JSON"

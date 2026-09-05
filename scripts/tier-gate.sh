@@ -3,7 +3,7 @@
 # tier-gate -- PreToolUse hook (matcher: Agent). See scripts/tier-set.sh's
 # header for why this exists (frontmatter rewriting is write-denied inside
 # the sandbox -- .claude/plans/orca-port.md S3.1, S3.6). Reads
-# .claude-dev/state/tier.json instead of rewriting executor.md/scout.md's
+# .claude-dev/run/tier.json instead of rewriting executor.md/scout.md's
 # frontmatter; injects the WORKER model for executor spawns (and generic/
 # unnamed spawns), the RECON model for scout spawns, whenever the Agent call
 # omits `model` -- an explicit model always wins (also the idempotency

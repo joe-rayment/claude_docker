@@ -30,7 +30,7 @@ bump_template_pin() {
     before="$(git -C "$ORCA_HOST/template" rev-parse HEAD)"
 
     bump_template_pin "0.0.76"
-    rm -f "$PROJECT_DIR/.claude-dev/state/selftest.json"
+    rm -f "$PROJECT_DIR/.claude-dev/run/selftest.json"
     : > "$STUB_LOG"
 
     cd "$PROJECT_DIR"
@@ -50,7 +50,7 @@ bump_template_pin() {
     [ -f "$PROJECT_DIR/.claude-dev/home/.claude/settings.json" ]
 
     # the self-test re-ran and wrote fresh results.
-    [ -f "$PROJECT_DIR/.claude-dev/state/selftest.json" ]
+    [ -f "$PROJECT_DIR/.claude-dev/run/selftest.json" ]
 
     # ... and it reported what changed.
     [[ "$output" == *"${before:0:7}"* ]]
