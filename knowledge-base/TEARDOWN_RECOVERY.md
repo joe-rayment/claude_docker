@@ -36,7 +36,7 @@ install and nothing outside the project to put state in, so the snapshot
 directory is a *sibling* of `.claude-dev`, not a child: teardown deletes
 `.claude-dev` whole, and anything inside it would go with it. Being in the
 project also means the snapshots move, copy and back up with the project.
-They are gitignored, so they never enter your history.
+They are gitignored while the project is registered; teardown removes that seeded ignore line with the others, so re-run the bootstrap (or ignore the directory yourself) before committing after a teardown.
 
 ## `claude-dev --uninstall`
 

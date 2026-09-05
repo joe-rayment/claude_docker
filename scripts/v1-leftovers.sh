@@ -42,6 +42,7 @@ cmd_remove() {
         echo "No v1 leftovers: $V1_HOME does not exist"
         return 0
     fi
+    echo "Removing the v1 central install at $V1_HOME"
     rm -rf "$V1_HOME"
     echo "Removed the v1 central install at $V1_HOME"
     echo "Run 'claude-dev rc-install' if any shell rc still sources it (register and --update do this for you)."

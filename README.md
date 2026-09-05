@@ -84,7 +84,7 @@ them.
 
 **Layer 2 (each shell, `srt`).** Writes: the project folder and the current
 worktree only; a linked worktree also gets the primary checkout's `.git`,
-`.beads` and `.claude-dev/{home,tmp}`. Reads: your real home is denied, so
+`.beads` and `.claude-dev/{home,tmp,run}`. Reads: your real home is denied, so
 `~/.ssh`, `~/.aws` and Documents are unreadable; the project, `~/.local/bin`,
 `~/.local/share/claude` and `~/.orca/agent-hooks` are allowed. Network: only
 `srt`'s localhost proxy, against `api.anthropic.com`, `claude.ai`,
