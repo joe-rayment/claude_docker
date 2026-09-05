@@ -157,6 +157,41 @@ STUB
     chmod +x "$1"
 }
 
+# S10 (claude-orca-3sk.21): a `node` stub that records what take-screenshot
+# asked for -- one argv element per line to $STUB_ARGV, a full env dump to
+# $STUB_NODE_ENV -- and fakes Playwright's side effect by creating the PNG
+# path it was handed (the argument that ends in .png). Replaces the plain
+# write_stub_node on PATH for tests that need to inspect the invocation.
+write_stub_node_recording() {
+    mkdir -p "$(dirname "$1")"
+    cat > "$1" <<'STUB'
+#!/usr/bin/env bash
+if [ "$1" = "--version" ]; then
+    echo "${STUB_NODE_VERSION:-v24.0.0}"
+    exit 0
+fi
+printf '%s\n' "$@" >> "$STUB_ARGV"
+env > "$STUB_NODE_ENV"
+for arg in "$@"; do
+    case "$arg" in
+        /*.png) mkdir -p "$(dirname "$arg")"; : > "$arg" ;;
+    esac
+done
+exit "${STUB_NODE_EXIT:-0}"
+STUB
+    chmod +x "$1"
+}
+
+# S10 (claude-orca-3sk.21): a resolvable-but-inert `playwright` package under
+# $1/node_modules, standing in for `npm i -g playwright@<pin>` having been run
+# -- take-screenshot only checks that the package directory exists before
+# handing the work to node, which is stubbed too.
+fake_playwright_package() {
+    mkdir -p "$1/node_modules/playwright"
+    printf '{"name":"playwright","version":"1.61.1"}' \
+        > "$1/node_modules/playwright/package.json"
+}
+
 # S2 (claude-orca-3sk.14): stands in for the real, pinned srt binary at
 # $CLAUDE_ORCA_HOME/srt/node_modules/.bin/srt. Records every invocation's
 # argv (one arg per line, delimited) to $STUB_LOG and a full environment
