@@ -3,7 +3,7 @@
 # selftest.sh -- the S3 probe runner. Invoked by `claude-orca-shell
 # --selftest` INSIDE the sandbox (see claude-orca-shell and
 # .claude/plans/orca-port.md S3) to prove the sandbox from the inside:
-# thirteen probes, each a shell function returning 0 (expected behaviour
+# seventeen probes, each a shell function returning 0 (expected behaviour
 # observed -- PASS), 1 (violation -- FAIL) or 2 (not applicable on this
 # host -- N/A), run in the fixed order below (the single source of truth
 # for the probe table). Writes a results JSON and exits 0 iff no probe
@@ -37,6 +37,13 @@
 #   CLAUDE_ORCA_HOST       -- <project>/.claude-dev (srt-version-pinned);
 #                             falls back to $CLAUDE_ORCA_ROOT/.claude-dev, the same
 #                             default every other script in this repo uses.
+#   CLAUDE_ORCA_LAYER      -- `orca` inside a terminal that the folder's own
+#                             sandboxed Orca opened (exported by orca-launch).
+#                             The last four probes -- layer 1, the Orca app
+#                             itself -- are the only ones that can observe
+#                             that layer, so they report N/A anywhere else
+#                             rather than claiming a confinement nobody
+#                             applied. V3 (claude-orca-qt9.3).
 #
 # Deliberately no `set -e`: most of these probes' PASS case is "the
 # expected command fails" -- every fallible command below is the
@@ -45,7 +52,7 @@
 
 set -u
 
-PROBE_NAMES="write-outside-denied read-real-home-denied keychain-denied project-writable worktree-writable sibling-worktree-denied tmp-outside-denied network-blocked-domain network-allowed-domain orca-socket-unreachable sandbox-exec-present srt-version-pinned git-hooks-audit"
+PROBE_NAMES="write-outside-denied read-real-home-denied keychain-denied project-writable worktree-writable sibling-worktree-denied tmp-outside-denied network-blocked-domain network-allowed-domain orca-socket-unreachable sandbox-exec-present srt-version-pinned git-hooks-audit orca-profile-active home-redirected orca-data-in-folder host-files-write-denied"
 
 usage() {
     cat <<'USAGE'
@@ -68,6 +75,10 @@ probe_description() {
         sandbox-exec-present)    echo "sandbox-exec is on PATH (Darwin only; reports bwrap elsewhere)" ;;
         srt-version-pinned)      echo "installed srt package.json version equals the SRT_VERSION pin" ;;
         git-hooks-audit)         echo "git hooks reference only paths covered by the generated denyWrite list" ;;
+        orca-profile-active)     echo "a write under \$CLAUDE_ORCA_REAL_HOME fails before srt (layer 1 alone)" ;;
+        home-redirected)         echo "\$HOME resolves inside <project>/.claude-dev/home" ;;
+        orca-data-in-folder)     echo "Orca's user data dir is the folder's, and the real one is untouched since launch" ;;
+        host-files-write-denied) echo "touch ./claude-dev, Orca.app/Contents/MacOS/Orca and state/orca.sb all fail" ;;
         *)                       echo "" ;;
     esac
 }
@@ -409,6 +420,132 @@ _selftest_path_covered() {
     return 1
 }
 
+# --- layer 1: the Orca app itself (V3, claude-orca-qt9.3) -------------------
+#
+# The thirteen probes above are about layer 2 -- the srt sandbox each
+# shell re-execs into. The four below are about LAYER 1: the Seatbelt
+# profile orca-launch hands sandbox-exec before Orca ever starts. Only a
+# terminal that this folder's own Orca opened is inside it, and there is
+# no way to fake that from anywhere else -- so each of them reports N/A
+# (never PASS) unless $CLAUDE_ORCA_LAYER says so. A probe that cannot
+# see what it checks must not claim the check passed.
+
+# The one gate, and the one message that tells a reader how to make these
+# four mean something.
+orca_layer_na() {
+    echo "not inside an Orca terminal (CLAUDE_ORCA_LAYER=orca) -- run the self-test from a terminal this folder's Orca opened"
+}
+
+# Seconds since the epoch for $1, or nothing (GNU stat, then BSD/macOS).
+file_mtime() {
+    stat -c '%Y' "$1" 2>/dev/null || stat -f '%m' "$1" 2>/dev/null || true
+}
+
+probe_orca_profile_active() {
+    local real_home="${CLAUDE_ORCA_REAL_HOME:-}" f
+    [ "${CLAUDE_ORCA_LAYER:-}" = "orca" ] || { orca_layer_na; return 2; }
+    if [ -z "$real_home" ] || [ ! -d "$real_home" ]; then
+        echo "CLAUDE_ORCA_REAL_HOME not set or not a directory -- cannot test"
+        return 2
+    fi
+    # Deliberately the same write as write-outside-denied, minus srt: in
+    # an Orca terminal that has not re-execed yet, only layer 1 can be
+    # what denies it.
+    f="$real_home/.claude-orca-selftest-layer1-$$"
+    if ( : > "$f" ) 2>/dev/null; then
+        rm -f "$f" 2>/dev/null
+        echo "layer 1 is NOT confining this app: $f was created without srt in the way"
+        return 1
+    fi
+    echo "layer 1 active: a write under \$CLAUDE_ORCA_REAL_HOME ($real_home) is denied before srt"
+    return 0
+}
+
+probe_home_redirected() {
+    local root="${CLAUDE_ORCA_ROOT:-}" expect cur
+    [ "${CLAUDE_ORCA_LAYER:-}" = "orca" ] || { orca_layer_na; return 2; }
+    if [ -z "$root" ]; then
+        echo "CLAUDE_ORCA_ROOT not set -- cannot tell which folder this should be"
+        return 2
+    fi
+    expect="$root/.claude-dev/home"
+    if [ ! -d "$expect" ]; then
+        echo "$expect does not exist -- HOME cannot be pointing inside the folder"
+        return 1
+    fi
+    expect="$(cd "$expect" && pwd -P)"
+    cur="$(cd "${HOME:-/nonexistent}" 2>/dev/null && pwd -P)" || cur=""
+    case "$cur" in
+        "$expect"|"$expect"/*)
+            echo "HOME=$cur is inside the folder ($expect)"
+            return 0
+            ;;
+    esac
+    echo "HOME=${cur:-${HOME:-<unset>}} is outside $expect -- the app is writing someone else's home"
+    return 1
+}
+
+probe_orca_data_in_folder() {
+    local root="${CLAUDE_ORCA_ROOT:-}" real_home="${CLAUDE_ORCA_REAL_HOME:-}"
+    local folder_data real_data profile launched touched
+    [ "${CLAUDE_ORCA_LAYER:-}" = "orca" ] || { orca_layer_na; return 2; }
+    if [ -z "$root" ]; then
+        echo "CLAUDE_ORCA_ROOT not set -- cannot tell which folder this should be"
+        return 2
+    fi
+    folder_data="${ORCA_USER_DATA_PATH:-$root/.claude-dev/home/Library/Application Support/orca}"
+    if [ ! -d "$folder_data" ]; then
+        echo "$folder_data does not exist -- Orca is not running in this folder yet"
+        return 2
+    fi
+    real_data="$real_home/Library/Application Support/orca"
+    if [ -z "$real_home" ] || [ ! -d "$real_data" ]; then
+        echo "Orca's data is in the folder ($folder_data); the real home has none"
+        return 0
+    fi
+    # "Since launch" is measured against the profile, which orca-launch
+    # regenerates immediately before exec'ing sandbox-exec.
+    profile="$root/.claude-dev/state/orca.sb"
+    launched="$(file_mtime "$profile")"
+    touched="$(file_mtime "$real_data")"
+    if [ -n "$launched" ] && [ -n "$touched" ] && [ "$touched" -gt "$launched" ]; then
+        echo "the real home's Orca data ($real_data) was written since this launch"
+        return 1
+    fi
+    echo "Orca's data is in the folder ($folder_data); $real_data untouched since launch"
+    return 0
+}
+
+probe_host_files_write_denied() {
+    local root="${CLAUDE_ORCA_ROOT:-}" p tested=0 escaped=""
+    [ "${CLAUDE_ORCA_LAYER:-}" = "orca" ] || { orca_layer_na; return 2; }
+    if [ -z "$root" ]; then
+        echo "CLAUDE_ORCA_ROOT not set -- cannot tell which folder this should be"
+        return 2
+    fi
+    # The three the host executes on the next launch: the stub, the
+    # bundle Finder starts, and the profile that confines what it starts.
+    for p in "$root/claude-dev" \
+             "$root/Orca.app/Contents/MacOS/Orca" \
+             "$root/.claude-dev/state/orca.sb"; do
+        [ -e "$p" ] || continue
+        tested=$((tested + 1))
+        if touch "$p" 2>/dev/null; then
+            escaped="$escaped $p"
+        fi
+    done
+    if [ "$tested" -eq 0 ]; then
+        echo "none of the host-owned files exist in $root yet -- nothing to test"
+        return 2
+    fi
+    if [ -n "$escaped" ]; then
+        echo "host-owned files are WRITABLE from in here:$escaped"
+        return 1
+    fi
+    echo "touch denied on all $tested host-owned files (./claude-dev, the Orca.app binary, state/orca.sb)"
+    return 0
+}
+
 # --- dispatch ---------------------------------------------------------------
 
 probe_run() {
@@ -426,6 +563,10 @@ probe_run() {
         sandbox-exec-present)    probe_sandbox_exec_present ;;
         srt-version-pinned)      probe_srt_version_pinned ;;
         git-hooks-audit)         probe_git_hooks_audit ;;
+        orca-profile-active)     probe_orca_profile_active ;;
+        home-redirected)         probe_home_redirected ;;
+        orca-data-in-folder)     probe_orca_data_in_folder ;;
+        host-files-write-denied) probe_host_files_write_denied ;;
         *) echo "unknown probe: $1"; return 1 ;;
     esac
 }

@@ -89,6 +89,11 @@ export HOME="$project/.claude-dev/home"
 export TMPDIR="$project/.claude-dev/tmp"
 export CLAUDE_ORCA_ROOT="$project"
 export CLAUDE_ORCA_REAL_HOME="$REAL_HOME"
+# V3 (claude-orca-qt9.3): the marker every terminal Orca opens inherits.
+# It is what tells the self-test's four layer-1 probes that they are
+# inside the Seatbelt profile and can actually observe it; anywhere else
+# they report N/A rather than claim a confinement nobody applied.
+export CLAUDE_ORCA_LAYER="orca"
 # Node's os.homedir() follows HOME, so this is where Orca's runtime
 # metadata and socket land; the CLI is told the same path explicitly
 # (ORCA_USER_DATA_PATH, src/cli/runtime/metadata.ts:50).
