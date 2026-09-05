@@ -4,7 +4,10 @@ bats_require_minimum_version 1.5.0
 # delegate.bats -- scripts/delegate.sh: routes config, `check` health table,
 # `run` (job worktree under the primary's .claude-dev, scrubbed-env runner
 # invocation, JSON receipt, bead stamping), `ps` and `report`
-# (claude-orca-3sk.19, S8).
+# (claude-orca-3sk.28, S8 -- re-registered from claude-orca-3sk.19, whose
+# frozen copy of this file carried two assertions no implementation could
+# satisfy: a jq that indexed a string with "network", and an --acceptance
+# needle the test's own bd fixture always planted).
 #
 # FROZEN per the bead's acceptance contract: this file must not be edited
 # after its RED commit. If a case here turns out to be wrong, stop and
@@ -527,9 +530,7 @@ ROUTES_EOF
             "$settings")" = "$2" ]
     done
     # srt rejects an injectHost that allowedDomains cannot reach
-    [ "$(jq -r '[.credentials.envVars[].injectHosts[]] as $h
-                | [$h[] | select(. as $x | ([.network.allowedDomains[]] | index($x)) == null)]
-                | length' "$settings")" = "0" ]
+    [ "$(jq -r '[.credentials.envVars[].injectHosts[]] - [.network.allowedDomains[]] | length' "$settings")" = "0" ]
     [ "$(jq -r '.network.tlsTerminate | type' "$settings")" = "object" ]
 
     # (b) the job side: the key value never lands in the env file the job writes.
@@ -649,9 +650,10 @@ STUB
     [[ "$notes" == *"branch: delegate/$job"* ]]
     [[ "$notes" == *"receipt: $job_dir/receipt.json"* ]]
 
-    # appended, never a rewrite of the bead's acceptance field
+    # appended, never a rewrite of the bead's acceptance field (the
+    # fixture's own `bd create --acceptance` is not delegate.sh's doing)
     grep -q -- "--append-notes" "$BD_STUB_LOG"
-    run grep -- "--acceptance" "$BD_STUB_LOG"
+    run grep -- "update .* --acceptance" "$BD_STUB_LOG"
     [ "$status" -ne 0 ]
 }
 
