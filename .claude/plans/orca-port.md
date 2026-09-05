@@ -335,3 +335,18 @@ sandbox-generated files}`, plus the earlier list (`orca.yaml`, `.worktreeinclude
 | V5 | Lifecycle + docs v2 (update/teardown/uninstall for the per-folder layout, v1 leftovers cleanup, README/SANDBOX/ORCA_INTEGRATION rewrite) | V1–V4 |
 Linux can test everything but the Seatbelt behaviour itself; each slice's MAC-CHECK names the
 probe the user sees in `claude-dev --doctor`.
+
+### 9.4 Decisions from the user (2026-09-05, after §9 was written)
+- Seatbelt confirmed. Note for the record: Apple's `container` tool runs *Linux* VMs and cannot run
+  the macOS Orca app; the folder-only view and the separate credential store the user wants are
+  achieved with the macOS sandbox (Seatbelt), not with a Linux container.
+- **Keychain is cut.** The Orca profile denies the Keychain mach services (`com.apple.SecurityServer`,
+  `com.apple.securityd.xpc`, `com.apple.ctkd`, the keychain-prompt agent) for the whole process
+  tree; nested layers inherit the denial, so Claude Code inside falls back to its documented
+  `.credentials.json` in the folder and Orca keeps whatever file-based auth storage it has (its
+  `runtime-auth-file-storage`) — a credential store that lives and dies with the folder.
+  `com.apple.trustd` stays allowed (TLS certificate evaluation is not the Keychain).
+- **Clipboard stays** (`com.apple.pasteboard.1` and the WindowServer/GPU/font services remain
+  allowed under `(allow default)`); only the Keychain family is denied by name.
+- Slice V2b carries the contract for the Keychain denial and the inner-layer `keychain-denied`
+  probe now being guaranteed by the outer layer.
