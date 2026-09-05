@@ -9,7 +9,7 @@
 #
 # Usage:
 #   gen-settings.sh --primary <dir> --worktree <dir> --real-home <dir> \
-#       --host <CLAUDE_ORCA_HOME> --sandbox-json <file> [--gh-token-present] \
+#       --host <project>/.claude-dev --sandbox-json <file> [--gh-token-present] \
 #       [--openrouter-key-present] [--openai-key-present] [--gemini-key-present]
 #
 # The three provider-key flags (S8, claude-orca-3sk.19) are the delegation

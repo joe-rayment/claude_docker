@@ -11,7 +11,7 @@
 #
 #   --project  the primary checkout. Its .claude-dev/home/.claude is the
 #              sync target, and .claude-dev/state/config-hash the gate.
-#   --host     the host dir (~/.claude-orca) whose template/config/ is the
+#   --host     the host dir (<project>/.claude-dev) whose template/config/ is the
 #              SOURCE; hook commands in the synced settings.json get the
 #              __HOST__ placeholder rewritten to this exact value, so every
 #              hook command is an absolute path Claude Code can exec
@@ -40,7 +40,7 @@ set -euo pipefail
 # Resolve through a symlink chain (e.g. bin/config-sync ->
 # ../scripts/config-sync.sh) to this script's real directory, so
 # lib/paths.sh resolves whether this is invoked via the repo copy or the
-# ~/.claude-orca/template/bin/ symlink.
+# .claude-dev/template/bin/ symlink.
 _resolve_script_path() {
     local src="${BASH_SOURCE[0]}"
     while [ -L "$src" ]; do

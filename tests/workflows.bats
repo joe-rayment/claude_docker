@@ -115,7 +115,7 @@ import(process.argv[1]).then(m => {
 @test "config-sync mirrors config/workflows/*.js into the project's .claude/workflows/" {
     make_project "$PROJECT_DIR"
     primary="$(abspath "$PROJECT_DIR")"
-    run "$CLAUDE_ORCA_HOME/template/scripts/config-sync.sh" --project "$primary" --host "$CLAUDE_ORCA_HOME"
+    run "$ORCA_HOST/template/scripts/config-sync.sh" --project "$primary" --host "$ORCA_HOST"
     [ "$status" -eq 0 ]
     dest="$primary/.claude-dev/home/.claude/workflows"
     diff "$WORKFLOWS_DIR/recon-fanout.js" "$dest/recon-fanout.js"

@@ -3,7 +3,7 @@ set -e
 
 # Resolve through a symlink chain (e.g. bin/view-logs -> ../scripts/
 # view-logs.sh) to this script's real directory, so lib/paths.sh resolves
-# whether this is invoked via the repo copy or the ~/.claude-orca/template/
+# whether this is invoked via the repo copy or the .claude-dev/template/
 # bin/ symlink.
 _resolve_script_path() {
     local src="${BASH_SOURCE[0]}"

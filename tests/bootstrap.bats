@@ -1,9 +1,12 @@
 #!/usr/bin/env bats
 #
-# S1 acceptance contract (claude-orca-3sk.1) -- FROZEN from RED-AT onward.
-# Exercises bootstrap.sh + scripts/launcher.sh against a local git fixture
-# (built from the working tree by helpers/setup.bash) with brew/npm/gh/node
-# stubbed on PATH -- no Docker, no network, no real macOS tooling required.
+# S1 acceptance contract (claude-orca-3sk.1), rebased onto the v2
+# per-folder layout by V1 (claude-orca-qt9.1): $ORCA_HOST is now
+# <project>/.claude-dev, not a central install. Exercises bootstrap.sh +
+# scripts/launcher.sh against a local git fixture (built from the working
+# tree by helpers/setup.bash) with brew/npm/gh/node/curl/hdiutil stubbed on
+# PATH -- no network and no real macOS tooling required. The layout itself
+# is pinned by tests/layout.bats.
 
 load helpers/setup
 
@@ -12,31 +15,32 @@ load helpers/setup
     run bash "$REPO_ROOT/bootstrap.sh" "$PROJECT_DIR"
     [ "$status" -eq 1 ]
     [[ "$output" == *"gh"* ]]
-    [ ! -d "$CLAUDE_ORCA_HOME" ]
+    [ ! -d "$ORCA_HOST" ]
 }
 
-@test "bootstrap installs host side under ~/.claude-orca (bin, template clone, srt pinned to 0.0.75 via stubbed npm)" {
+@test "bootstrap installs everything under <project>/.claude-dev (bin, template clone, srt pinned to 0.0.75 via stubbed npm)" {
     run bash "$REPO_ROOT/bootstrap.sh" "$PROJECT_DIR"
     [ "$status" -eq 0 ]
 
-    [ -L "$CLAUDE_ORCA_HOME/bin/claude-dev" ]
-    [ "$(readlink "$CLAUDE_ORCA_HOME/bin/claude-dev")" = "$CLAUDE_ORCA_HOME/template/scripts/launcher.sh" ]
+    [ -L "$ORCA_HOST/bin/claude-dev" ]
+    [ "$(readlink "$ORCA_HOST/bin/claude-dev")" = "../template/scripts/launcher.sh" ]
+    [ -x "$ORCA_HOST/bin/claude-dev" ]
 
-    [ -d "$CLAUDE_ORCA_HOME/template/.git" ]
-    [ -f "$CLAUDE_ORCA_HOME/template/bootstrap.sh" ]
+    [ -d "$ORCA_HOST/template/.git" ]
+    [ -f "$ORCA_HOST/template/bootstrap.sh" ]
 
-    run cat "$CLAUDE_ORCA_HOME/srt/node_modules/@anthropic-ai/sandbox-runtime/package.json"
+    run cat "$ORCA_HOST/srt/node_modules/@anthropic-ai/sandbox-runtime/package.json"
     [ "$status" -eq 0 ]
     [[ "$output" == *'"version":"0.0.75"'* ]]
 
-    grep -q -- "--prefix $CLAUDE_ORCA_HOME/srt install" "$STUB_LOG"
+    grep -q -- "--prefix $ORCA_HOST/srt install" "$STUB_LOG"
     grep -q "sandbox-runtime@0.0.75" "$STUB_LOG"
 }
 
 @test "brew bundle invoked with the Brewfile via stubbed brew" {
     run bash "$REPO_ROOT/bootstrap.sh" "$PROJECT_DIR"
     [ "$status" -eq 0 ]
-    grep -qF "brew bundle --file $CLAUDE_ORCA_HOME/template/Brewfile" "$STUB_LOG"
+    grep -qF "brew bundle --file $ORCA_HOST/template/Brewfile" "$STUB_LOG"
 }
 
 @test "registration creates .claude-dev/{home,tmp,state} and sandbox.json defaults" {
@@ -55,7 +59,7 @@ load helpers/setup
     [ "$status" -eq 0 ]
 }
 
-@test "gitignore seeded idempotently with .claude-dev/, .mcp.json, attachments/, .claude/logs/" {
+@test "gitignore seeded idempotently with .claude-dev/, /claude-dev, Orca.app/, .mcp.json, attachments/, .claude/logs/" {
     echo "node_modules/" > "$PROJECT_DIR/.gitignore"
 
     run bash "$REPO_ROOT/bootstrap.sh" "$PROJECT_DIR"
@@ -63,6 +67,8 @@ load helpers/setup
 
     grep -qxF "node_modules/" "$PROJECT_DIR/.gitignore"
     grep -qxF ".claude-dev/" "$PROJECT_DIR/.gitignore"
+    grep -qxF "/claude-dev" "$PROJECT_DIR/.gitignore"
+    grep -qxF "Orca.app/" "$PROJECT_DIR/.gitignore"
     grep -qxF ".mcp.json" "$PROJECT_DIR/.gitignore"
     grep -qxF "attachments/" "$PROJECT_DIR/.gitignore"
     grep -qxF ".claude/logs/" "$PROJECT_DIR/.gitignore"
@@ -80,19 +86,22 @@ load helpers/setup
     [ "$(grep -cxF '.claude-dev/' "$PROJECT_DIR/.gitignore")" -eq 1 ]
 }
 
-@test "no ./claude-dev file is written into the project" {
+# V1 (claude-orca-qt9.1) inverts S1's rule: the v2 project root DOES get
+# one executable, the ./claude-dev stub that execs the in-folder launcher
+# (trust boundary v2 -- both Seatbelt profiles write-deny it). It is still
+# the ONLY one outside .claude-dev/.
+@test "the only executable outside .claude-dev is the ./claude-dev stub" {
     run bash "$REPO_ROOT/bootstrap.sh" "$PROJECT_DIR"
     [ "$status" -eq 0 ]
 
-    [ ! -e "$PROJECT_DIR/claude-dev" ]
-    [ -x "$CLAUDE_ORCA_HOME/bin/claude-dev" ]
+    [ -x "$PROJECT_DIR/claude-dev" ]
+    [ -x "$ORCA_HOST/bin/claude-dev" ]
 
-    # No executable lands anywhere in the project EXCEPT inside .claude-dev/
-    # itself, where config-sync (S7, claude-orca-3sk.7) intentionally makes
-    # the synced statusline.sh executable as part of the config dir.
+    # config-sync (S7, claude-orca-3sk.7) intentionally makes the synced
+    # statusline.sh executable inside .claude-dev/, which is excluded here.
     run find "$PROJECT_DIR" -type f -perm -u+x -not -path "$PROJECT_DIR/.claude-dev/*"
     [ "$status" -eq 0 ]
-    [ -z "$output" ]
+    [ "$output" = "$PROJECT_DIR/claude-dev" ]
 }
 
 @test "register populates .claude-dev/home/.claude from the template config" {
@@ -117,17 +126,16 @@ load helpers/setup
     run bash "$REPO_ROOT/bootstrap.sh" "$PROJECT_DIR"
     [ "$status" -eq 0 ]
 
-    local host_sum1 project_sum1 host_sum2 project_sum2
-    host_sum1="$(tree_checksum "$CLAUDE_ORCA_HOME")"
+    local project_sum1 project_sum2
     project_sum1="$(tree_checksum "$PROJECT_DIR")"
 
     run bash "$REPO_ROOT/bootstrap.sh" "$PROJECT_DIR"
     [ "$status" -eq 0 ]
 
-    host_sum2="$(tree_checksum "$CLAUDE_ORCA_HOME")"
     project_sum2="$(tree_checksum "$PROJECT_DIR")"
 
-    [ "$host_sum1" = "$host_sum2" ]
+    # One checksum now covers both sides: the host install lives inside
+    # the project folder.
     [ "$project_sum1" = "$project_sum2" ]
 }
 

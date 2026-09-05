@@ -34,8 +34,8 @@
 #   CLAUDE_ORCA_REAL_HOME  -- the unsandboxed home (write/read-denied probes)
 #   CLAUDE_ORCA_ROOT       -- the primary checkout (project-writable, hooks audit)
 #   CLAUDE_ORCA_SETTINGS   -- generated srt settings JSON (git-hooks-audit)
-#   CLAUDE_ORCA_HOST       -- ~/.claude-orca (srt-version-pinned); falls back
-#                             to $CLAUDE_ORCA_REAL_HOME/.claude-orca, the same
+#   CLAUDE_ORCA_HOST       -- <project>/.claude-dev (srt-version-pinned);
+#                             falls back to $CLAUDE_ORCA_ROOT/.claude-dev, the same
 #                             default every other script in this repo uses.
 #
 # Deliberately no `set -e`: most of these probes' PASS case is "the
@@ -295,7 +295,7 @@ probe_sandbox_exec_present() {
 probe_srt_version_pinned() {
     local pin host pkg installed
     pin="$(read_srt_pin)" || { echo "could not read SRT_VERSION pin from install-srt.sh"; return 2; }
-    host="${CLAUDE_ORCA_HOST:-${CLAUDE_ORCA_REAL_HOME:-}/.claude-orca}"
+    host="${CLAUDE_ORCA_HOST:-${CLAUDE_ORCA_ROOT:-}/.claude-dev}"
     pkg="$host/srt/node_modules/@anthropic-ai/sandbox-runtime/package.json"
     if [ ! -f "$pkg" ]; then
         echo "srt package.json not found at $pkg (pin is $pin)"

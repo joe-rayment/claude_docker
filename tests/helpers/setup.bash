@@ -46,7 +46,7 @@ setup_file() {
     # and tier-gate/tier-set etc. are resolved through -- `cp -R` preserves
     # bin/<name>'s relative symlinks (e.g. bin/tier-set -> ../scripts/
     # tier-set.sh) as symlinks, so they still resolve correctly once re-rooted
-    # under $TEMPLATE_SRC and, later, under $CLAUDE_ORCA_HOME/template.
+    # under $TEMPLATE_SRC and, later, under <project>/.claude-dev/template.
     [ -d "$REPO_ROOT/config" ] && cp -R "$REPO_ROOT/config" "$TEMPLATE_SRC/config"
     [ -d "$REPO_ROOT/bin" ] && cp -R "$REPO_ROOT/bin" "$TEMPLATE_SRC/bin"
 
@@ -294,7 +294,7 @@ fake_playwright_package() {
 }
 
 # S2 (claude-orca-3sk.14): stands in for the real, pinned srt binary at
-# $CLAUDE_ORCA_HOME/srt/node_modules/.bin/srt. Records every invocation's
+# <project>/.claude-dev/srt/node_modules/.bin/srt. Records every invocation's
 # argv (one arg per line, delimited) to $STUB_LOG and a full environment
 # dump to $STUB_ENV (overwritten each call -- tests that need more than
 # one call's env capture it between calls), then actually runs the `-c`
@@ -475,7 +475,6 @@ setup() {
     export HOME="$BATS_TEST_TMPDIR/home"
     mkdir -p "$HOME"
 
-    export CLAUDE_ORCA_HOME="$BATS_TEST_TMPDIR/claude-orca-home"
     export CLAUDE_ORCA_TEMPLATE_URL="$TEMPLATE_SRC"
 
     export STUB_LOG="$BATS_TEST_TMPDIR/stub.log"
@@ -528,9 +527,10 @@ setup() {
 
 # --- S2 fixtures (claude-orca-3sk.14) --------------------------------------
 
-# Bootstraps the host (template clone, srt "install", ~/.claude-orca/bin
-# symlinks, rc-install) and registers a fresh git repo as a project, all
-# through the real bootstrap.sh with brew/npm/gh/node stubbed -- then
+# Bootstraps a folder (template clone into <dir>/.claude-dev/template, the
+# srt and Claude Code "installs", the Orca.app "DMG", bin/ symlinks,
+# rc-install) and registers a fresh git repo as a project, all through the
+# real bootstrap.sh with brew/npm/gh/node/curl/hdiutil stubbed -- then
 # drops in a working srt stub, since the stubbed `npm install` only
 # fabricates a package.json, not an executable.
 make_project() {
@@ -545,7 +545,7 @@ make_project() {
     # working srt stub must exist BEFORE bootstrap.sh runs, not after.
     # (The stubbed npm install a few lines up in bootstrap.sh only
     # fabricates a package.json, never an executable at .bin/srt.)
-    write_stub_srt "$CLAUDE_ORCA_HOME/srt/node_modules/.bin/srt"
+    write_stub_srt "$dir/.claude-dev/srt/node_modules/.bin/srt"
 
     bash "$REPO_ROOT/bootstrap.sh" "$dir" >/dev/null
 }

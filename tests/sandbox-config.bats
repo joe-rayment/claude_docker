@@ -12,7 +12,7 @@
 load helpers/setup
 
 GEN_SETTINGS() {
-    "$CLAUDE_ORCA_HOME/template/scripts/sandbox/gen-settings.sh" "$@"
+    "$ORCA_HOST/template/scripts/sandbox/gen-settings.sh" "$@"
 }
 
 @test "primary checkout scope: allowWrite is exactly project, .claude-dev/home, .claude-dev/tmp" {
@@ -22,7 +22,7 @@ GEN_SETTINGS() {
 
     run GEN_SETTINGS \
         --primary "$primary" --worktree "$primary" \
-        --real-home "$real_home" --host "$CLAUDE_ORCA_HOME" \
+        --real-home "$real_home" --host "$ORCA_HOST" \
         --sandbox-json "$PROJECT_DIR/.claude-dev/sandbox.json"
     [ "$status" -eq 0 ]
 
@@ -39,7 +39,7 @@ GEN_SETTINGS() {
 
     run GEN_SETTINGS \
         --primary "$primary" --worktree "$primary" \
-        --real-home "$real_home" --host "$CLAUDE_ORCA_HOME" \
+        --real-home "$real_home" --host "$ORCA_HOST" \
         --sandbox-json "$PROJECT_DIR/.claude-dev/sandbox.json"
     [ "$status" -eq 0 ]
 
@@ -58,7 +58,7 @@ GEN_SETTINGS() {
 
     run GEN_SETTINGS \
         --primary "$primary" --worktree "$worktree" \
-        --real-home "$real_home" --host "$CLAUDE_ORCA_HOME" \
+        --real-home "$real_home" --host "$ORCA_HOST" \
         --sandbox-json "$PROJECT_DIR/.claude-dev/sandbox.json"
     [ "$status" -eq 0 ]
 
@@ -72,14 +72,14 @@ GEN_SETTINGS() {
     make_project "$PROJECT_DIR"
     wt="$(make_worktree "$PROJECT_DIR" feature)"
     real_home="$(make_real_home)"
-    host="$(abspath "$CLAUDE_ORCA_HOME")"
+    host="$(abspath "$ORCA_HOST")"
     primary="$(abspath "$PROJECT_DIR")"
     worktree="$(abspath "$wt")"
 
     # Primary session: worktree == primary, so allowRead dedupes to one entry.
     run GEN_SETTINGS \
         --primary "$primary" --worktree "$primary" \
-        --real-home "$real_home" --host "$CLAUDE_ORCA_HOME" \
+        --real-home "$real_home" --host "$ORCA_HOST" \
         --sandbox-json "$PROJECT_DIR/.claude-dev/sandbox.json"
     [ "$status" -eq 0 ]
 
@@ -94,7 +94,7 @@ GEN_SETTINGS() {
     # Linked worktree: both primary and worktree are re-opened.
     run GEN_SETTINGS \
         --primary "$primary" --worktree "$worktree" \
-        --real-home "$real_home" --host "$CLAUDE_ORCA_HOME" \
+        --real-home "$real_home" --host "$ORCA_HOST" \
         --sandbox-json "$PROJECT_DIR/.claude-dev/sandbox.json"
     [ "$status" -eq 0 ]
 
@@ -113,7 +113,7 @@ GEN_SETTINGS() {
 
     run GEN_SETTINGS \
         --primary "$primary" --worktree "$primary" \
-        --real-home "$real_home" --host "$CLAUDE_ORCA_HOME" \
+        --real-home "$real_home" --host "$ORCA_HOST" \
         --sandbox-json "$PROJECT_DIR/.claude-dev/sandbox.json"
     [ "$status" -eq 0 ]
 
@@ -124,7 +124,7 @@ GEN_SETTINGS() {
 
     run GEN_SETTINGS \
         --primary "$primary" --worktree "$worktree" \
-        --real-home "$real_home" --host "$CLAUDE_ORCA_HOME" \
+        --real-home "$real_home" --host "$ORCA_HOST" \
         --sandbox-json "$PROJECT_DIR/.claude-dev/sandbox.json"
     [ "$status" -eq 0 ]
 
@@ -146,7 +146,7 @@ GEN_SETTINGS() {
 
     run GEN_SETTINGS \
         --primary "$primary" --worktree "$primary" \
-        --real-home "$real_home" --host "$CLAUDE_ORCA_HOME" \
+        --real-home "$real_home" --host "$ORCA_HOST" \
         --sandbox-json "$PROJECT_DIR/.claude-dev/sandbox.json"
     [ "$status" -eq 0 ]
 
@@ -175,7 +175,7 @@ GEN_SETTINGS() {
 
     run GEN_SETTINGS \
         --primary "$primary" --worktree "$primary" \
-        --real-home "$real_home" --host "$CLAUDE_ORCA_HOME" \
+        --real-home "$real_home" --host "$ORCA_HOST" \
         --sandbox-json "$PROJECT_DIR/.claude-dev/sandbox.json"
     [ "$status" -eq 2 ]
     [[ "$output" == *"domain"* ]]
@@ -188,7 +188,7 @@ GEN_SETTINGS() {
 
     run GEN_SETTINGS \
         --primary "$primary" --worktree "$primary" \
-        --real-home "$real_home" --host "$CLAUDE_ORCA_HOME" \
+        --real-home "$real_home" --host "$ORCA_HOST" \
         --sandbox-json "$PROJECT_DIR/.claude-dev/sandbox.json"
     [ "$status" -eq 2 ]
     [[ "$output" == *"outside"* || "$output" == *"extraAllowWrite"* ]]
@@ -203,7 +203,7 @@ GEN_SETTINGS() {
 
     run GEN_SETTINGS \
         --primary "$primary" --worktree "$primary" \
-        --real-home "$real_home" --host "$CLAUDE_ORCA_HOME" \
+        --real-home "$real_home" --host "$ORCA_HOST" \
         --sandbox-json "$PROJECT_DIR/.claude-dev/sandbox.json"
     [ "$status" -eq 0 ]
     printf '%s\n' "$output" > "$BATS_TEST_TMPDIR/settings.json"
@@ -218,10 +218,10 @@ GEN_SETTINGS() {
     make_project "$PROJECT_DIR"
     real_home="$(abspath "$(make_real_home)")"
     primary="$(abspath "$PROJECT_DIR")"
-    host="$(abspath "$CLAUDE_ORCA_HOME")"
+    host="$(abspath "$ORCA_HOST")"
 
     export CLAUDE_ORCA_REAL_HOME="$real_home"
-    run "$CLAUDE_ORCA_HOME/bin/claude-orca-shell" --print-env --root "$primary" --cwd "$primary"
+    run "$ORCA_HOST/bin/claude-orca-shell" --print-env --root "$primary" --cwd "$primary"
     unset CLAUDE_ORCA_REAL_HOME
     [ "$status" -eq 0 ]
 
@@ -237,7 +237,7 @@ GEN_SETTINGS() {
         "CLAUDE_ORCA_SANDBOXED=1"
         "CLAUDE_ORCA_REAL_HOME=$real_home"
         "CLAUDE_ORCA_ROOT=$primary"
-        "PATH=/opt/homebrew/bin:/opt/homebrew/sbin:$real_home/.local/bin:$host/template/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+        "PATH=$host/bin:$host/template/bin:/opt/homebrew/bin:/opt/homebrew/sbin:$real_home/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
     )
 
     for line in "${expected_lines[@]}"; do
@@ -253,7 +253,7 @@ GEN_SETTINGS() {
     echo "# pre-existing user content" > "$HOME/.zshrc"
     echo "# pre-existing user content" > "$HOME/.bash_profile"
 
-    run "$CLAUDE_ORCA_HOME/bin/claude-dev" rc-install
+    run "$ORCA_HOST/bin/claude-dev" rc-install
     [ "$status" -eq 0 ]
     [ "$(grep -c '# >>> claude_orca >>>' "$HOME/.zshrc")" -eq 1 ]
     [ "$(grep -c '# >>> claude_orca >>>' "$HOME/.bash_profile")" -eq 1 ]
@@ -263,14 +263,14 @@ GEN_SETTINGS() {
     zshrc_sum1="$(sha256sum "$HOME/.zshrc" | cut -d' ' -f1)"
     bp_sum1="$(sha256sum "$HOME/.bash_profile" | cut -d' ' -f1)"
 
-    run "$CLAUDE_ORCA_HOME/bin/claude-dev" rc-install
+    run "$ORCA_HOST/bin/claude-dev" rc-install
     [ "$status" -eq 0 ]
     [ "$(grep -c '# >>> claude_orca >>>' "$HOME/.zshrc")" -eq 1 ]
     [ "$(grep -c '# >>> claude_orca >>>' "$HOME/.bash_profile")" -eq 1 ]
     [ "$(sha256sum "$HOME/.zshrc" | cut -d' ' -f1)" = "$zshrc_sum1" ]
     [ "$(sha256sum "$HOME/.bash_profile" | cut -d' ' -f1)" = "$bp_sum1" ]
 
-    run "$CLAUDE_ORCA_HOME/bin/claude-dev" rc-uninstall
+    run "$ORCA_HOST/bin/claude-dev" rc-uninstall
     [ "$status" -eq 0 ]
     ! grep -q '# >>> claude_orca >>>' "$HOME/.zshrc"
     ! grep -q '# >>> claude_orca >>>' "$HOME/.bash_profile"
@@ -288,12 +288,12 @@ GEN_SETTINGS() {
         command -v "$shell" >/dev/null 2>&1 || continue
         if [ "$shell" = zsh ]; then rc_name=shellrc.zsh; else rc_name=shellrc.bash; fi
 
-        run "$shell" -c "cd '$outside' && unset CLAUDE_ORCA_SANDBOXED && . '$CLAUDE_ORCA_HOME/$rc_name' && echo REACHED_END"
+        run "$shell" -c "cd '$outside' && unset CLAUDE_ORCA_SANDBOXED && . '$ORCA_HOST/template/scripts/sandbox/$rc_name' && echo REACHED_END"
         [ "$status" -eq 0 ]
         [[ "$output" == *"REACHED_END"* ]]
         [[ "$output" != *"REFUSING"* ]]
 
-        run "$shell" -c "cd '$primary' && export CLAUDE_ORCA_SANDBOXED=1 && . '$CLAUDE_ORCA_HOME/$rc_name' && echo REACHED_END"
+        run "$shell" -c "cd '$primary' && export CLAUDE_ORCA_SANDBOXED=1 && . '$ORCA_HOST/template/scripts/sandbox/$rc_name' && echo REACHED_END"
         [ "$status" -eq 0 ]
         [[ "$output" == *"REACHED_END"* ]]
         [[ "$output" != *"REFUSING"* ]]
@@ -307,7 +307,7 @@ GEN_SETTINGS() {
 
     export CLAUDE_ORCA_REAL_HOME="$real_home"
     export STUB_SRT_NOEXEC=1
-    run "$CLAUDE_ORCA_HOME/bin/claude-orca-shell" --root "$primary" --cwd "$primary" -- zsh
+    run "$ORCA_HOST/bin/claude-orca-shell" --root "$primary" --cwd "$primary" -- zsh
     unset STUB_SRT_NOEXEC CLAUDE_ORCA_REAL_HOME
     [ "$status" -eq 0 ]
 
@@ -323,14 +323,14 @@ GEN_SETTINGS() {
 @test "missing srt shadows claude/codex/gemini/opencode with refusing functions" {
     make_project "$PROJECT_DIR"
     primary="$(abspath "$PROJECT_DIR")"
-    rm -f "$CLAUDE_ORCA_HOME/srt/node_modules/.bin/srt"
+    rm -f "$ORCA_HOST/srt/node_modules/.bin/srt"
 
     for shell in zsh bash; do
         command -v "$shell" >/dev/null 2>&1 || continue
         if [ "$shell" = zsh ]; then rc_name=shellrc.zsh; else rc_name=shellrc.bash; fi
 
         for agent in claude codex gemini opencode; do
-            run "$shell" -c "cd '$primary' && unset CLAUDE_ORCA_SANDBOXED && . '$CLAUDE_ORCA_HOME/$rc_name' && $agent; ec=\$?; echo \"EXIT:\$ec\""
+            run "$shell" -c "cd '$primary' && unset CLAUDE_ORCA_SANDBOXED && . '$ORCA_HOST/template/scripts/sandbox/$rc_name' && $agent; ec=\$?; echo \"EXIT:\$ec\""
             [ "$status" -eq 0 ]
             [[ "$output" == *"REFUSING"* ]]
             [[ "$output" == *"EXIT:1"* ]]

@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 #
-# Verifies each tool the Brewfile installs is on PATH, and checks whether
-# the Orca cask is installed -- printing the install hint when it isn't.
-# Never installs the Orca GUI app itself. Informational (S1): always exits
-# 0. S3's --doctor gate is the version of this that fails a session.
+# Verifies each tool the Brewfile installs is on PATH. Informational (S1):
+# always exits 0. S3's --doctor gate is the version of this that fails a
+# session, and it is also what reports the in-folder pieces (Claude Code,
+# Orca.app) -- V1 dropped the Orca cask row from here, because in v2 a
+# central Orca install is precisely what must NOT be used.
 #
 # beads is a Homebrew *core* formula (see Brewfile), so there is no tarball
 # fallback here -- if that ever changes, this is where a tarball install
@@ -20,11 +21,5 @@ for tool in $TOOLS; do
         printf '  [missing] %s\n' "$tool"
     fi
 done
-
-if brew list --cask orca >/dev/null 2>&1 || [ -d "/Applications/Orca.app" ]; then
-    printf '  [ok]      orca (cask)\n'
-else
-    printf '  [missing] orca (cask) -- run: brew install --cask stablyai/orca/orca\n'
-fi
 
 exit 0

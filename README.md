@@ -25,14 +25,23 @@ Then, **from inside the project folder you want to sandbox**:
 gh api repos/joe-rayment/claude_orca/contents/bootstrap.sh -H "Accept: application/vnd.github.raw" | bash
 ```
 
-That installs the host side under `~/.claude-orca` (template clone, the
-pinned `srt` runtime, `bin/claude-dev`), adds one marker-delimited line to
-`~/.zshrc` and `~/.bash_profile`, and registers this folder. Re-running is
-safe. To register a different folder later:
+Everything it installs lands **inside that folder**, under `.claude-dev/`:
+the template clone, the pinned `srt` runtime, this folder's own pinned copy
+of Claude Code, `Orca.app`, and `bin/` (which leads the sandbox `PATH`, so
+the `claude` an agent here can reach is this folder's copy and never a
+central one). There is no central install and no central Orca. The
+bootstrap also writes the `./claude-dev` launcher stub in the project root,
+adds one marker-delimited block to `~/.zshrc`, `~/.zprofile` and
+`~/.bash_profile` — generic, so it covers every folder you bootstrap — and
+registers the folder. Re-running is safe. To bootstrap another folder, run
+the same one-liner from inside it; from a folder that already has one:
 
 ```bash
-claude-dev register /path/to/project
+./claude-dev register
 ```
+
+Upgrading from a pre-v2 install? `claude-dev --doctor` flags the old
+central `~/.claude-orca` and `claude-dev --remove-v1` removes it.
 
 Registration ends by running the sandbox self-test, and **refuses to hand
 off to Orca unless it passes** — see [Self-test](#self-test).
@@ -62,9 +71,9 @@ The launcher on your PATH:
   `.claude-dev/{home,tmp}` — nothing else. Sibling worktrees, `/private/tmp`
   and your real home are read-only or invisible.
 - **Reads**: your real home is denied, so `~/.ssh`, `~/.aws`, Keychains and
-  Documents cannot be read. Allowed: the project, `~/.claude-orca`,
-  `~/.local/bin`, `~/.local/share/claude`, `~/.orca/agent-hooks`, and Orca's
-  runtime dir when `orca.cli` is on.
+  Documents cannot be read. Allowed: the project (which is where the whole
+  install lives), `~/.local/bin`, `~/.local/share/claude`,
+  `~/.orca/agent-hooks`, and Orca's runtime dir when `orca.cli` is on.
 - **Network**: only through `srt`'s localhost proxy against an allowlist —
   `api.anthropic.com`, `claude.ai`, `console.anthropic.com`,
   `platform.claude.com`, `statsig.anthropic.com`, `*.sentry.io`,

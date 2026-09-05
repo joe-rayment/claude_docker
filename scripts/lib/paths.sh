@@ -20,8 +20,9 @@
 #                          resolved through symlinks -- independent of which
 #                          script sourced this file or from where.
 #   host_dir            -- $CLAUDE_ORCA_HOST if set, else template_dir's
-#                          parent (~/.claude-orca when template_dir is
-#                          ~/.claude-orca/template).
+#                          parent (<project>/.claude-dev when template_dir
+#                          is <project>/.claude-dev/template -- the v2
+#                          per-folder layout; see plans/orca-port.md S9.2).
 
 claude_config_dir() {
     printf '%s\n' "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
@@ -44,7 +45,7 @@ tier_state_file() {
 
 # Resolves $1, following symlinks -- shared by template_dir/host_dir so both
 # agree on THIS FILE's own real location regardless of how many symlink hops
-# (bin/<name> -> ../scripts/<name>.sh, or the ~/.claude-orca/bin/claude-dev
+# (bin/<name> -> ../scripts/<name>.sh, or the .claude-dev/bin/claude-dev
 # chain) sit between the caller and here.
 _paths_sh_resolve() {
     local src="$1" link dir

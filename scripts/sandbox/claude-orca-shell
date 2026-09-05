@@ -64,10 +64,12 @@ GEN_SETTINGS="$SANDBOX_DIR/gen-settings.sh"
 TEMPLATE_DIR="$(cd "$SANDBOX_DIR/../.." && pwd)"
 ROOT_BIN="$SANDBOX_DIR/claude-orca-root"
 
-# HOST = ~/.claude-orca (override: CLAUDE_ORCA_HOME), independent of
-# where this copy of the script physically lives (template checkout vs.
-# the ~/.claude-orca/bin symlink) -- see .claude/plans/orca-port.md S3.1.
-HOST="${CLAUDE_ORCA_HOME:-$HOME/.claude-orca}"
+# HOST is the project's own .claude-dev -- derived from --root below, not
+# from where this copy of the script physically lives and not from any
+# central path: in v2 srt, Claude Code, the template and Orca.app all live
+# in the folder being sandboxed (V1, claude-orca-qt9.1; see
+# .claude/plans/orca-port.md S9.2).
+HOST=""
 REAL_HOME="${CLAUDE_ORCA_REAL_HOME:-$HOME}"
 
 die() {
@@ -167,6 +169,7 @@ if [ ! -d "$PRIMARY" ]; then
     die "--root is not a directory: $PRIMARY" 2
 fi
 PRIMARY="$(cd "$PRIMARY" && pwd -P)"
+HOST="$PRIMARY/.claude-dev"
 
 CWD_DIR="${CWD_OPT:-$PWD}"
 if [ ! -d "$CWD_DIR" ]; then
@@ -174,9 +177,10 @@ if [ ! -d "$CWD_DIR" ]; then
 fi
 CWD_DIR="$(cd "$CWD_DIR" && pwd -P)"
 
-# Best-effort canonicalization -- if HOST/REAL_HOME don't exist yet, leave
-# them as-is and let the checks below (srt presence, gen-settings.sh's own
-# --real-home validation) fail with a precise, specific reason instead.
+# Best-effort canonicalization -- if REAL_HOME doesn't exist yet, leave it
+# as-is and let the checks below (gen-settings.sh's own --real-home
+# validation) fail with a precise, specific reason instead. HOST needs
+# none: it is $PRIMARY, already canonical, plus a fixed suffix.
 canon_if_dir() {
     if [ -d "$1" ]; then
         (cd "$1" && pwd -P)
@@ -184,11 +188,10 @@ canon_if_dir() {
         printf '%s\n' "$1"
     fi
 }
-HOST="$(canon_if_dir "$HOST")"
 REAL_HOME="$(canon_if_dir "$REAL_HOME")"
 
 SRT_BIN="$HOST/srt/node_modules/.bin/srt"
-[ -x "$SRT_BIN" ] || die "srt not found at $SRT_BIN -- run claude-dev bootstrap again" 4
+[ -x "$SRT_BIN" ] || die "srt not found at $SRT_BIN -- re-run the bootstrap for this folder" 4
 
 if [ "$(uname -s)" = "Darwin" ]; then
     command -v sandbox-exec >/dev/null 2>&1 || die "sandbox-exec not found on PATH (macOS Seatbelt)" 4
@@ -273,7 +276,11 @@ ENV_GH_CONFIG_DIR="$SANDBOX_HOME/.config/gh"
 ENV_BEADS_DIR="$PRIMARY/.beads"
 ENV_ORCA_USER_DATA_PATH="$REAL_HOME/Library/Application Support/orca"
 USR_LOCAL_DIR="/usr/local"
-ENV_PATH="/opt/homebrew/bin:/opt/homebrew/sbin:$REAL_HOME/.local/bin:$HOST/template/bin:$USR_LOCAL_DIR/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+# V1 (claude-orca-qt9.1): the folder's own bin/ LEADS the PATH, so the
+# `claude` an agent here resolves is this folder's pinned copy and never a
+# central install the user may also have; the template's hook binaries
+# follow it, and Homebrew and the system come after both.
+ENV_PATH="$HOST/bin:$HOST/template/bin:/opt/homebrew/bin:/opt/homebrew/sbin:$REAL_HOME/.local/bin:$USR_LOCAL_DIR/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
 print_env_lines() {
     cat <<EOF

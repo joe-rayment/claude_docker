@@ -39,7 +39,7 @@ write_allpass_fake() {
 
 @test "probe table lists exactly the 13 named probes in order" {
     make_project "$PROJECT_DIR"
-    selftest="$CLAUDE_ORCA_HOME/template/scripts/sandbox/selftest.sh"
+    selftest="$ORCA_HOST/template/scripts/sandbox/selftest.sh"
 
     run "$selftest" --dry-run --json-out "$BATS_TEST_TMPDIR/unused.json"
     [ "$status" -eq 0 ]
@@ -66,7 +66,7 @@ git-hooks-audit"
 
 @test "runner marks a probe FAIL when its fake outcome is wrong and exits 1" {
     make_project "$PROJECT_DIR"
-    selftest="$CLAUDE_ORCA_HOME/template/scripts/sandbox/selftest.sh"
+    selftest="$ORCA_HOST/template/scripts/sandbox/selftest.sh"
 
     fake="$BATS_TEST_TMPDIR/fake-one-fail.txt"
     write_allpass_fake "$fake" "network-allowed-domain=1"
@@ -88,7 +88,7 @@ git-hooks-audit"
 
 @test "--dry-run prints the probes without executing any" {
     make_project "$PROJECT_DIR"
-    selftest="$CLAUDE_ORCA_HOME/template/scripts/sandbox/selftest.sh"
+    selftest="$ORCA_HOST/template/scripts/sandbox/selftest.sh"
 
     results="$BATS_TEST_TMPDIR/out.json"
     trace="$BATS_TEST_TMPDIR/trace.log"
@@ -113,8 +113,8 @@ git-hooks-audit"
 @test "doctor exits 2 when selftest.json is absent, stale (>24h) or failed, and 0 when fresh and passed" {
     make_project "$PROJECT_DIR"
     primary="$(abspath "$PROJECT_DIR")"
-    doctor="$CLAUDE_ORCA_HOME/bin/claude-dev"
-    wrapper="$CLAUDE_ORCA_HOME/bin/claude-orca-shell"
+    doctor="$ORCA_HOST/bin/claude-dev"
+    wrapper="$ORCA_HOST/bin/claude-orca-shell"
     results="$primary/.claude-dev/state/selftest.json"
 
     # absent
@@ -147,7 +147,7 @@ git-hooks-audit"
 @test "results JSON has timestamp, per-probe status and the srt version" {
     require_bash32
     make_project "$PROJECT_DIR"
-    selftest="$CLAUDE_ORCA_HOME/template/scripts/sandbox/selftest.sh"
+    selftest="$ORCA_HOST/template/scripts/sandbox/selftest.sh"
 
     pin="$(grep -E '^SRT_VERSION=' "$REPO_ROOT/scripts/install-srt.sh" | head -1 | sed -E 's/^SRT_VERSION="([^"]*)".*/\1/')"
     [ -n "$pin" ]

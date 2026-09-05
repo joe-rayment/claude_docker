@@ -26,7 +26,7 @@ ORCA_EVENTS=(SessionStart UserPromptSubmit Stop StopFailure SubagentStart \
     PermissionRequest PostCompact)
 
 MERGE() {
-    "$CLAUDE_ORCA_HOME/template/bin/orca-hooks-merge" "$@"
+    "$ORCA_HOST/template/bin/orca-hooks-merge" "$@"
 }
 
 # Populates $primary/.claude-dev/home/.claude/settings.json the way the
@@ -35,8 +35,8 @@ prepare() {
     primary="$(abspath "$PROJECT_DIR")"
     real_home="$(abspath "$(make_real_home)")"
     config_dir="$primary/.claude-dev/home/.claude"
-    "$CLAUDE_ORCA_HOME/template/scripts/config-sync.sh" \
-        --project "$primary" --host "$CLAUDE_ORCA_HOME" >/dev/null
+    "$ORCA_HOST/template/scripts/config-sync.sh" \
+        --project "$primary" --host "$ORCA_HOST" >/dev/null
     baseline="$BATS_TEST_TMPDIR/baseline.json"
     cp "$config_dir/settings.json" "$baseline"
     mkdir -p "$real_home/.claude"
@@ -200,7 +200,7 @@ STUB
     export ORCA_AGENT_HOOK_PORT=54321
     export ORCA_SESSION_ID="sess-abc"
     export ORCA_TERMINAL_ID="term-xyz"
-    run "$CLAUDE_ORCA_HOME/bin/claude-orca-shell" --root "$primary" --cwd "$primary" -- zsh
+    run "$ORCA_HOST/bin/claude-orca-shell" --root "$primary" --cwd "$primary" -- zsh
     unset STUB_SRT_NOEXEC CLAUDE_ORCA_REAL_HOME ORCA_AGENT_HOOK_PORT ORCA_SESSION_ID ORCA_TERMINAL_ID
     [ "$status" -eq 0 ]
 
@@ -221,7 +221,7 @@ STUB
     export STUB_SRT_NOEXEC=1
 
     # Default sandbox.json (no orca.transcriptSymlink): no symlink.
-    run "$CLAUDE_ORCA_HOME/bin/claude-orca-shell" --root "$primary" --cwd "$primary" -- zsh
+    run "$ORCA_HOST/bin/claude-orca-shell" --root "$primary" --cwd "$primary" -- zsh
     [ "$status" -eq 0 ]
     [ ! -e "$link" ]
 
@@ -229,20 +229,20 @@ STUB
         > "$BATS_TEST_TMPDIR/sandbox.json"
     mv "$BATS_TEST_TMPDIR/sandbox.json" "$primary/.claude-dev/sandbox.json"
 
-    run "$CLAUDE_ORCA_HOME/bin/claude-orca-shell" --root "$primary" --cwd "$primary" -- zsh
+    run "$ORCA_HOST/bin/claude-orca-shell" --root "$primary" --cwd "$primary" -- zsh
     [ "$status" -eq 0 ]
     [ -L "$link" ]
     [ "$(readlink "$link")" = "$target" ]
 
     # Idempotent, and a real directory in the slot is never replaced.
-    run "$CLAUDE_ORCA_HOME/bin/claude-orca-shell" --root "$primary" --cwd "$primary" -- zsh
+    run "$ORCA_HOST/bin/claude-orca-shell" --root "$primary" --cwd "$primary" -- zsh
     [ "$status" -eq 0 ]
     [ -L "$link" ]
 
     rm -f "$link"
     mkdir -p "$link"
     echo keep > "$link/real-transcript.jsonl"
-    run "$CLAUDE_ORCA_HOME/bin/claude-orca-shell" --root "$primary" --cwd "$primary" -- zsh
+    run "$ORCA_HOST/bin/claude-orca-shell" --root "$primary" --cwd "$primary" -- zsh
     unset STUB_SRT_NOEXEC CLAUDE_ORCA_REAL_HOME
     [ "$status" -eq 0 ]
     [ ! -L "$link" ]

@@ -38,7 +38,7 @@ csd() { claude --dangerously-skip-permissions --debug "$@" }
 cn()  { claude "$@" }
 
 # ── Tiered orchestration: /tier (slash command) is the primary interface ────
-# The engine is ~/.claude-orca/template/bin/tier-set (repo: scripts/tier-set.sh).
+# The engine is .claude-dev/template/bin/tier-set (repo: scripts/tier-set.sh).
 # You pick ONE top model (alias fable/opus/sonnet/haiku or a full id); worker
 # and recon are DERIVED via tier-derive — worker one rung down CAPPED at
 # sonnet-class, recon one below the worker — so the trio can't drift from the

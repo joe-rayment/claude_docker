@@ -33,7 +33,7 @@ command -v jq >/dev/null 2>&1 || exit 0
 
 # Resolve through a symlink chain (e.g. bin/tier-gate -> ../scripts/tier-gate.sh)
 # to this script's real directory, so lib/paths.sh resolves whether this is
-# invoked via the repo copy or the ~/.claude-orca/template/bin/ symlink.
+# invoked via the repo copy or the .claude-dev/template/bin/ symlink.
 _resolve_script_path() {
     local src="${BASH_SOURCE[0]}"
     while [ -L "$src" ]; do

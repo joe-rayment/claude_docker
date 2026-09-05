@@ -16,11 +16,11 @@
 load helpers/setup
 
 WRAPPER() {
-    "$CLAUDE_ORCA_HOME/bin/claude-orca-shell" "$@"
+    "$ORCA_HOST/bin/claude-orca-shell" "$@"
 }
 
 GEN_SETTINGS() {
-    "$CLAUDE_ORCA_HOME/template/scripts/sandbox/gen-settings.sh" "$@"
+    "$ORCA_HOST/template/scripts/sandbox/gen-settings.sh" "$@"
 }
 
 # Rewrites the project's sandbox.json orca.cli flag in place (true/false).
@@ -41,7 +41,7 @@ orca_runtime_dir() {
     make_project "$PROJECT_DIR"
     real_home="$(make_real_home)"
     primary="$(abspath "$PROJECT_DIR")"
-    host="$(abspath "$CLAUDE_ORCA_HOME")"
+    host="$(abspath "$ORCA_HOST")"
 
     # `claude-dev register` seeds orca.cli false; the untouched file is the
     # default this case pins.
@@ -50,7 +50,7 @@ orca_runtime_dir() {
 
     run GEN_SETTINGS \
         --primary "$primary" --worktree "$primary" \
-        --real-home "$real_home" --host "$CLAUDE_ORCA_HOME" \
+        --real-home "$real_home" --host "$ORCA_HOST" \
         --sandbox-json "$PROJECT_DIR/.claude-dev/sandbox.json"
     [ "$status" -eq 0 ]
     default_out="$output"
@@ -69,7 +69,7 @@ orca_runtime_dir() {
     set_orca_cli "$PROJECT_DIR" false
     run GEN_SETTINGS \
         --primary "$primary" --worktree "$primary" \
-        --real-home "$real_home" --host "$CLAUDE_ORCA_HOME" \
+        --real-home "$real_home" --host "$ORCA_HOST" \
         --sandbox-json "$PROJECT_DIR/.claude-dev/sandbox.json"
     [ "$status" -eq 0 ]
     [ "$output" = "$default_out" ]
@@ -77,7 +77,7 @@ orca_runtime_dir() {
     jq 'del(.orca)' "$PROJECT_DIR/.claude-dev/sandbox.json" > "$BATS_TEST_TMPDIR/no-orca.json"
     run GEN_SETTINGS \
         --primary "$primary" --worktree "$primary" \
-        --real-home "$real_home" --host "$CLAUDE_ORCA_HOME" \
+        --real-home "$real_home" --host "$ORCA_HOST" \
         --sandbox-json "$BATS_TEST_TMPDIR/no-orca.json"
     [ "$status" -eq 0 ]
     [ "$output" = "$default_out" ]
@@ -93,7 +93,7 @@ orca_runtime_dir() {
 
     run GEN_SETTINGS \
         --primary "$primary" --worktree "$primary" \
-        --real-home "$real_home" --host "$CLAUDE_ORCA_HOME" \
+        --real-home "$real_home" --host "$ORCA_HOST" \
         --sandbox-json "$PROJECT_DIR/.claude-dev/sandbox.json"
     [ "$status" -eq 0 ]
 
@@ -117,13 +117,13 @@ orca_runtime_dir() {
     export CLAUDE_ORCA_REAL_HOME="$real_home"
     export STUB_SRT_NOEXEC=1
     run env ORCA_CLI_COMMAND=/opt/orca/bin/orca-ide \
-        "$CLAUDE_ORCA_HOME/bin/claude-orca-shell" --root "$primary" --cwd "$primary" -- zsh
+        "$ORCA_HOST/bin/claude-orca-shell" --root "$primary" --cwd "$primary" -- zsh
     [ "$status" -eq 0 ]
     grep -qxF "ORCA_CLI_COMMAND=/opt/orca/bin/orca-ide" "$STUB_ENV"
 
     # --print-env reports it too, so `claude-dev` users can see it.
     run env ORCA_CLI_COMMAND=/opt/orca/bin/orca-ide \
-        "$CLAUDE_ORCA_HOME/bin/claude-orca-shell" --print-env --root "$primary" --cwd "$primary"
+        "$ORCA_HOST/bin/claude-orca-shell" --print-env --root "$primary" --cwd "$primary"
     [ "$status" -eq 0 ]
     grep -qxF "ORCA_CLI_COMMAND=/opt/orca/bin/orca-ide" <<<"$output"
 
@@ -140,7 +140,7 @@ orca_runtime_dir() {
 
     run GEN_SETTINGS \
         --primary "$primary" --worktree "$primary" \
-        --real-home "$real_home" --host "$CLAUDE_ORCA_HOME" \
+        --real-home "$real_home" --host "$ORCA_HOST" \
         --sandbox-json "$PROJECT_DIR/.claude-dev/sandbox.json"
     [ "$status" -eq 0 ]
     printf '%s\n' "$output" > "$BATS_TEST_TMPDIR/settings.json"
@@ -154,7 +154,7 @@ orca_runtime_dir() {
 @test "doctor prints the escape-surface warning only when the mode is on" {
     make_project "$PROJECT_DIR"
     primary="$(abspath "$PROJECT_DIR")"
-    doctor="$CLAUDE_ORCA_HOME/bin/claude-dev"
+    doctor="$ORCA_HOST/bin/claude-dev"
 
     # OFF: not a word about it.
     run bash -c "cd '$primary' && '$doctor' --doctor"
@@ -172,11 +172,17 @@ orca_runtime_dir() {
     [[ "$output" == *"public artifact link"* ]]
     [[ "$output" == *"orca.yaml"* ]]
 
-    # It is the CWD PROJECT's flag, not a global one: outside any
-    # registered project the tool table stands alone.
+    # V1 (claude-orca-qt9.1): it is THIS FOLDER's flag. A per-folder
+    # launcher reports its own project wherever it is run from...
     outside="$BATS_TEST_TMPDIR/outside"
     mkdir -p "$outside"
     run bash -c "cd '$outside' && '$doctor' --doctor"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Orca CLI mode is ON"* ]]
+
+    # ... and a launcher that is not a per-folder install at all (the repo
+    # checkout), run outside any project, prints the tool table alone.
+    run bash -c "cd '$outside' && '$REPO_ROOT/scripts/launcher.sh' --doctor"
     [ "$status" -eq 0 ]
     [[ "$output" != *"Orca CLI mode is ON"* ]]
 }
@@ -248,7 +254,7 @@ orca_runtime_dir() {
 # orca-socket-unreachable -- which runs for real against the stubbed
 # `orca` on PATH -- and prints just that probe's status.
 orca_probe_status() {
-    "$CLAUDE_ORCA_HOME/template/scripts/sandbox/selftest.sh" \
+    "$ORCA_HOST/template/scripts/sandbox/selftest.sh" \
         --json-out "$BATS_TEST_TMPDIR/orca-probe.json" --fake "$1" >/dev/null 2>&1 || true
     jq -r '.probes[] | select(.name == "orca-socket-unreachable") | .status' \
         "$BATS_TEST_TMPDIR/orca-probe.json"

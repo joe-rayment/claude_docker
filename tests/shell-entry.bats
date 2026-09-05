@@ -28,20 +28,20 @@ require_bash32() {
     make_project "$PROJECT_DIR"
     real_home="$(make_real_home)"
     primary="$(abspath "$PROJECT_DIR")"
-    gen_settings="$CLAUDE_ORCA_HOME/template/scripts/sandbox/gen-settings.sh"
+    gen_settings="$ORCA_HOST/template/scripts/sandbox/gen-settings.sh"
 
     # Empty extras -- sandbox.json's freshly-registered default. This is
     # exactly the shape that crashes bash 3.2 under `set -u`.
     run "$BASH32" "$gen_settings" \
         --primary "$primary" --worktree "$primary" \
-        --real-home "$real_home" --host "$CLAUDE_ORCA_HOME" \
+        --real-home "$real_home" --host "$ORCA_HOST" \
         --sandbox-json "$PROJECT_DIR/.claude-dev/sandbox.json"
     [ "$status" -eq 0 ]
     bash32_empty="$output"
 
     run bash "$gen_settings" \
         --primary "$primary" --worktree "$primary" \
-        --real-home "$real_home" --host "$CLAUDE_ORCA_HOME" \
+        --real-home "$real_home" --host "$ORCA_HOST" \
         --sandbox-json "$PROJECT_DIR/.claude-dev/sandbox.json"
     [ "$status" -eq 0 ]
     [ "$output" = "$bash32_empty" ]
@@ -55,7 +55,7 @@ require_bash32() {
 
     run "$BASH32" "$gen_settings" \
         --primary "$primary" --worktree "$primary" \
-        --real-home "$real_home" --host "$CLAUDE_ORCA_HOME" \
+        --real-home "$real_home" --host "$ORCA_HOST" \
         --sandbox-json "$PROJECT_DIR/.claude-dev/sandbox.json"
     [ "$status" -eq 0 ]
     bash32_full="$output"
@@ -64,7 +64,7 @@ require_bash32() {
 
     run bash "$gen_settings" \
         --primary "$primary" --worktree "$primary" \
-        --real-home "$real_home" --host "$CLAUDE_ORCA_HOME" \
+        --real-home "$real_home" --host "$ORCA_HOST" \
         --sandbox-json "$PROJECT_DIR/.claude-dev/sandbox.json"
     [ "$status" -eq 0 ]
     [ "$output" = "$bash32_full" ]
@@ -97,15 +97,27 @@ require_bash32() {
     run "$BASH32" "$REPO_ROOT/scripts/install-tools.sh"
     [ "$status" -eq 0 ]
 
-    run "$BASH32" "$REPO_ROOT/scripts/install-srt.sh"
+    # V1 (claude-orca-qt9.1): the installers take the folder's host dir as
+    # $1 -- a smoke run gets a scratch one, never this repo's parent.
+    smoke_host="$BATS_TEST_TMPDIR/smoke-host"
+    run "$BASH32" "$REPO_ROOT/scripts/install-srt.sh" "$smoke_host"
     [ "$status" -eq 0 ]
+
+    CLAUDE_ORCA_SKIP_CLAUDE=1 run "$BASH32" "$REPO_ROOT/scripts/install-claude.sh" "$smoke_host"
+    [ "$status" -eq 0 ]
+
+    CLAUDE_ORCA_SKIP_ORCA_DMG=1 run "$BASH32" "$REPO_ROOT/scripts/install-orca.sh" "$smoke_host"
+    [ "$status" -eq 0 ]
+
+    run "$BASH32" "$REPO_ROOT/scripts/v1-leftovers.sh" --check
+    [ "$status" -eq 0 ] || [ "$status" -eq 1 ]
 
     make_project "$PROJECT_DIR"
     real_home="$(make_real_home)"
     primary="$(abspath "$PROJECT_DIR")"
     run "$BASH32" "$REPO_ROOT/scripts/sandbox/gen-settings.sh" \
         --primary "$primary" --worktree "$primary" \
-        --real-home "$real_home" --host "$CLAUDE_ORCA_HOME" \
+        --real-home "$real_home" --host "$ORCA_HOST" \
         --sandbox-json "$PROJECT_DIR/.claude-dev/sandbox.json"
     [ "$status" -eq 0 ]
 
@@ -196,7 +208,7 @@ require_bash32() {
     orig_zshrc_sum="$(sha256sum "$HOME/.zshrc" | cut -d' ' -f1)"
     orig_bp_sum="$(sha256sum "$HOME/.bash_profile" | cut -d' ' -f1)"
 
-    run "$CLAUDE_ORCA_HOME/bin/claude-dev" rc-install
+    run "$ORCA_HOST/bin/claude-dev" rc-install
     [ "$status" -eq 0 ]
 
     for f in "$HOME/.zprofile" "$HOME/.zshrc" "$HOME/.bash_profile"; do
@@ -211,7 +223,7 @@ require_bash32() {
     zshrc_sum1="$(sha256sum "$HOME/.zshrc" | cut -d' ' -f1)"
     bp_sum1="$(sha256sum "$HOME/.bash_profile" | cut -d' ' -f1)"
 
-    run "$CLAUDE_ORCA_HOME/bin/claude-dev" rc-install
+    run "$ORCA_HOST/bin/claude-dev" rc-install
     [ "$status" -eq 0 ]
     [ "$(sha256sum "$HOME/.zprofile" | cut -d' ' -f1)" = "$zprofile_sum1" ]
     [ "$(sha256sum "$HOME/.zshrc" | cut -d' ' -f1)" = "$zshrc_sum1" ]
@@ -220,7 +232,7 @@ require_bash32() {
     [ "$(grep -c '# >>> claude_orca >>>' "$HOME/.zshrc")" -eq 1 ]
     [ "$(grep -c '# >>> claude_orca >>>' "$HOME/.bash_profile")" -eq 1 ]
 
-    run "$CLAUDE_ORCA_HOME/bin/claude-dev" rc-uninstall
+    run "$ORCA_HOST/bin/claude-dev" rc-uninstall
     [ "$status" -eq 0 ]
     ! grep -q '# >>> claude_orca >>>' "$HOME/.zprofile"
     ! grep -q '# >>> claude_orca >>>' "$HOME/.zshrc"

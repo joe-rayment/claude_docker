@@ -1,15 +1,22 @@
 #!/usr/bin/env bash
 #
-# claude_orca bootstrap -- thin installer, run once per machine (idempotent).
-# Installs the host side under ~/.claude-orca (override: CLAUDE_ORCA_HOME)
-# and registers a project directory. Everything it does is safe to re-run.
+# claude_orca bootstrap -- run once per project folder (idempotent).
+# Everything it installs lands under <project>/.claude-dev: the template
+# clone, sandbox-runtime, Claude Code, Orca.app, and the bin/ symlinks the
+# sandbox PATH leads with. There is no central install and no central Orca
+# -- the only Orca for this project is the sandboxed one in the folder
+# (V1, claude-orca-qt9.1; see .claude/plans/orca-port.md S9).
 #
 #   cd /path/to/your/project
 #   gh api repos/joe-rayment/claude_orca/contents/bootstrap.sh \
 #       -H "Accept: application/vnd.github.raw" | bash
 #
-# Or register a different directory:
+# Or bootstrap a different directory:
 #   ... | bash -s -- /path/to/project
+#
+# CI/Linux escape hatches: CLAUDE_ORCA_SKIP_BREW, CLAUDE_ORCA_SKIP_CLAUDE,
+# CLAUDE_ORCA_SKIP_ORCA_DMG, CLAUDE_ORCA_SKIP_SELFTEST -- each skips only
+# its own step, and claude-dev --doctor reports what was skipped.
 
 set -euo pipefail
 
@@ -35,12 +42,15 @@ if ! gh auth status >/dev/null 2>&1; then
     exit 1
 fi
 
-HOST="${CLAUDE_ORCA_HOME:-$HOME/.claude-orca}"
+PROJECT="${1:-$PWD}"
+[ -d "$PROJECT" ] || { echo "Error: directory does not exist: $PROJECT" >&2; exit 1; }
+PROJECT="$(cd "$PROJECT" && pwd -P)"
+HOST="$PROJECT/.claude-dev"
 TEMPLATE_URL="${CLAUDE_ORCA_TEMPLATE_URL:-https://github.com/joe-rayment/claude_orca.git}"
 
 mkdir -p "$HOST"
 
-echo "==> Installing claude_orca template under $HOST"
+echo "==> Installing the claude_orca template under $HOST/template"
 if [ -d "$HOST/template/.git" ]; then
     git -C "$HOST/template" pull --ff-only
 else
@@ -54,23 +64,25 @@ if [ "${CLAUDE_ORCA_SKIP_BREW:-0}" != "1" ]; then
 fi
 
 echo "==> Installing sandbox-runtime (srt)"
-"$HOST/template/scripts/install-srt.sh"
+"$HOST/template/scripts/install-srt.sh" "$HOST"
+
+echo "==> Installing Claude Code"
+"$HOST/template/scripts/install-claude.sh" "$HOST"
+
+echo "==> Installing Orca"
+"$HOST/template/scripts/install-orca.sh" "$HOST"
 
 echo "==> Verifying tools"
 "$HOST/template/scripts/install-tools.sh"
 
+# The wrappers, as relative symlinks into the template clone: a `--update`
+# pull picks up fixes with no re-bootstrap, and the whole folder stays
+# movable. orca-launch lands V2 and may dangle until then -- the link is
+# created anyway so the PATH entry never changes shape.
 mkdir -p "$HOST/bin"
-ln -sf "$HOST/template/scripts/launcher.sh" "$HOST/bin/claude-dev"
+ln -sfn "../template/scripts/launcher.sh"              "$HOST/bin/claude-dev"
+ln -sfn "../template/scripts/sandbox/claude-orca-root"  "$HOST/bin/claude-orca-root"
+ln -sfn "../template/scripts/sandbox/claude-orca-shell" "$HOST/bin/claude-orca-shell"
+ln -sfn "../template/scripts/sandbox/orca-launch"       "$HOST/bin/orca-launch"
 
-# S2 (claude-orca-3sk.14): the sandbox wrapper and its shell-rc hooks --
-# same symlink-into-template pattern as bin/claude-dev above, so a
-# `--update` pull picks up fixes with no re-bootstrap.
-ln -sf "$HOST/template/scripts/sandbox/claude-orca-root" "$HOST/bin/claude-orca-root"
-ln -sf "$HOST/template/scripts/sandbox/claude-orca-shell" "$HOST/bin/claude-orca-shell"
-ln -sf "$HOST/template/scripts/sandbox/shellrc.zsh" "$HOST/shellrc.zsh"
-ln -sf "$HOST/template/scripts/sandbox/shellrc.bash" "$HOST/shellrc.bash"
-
-echo "==> Installing shell hook (sources shellrc.zsh/.bash from ~/.zshrc, ~/.bash_profile)"
-"$HOST/bin/claude-dev" rc-install
-
-exec "$HOST/bin/claude-dev" register "${1:-$PWD}"
+exec "$HOST/bin/claude-dev" register "$PROJECT"

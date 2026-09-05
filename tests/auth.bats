@@ -25,11 +25,11 @@
 load helpers/setup
 
 SHELL_BIN_UNDER_TEST() {
-    "$CLAUDE_ORCA_HOME/bin/claude-orca-shell" "$@"
+    "$ORCA_HOST/bin/claude-orca-shell" "$@"
 }
 
 AUTH_GUARD() {
-    "$CLAUDE_ORCA_HOME/template/bin/auth-guard" "$@"
+    "$ORCA_HOST/template/bin/auth-guard" "$@"
 }
 
 # --- 1. srt settings: the masked GH_TOKEN credential ----------------------
@@ -130,7 +130,7 @@ AUTH_GUARD() {
 
     # Never reset a project's own edits.
     git config --file "$gc" user.name "Edited By Hand"
-    run "$CLAUDE_ORCA_HOME/bin/claude-dev" register "$primary"
+    run "$ORCA_HOST/bin/claude-dev" register "$primary"
     [ "$status" -eq 0 ]
     run git config --file "$gc" --get user.name
     [ "$output" = "Edited By Hand" ]
@@ -196,7 +196,7 @@ AUTH_GUARD() {
     export STUB_SRT_NOEXEC=1
     : > "$STUB_LOG"
     run env ANTHROPIC_API_KEY=sk-ant-leaked \
-        "$CLAUDE_ORCA_HOME/bin/claude-orca-shell" --root "$primary" --cwd "$primary" -- zsh
+        "$ORCA_HOST/bin/claude-orca-shell" --root "$primary" --cwd "$primary" -- zsh
     [ "$status" -ne 0 ]
     [[ "$output" == *"FATAL"* ]]
     # never reached srt
@@ -204,7 +204,7 @@ AUTH_GUARD() {
     [ "$output" = "0" ]
 
     run env ANTHROPIC_API_KEY=sk-ant-leaked CLAUDE_DEV_ALLOW_API_BILLING=1 \
-        "$CLAUDE_ORCA_HOME/bin/claude-orca-shell" --root "$primary" --cwd "$primary" -- zsh
+        "$ORCA_HOST/bin/claude-orca-shell" --root "$primary" --cwd "$primary" -- zsh
     [ "$status" -eq 0 ]
     [[ "$output" == *"WARNING"* ]]
     grep -q "=== srt invocation ===" "$STUB_LOG"

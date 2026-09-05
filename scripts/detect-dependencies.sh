@@ -7,7 +7,7 @@ set -eo pipefail
 # Resolve through a symlink chain (e.g. bin/detect-dependencies -> ../scripts/
 # detect-dependencies.sh) to this script's real directory, so lib/paths.sh
 # resolves whether this is invoked via the repo copy or the
-# ~/.claude-orca/template/bin/ symlink.
+# .claude-dev/template/bin/ symlink.
 _resolve_script_path() {
     local src="${BASH_SOURCE[0]}"
     while [ -L "$src" ]; do
