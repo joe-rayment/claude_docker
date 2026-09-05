@@ -37,7 +37,8 @@
 #
 # Best-effort by design: Orca integration is cosmetic, so a missing or
 # unparseable file on either side is a no-op (exit 0), never a launch
-# failure. Exit 2 is reserved for invalid arguments.
+# failure. Exit 2 is reserved for invalid arguments. A <real home> that
+# resolves to the sandbox home is a no-op too -- see same_dir() below.
 #
 # bash 3.2 clean (macOS /bin/bash) -- see scripts/lint-bash32.sh.
 
@@ -71,6 +72,26 @@ done
 
 [ -n "$REAL_HOME" ]  || die "--real-home is required"
 [ -n "$CONFIG_DIR" ] || die "--config-dir is required"
+
+# V4 (claude-orca-qt9.4): once HOME is redirected into the project folder,
+# the "real home" IS the sandbox home -- Orca's installer writes its managed
+# entries straight into <config dir>/settings.json, so source and target are
+# one file and there is nothing to carry across. Re-running the merge on it
+# would only nest the statusline chain inside itself (Orca's half is already
+# in the current command), so this is a silent no-op instead. Preserving
+# those entries across a template rewrite is config-sync.sh's job from here
+# on. Compared after resolution, so a non-canonical path to the same
+# directory is caught too.
+same_dir() {
+    local a="$1" b="$2" ra rb
+    [ -d "$a" ] && [ -d "$b" ] || return 1
+    ra="$(cd "$a" 2>/dev/null && pwd -P)" || return 1
+    rb="$(cd "$b" 2>/dev/null && pwd -P)" || return 1
+    [ -n "$ra" ] && [ "$ra" = "$rb" ]
+}
+if same_dir "$REAL_HOME/.claude" "$CONFIG_DIR"; then
+    exit 0
+fi
 
 command -v jq >/dev/null 2>&1 || { warn "jq not found -- skipping Orca hook merge"; exit 0; }
 
