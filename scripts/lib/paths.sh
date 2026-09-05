@@ -23,6 +23,9 @@
 #                          parent (<project>/.claude-dev when template_dir
 #                          is <project>/.claude-dev/template -- the v2
 #                          per-folder layout; see plans/orca-port.md S9.2).
+#   project_dir         -- $CLAUDE_ORCA_ROOT if set, else host_dir's parent
+#                          (the project folder itself). Exit 1, no output,
+#                          if neither resolves.
 
 claude_config_dir() {
     printf '%s\n' "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
@@ -74,4 +77,19 @@ host_dir() {
     local t
     t="$(template_dir)" || return 1
     (cd "$t/.." && pwd)
+}
+
+# V2 (claude-orca-qt9.2): the project folder itself. There is no central
+# install any more -- the template lives at <project>/.claude-dev/
+# template, so host_dir() is <project>/.claude-dev and its parent is the
+# project. $CLAUDE_ORCA_ROOT wins when set (the sandboxed side always has
+# it). Exit 1, no output, when neither resolves.
+project_dir() {
+    if [ -n "${CLAUDE_ORCA_ROOT:-}" ]; then
+        printf '%s\n' "$CLAUDE_ORCA_ROOT"
+        return 0
+    fi
+    local h
+    h="$(host_dir)" || return 1
+    (cd "$h/.." && pwd)
 }

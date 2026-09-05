@@ -255,6 +255,10 @@ JSON
     # runs against this project. Checksum-gated, so a re-register is cheap.
     "$SCRIPT_DIR/config-sync.sh" --project "$dir" --host "$HOST_DIR"
 
+    # V2 (claude-orca-qt9.2): the double-clickable launcher bundle in the
+    # project root -- rebuilt every register, gitignored, host-owned.
+    "$SCRIPT_DIR/sandbox/make-launcher-app.sh" --project "$dir" >/dev/null
+
     # Idempotent and cheap -- covers `claude-dev register` run standalone
     # against an already-bootstrapped host (e.g. a second project), not
     # just the bootstrap.sh call chain.
@@ -600,6 +604,13 @@ cmd_teardown() {
     # bootstrap one-liner is what brings the folder back.
     rm -rf "$dir/.claude-dev"
     rm -f "$dir/claude-dev"
+    # V2 (claude-orca-qt9.2): the generated launcher bundle would now point
+    # at a .claude-dev that is gone. Only ever OUR bundle -- identified by
+    # the bundle id make-launcher-app.sh writes -- never a real Orca.app a
+    # user happens to keep in the folder.
+    if grep -qF "dev.onorca.sandboxed." "$dir/Orca.app/Contents/Info.plist" 2>/dev/null; then
+        rm -rf "$dir/Orca.app"
+    fi
     gitignore_unseed "$dir"
 
     if [ "$purge" = "1" ]; then

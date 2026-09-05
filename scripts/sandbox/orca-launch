@@ -1,0 +1,128 @@
+#!/usr/bin/env bash
+#
+# orca-launch -- the HOST side of layer 1 (.claude/plans/orca-port.md
+# §9.1): regenerate the Seatbelt profile for this folder, point HOME and
+# TMPDIR inside it, and hand the folder's own copy of Orca to
+# sandbox-exec. Reached as <project>/.claude-dev/bin/orca-launch, either
+# from the Orca.app launcher bundle in the project root (double-click) or
+# by hand.
+#
+# Usage: orca-launch [--project <dir>] [--app <Orca.app>] [args for Orca]
+#
+# The project is derived from this script's own resolved location
+# (.claude-dev/template/scripts/sandbox/ -> the project) via paths.sh, so
+# neither PATH nor the working directory matters; --project and
+# $CLAUDE_ORCA_ROOT override it, in that order.
+#
+# Fail closed: no sandbox-exec, no profile, or no app bundle means no
+# launch. Running Orca unsandboxed is exactly what this folder exists to
+# prevent, so there is no fallback path.
+#
+# Why `orca repo add` runs from a backgrounded helper: the last thing
+# this script does is REPLACE itself with sandbox-exec (exec), so the app
+# inherits the terminal and the process tree stays flat -- there is no
+# "after" in this process. The helper is started first, waits for Orca to
+# write its runtime metadata (orca-runtime.json under the user data dir,
+# src/shared/runtime-bootstrap.ts:45), then runs the CLI bundled inside
+# the app (Contents/Resources/bin/orca, per Orca's own Casks/orca.rb) ONCE
+# with the project's path. `repo add` on an already-added path is a
+# no-op that must never fail the launch, so its exit status is logged and
+# discarded. Its stdio goes to the launch log, never the terminal.
+
+set -euo pipefail
+
+_self="${BASH_SOURCE[0]}"
+while [ -L "$_self" ]; do
+    _link="$(readlink "$_self")"
+    case "$_link" in
+        /*) _self="$_link" ;;
+        *)  _self="$(cd "$(dirname "$_self")" && pwd)/$_link" ;;
+    esac
+done
+SCRIPT_DIR="$(cd "$(dirname "$_self")" && pwd)"
+# shellcheck source=scripts/lib/paths.sh
+. "$SCRIPT_DIR/../lib/paths.sh"
+
+die() {
+    echo "orca-launch: $1" >&2
+    exit 1
+}
+
+project=""
+app=""
+orca_args=()
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --project) project="$2"; shift 2 ;;
+        --app)     app="$2"; shift 2 ;;
+        # Everything else belongs to Orca (Finder adds its own flags).
+        *) orca_args=(${orca_args[@]+"${orca_args[@]}"} "$1"); shift ;;
+    esac
+done
+
+[ -n "$project" ] || project="$(project_dir)" || die "cannot tell which project this is; pass --project <dir>"
+[ -d "$project" ] || die "project directory does not exist: $project"
+project="$(cd "$project" && pwd -P)"
+
+[ -n "$app" ] || app="$project/.claude-dev/app/Orca.app"
+APP_BIN="$app/Contents/MacOS/Orca"
+ORCA_CLI="$app/Contents/Resources/bin/orca"
+[ -x "$APP_BIN" ] || die "no Orca app in this folder: $APP_BIN (run 'claude-dev register' first)"
+command -v sandbox-exec >/dev/null 2>&1 \
+    || die "sandbox-exec not found -- refusing to start Orca unsandboxed"
+
+# Captured before HOME is repointed: the profile denies the real home.
+REAL_HOME="${CLAUDE_ORCA_REAL_HOME:-$HOME}"
+
+STATE_DIR="$project/.claude-dev/state"
+PROFILE="$STATE_DIR/orca.sb"
+LAUNCH_LOG="$STATE_DIR/orca-launch.log"
+mkdir -p "$STATE_DIR" "$project/.claude-dev/home" "$project/.claude-dev/tmp"
+
+"$SCRIPT_DIR/gen-orca-profile.sh" --project "$project" --real-home "$REAL_HOME" \
+    --app "$app" --sandbox-json "$project/.claude-dev/sandbox.json" \
+    > "$PROFILE.tmp" || die "could not generate the sandbox profile (see the message above)"
+mv "$PROFILE.tmp" "$PROFILE"
+
+export HOME="$project/.claude-dev/home"
+export TMPDIR="$project/.claude-dev/tmp"
+export CLAUDE_ORCA_ROOT="$project"
+export CLAUDE_ORCA_REAL_HOME="$REAL_HOME"
+# Node's os.homedir() follows HOME, so this is where Orca's runtime
+# metadata and socket land; the CLI is told the same path explicitly
+# (ORCA_USER_DATA_PATH, src/cli/runtime/metadata.ts:50).
+export ORCA_USER_DATA_PATH="$HOME/Library/Application Support/orca"
+
+# Registers this folder with the app once it is listening. Never fatal.
+add_repo_when_ready() {
+    local timeout="${CLAUDE_ORCA_METADATA_TIMEOUT:-120}" waited=0
+    local metadata="$ORCA_USER_DATA_PATH/orca-runtime.json"
+    while [ ! -f "$metadata" ]; do
+        if [ "$waited" -ge "$timeout" ]; then
+            echo "orca repo add skipped: runtime metadata did not appear within ${timeout}s ($metadata)"
+            return 0
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+    if [ ! -x "$ORCA_CLI" ]; then
+        echo "orca repo add skipped: no bundled CLI at $ORCA_CLI"
+        return 0
+    fi
+    echo "orca repo add --path $project --json"
+    "$ORCA_CLI" repo add --path "$project" --json || \
+        echo "orca repo add exited $? (already added is fine)"
+    return 0
+}
+
+{
+    echo "--- $(date -u '+%Y-%m-%dT%H:%M:%SZ') launching $APP_BIN"
+} >> "$LAUNCH_LOG"
+add_repo_when_ready >> "$LAUNCH_LOG" 2>&1 </dev/null &
+
+echo "Orca (sandboxed to $project)"
+echo "  profile: $PROFILE"
+echo "  logs:    $LAUNCH_LOG"
+
+exec sandbox-exec -f "$PROFILE" "$APP_BIN" ${orca_args[@]+"${orca_args[@]}"}

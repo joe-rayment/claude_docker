@@ -98,8 +98,13 @@ load helpers/setup
     [ -x "$ORCA_HOST/bin/claude-dev" ]
 
     # config-sync (S7, claude-orca-3sk.7) intentionally makes the synced
-    # statusline.sh executable inside .claude-dev/, which is excluded here.
-    run find "$PROJECT_DIR" -type f -perm -u+x -not -path "$PROJECT_DIR/.claude-dev/*"
+    # statusline.sh executable inside .claude-dev/, which is excluded here;
+    # so is Orca.app/Contents/MacOS/Orca, the generated launcher bundle's
+    # entry point (V2, claude-orca-qt9.2). Both are host-owned: write-denied
+    # inside both sandboxes (scripts/sandbox/host-owned-paths.sh).
+    run find "$PROJECT_DIR" -type f -perm -u+x \
+        -not -path "$PROJECT_DIR/.claude-dev/*" \
+        -not -path "$PROJECT_DIR/Orca.app/*"
     [ "$status" -eq 0 ]
     [ "$output" = "$PROJECT_DIR/claude-dev" ]
 }
