@@ -15,24 +15,29 @@ Before deleting anything, teardown takes a **beads snapshot**:
 ~/.claude-orca/state/<project>/<timestamp>/
 ```
 
-`<project>` is the folder's slug, `<timestamp>` is UTC. The snapshot holds
+`<project>` is the folder's slug, `<timestamp>` is a local-time
+`YYYYMMDD-HHMMSS` stamp. The snapshot holds
 `issues.jsonl` (the passive, git-tracked export) plus `metadata.json`, which
 is what a rebuild actually needs — not the embedded Dolt directory, which is
 disposable and rebuildable.
 
 ## `claude-dev --uninstall`
 
-Removes the **host-side install**: `~/.claude-orca/{bin,template,srt}`, the
-`shellrc.zsh` / `shellrc.bash` symlinks, and the marker-delimited lines from
-`~/.zshrc` and `~/.bash_profile` (equivalent to `claude-dev rc-uninstall`,
-which restores those files byte-for-byte). Project folders are left alone.
+Removes the **host-side install**. It tears down the project you are standing
+in, strips the marker-delimited lines from `~/.zprofile`, `~/.zshrc` and
+`~/.bash_profile` (equivalent to `claude-dev rc-uninstall`, which restores
+those files byte-for-byte), and then deletes `~/.claude-orca` outright. Your
+code and git history are left alone.
 
-`~/.claude-orca/state/` — the snapshots — is **kept** by default, so
-uninstalling and re-bootstrapping later still restores your issues. Delete
-it by hand if you really want a clean slate.
+`~/.claude-orca/state/` goes with it: **the snapshots live inside the thing
+being deleted.** Copy out whatever you still want first —
+
+```bash
+cp -R ~/.claude-orca/state ~/claude-orca-snapshots
+```
 
 Order matters if you want both: teardown each project first (so each gets a
-snapshot), then uninstall.
+snapshot), copy `state/` somewhere safe, then uninstall.
 
 ## Restore
 

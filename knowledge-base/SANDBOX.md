@@ -25,8 +25,10 @@ host-owned template.
 Files the host executes implicitly are write-denied *inside* the sandbox, on
 top of `srt`'s own mandatory list (shell rc files, `.mcp.json`, `.ripgreprc`,
 `.vscode`, `.idea`, `.claude/commands`, `.claude/agents`, `.git/hooks`,
-`.git/config`): `orca.yaml`, `.worktreeinclude`, `.envrc`, `.beads/hooks/**`
-— in the primary checkout and in the current worktree.
+`.git/config`): `orca.yaml`, `.worktreeinclude` and `.envrc`, in the primary
+checkout *and* in the current worktree, plus `.beads/hooks/**` in the primary
+checkout only — a linked worktree has no `.beads` of its own, it writes
+through the primary's.
 
 ## How every shell ends up inside
 
@@ -68,11 +70,17 @@ Network: `strictAllowlist: true` over the defaults — `api.anthropic.com`,
 `claude.ai`, `console.anthropic.com`, `platform.claude.com`,
 `statsig.anthropic.com`, `*.sentry.io`, `github.com`, `api.github.com`,
 `*.githubusercontent.com`, `registry.npmjs.org`, `pypi.org`,
-`files.pythonhosted.org` — union `network.extraAllowedDomains`. Also
+`files.pythonhosted.org`, `cdn.playwright.dev`,
+`playwright.download.prss.microsoft.com` (the last two so `take-screenshot
+url` can fetch its headless browser) — union
+`network.extraAllowedDomains`. Also
 `allowLocalBinding: true` (dev servers, the Dolt server, Orca's hook
 endpoint on `127.0.0.1:$ORCA_AGENT_HOOK_PORT`), `allowPty: true`,
 `enableWeakerNetworkIsolation: true` (one `trustd` mach-lookup, needed for Go
-TLS in `gh`/`bd`/`dolt`), `allowAppleEvents: false`, `allowUnixSockets: []`.
+TLS in `gh`/`bd`/`dolt`), `allowAppleEvents: false`, and `allowUnixSockets:
+[]` — except in Orca CLI mode, where it carries the same Orca runtime dir
+`allowRead` gets, because the socket and a readable path to it are one
+decision.
 
 The generated file is
 `<primary>/.claude-dev/state/srt-<sha1(worktree)>.json`, validated in the

@@ -63,13 +63,15 @@ The launcher on your PATH:
   and your real home are read-only or invisible.
 - **Reads**: your real home is denied, so `~/.ssh`, `~/.aws`, Keychains and
   Documents cannot be read. Allowed: the project, `~/.claude-orca`,
-  `~/.local/bin`, `~/.local/share/claude`, `~/.orca/agent-hooks`.
+  `~/.local/bin`, `~/.local/share/claude`, `~/.orca/agent-hooks`, and Orca's
+  runtime dir when `orca.cli` is on.
 - **Network**: only through `srt`'s localhost proxy against an allowlist —
   `api.anthropic.com`, `claude.ai`, `console.anthropic.com`,
   `platform.claude.com`, `statsig.anthropic.com`, `*.sentry.io`,
   `github.com`, `api.github.com`, `*.githubusercontent.com`,
-  `registry.npmjs.org`, `pypi.org`, `files.pythonhosted.org`. Local binding
-  is on (dev servers, the beads Dolt server, Orca's hook endpoint).
+  `registry.npmjs.org`, `pypi.org`, `files.pythonhosted.org`,
+  `cdn.playwright.dev`, `playwright.download.prss.microsoft.com`. Local
+  binding is on (dev servers, the beads Dolt server, Orca's hook endpoint).
 - **Apple Events are off.** Nothing inside can drive another app, so OAuth
   prints a URL instead of opening a browser.
 - **Environment**: `HOME` is `<project>/.claude-dev/home`, `TMPDIR` is
