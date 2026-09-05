@@ -250,54 +250,150 @@ orca_runtime_dir() {
     unset STUB_SRT_NOEXEC CLAUDE_ORCA_REAL_HOME
 }
 
-# Runs the probe runner with every probe faked EXCEPT
-# orca-socket-unreachable -- which runs for real against the stubbed
-# `orca` on PATH -- and prints just that probe's status.
-orca_probe_status() {
-    "$ORCA_HOST/template/scripts/sandbox/selftest.sh" \
-        --json-out "$BATS_TEST_TMPDIR/orca-probe.json" --fake "$1" >/dev/null 2>&1 || true
-    jq -r '.probes[] | select(.name == "orca-socket-unreachable") | .status' \
-        "$BATS_TEST_TMPDIR/orca-probe.json"
-}
+# --- the orca-socket-unreachable probe (claude-orca-riu.2) -----------------
+#
+# Supersedes the single "selftest expectation for orca-socket flips with
+# the mode" case, whose stub modelled `orca status --json` exiting 1 when
+# the runtime is unreachable. The v1.4.197 binary falsifies that: its
+# status handler sets exitCode=1 ONLY when --json was NOT passed, so with
+# --json it always exits 0 and carries reachability in the JSON instead.
+# The probe therefore reads reachability semantically, and the five cases
+# below pin every branch of the resulting truth table.
 
-@test "selftest expectation for orca-socket flips with the mode" {
-    make_project "$PROJECT_DIR"
-    primary="$(abspath "$PROJECT_DIR")"
-
-    # `orca status --json` reachable (exit 0) or not (exit 1), on demand.
+# Writes an `orca` stub onto the test PATH that models the real CLI:
+# `status --json` ALWAYS exits 0 and prints reachability in its JSON;
+# plain `status` is the only form whose exit code carries it.
+# $STUB_ORCA_REACHABLE (true/false) drives both; $STUB_ORCA_JSON_GARBAGE,
+# when set, is printed instead of the JSON (still exit 0).
+write_orca_stub() {
     cat > "$BATS_TEST_TMPDIR/stubs/orca" <<'STUB'
 #!/usr/bin/env bash
 if [ "$1" = "status" ]; then
-    exit "${STUB_ORCA_STATUS_EXIT:-1}"
+    reachable="${STUB_ORCA_REACHABLE:-false}"
+    if [ "${2:-}" = "--json" ]; then
+        if [ -n "${STUB_ORCA_JSON_GARBAGE:-}" ]; then
+            printf '%s\n' "$STUB_ORCA_JSON_GARBAGE"
+        else
+            printf '{"version":"1.4.197","runtime":{"reachable":%s,"endpoint":"/tmp/orca.sock"}}\n' "$reachable"
+        fi
+        exit 0
+    fi
+    [ "$reachable" = "true" ] && exit 0
+    exit 1
 fi
 exit 0
 STUB
     chmod +x "$BATS_TEST_TMPDIR/stubs/orca"
+}
 
-    fake="$BATS_TEST_TMPDIR/fake-except-orca.txt"
-    : > "$fake"
+# A registered project, the stub above on PATH, and a fake-outcomes file
+# ($SOCKET_FAKE) covering every probe EXCEPT orca-socket-unreachable --
+# which is left to run for real against the stub.
+setup_socket_probe() {
+    make_project "$PROJECT_DIR"
+    export CLAUDE_ORCA_ROOT="$(abspath "$PROJECT_DIR")"
+    write_orca_stub
+    SOCKET_FAKE="$BATS_TEST_TMPDIR/fake-except-orca.txt"
+    : > "$SOCKET_FAKE"
+    local name
     for name in write-outside-denied read-real-home-denied keychain-denied \
         project-writable worktree-writable sibling-worktree-denied \
         tmp-outside-denied network-blocked-domain network-allowed-domain \
         sandbox-exec-present srt-version-pinned git-hooks-audit; do
-        echo "$name=0" >> "$fake"
+        echo "$name=0" >> "$SOCKET_FAKE"
     done
+}
 
-    export CLAUDE_ORCA_ROOT="$primary"
+run_socket_probe() {
+    "$ORCA_HOST/template/scripts/sandbox/selftest.sh" \
+        --json-out "$BATS_TEST_TMPDIR/orca-probe.json" \
+        --fake "$SOCKET_FAKE" >/dev/null 2>&1 || true
+}
 
-    # Socket reachable: a violation with the mode off, the point of the
-    # mode when it is on.
-    export STUB_ORCA_STATUS_EXIT=0
+# $1 = "status" or "detail" from the last run_socket_probe.
+socket_probe() {
+    jq -r ".probes[] | select(.name == \"orca-socket-unreachable\") | .$1" \
+        "$BATS_TEST_TMPDIR/orca-probe.json"
+}
+
+@test "socket probe: cli=false and runtime unreachable is a PASS" {
+    setup_socket_probe
     set_orca_cli "$PROJECT_DIR" false
-    [ "$(orca_probe_status "$fake")" = "FAIL" ]
+    export STUB_ORCA_REACHABLE=false
+
+    run_socket_probe
+    [ "$(socket_probe status)" = "PASS" ]
+    [[ "$(socket_probe detail)" == *"unreachable"* ]]
+
+    unset STUB_ORCA_REACHABLE CLAUDE_ORCA_ROOT
+}
+
+@test "socket probe: cli=false and runtime reachable is a FAIL naming the leak" {
+    setup_socket_probe
+    set_orca_cli "$PROJECT_DIR" false
+    export STUB_ORCA_REACHABLE=true
+
+    run_socket_probe
+    [ "$(socket_probe status)" = "FAIL" ]
+
+    # The detail has to say what actually broke -- a reachable runtime
+    # with the mode off means the unix-socket deny did not hold.
+    detail="$(socket_probe detail)"
+    [[ "$detail" == *"LEAK"* ]]
+    [[ "$detail" == *"socket"* ]]
+    [[ "$detail" == *"orca.cli=false"* ]]
+
+    unset STUB_ORCA_REACHABLE CLAUDE_ORCA_ROOT
+}
+
+@test "socket probe: cli=true and runtime reachable is a PASS" {
+    setup_socket_probe
     set_orca_cli "$PROJECT_DIR" true
-    [ "$(orca_probe_status "$fake")" = "PASS" ]
+    export STUB_ORCA_REACHABLE=true
 
-    # Socket unreachable: exactly the other way round.
-    export STUB_ORCA_STATUS_EXIT=1
-    [ "$(orca_probe_status "$fake")" = "FAIL" ]
+    run_socket_probe
+    [ "$(socket_probe status)" = "PASS" ]
+    [[ "$(socket_probe detail)" == *"orca.cli=true"* ]]
+
+    unset STUB_ORCA_REACHABLE CLAUDE_ORCA_ROOT
+}
+
+@test "socket probe: cli=true and runtime unreachable is N/A telling the user to launch Orca" {
+    setup_socket_probe
+    set_orca_cli "$PROJECT_DIR" true
+    export STUB_ORCA_REACHABLE=false
+
+    # Not a FAIL: the app simply isn't running, which must never brick a
+    # first-run registration the way a FAIL would.
+    run_socket_probe
+    [ "$(socket_probe status)" = "N/A" ]
+
+    detail="$(socket_probe detail)"
+    [[ "$detail" == *"launch"* ]]
+    [[ "$detail" == *"Orca.app"* ]]
+    [[ "$detail" == *"--doctor"* ]]
+
+    unset STUB_ORCA_REACHABLE CLAUDE_ORCA_ROOT
+}
+
+@test "socket probe: unparseable status JSON falls back to the plain status exit code" {
+    setup_socket_probe
     set_orca_cli "$PROJECT_DIR" false
-    [ "$(orca_probe_status "$fake")" = "PASS" ]
+    export STUB_ORCA_JSON_GARBAGE='orca: could not read runtime endpoint'
 
-    unset STUB_ORCA_STATUS_EXIT CLAUDE_ORCA_ROOT
+    # Plain `orca status` exits nonzero -> unreachable -> PASS with the
+    # mode off, and the detail says where the answer came from.
+    export STUB_ORCA_REACHABLE=false
+    run_socket_probe
+    [ "$(socket_probe status)" = "PASS" ]
+    [[ "$(socket_probe detail)" == *"exit code"* ]]
+
+    # ... and exits 0 -> reachable -> the same leak, still with the mode
+    # off, proving the exit code (not the unparseable JSON) decided it.
+    export STUB_ORCA_REACHABLE=true
+    run_socket_probe
+    [ "$(socket_probe status)" = "FAIL" ]
+    [[ "$(socket_probe detail)" == *"exit code"* ]]
+
+    unset STUB_ORCA_REACHABLE STUB_ORCA_JSON_GARBAGE CLAUDE_ORCA_ROOT
 }

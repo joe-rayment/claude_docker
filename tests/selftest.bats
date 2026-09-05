@@ -148,6 +148,30 @@ host-files-write-denied"
     [ "$status" -eq 2 ]
 }
 
+# claude-orca-riu.2: a refusal that only says no is a dead end -- the
+# user needs the failing probes and the two things to do about them.
+@test "register refusal names the FAILed probes and the next step" {
+    make_project "$PROJECT_DIR"
+    primary="$(abspath "$PROJECT_DIR")"
+    launcher="$ORCA_HOST/bin/claude-dev"
+
+    fake="$BATS_TEST_TMPDIR/fake-one-fail.txt"
+    write_allpass_fake "$fake" "network-allowed-domain=1"
+    export CLAUDE_ORCA_SELFTEST_FAKE="$fake"
+
+    run bash -c "cd '$primary' && '$launcher' register"
+    [ "$status" -eq 2 ]
+
+    # The probe table (which probe, and why) ...
+    [[ "$output" == *"[FAIL]"* ]]
+    [[ "$output" == *"network-allowed-domain"* ]]
+    # ... the refusal itself ...
+    [[ "$output" == *"Refusing to hand off to Orca"* ]]
+    # ... and what to do next: re-run the gate, read the per-probe detail.
+    [[ "$output" == *"then re-run: claude-dev --doctor"* ]]
+    [[ "$output" == *"$primary/.claude-dev/run/selftest.json"* ]]
+}
+
 @test "results JSON has timestamp, per-probe status and the srt version" {
     require_bash32
     make_project "$PROJECT_DIR"
