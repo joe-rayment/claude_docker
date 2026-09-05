@@ -89,3 +89,54 @@ project_sections() {
         esac
     done
 }
+
+# --- V5 (claude-orca-qt9.5): the v2 documentation ------------------------
+
+@test "README documents the double-click launch, both sandbox layers and their exceptions, and no doc mentions ~/.claude-orca as a current location" {
+    # How you actually start it in v2: the bundle in the project root.
+    grep -qi -- "double-click" "$README_MD"
+    grep -qF -- "Orca.app" "$README_MD"
+    grep -qF -- "./claude-dev open" "$README_MD"
+
+    # Both layers, named, each with the mechanism that enforces it.
+    grep -qF -- "Layer 1" "$README_MD"
+    grep -qF -- "Layer 2" "$README_MD"
+    grep -qF -- "sandbox-exec" "$README_MD"
+    grep -qF -- "srt" "$README_MD"
+
+    # ... and the exceptions each layer keeps or cuts.
+    grep -qi -- "clipboard" "$README_MD"
+    grep -qi -- "keychain" "$README_MD"
+    grep -qi -- "apple events" "$README_MD"
+
+    # The sandbox.json knobs that narrow or widen them.
+    local knob
+    for knob in "orca.profileExceptions" "orca.keychain" "orca.cli"; do
+        grep -qF -- "$knob" "$README_MD"
+    done
+
+    # Nothing retired is still advertised, and the probe count is current.
+    ! grep -qF -- "transcriptSymlink" "$README_MD"
+    ! grep -qiE -- "thirteen probes|13 probes|13 sandbox probes" "$README_MD"
+    ! grep -qF -- "state/config-hash" "$README_MD"
+
+    # ~/.claude-orca may appear ONLY as the v1 leftover that --uninstall
+    # and --remove-v1 remove -- never as a place anything lives now.
+    local files=("$README_MD" "$CLAUDE_MD" "$AGENTS_MD") f line hits=""
+    while IFS= read -r f; do
+        files+=("$f")
+    done < <(find "$KB_DIR" -type f -name '*.md' | sort)
+
+    for f in "${files[@]}"; do
+        while IFS= read -r line; do
+            case "$line" in
+                *v1*|*leftover*|*pre-v2*) ;;
+                *) hits="$hits${f}: ${line}"$'\n' ;;
+            esac
+        done < <(grep -F -- '~/.claude-orca' "$f" || true)
+    done
+    [ -z "$hits" ] || {
+        printf 'stale ~/.claude-orca references:\n%s' "$hits"
+        return 1
+    }
+}
