@@ -221,7 +221,7 @@ orca_runtime_dir() {
     [ "$(grep -c 'claude_orca orca-cli' "$config_dir/CLAUDE.md")" -eq 2 ]
     grep -qF "coordinator" "$config_dir/CLAUDE.md"
     grep -qF "orca orchestration worker-start" "$config_dir/CLAUDE.md"
-    grep -qF "--worktree current" "$config_dir/CLAUDE.md"
+    grep -qF -e "--worktree current" "$config_dir/CLAUDE.md"
     grep -qF "worker_done" "$config_dir/CLAUDE.md"
     grep -qF "beads remain the source of truth" "$config_dir/CLAUDE.md"
     with_addendum="$(cat "$config_dir/CLAUDE.md")"
