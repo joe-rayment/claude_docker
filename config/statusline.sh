@@ -6,7 +6,7 @@ input=$(cat)
 
 model=$(echo "$input" | jq -r '.model.display_name // "unknown"')
 ctx_pct=$(echo "$input" | jq -r '.context_window.used_percentage // 0' | awk '{printf "%d", $1}')
-branch=$(git -C /workspace rev-parse --abbrev-ref HEAD 2>/dev/null || echo "?")
+branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "?")
 
 # Build context bar (10 dots)
 filled=$((ctx_pct / 10))
@@ -26,7 +26,7 @@ if [ -f "$cache" ]; then
 fi
 
 if [ "$refresh" -eq 1 ]; then
-    token=$(jq -r '.claudeAiOauth.accessToken' /home/agent/.claude/.credentials.json 2>/dev/null)
+    token=$(jq -r '.claudeAiOauth.accessToken' "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.credentials.json" 2>/dev/null)
     if [ -n "$token" ] && [ "$token" != "null" ]; then
         curl -s --max-time 5 \
             -H "Accept: application/json" \

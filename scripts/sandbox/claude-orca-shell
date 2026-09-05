@@ -219,7 +219,8 @@ ENV_GIT_CONFIG_GLOBAL="$SANDBOX_HOME/.gitconfig"
 ENV_GH_CONFIG_DIR="$SANDBOX_HOME/.config/gh"
 ENV_BEADS_DIR="$PRIMARY/.beads"
 ENV_ORCA_USER_DATA_PATH="$REAL_HOME/Library/Application Support/orca"
-ENV_PATH="/opt/homebrew/bin:/opt/homebrew/sbin:$REAL_HOME/.local/bin:$HOST/template/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+USR_LOCAL_DIR="/usr/local"
+ENV_PATH="/opt/homebrew/bin:/opt/homebrew/sbin:$REAL_HOME/.local/bin:$HOST/template/bin:$USR_LOCAL_DIR/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
 print_env_lines() {
     cat <<EOF
@@ -250,6 +251,15 @@ fi
 # --- MODE = run / selftest: side effects start here -----------------------
 
 mkdir -p "$SANDBOX_HOME" "$SANDBOX_TMP" "$PRIMARY/.claude-dev/state"
+
+# Host side, before exec/selftest: keep the primary checkout's config dir
+# current with this template's config/ (S7, claude-orca-3sk.7). Best-effort
+# -- a sync failure here must not block a shell the user can otherwise use
+# to go fix it.
+CONFIG_SYNC_SCRIPT="$HOST/template/scripts/config-sync.sh"
+if [ -x "$CONFIG_SYNC_SCRIPT" ]; then
+    "$CONFIG_SYNC_SCRIPT" --project "$PRIMARY" --host "$HOST" || true
+fi
 
 SETTINGS_FILE="$PRIMARY/.claude-dev/state/srt-$(sha1_of "$WORKTREE").json"
 printf '%s\n' "$SETTINGS_JSON" > "$SETTINGS_FILE"

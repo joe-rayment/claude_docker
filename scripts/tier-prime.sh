@@ -46,6 +46,20 @@ flags=""
 [ "$overdrive" = "true" ] && flags="$flags OVERDRIVE"
 [ "$pinned" = "true" ] && flags="$flags PIN"
 
+# --short (UserPromptSubmit, per-prompt): worker+recon only, one line, no
+# orchestrator/protocol line -- that per-prompt line used to be built by
+# grepping agent frontmatter (executor.md/scout.md `model:`); it now reads
+# the same tier.json this whole script reads, so it can never drift from
+# what tier-gate will actually inject.
+if [ "${1:-}" = "--short" ]; then
+    line="[tier] worker=${worker:-<unbound>} recon=${recon:-<unbound>}"
+    if [ -n "$flags" ]; then
+        line="$line (${flags# })"
+    fi
+    echo "$line"
+    exit 0
+fi
+
 line="[tier] orchestrator=${top:-<unbound>} worker=${worker:-<unbound>} recon=${recon:-<unbound>}"
 if [ -n "$flags" ]; then
     line="$line (${flags# })"

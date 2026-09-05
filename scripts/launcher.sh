@@ -178,6 +178,11 @@ JSON
     seed_gitignore "$dir"
     mkdir -p "$dir/attachments"
 
+    # Populate .claude-dev/home/.claude from this template's config/ (S7,
+    # claude-orca-3sk.7) before anything -- including the self-test below --
+    # runs against this project. Checksum-gated, so a re-register is cheap.
+    "$SCRIPT_DIR/config-sync.sh" --project "$dir" --host "$HOST_DIR"
+
     # Idempotent and cheap -- covers `claude-dev register` run standalone
     # against an already-bootstrapped host (e.g. a second project), not
     # just the bootstrap.sh call chain.

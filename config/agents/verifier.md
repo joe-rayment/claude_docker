@@ -57,7 +57,7 @@ path, or a real implementation file at `RED-AT`, ⇒ `Verdict: TAMPERED`.
 
 **C2b — Red actually red.** Materialize `RED-AT` in a throwaway worktree
 and run the contract's `CHECK` there, re-rooted — a `CHECK` with absolute
-`/workspace/...` paths must point at the worktree copy, or it silently
+repo-root paths must point at the worktree copy, or it silently
 re-tests HEAD and always "passes":
 
     git worktree add /tmp/redat-check <RED-AT>
@@ -66,7 +66,7 @@ re-tests HEAD and always "passes":
 
 Re-rooting is often not an env-var away — a test that hardcodes absolute
 paths internally ignores what you export, so rewrite them in the checkout
-(`sed -i 's#/workspace/#/tmp/redat-check/#g' <test file>`); mutating the
+(rewrite the repo-root prefix to the worktree path with sed); mutating the
 disposable worktree is fine. Expect a non-zero exit, the red the notes
 claim; report which case(s) failed. If it **passes**, rule out botched
 re-rooting first — a run that silently read HEAD's files passes for the

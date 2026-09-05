@@ -1,5 +1,6 @@
 # Path configuration
-export PATH="$HOME/.local/bin:$HOME/bin:/usr/local/bin:$PATH"
+usr_local_dir="/usr/local"
+export PATH="$HOME/.local/bin:$HOME/bin:$usr_local_dir/bin:$PATH"
 
 # Preferred editor
 export EDITOR='hx'

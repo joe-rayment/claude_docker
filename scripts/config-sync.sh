@@ -25,6 +25,7 @@
 #   agents/*.md           -> .claude/agents/
 #   claude-commands/*.md  -> .claude/commands/
 #   skills/**             -> .claude/skills/
+#   workflows/*.js        -> .claude/workflows/
 #   .zshrc                -> .zshrc
 #
 # settings.local.json itself is only ever READ, never rewritten or moved --
@@ -77,16 +78,33 @@ host="$(cd "$host" && pwd -P)"
 TEMPLATE_CONFIG="$host/template/config"
 [ -d "$TEMPLATE_CONFIG" ] || die "template config not found: $TEMPLATE_CONFIG"
 
+CONFIG_DIR="$project/.claude-dev/home/.claude"
+LOCAL_SETTINGS="$CONFIG_DIR/settings.local.json"
+
 # --- checksum gate -----------------------------------------------------
 
-# Sorted sha1 of every file's relative path AND its content -- a rename
-# with byte-identical content still counts as a change, unlike a
-# content-only hash.
+# Sorted sha1 of every file's relative path AND its content, PLUS the
+# --host value and the project's own settings.local.json -- a rename with
+# byte-identical content still counts as a change (unlike a content-only
+# hash), and so does a host change with byte-identical config: __HOST__ is
+# baked into every hook command in the synced settings.json, so a project
+# re-registered (or re-entered) under a different host dir must re-render
+# even when config/** itself is untouched, never silently keep serving the
+# previous host's paths. settings.local.json is included for the same
+# reason: it is merged into the OUTPUT settings.json below, so appearing,
+# changing or disappearing must invalidate the gate even though it lives
+# outside $TEMPLATE_CONFIG entirely and never itself changes config/**.
 config_checksum() {
     ( cd "$TEMPLATE_CONFIG" && find . -type f | LC_ALL=C sort | while IFS= read -r f; do
         printf '%s\n' "${f#./}"
         sha1sum "$f" | cut -d' ' -f1
-    done ) | sha1sum | cut -d' ' -f1
+    done
+    printf 'host:%s\n' "$host"
+    if [ -f "$LOCAL_SETTINGS" ]; then
+        printf 'local-settings:%s\n' "$(sha1sum "$LOCAL_SETTINGS" | cut -d' ' -f1)"
+    else
+        printf 'local-settings:(absent)\n'
+    fi ) | sha1sum | cut -d' ' -f1
 }
 
 HASH_FILE="$project/.claude-dev/state/config-hash"
@@ -100,7 +118,6 @@ fi
 
 # --- populate ------------------------------------------------------------
 
-CONFIG_DIR="$project/.claude-dev/home/.claude"
 mkdir -p "$CONFIG_DIR"
 
 # settings.json: hook commands carry a __HOST__ placeholder in the repo copy
@@ -112,11 +129,11 @@ cp "$TEMPLATE_CONFIG/claude-user-memory.md" "$CONFIG_DIR/CLAUDE.md"
 cp "$TEMPLATE_CONFIG/statusline.sh" "$CONFIG_DIR/statusline.sh"
 chmod +x "$CONFIG_DIR/statusline.sh"
 
-# agents/commands/skills are fully mirrored (removed-in-template files are
-# removed here too), never hand-edited in the project -- settings.local.json
-# is the one sanctioned local-override channel.
-rm -rf "$CONFIG_DIR/agents" "$CONFIG_DIR/commands" "$CONFIG_DIR/skills"
-mkdir -p "$CONFIG_DIR/agents" "$CONFIG_DIR/commands" "$CONFIG_DIR/skills"
+# agents/commands/skills/workflows are fully mirrored (removed-in-template
+# files are removed here too), never hand-edited in the project --
+# settings.local.json is the one sanctioned local-override channel.
+rm -rf "$CONFIG_DIR/agents" "$CONFIG_DIR/commands" "$CONFIG_DIR/skills" "$CONFIG_DIR/workflows"
+mkdir -p "$CONFIG_DIR/agents" "$CONFIG_DIR/commands" "$CONFIG_DIR/skills" "$CONFIG_DIR/workflows"
 if [ -d "$TEMPLATE_CONFIG/agents" ]; then
     cp "$TEMPLATE_CONFIG"/agents/*.md "$CONFIG_DIR/agents/" 2>/dev/null || true
 fi
@@ -125,6 +142,9 @@ if [ -d "$TEMPLATE_CONFIG/claude-commands" ]; then
 fi
 if [ -d "$TEMPLATE_CONFIG/skills" ]; then
     cp -R "$TEMPLATE_CONFIG"/skills/. "$CONFIG_DIR/skills/" 2>/dev/null || true
+fi
+if [ -d "$TEMPLATE_CONFIG/workflows" ]; then
+    cp "$TEMPLATE_CONFIG"/workflows/*.js "$CONFIG_DIR/workflows/" 2>/dev/null || true
 fi
 
 if [ -f "$TEMPLATE_CONFIG/.zshrc" ]; then
@@ -135,7 +155,6 @@ fi
 # wins) -- same deep-merge entrypoint.sh used, permission arrays unioned
 # rather than replaced so a local allowlist extends the base one instead of
 # wiping it.
-LOCAL_SETTINGS="$CONFIG_DIR/settings.local.json"
 if [ -f "$LOCAL_SETTINGS" ] && jq -e . "$LOCAL_SETTINGS" >/dev/null 2>&1; then
     merged="$(jq -s '
         .[0] as $base | .[1] as $local | ($base * $local)

@@ -87,9 +87,30 @@ load helpers/setup
     [ ! -e "$PROJECT_DIR/claude-dev" ]
     [ -x "$CLAUDE_ORCA_HOME/bin/claude-dev" ]
 
-    run find "$PROJECT_DIR" -type f -perm -u+x
+    # No executable lands anywhere in the project EXCEPT inside .claude-dev/
+    # itself, where config-sync (S7, claude-orca-3sk.7) intentionally makes
+    # the synced statusline.sh executable as part of the config dir.
+    run find "$PROJECT_DIR" -type f -perm -u+x -not -path "$PROJECT_DIR/.claude-dev/*"
     [ "$status" -eq 0 ]
     [ -z "$output" ]
+}
+
+@test "register populates .claude-dev/home/.claude from the template config" {
+    run bash "$REPO_ROOT/bootstrap.sh" "$PROJECT_DIR"
+    [ "$status" -eq 0 ]
+
+    dest="$PROJECT_DIR/.claude-dev/home/.claude"
+    [ -f "$dest/settings.json" ]
+    run jq -e . "$dest/settings.json"
+    [ "$status" -eq 0 ]
+    [ -f "$dest/CLAUDE.md" ]
+    [ -x "$dest/statusline.sh" ]
+    [ -f "$PROJECT_DIR/.claude-dev/state/config-hash" ]
+
+    # __HOST__ is always rewritten to a real, absolute host path -- never
+    # left as a literal placeholder for Claude Code to choke on.
+    run cat "$dest/settings.json"
+    [[ "$output" != *"__HOST__"* ]]
 }
 
 @test "second run is a no-op" {
