@@ -289,15 +289,6 @@ fi
 
 # --- MODE = run / selftest: side effects start here -----------------------
 
-# S5: billing hard-guard, before anything is written and before srt is
-# ever reached -- ANTHROPIC_API_KEY/_AUTH_TOKEN/_BASE_URL silently flip
-# Claude Code from subscription to API billing. Run mode only: --selftest
-# exits with the self-test's own probe status, which a guard veto must not
-# impersonate.
-if [ "$MODE" = "run" ] && [ -x "$TEMPLATE_DIR/bin/auth-guard" ]; then
-    "$TEMPLATE_DIR/bin/auth-guard" || die "auth-guard refused to start this shell" 1
-fi
-
 mkdir -p "$SANDBOX_HOME" "$SANDBOX_TMP" "$PRIMARY/.claude-dev/state"
 
 # Host side, before exec/selftest: keep the primary checkout's config dir
@@ -308,10 +299,6 @@ CONFIG_SYNC_SCRIPT="$HOST/template/scripts/config-sync.sh"
 if [ -x "$CONFIG_SYNC_SCRIPT" ]; then
     "$CONFIG_SYNC_SCRIPT" --project "$PRIMARY" --host "$HOST" || true
 fi
-
-SETTINGS_FILE="$PRIMARY/.claude-dev/state/srt-$(sha1_of "$WORKTREE").json"
-printf '%s\n' "$SETTINGS_JSON" > "$SETTINGS_FILE"
-chmod 600 "$SETTINGS_FILE"
 
 # S6 (claude-orca-3sk.18): carry Orca's managed hook entries from the real
 # (unsandboxed) home's .claude/settings.json into the sandboxed config dir
@@ -341,6 +328,21 @@ if [ "$(jq -r '.orca.transcriptSymlink // false' "$SANDBOX_JSON" 2>/dev/null)" =
         ln -sfn "$TRANSCRIPT_TARGET" "$TRANSCRIPT_LINK"
     fi
 fi
+
+# S5: billing hard-guard, before the srt settings file is written and
+# before srt is ever reached -- ANTHROPIC_API_KEY/_AUTH_TOKEN/_BASE_URL
+# silently flip Claude Code from subscription to API billing. Sits after
+# the best-effort config-sync/Orca-hook integration above, which must run
+# in the same order on every launch. Run mode only: --selftest
+# exits with the self-test's own probe status, which a guard veto must not
+# impersonate.
+if [ "$MODE" = "run" ] && [ -x "$TEMPLATE_DIR/bin/auth-guard" ]; then
+    "$TEMPLATE_DIR/bin/auth-guard" || die "auth-guard refused to start this shell" 1
+fi
+
+SETTINGS_FILE="$PRIMARY/.claude-dev/state/srt-$(sha1_of "$WORKTREE").json"
+printf '%s\n' "$SETTINGS_JSON" > "$SETTINGS_FILE"
+chmod 600 "$SETTINGS_FILE"
 
 export HOME="$ENV_HOME"
 export CLAUDE_CONFIG_DIR="$ENV_CLAUDE_CONFIG_DIR"

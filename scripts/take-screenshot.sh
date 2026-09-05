@@ -3,10 +3,10 @@
 # take-screenshot -- Claude's eyes on a web UI, inside the Seatbelt sandbox
 # (S10, claude-orca-3sk.21; see .claude/plans/orca-port.md S3.6).
 #
-# ONE mode: `url`. The Docker template's `display` (Xvfb + ImageMagick) and
-# `term` (termshot) modes are gone -- a Seatbelt sandbox on macOS has no X
-# display server and no tmux -- and are rejected with a usage message rather
-# than silently doing nothing.
+# ONE mode: `url`. The old container template's `display` and `term` modes
+# are gone -- a Seatbelt sandbox on macOS has no X display server and no
+# terminal multiplexer -- and are rejected with a usage message rather than
+# silently doing nothing.
 #
 # Mechanism: `node -e <script>` requiring the `playwright` package, NOT
 # `npx playwright screenshot`. The CLI's `screenshot` subcommand has no way to
@@ -60,9 +60,10 @@ Options:
   --name <name>   Output basename (default: <url-host>-<UTC timestamp>)
   --full-page     Capture the full scrollable page, not just the viewport
 
-The 'term' and 'display' modes of the Docker template are removed: a Seatbelt
-sandbox has no X display server and no termshot. Capture terminal output by
-reading it, and ask the user to drop any other screenshot into attachments/.
+The 'term' and 'display' modes of the old container template are removed: a
+Seatbelt sandbox has no X display server and no termshot. Capture terminal
+output by reading it, and ask the user to drop any other screenshot into
+attachments/.
 EOF
 }
 
@@ -219,7 +220,7 @@ case "${1:-}" in
         usage
         ;;
     term|display)
-        die_usage "the '$1' mode was removed with the Docker container (no X display server, no termshot in the sandbox)"
+        die_usage "the '$1' mode was removed with the old container template (no X display server, no termshot in the sandbox)"
         ;;
     "")
         die_usage ""

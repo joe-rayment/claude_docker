@@ -62,18 +62,21 @@ CONFIG_DIR="$(claude_config_dir)"
 SETTINGS="$CONFIG_DIR/settings.json"
 SETTINGS_LOCAL="$CONFIG_DIR/settings.local.json"
 
-hit_vars=""
-hit_locs=""
+NL="$(printf '\nx')"; NL="${NL%x}"
+TAB="$(printf '\tx')"; TAB="${TAB%x}"
+
+hits=""
 hit_count=0
 
-# Parallel newline-delimited lists rather than arrays: nothing in a var
-# name or a settings path can contain a newline, and this stays clear of
-# bash 3.2's empty-array-under-set -u trap entirely.
+# One newline-delimited list of "<var><tab><location>" rather than arrays:
+# nothing in a var name or a settings path can contain a tab or a newline,
+# and this stays clear of bash 3.2's empty-array-under-set -u trap
+# entirely. Walked below with parameter expansion only -- no sed/awk --
+# because tests/auth-guard.bats runs this script with everything bar
+# dirname/readlink off PATH (the "missing jq" cases) and still expects the
+# FATAL lines.
 record_hit() {
-    hit_vars="$hit_vars$1
-"
-    hit_locs="$hit_locs$2
-"
+    hits="$hits$1$TAB$2$NL"
     hit_count=$((hit_count + 1))
 }
 
@@ -110,12 +113,14 @@ if [ "${CLAUDE_DEV_ALLOW_API_BILLING:-0}" = "1" ]; then
     level=WARNING
 fi
 
-i=1
-while [ "$i" -le "$hit_count" ]; do
-    var="$(printf '%s' "$hit_vars" | sed -n "${i}p")"
-    loc="$(printf '%s' "$hit_locs" | sed -n "${i}p")"
+rest="$hits"
+while [ -n "$rest" ]; do
+    line="${rest%%$NL*}"
+    rest="${rest#*$NL}"
+    [ -n "$line" ] || continue
+    var="${line%%$TAB*}"
+    loc="${line#*$TAB}"
     echo "$level: $var is set in $loc -- this silently switches Claude Code billing from subscription to API." >&2
-    i=$((i + 1))
 done
 
 if [ "$level" = "WARNING" ]; then

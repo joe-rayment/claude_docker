@@ -204,14 +204,14 @@ cmd_register() {
 JSON
     fi
 
-    seed_git_identity "$dir"
-
     seed_gitignore "$dir"
     mkdir -p "$dir/attachments"
 
     # S12 (claude-orca-3sk.23): resume a torn-down project -- pull the most
     # recent beads snapshot back in when this project has none of its own.
     restore_beads_snapshot "$dir" "$project_name"
+
+    seed_git_identity "$dir"
 
     # Populate .claude-dev/home/.claude from this template's config/ (S7,
     # claude-orca-3sk.7) before anything -- including the self-test below --
