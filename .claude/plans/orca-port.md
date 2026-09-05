@@ -254,3 +254,19 @@ Order: S1 → S2 → S3 → S4 → S7 → S5 → S6 → S8 → S12 → S11 → S
   from this session: the `gh` token cannot create repositories (GraphQL `createRepository`
   and REST `POST /user/repos` both 403 "Resource not accessible by personal access token").
   Once `joe-rayment/claude_orca` exists: add it as `origin` and publish `main`.
+
+## 7. Risks found during implementation (2026-09-05)
+- **Credential masking forces TLS termination.** srt refuses `credentials.envVars` masking unless
+  `network.tlsTerminate` is set, so when the wrapper finds a `gh auth token` it also turns on
+  srt's ephemeral CA and the proxy terminates TLS for every allowed domain (S5). curl/node/python
+  honor the repointed trust store; Go clients on macOS (`gh`, `bd`, `dolt`) verify against the
+  Security.framework roots and ignore `SSL_CERT_FILE`, so they may fail TLS inside the sandbox.
+  Settle it with the Mac self-test: if `gh auth status` fails under masking, make masking opt-in
+  in `sandbox.json` and pass the token through (parity with the Docker template), or exclude
+  those hosts from termination.
+- **Playwright downloads** (`cdn.playwright.dev`, `playwright.download.prss.microsoft.com`) are not
+  in the default allowlist yet (S10 kept S2's pinned list); they are promoted to defaults at merge.
+- **Non-interactive login shells** (`zsh -l -c`) bypassed `.zshrc`; fixed in S2b (execution string
+  carried through the re-exec, block also in `.zprofile`).
+- **macOS bash 3.2**: one real incompatibility found (empty-array `+=` under `set -u`); every script
+  now runs under a real GNU bash 3.2.57 in the suite (S2b).
