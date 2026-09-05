@@ -146,7 +146,20 @@ rc_remove_block() {
 
 rc_install_one() {
     local file="$1" shellrc_name="$2"
-    touch "$file"
+    # Fail closed with a usable message: a root-owned or otherwise
+    # unwritable rc file (a sudo'd installer is the usual culprit) must
+    # stop registration -- a login shell of that flavour would run
+    # unconfined without its hook -- but 'touch: Permission denied' told
+    # the user nothing about which file or how to fix it.
+    if ! touch "$file" 2>/dev/null; then
+        {
+            echo "Error: cannot write $file -- the shell hook cannot be installed there."
+            echo "  Check who owns it:   ls -l $file"
+            echo "  Reclaim it:          sudo chown $(id -un) $file && chmod u+w $file"
+            echo "  Then re-run the bootstrap command (it is idempotent)."
+        } >&2
+        return 1
+    fi
     rc_remove_block "$file"
 
     # $(...) strips ALL trailing newlines, however many -- including any
