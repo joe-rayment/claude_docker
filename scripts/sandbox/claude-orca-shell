@@ -408,22 +408,17 @@ else
     fi
 fi
 
-# S6: Orca reads $CLAUDE_CONFIG_DIR/projects from its OWN process env, not
-# the agent's, so a project whose sandbox.json says Orca cannot see the
-# config dir gets a .claude/projects/<slug> link under the real home,
-# pointed at the sandboxed transcripts dir. <slug> is Claude Code's slug: the
-# worktree path with `/` and `.` replaced by `-`. Opt-in, and a real
-# directory already sitting in that slot is never touched.
-if [ "$(jq -r '.orca.transcriptSymlink // false' "$SANDBOX_JSON" 2>/dev/null)" = "true" ]; then
-    TRANSCRIPT_SLUG="$(printf '%s' "$WORKTREE" | tr '/.' '-')"
-    TRANSCRIPT_LINK="$REAL_HOME/.claude/projects/$TRANSCRIPT_SLUG"
-    TRANSCRIPT_TARGET="$ENV_CLAUDE_CONFIG_DIR/projects/$TRANSCRIPT_SLUG"
-    if [ -e "$TRANSCRIPT_LINK" ] && [ ! -L "$TRANSCRIPT_LINK" ]; then
-        echo "[claude-orca] not replacing existing $TRANSCRIPT_LINK with a symlink" >&2
-    else
-        mkdir -p "$REAL_HOME/.claude/projects" "$TRANSCRIPT_TARGET"
-        ln -sfn "$TRANSCRIPT_TARGET" "$TRANSCRIPT_LINK"
-    fi
+# S6/V4 (claude-orca-qt9.4): orca.transcriptSymlink used to link
+# <real home>/.claude/projects/<slug> at the sandboxed transcripts dir, so
+# an Orca running under the user's own HOME could still read the session
+# transcripts the agent wrote under $CLAUDE_CONFIG_DIR. HOME is redirected
+# into the folder now (.claude/plans/orca-port.md S9.1), so Orca's own home
+# IS the sandbox home and it finds the transcripts there with no link at
+# all. The key is retired: still accepted, so an older sandbox.json keeps
+# launching, but it warns and does nothing.
+if jq -e '(.orca? // {}) | (type == "object") and has("transcriptSymlink")' \
+        "$SANDBOX_JSON" >/dev/null 2>&1; then
+    echo "[claude-orca] sandbox.json: orca.transcriptSymlink is retired and ignored -- Orca reads transcripts from the folder's own home now" >&2
 fi
 
 # S5: billing hard-guard, before the srt settings file is written and

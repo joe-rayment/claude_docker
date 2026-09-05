@@ -5,10 +5,14 @@
 # the sandboxed Claude runs with its own CLAUDE_CONFIG_DIR and never reads
 # that file, so the wrapper (host side, every launch) merges Orca's managed
 # entries -- identified by the ~/.orca/agent-hooks/claude-hook.sh command --
-# into <config dir>/settings.json, chains Orca's statusline before ours,
-# leaves ORCA_* env alone, and (only when the project opts in) symlinks
-# ~/.claude/projects/<slug> at the sandboxed transcripts dir.
-# See .claude/plans/orca-port.md S3.5.
+# into <config dir>/settings.json, chains Orca's statusline before ours and
+# leaves ORCA_* env alone. See .claude/plans/orca-port.md S3.5.
+#
+# V4 (claude-orca-qt9.4) narrowed this: once HOME is redirected into the
+# folder the two files are one, so the merge no-ops and config-sync does the
+# preserving -- covered in tests/orca-data.bats, which also owns what
+# replaced the retired transcript symlink. The cases below are the
+# still-live split-home path.
 #
 # tests/fixtures/orca/claude-settings-with-orca.json is a faithful copy of
 # what Orca's own installer writes: the 12 CLAUDE_EVENTS of
@@ -207,45 +211,4 @@ STUB
     grep -qxF 'ORCA_AGENT_HOOK_PORT=54321' "$STUB_ENV"
     grep -qxF 'ORCA_SESSION_ID=sess-abc' "$STUB_ENV"
     grep -qxF 'ORCA_TERMINAL_ID=term-xyz' "$STUB_ENV"
-}
-
-@test "transcript symlink is written only when the flag file says Orca cannot see the config dir" {
-    make_project "$PROJECT_DIR"
-    real_home="$(abspath "$(make_real_home)")"
-    primary="$(abspath "$PROJECT_DIR")"
-    slug="$(printf '%s' "$primary" | tr '/.' '-')"
-    link="$real_home/.claude/projects/$slug"
-    target="$primary/.claude-dev/home/.claude/projects/$slug"
-
-    export CLAUDE_ORCA_REAL_HOME="$real_home"
-    export STUB_SRT_NOEXEC=1
-
-    # Default sandbox.json (no orca.transcriptSymlink): no symlink.
-    run "$ORCA_HOST/bin/claude-orca-shell" --root "$primary" --cwd "$primary" -- zsh
-    [ "$status" -eq 0 ]
-    [ ! -e "$link" ]
-
-    jq '.orca.transcriptSymlink = true' "$primary/.claude-dev/sandbox.json" \
-        > "$BATS_TEST_TMPDIR/sandbox.json"
-    mv "$BATS_TEST_TMPDIR/sandbox.json" "$primary/.claude-dev/sandbox.json"
-
-    run "$ORCA_HOST/bin/claude-orca-shell" --root "$primary" --cwd "$primary" -- zsh
-    [ "$status" -eq 0 ]
-    [ -L "$link" ]
-    [ "$(readlink "$link")" = "$target" ]
-
-    # Idempotent, and a real directory in the slot is never replaced.
-    run "$ORCA_HOST/bin/claude-orca-shell" --root "$primary" --cwd "$primary" -- zsh
-    [ "$status" -eq 0 ]
-    [ -L "$link" ]
-
-    rm -f "$link"
-    mkdir -p "$link"
-    echo keep > "$link/real-transcript.jsonl"
-    run "$ORCA_HOST/bin/claude-orca-shell" --root "$primary" --cwd "$primary" -- zsh
-    unset STUB_SRT_NOEXEC CLAUDE_ORCA_REAL_HOME
-    [ "$status" -eq 0 ]
-    [ ! -L "$link" ]
-    [ -d "$link" ]
-    [ "$(cat "$link/real-transcript.jsonl")" = "keep" ]
 }

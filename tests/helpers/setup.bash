@@ -500,6 +500,12 @@ setup() {
     # derived from $PROJECT_DIR rather than being a place of its own.
     export ORCA_HOST="$PROJECT_DIR/.claude-dev"
 
+    # Merge compat (V1 x V4): tests written before the per-folder move name
+    # the host root CLAUDE_ORCA_HOME. Nothing under scripts/ reads it any
+    # more (tests/layout.bats greps for that), so this is just the old
+    # spelling of $ORCA_HOST for those suites.
+    export CLAUDE_ORCA_HOME="$ORCA_HOST"
+
     # S3 (claude-orca-3sk.15): `claude-dev register` now runs the sandbox
     # self-test (scripts/sandbox/selftest.sh via claude-orca-shell
     # --selftest) as its last step and refuses to hand off on failure.
