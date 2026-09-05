@@ -88,7 +88,12 @@ BLOCK
 }
 
 # Strips any existing marker-delimited block from $1, leaving everything
-# else untouched. A no-op if the file doesn't exist or has no block.
+# else untouched -- including the single blank-line separator
+# rc_install_one puts immediately before the block, which is dropped here
+# too so install-then-uninstall restores the original file byte-for-byte
+# instead of leaving a trailing blank line behind. A no-op if the file
+# doesn't exist or has no block. (One line of lookahead: a line is only
+# printed once we know it isn't the blank line immediately before START.)
 rc_remove_block() {
     local file="$1"
     [ -f "$file" ] || return 0
@@ -97,9 +102,20 @@ rc_remove_block() {
     local tmp
     tmp="$(mktemp "${file}.XXXXXX")"
     awk -v start="$RC_MARKER_START" -v end="$RC_MARKER_END" '
-        $0 == start { skip = 1; next }
-        $0 == end   { skip = 0; next }
-        !skip       { print }
+        $0 == start {
+            skip = 1
+            if (have_pending && pending != "") { print pending }
+            have_pending = 0
+            next
+        }
+        $0 == end { skip = 0; next }
+        skip { next }
+        {
+            if (have_pending) { print pending }
+            pending = $0
+            have_pending = 1
+        }
+        END { if (have_pending) print pending }
     ' "$file" > "$tmp"
     mv "$tmp" "$file"
 }
@@ -125,15 +141,22 @@ rc_install_one() {
 }
 
 cmd_rc_install() {
+    # .zprofile as well as .zshrc: zsh does not read ~/.zshrc for a
+    # non-interactive login shell (`zsh -l -c '...'`), only ~/.zprofile --
+    # see shellrc.zsh and .claude/plans/orca-port.md S3.2. bash already
+    # reads ~/.bash_profile for any login shell, interactive or not, so it
+    # needs no second file.
+    rc_install_one "$HOME/.zprofile" "shellrc.zsh"
     rc_install_one "$HOME/.zshrc" "shellrc.zsh"
     rc_install_one "$HOME/.bash_profile" "shellrc.bash"
-    echo "Installed claude_orca shell hook in ~/.zshrc and ~/.bash_profile"
+    echo "Installed claude_orca shell hook in ~/.zprofile, ~/.zshrc and ~/.bash_profile"
 }
 
 cmd_rc_uninstall() {
+    rc_remove_block "$HOME/.zprofile"
     rc_remove_block "$HOME/.zshrc"
     rc_remove_block "$HOME/.bash_profile"
-    echo "Removed claude_orca shell hook from ~/.zshrc and ~/.bash_profile"
+    echo "Removed claude_orca shell hook from ~/.zprofile, ~/.zshrc and ~/.bash_profile"
 }
 
 cmd_register() {
@@ -197,7 +220,7 @@ Usage:
   claude-dev --update           Update the host-side template and tools
   claude-dev --teardown         Remove a project's claude_orca artifacts
   claude-dev --uninstall        Remove the host-side install
-  claude-dev rc-install         Install the shell hook in ~/.zshrc, ~/.bash_profile
+  claude-dev rc-install         Install the shell hook in ~/.zprofile, ~/.zshrc, ~/.bash_profile
   claude-dev rc-uninstall       Remove the shell hook
   claude-dev --help             Show this help
 HELP

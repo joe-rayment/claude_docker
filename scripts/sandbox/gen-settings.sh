@@ -140,7 +140,16 @@ else
     allow_read=("$primary" "$worktree" "$host" "$real_home/.local/bin" "$real_home/.local/share/claude" "$real_home/.orca/agent-hooks")
 fi
 
-allow_write+=("${extra_write_paths[@]}")
+# Bash 3.2 (macOS /bin/bash) throws "unbound variable" under `set -u` when
+# "${arr[@]}" expands an array that has zero elements -- even just to
+# reference it, not only to assign it. extra_write_paths is exactly that
+# case when sandbox.json's filesystem.extraAllowWrite is []. The
+# `${arr[@]+"${arr[@]}"}` idiom sidesteps it: the `+` test only substitutes
+# its alternate value when the parameter is considered set, so an unset or
+# zero-element array expands to nothing instead of raising, while a
+# non-empty array is unaffected -- verified against a real bash-3.2.57
+# build in tests/shell-entry.bats.
+allow_write+=(${extra_write_paths[@]+"${extra_write_paths[@]}"})
 
 allowed_domains=("${DEFAULT_DOMAINS[@]}")
 while IFS= read -r d; do
