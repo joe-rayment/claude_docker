@@ -220,12 +220,30 @@ if [ -n "$GH_TOKEN_HOST" ]; then
     GH_TOKEN_FLAG="--gh-token-present"
 fi
 
+# S8 (claude-orca-3sk.19): the delegation provider keys, read on the host
+# for the same reason and handled the same way -- masked inside the
+# sandbox, substituted by the proxy only on egress to that provider's own
+# API host. A key that is not set simply yields no flag and no mask.
+# Unquoted on purpose, like $GH_TOKEN_FLAG: always set, and either empty
+# or whole flag words.
+PROVIDER_KEY_FLAGS=""
+if [ -n "${OPENROUTER_API_KEY:-}" ]; then
+    PROVIDER_KEY_FLAGS="$PROVIDER_KEY_FLAGS --openrouter-key-present"
+fi
+if [ -n "${OPENAI_API_KEY:-}" ]; then
+    PROVIDER_KEY_FLAGS="$PROVIDER_KEY_FLAGS --openai-key-present"
+fi
+if [ -n "${GEMINI_API_KEY:-}" ]; then
+    PROVIDER_KEY_FLAGS="$PROVIDER_KEY_FLAGS --gemini-key-present"
+fi
+
 if ! SETTINGS_JSON="$("$GEN_SETTINGS" \
     --primary "$PRIMARY" \
     --worktree "$WORKTREE" \
     --real-home "$REAL_HOME" \
     --host "$HOST" \
     $GH_TOKEN_FLAG \
+    $PROVIDER_KEY_FLAGS \
     --sandbox-json "$SANDBOX_JSON" 2>&1)"; then
     die "invalid sandbox scope for $PRIMARY: $SETTINGS_JSON" 2
 fi
@@ -363,6 +381,11 @@ export PATH="$ENV_PATH"
 if [ -n "$GH_TOKEN_HOST" ]; then
     export GH_TOKEN="$GH_TOKEN_HOST"
 fi
+
+# The delegation provider keys need no re-export: they already carry the
+# names srt's credentials masks name (see the flags above), so they cross
+# into the sandbox as themselves and are masked there. Nothing writes them
+# under the project, and --print-env omits them like GH_TOKEN.
 
 if [ "$MODE" = "selftest" ]; then
     # Extra exports for the selftest process only -- never added to
