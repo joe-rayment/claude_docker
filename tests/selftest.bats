@@ -16,7 +16,7 @@ require_bash32() {
     . "$BATS_TEST_DIRNAME/helpers/ensure_bash32"
 }
 
-ALL_PROBE_NAMES="write-outside-denied read-real-home-denied keychain-denied project-writable worktree-writable sibling-worktree-denied tmp-outside-denied network-blocked-domain network-allowed-domain orca-socket-unreachable sandbox-exec-present srt-version-pinned git-hooks-audit"
+ALL_PROBE_NAMES="write-outside-denied read-real-home-denied keychain-denied project-writable worktree-writable sibling-worktree-denied tmp-outside-denied network-blocked-domain network-allowed-domain orca-socket-unreachable sandbox-exec-present srt-version-pinned git-hooks-audit orca-profile-active home-redirected orca-data-in-folder host-files-write-denied"
 
 # Writes a fake-outcomes file to $1 with every probe set to PASS (=0),
 # except any NAME=CODE overrides passed as additional arguments.
@@ -37,7 +37,7 @@ write_allpass_fake() {
     done
 }
 
-@test "probe table lists exactly the 13 named probes in order" {
+@test "probe table lists exactly the 17 named probes in order" {
     make_project "$PROJECT_DIR"
     selftest="$ORCA_HOST/template/scripts/sandbox/selftest.sh"
 
@@ -57,11 +57,15 @@ network-allowed-domain
 orca-socket-unreachable
 sandbox-exec-present
 srt-version-pinned
-git-hooks-audit"
+git-hooks-audit
+orca-profile-active
+home-redirected
+orca-data-in-folder
+host-files-write-denied"
 
     actual="$(printf '%s\n' "$output" | awk 'NR>1 && NF {print $1}')"
     [ "$actual" = "$expected" ]
-    [ "$(printf '%s\n' "$actual" | wc -l)" -eq 13 ]
+    [ "$(printf '%s\n' "$actual" | wc -l)" -eq 17 ]
 }
 
 @test "runner marks a probe FAIL when its fake outcome is wrong and exits 1" {
@@ -78,7 +82,7 @@ git-hooks-audit"
 
     run jq -e '.probes[] | select(.name == "network-allowed-domain") | .status == "FAIL"' "$results"
     [ "$status" -eq 0 ]
-    run jq -e '.summary == {"pass":12,"fail":1,"na":0}' "$results"
+    run jq -e '.summary == {"pass":16,"fail":1,"na":0}' "$results"
     [ "$status" -eq 0 ]
 
     # every OTHER probe is unaffected -- the fake overrides exactly one.
@@ -171,7 +175,7 @@ git-hooks-audit"
         run jq -e '.timestamp | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")' "$results"
         [ "$status" -eq 0 ]
 
-        run jq -e '.probes | length == 13' "$results"
+        run jq -e '.probes | length == 17' "$results"
         [ "$status" -eq 0 ]
 
         run jq -e '[.probes[] | (keys | sort)] | unique == [["detail","name","status"]]' "$results"
@@ -180,7 +184,7 @@ git-hooks-audit"
         run jq -e '[.probes[].status] | unique == ["PASS"]' "$results"
         [ "$status" -eq 0 ]
 
-        run jq -e '.summary == {"pass":13,"fail":0,"na":0}' "$results"
+        run jq -e '.summary == {"pass":17,"fail":0,"na":0}' "$results"
         [ "$status" -eq 0 ]
     done
 }

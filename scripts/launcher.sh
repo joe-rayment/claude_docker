@@ -7,6 +7,8 @@
 #
 # Usage:
 #   claude-dev [register] [dir]   Register a project (default: current dir)
+#   claude-dev open               Open this folder's Orca, sandboxed
+#   claude-dev --how-to-run       Print how to start this folder's Orca
 #   claude-dev --doctor           Show presence of required tools
 #   claude-dev --update           Pull the template, re-pin the tools, re-sync, re-test
 #   claude-dev --teardown         Snapshot beads, remove this folder's install
@@ -224,6 +226,44 @@ STUB
     chmod +x "$stub"
 }
 
+# V3 (claude-orca-qt9.3): the Seatbelt profile for layer 1, into the
+# host-owned state dir. gen-orca-profile.sh is a pure function that fails
+# closed on anything malformed in sandbox.json, so a bad knob leaves NO
+# profile behind (never a half-written one) and the doctor says so.
+write_orca_profile() {
+    local dir="$1" state="$1/.claude-dev/state"
+    local gen="$SCRIPT_DIR/sandbox/gen-orca-profile.sh"
+    [ -x "$gen" ] || return 1
+    mkdir -p "$state"
+    if "$gen" --project "$dir" --real-home "${CLAUDE_ORCA_REAL_HOME:-$HOME}" \
+            --app "$dir/.claude-dev/app/Orca.app" \
+            --sandbox-json "$dir/.claude-dev/sandbox.json" > "$state/orca.sb.tmp" 2>/dev/null; then
+        mv "$state/orca.sb.tmp" "$state/orca.sb"
+        return 0
+    fi
+    rm -f "$state/orca.sb.tmp"
+    return 1
+}
+
+# V3: the one screen a first-time user needs -- printed at the end of a
+# registration that PASSED its self-test, and by `claude-dev
+# --how-to-run` whenever they want it again. Every line is either
+# something to do or something they will see, in the order it happens.
+print_run_it_block() {
+    local dir="$1"
+    cat <<RUNIT
+
+How to run it:
+  1. Double-click $dir/Orca.app (first time: right-click → Open).
+     Or, from a terminal: ./claude-dev open
+  2. Orca opens with this folder; pick Claude Code.
+  3. The terminal says: [claude-orca] sandboxed: writes limited to $dir
+  4. The first 'claude' run prints a login URL -- open it on this Mac and
+     paste the code back.
+  Check it worked: ./claude-dev --doctor
+RUNIT
+}
+
 cmd_register() {
     local dir="${1:-$PROJECT_SELF}"
     [ -d "$dir" ] || { echo "Error: directory does not exist: $dir" >&2; exit 1; }
@@ -263,6 +303,15 @@ JSON
     # project root -- rebuilt every register, gitignored, host-owned.
     "$SCRIPT_DIR/sandbox/make-launcher-app.sh" --project "$dir" >/dev/null
 
+    # V3 (claude-orca-qt9.3): and the profile that bundle will be started
+    # under. orca-launch regenerates it on every launch -- this is the
+    # same generator run once, host-side, so a folder that has just been
+    # registered can SAY whether layer 1 is ready (claude-dev --doctor)
+    # instead of only finding out at the first double-click.
+    if ! write_orca_profile "$dir"; then
+        echo "Warning: could not generate the Orca sandbox profile -- 'claude-dev --doctor' will show it as missing" >&2
+    fi
+
     # Idempotent and cheap -- covers `claude-dev register` run standalone
     # against an already-bootstrapped host (e.g. a second project), not
     # just the bootstrap.sh call chain.
@@ -277,13 +326,13 @@ JSON
     # ever handing off to Orca -- see .claude/plans/orca-port.md S3.
     if [ "${CLAUDE_ORCA_SKIP_SELFTEST:-0}" = "1" ]; then
         echo "Skipping sandbox self-test (CLAUDE_ORCA_SKIP_SELFTEST=1) -- 'claude-dev --doctor' will show it as not run"
-        echo "Next: open this folder in Orca and pick Claude Code."
+        print_run_it_block "$dir"
         return 0
     fi
 
     local selftest_bin="$SCRIPT_DIR/sandbox/claude-orca-shell"
     if [ -x "$selftest_bin" ] && "$selftest_bin" --selftest --root "$dir" --cwd "$dir"; then
-        echo "Next: open this folder in Orca and pick Claude Code."
+        print_run_it_block "$dir"
         return 0
     fi
 
@@ -297,16 +346,95 @@ JSON
 
 # Prints one row per probe from a selftest.json results file: status,
 # name, detail (see scripts/sandbox/selftest.sh for the schema). Shared
-# by cmd_doctor and cmd_register's failure path.
+# by cmd_doctor and cmd_register's failure path. $2, when given, is a
+# space-separated allowlist of probe names -- the Orca section below
+# reprints just its own four, indented under their own heading.
 doctor_print_probes() {
-    local results="$1" entry name status detail
+    local results="$1" only="${2:-}" entry name status detail indent="  "
+    [ -n "$only" ] && indent="    "
     while IFS= read -r entry; do
         [ -z "$entry" ] && continue
         name="$(jq -r '.name' <<<"$entry" 2>/dev/null)"
+        if [ -n "$only" ]; then
+            case " $only " in
+                *" $name "*) ;;
+                *) continue ;;
+            esac
+        fi
         status="$(jq -r '.status' <<<"$entry" 2>/dev/null)"
         detail="$(jq -r '.detail' <<<"$entry" 2>/dev/null)"
-        printf '  [%-4s] %-28s %s\n' "$status" "$name" "$detail"
+        printf '%s[%-4s] %-28s %s\n' "$indent" "$status" "$name" "$detail"
     done < <(jq -c '.probes[]?' "$results" 2>/dev/null)
+}
+
+# The four layer-1 probes selftest.sh appends after the thirteen srt ones
+# (V3, claude-orca-qt9.3) -- the only ones that can see the Seatbelt
+# profile Orca itself runs under.
+ORCA_LAYER_PROBES="orca-profile-active home-redirected orca-data-in-folder host-files-write-denied"
+
+file_sha256() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | awk '{print $1}'
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$1" | awk '{print $1}'
+    fi
+}
+
+file_mtime() {
+    stat -c '%Y' "$1" 2>/dev/null || stat -f '%m' "$1" 2>/dev/null || true
+}
+
+# V3: what layer 1 looks like in THIS folder -- the app that will start,
+# the profile it will start under, the bundle that starts it, and the
+# last word from inside it. Returns 1 (the caller makes that exit 2) when
+# the bundle or the profile is missing: a folder with either one gone can
+# only be opened unconfined, which is the single thing this template
+# exists to prevent. A missing app is reported but not fatal -- there is
+# nothing to confine yet, and the bootstrap says the same.
+doctor_orca_section() {
+    local root="$1" rc=0 version="" sha="" mtime="" now age
+    local app="$root/.claude-dev/app/Orca.app"
+    local profile="$root/.claude-dev/state/orca.sb"
+    local bundle="$root/Orca.app/Contents/MacOS/Orca"
+    local results="$root/.claude-dev/run/selftest.json"
+
+    echo ""
+    echo "Orca layer ($root):"
+
+    version="$("$SCRIPT_DIR/install-orca.sh" --print-version "$root/.claude-dev" 2>/dev/null || true)"
+    if [ -n "$version" ]; then
+        echo "  app: $version -- $app"
+    else
+        echo "  app: MISSING -- $app (CLAUDE_ORCA_SKIP_ORCA_DMG, or re-run the bootstrap)"
+    fi
+
+    if [ -f "$profile" ]; then
+        sha="$(file_sha256 "$profile")"
+        mtime="$(file_mtime "$profile")"
+        now="$(date +%s)"
+        age=$((now - ${mtime:-0}))
+        printf '  profile: sha256 %s, age %dh %dm -- %s\n' \
+            "${sha:-unknown}" "$((age / 3600))" "$(((age % 3600) / 60))" "$profile"
+    else
+        echo "  profile: MISSING -- $profile (run 'claude-dev register')"
+        rc=1
+    fi
+
+    if [ -x "$bundle" ]; then
+        echo "  launcher: present -- $bundle"
+    else
+        echo "  launcher: MISSING -- $bundle (run 'claude-dev register')"
+        rc=1
+    fi
+
+    if [ -f "$results" ] && command -v jq >/dev/null 2>&1; then
+        echo "  orca-layer probes (from the last self-test):"
+        doctor_print_probes "$results" "$ORCA_LAYER_PROBES"
+    else
+        echo "  orca-layer probes: no self-test results yet ($results)"
+    fi
+
+    return "$rc"
 }
 
 cmd_doctor() {
@@ -415,6 +543,12 @@ WARN
         echo "  keychain: denied (folder-local credentials)"
     fi
 
+    # V3 (claude-orca-qt9.3): layer 1, before layer 2's verdict -- it is
+    # printed even when the self-test never ran, because a folder with no
+    # profile and no bundle is the more basic problem of the two.
+    local orca_rc=0
+    doctor_orca_section "$root" || orca_rc=2
+
     echo ""
     echo "Sandbox self-test ($root):"
     local results="$root/.claude-dev/run/selftest.json"
@@ -432,7 +566,7 @@ WARN
 
     doctor_print_probes "$results"
 
-    local fail_count launch_fail rc=0
+    local fail_count launch_fail rc="$orca_rc"
     fail_count="$(jq -r '.summary.fail // 0' "$results" 2>/dev/null || echo 1)"
     launch_fail="$(jq -r '[.probes[]? | select(.name == "srt-launch")] | length' "$results" 2>/dev/null || echo 1)"
 
@@ -672,12 +806,36 @@ cmd_remove_v1() {
     "$SCRIPT_DIR/v1-leftovers.sh" --remove
 }
 
+# V3 (claude-orca-qt9.3): `./claude-dev open` -- the same launch the
+# Orca.app bundle performs, from a terminal. It has to be backgrounded:
+# orca-launch REPLACES itself with sandbox-exec running a GUI app, so it
+# only returns when the user quits Orca. Its stdio goes to the launch log
+# rather than the terminal for the same reason (and so the shell that
+# started it is free immediately). The log lives in the host-owned state
+# dir, which is correct: this launcher is the host side.
+cmd_open() {
+    local dir="$PROJECT_SELF" launch log
+    launch="$HOST_DIR/bin/orca-launch"
+    [ -x "$launch" ] || launch="$SCRIPT_DIR/sandbox/orca-launch"
+    if [ ! -x "$launch" ]; then
+        echo "Error: no orca-launch in this folder ($HOST_DIR/bin/orca-launch) -- run 'claude-dev register'" >&2
+        return 1
+    fi
+    log="$dir/.claude-dev/state/orca-launch.log"
+    mkdir -p "$dir/.claude-dev/state"
+    nohup "$launch" --project "$dir" >> "$log" 2>&1 </dev/null &
+    echo "Opening Orca for $dir in the background."
+    echo "  log: $log"
+}
+
 cmd_help() {
     cat <<'HELP'
 claude-dev -- claude_orca project launcher (one per folder)
 
 Usage:
   claude-dev [register] [dir]   Register a project (default: this folder)
+  claude-dev open               Open this folder's Orca, sandboxed
+  claude-dev --how-to-run       Print how to start this folder's Orca
   claude-dev --doctor           Show presence of required tools
   claude-dev --update           Pull the template and re-pin srt, Claude Code, Orca
   claude-dev --teardown [--purge-beads]
@@ -692,6 +850,8 @@ HELP
 
 case "${1:-}" in
     register)      shift; cmd_register "${1:-$PROJECT_SELF}" ;;
+    open)          cmd_open || exit $?; exit 0 ;;
+    --how-to-run)  print_run_it_block "$PROJECT_SELF"; exit 0 ;;
     --doctor)      cmd_doctor || exit $?; exit 0 ;;
     --update)      shift; cmd_update "${1:-$PROJECT_SELF}" || exit $?; exit 0 ;;
     --teardown)    shift; cmd_teardown "$@" || exit $?; exit 0 ;;
