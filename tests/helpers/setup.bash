@@ -81,6 +81,41 @@ if [ "$do_install" = "1" ] && [ -n "$prefix" ]; then
     mkdir -p "$prefix/node_modules/@anthropic-ai/sandbox-runtime"
     printf '{"name":"@anthropic-ai/sandbox-runtime","version":"0.0.75"}' \
         > "$prefix/node_modules/@anthropic-ai/sandbox-runtime/package.json"
+
+    # S3 (claude-orca-3sk.15): real `npm install` of a package with a
+    # "bin" field also creates node_modules/.bin/<name> -- claude-dev
+    # register's new sandbox self-test step (claude-orca-shell
+    # --selftest) needs a working srt binary to exist by the time
+    # bootstrap.sh reaches it, so the stub mirrors that instead of
+    # depending on a separately-timed second setup call.
+    mkdir -p "$prefix/node_modules/.bin"
+    cat > "$prefix/node_modules/.bin/srt" <<'SRTSTUB'
+#!/usr/bin/env bash
+{
+    echo "=== srt invocation ==="
+    printf '%s\n' "$@"
+    echo "=== end argv ==="
+} >> "$STUB_LOG"
+env > "$STUB_ENV"
+
+command=""
+prev=""
+for arg in "$@"; do
+    if [ "$prev" = "-c" ]; then
+        command="$arg"
+    fi
+    prev="$arg"
+done
+
+if [ "${STUB_SRT_NOEXEC:-}" = "1" ]; then
+    exit 0
+fi
+if [ -n "$command" ]; then
+    exec sh -c "$command"
+fi
+exit 0
+SRTSTUB
+    chmod +x "$prefix/node_modules/.bin/srt"
 fi
 exit 0
 STUB
@@ -179,6 +214,30 @@ setup() {
 
     export PROJECT_DIR="$BATS_TEST_TMPDIR/project"
     mkdir -p "$PROJECT_DIR"
+
+    # S3 (claude-orca-3sk.15): `claude-dev register` now runs the sandbox
+    # self-test (scripts/sandbox/selftest.sh via claude-orca-shell
+    # --selftest) as its last step and refuses to hand off on failure.
+    # Every probe faked to PASS by default so the pre-existing S1/S2
+    # registration cases -- which know nothing about self-tests -- keep
+    # passing unmodified; a test that wants to exercise the failure path
+    # overrides one line (see tests/bootstrap.bats and tests/selftest.bats).
+    export CLAUDE_ORCA_SELFTEST_FAKE="$BATS_TEST_TMPDIR/selftest-fake-allpass.txt"
+    {
+        echo "write-outside-denied=0"
+        echo "read-real-home-denied=0"
+        echo "keychain-denied=0"
+        echo "project-writable=0"
+        echo "worktree-writable=0"
+        echo "sibling-worktree-denied=0"
+        echo "tmp-outside-denied=0"
+        echo "network-blocked-domain=0"
+        echo "network-allowed-domain=0"
+        echo "orca-socket-unreachable=0"
+        echo "sandbox-exec-present=0"
+        echo "srt-version-pinned=0"
+        echo "git-hooks-audit=0"
+    } > "$CLAUDE_ORCA_SELFTEST_FAKE"
 }
 
 # --- S2 fixtures (claude-orca-3sk.14) --------------------------------------
@@ -195,9 +254,14 @@ make_project() {
     git -C "$dir" -c user.email=test@example.com -c user.name=test \
         commit --quiet --allow-empty -m init >/dev/null 2>&1
 
-    bash "$REPO_ROOT/bootstrap.sh" "$dir" >/dev/null
-
+    # S3 (claude-orca-3sk.15): bootstrap.sh's own final step now runs
+    # `claude-dev register`, which runs the sandbox self-test -- so the
+    # working srt stub must exist BEFORE bootstrap.sh runs, not after.
+    # (The stubbed npm install a few lines up in bootstrap.sh only
+    # fabricates a package.json, never an executable at .bin/srt.)
     write_stub_srt "$CLAUDE_ORCA_HOME/srt/node_modules/.bin/srt"
+
+    bash "$REPO_ROOT/bootstrap.sh" "$dir" >/dev/null
 }
 
 # Adds a linked worktree as a sibling of $1 (Orca's default layout:
@@ -285,9 +349,17 @@ ensure_real_srt() {
 # `git pull --ff-only` legitimately rewrites reflogs/FETCH_HEAD (with a
 # fresh timestamp) even when nothing new was fetched, so including .git
 # would make an otherwise-true no-op look like a change.
+#
+# S3 (claude-orca-3sk.15) also excludes selftest.json/srt-debug-*.log for
+# the same reason: `claude-dev register` now runs the sandbox self-test
+# every time, and its results carry a live UTC timestamp (selftest.json)
+# and captured stderr (srt-debug-*.log) that legitimately differ run to
+# run even when nothing else changed.
 tree_checksum() {
     {
-        find "$1" -not -path '*/.git*' -type f -exec sha256sum {} + 2>/dev/null
+        find "$1" -not -path '*/.git*' \
+            -not -name 'selftest.json' -not -name 'srt-debug-*.log' \
+            -type f -exec sha256sum {} + 2>/dev/null
         find "$1" -not -path '*/.git*' -type l 2>/dev/null | while IFS= read -r link; do
             printf 'SYMLINK %s -> %s\n' "$link" "$(readlink "$link")"
         done
