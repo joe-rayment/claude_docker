@@ -1,10 +1,16 @@
 #!/usr/bin/env bats
 #
-# V2b acceptance contract (claude-orca-qt9.8) -- FROZEN from RED-AT
-# onward. The services block of the Orca-layer Seatbelt profile: the Mac
-# Keychain is unreachable from the whole folder by default, the opt-in
-# changes nothing else, an invalid value fails closed, and the doctor
-# says which mode the folder is in.
+# V2b acceptance contract (claude-orca-qt9.8), delivered and closed. The
+# services block of the Orca-layer Seatbelt profile: the Mac Keychain is
+# unreachable from the whole folder by default, the opt-in changes nothing
+# else, an invalid value fails closed, and the doctor says which mode the
+# folder is in.
+#
+# The last case was written against the pre-V1 central install, where
+# doctor resolved the project from $PWD. V1 (claude-orca-qt9.1) made the
+# per-folder launcher report its OWN folder instead, so that leg now
+# asserts the V1 rule; the "no row at all" half moved to the repo-checkout
+# launcher, which is the only launcher left that belongs to no folder.
 #
 # Linux cannot exercise Seatbelt, so these cases assert the generated
 # text -- which is also the only artifact the Mac probes (V3) will read.
@@ -139,10 +145,19 @@ rules_only() {
     [[ "$output" == *"keychain: shared with macOS (orca.keychain=true)"* ]]
     [[ "$output" != *"folder-local credentials"* ]]
 
-    # It is the CWD project's mode: outside one there is no such row.
+    # V1 (claude-orca-qt9.1): it is THIS FOLDER's mode, and the row
+    # follows the launcher rather than $PWD -- a per-folder launcher
+    # reports its own project wherever it is run from. Same rule the
+    # Orca CLI-mode row obeys (tests/orca-cli-mode.bats).
     outside="$BATS_TEST_TMPDIR/outside"
     mkdir -p "$outside"
     run bash -c "cd '$outside' && '$doctor' --doctor"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"keychain: shared with macOS (orca.keychain=true)"* ]]
+
+    # ... and a launcher that is not a per-folder install at all (the repo
+    # checkout), run outside any project, prints the tool table alone.
+    run bash -c "cd '$outside' && '$REPO_ROOT/scripts/launcher.sh' --doctor"
     [ "$status" -eq 0 ]
     [[ "$output" != *"keychain:"* ]]
 }
