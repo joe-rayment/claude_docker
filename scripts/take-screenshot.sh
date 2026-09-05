@@ -27,10 +27,9 @@
 #
 # Network: fetching chromium needs cdn.playwright.dev and
 # playwright.download.prss.microsoft.com (playwright-core's
-# PLAYWRIGHT_CDN_MIRRORS) on the sandbox allowlist. They are not in
-# gen-settings.sh's defaults -- add them per project in
-# .claude-dev/sandbox.json under network.extraAllowedDomains, then run
-# `npx playwright install chromium` once.
+# PLAYWRIGHT_CDN_MIRRORS) on the sandbox allowlist. Both are in
+# gen-settings.sh's DEFAULT_DOMAINS, so nothing per-project is needed --
+# just run `npx playwright install chromium` once.
 #
 # FALLBACK (documented, not hypothetical): headless chromium may refuse to
 # start under a nested Seatbelt profile on macOS. If it does, do not spend the

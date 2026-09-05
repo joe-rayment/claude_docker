@@ -43,6 +43,8 @@ DEFAULT_DOMAINS=(
     registry.npmjs.org
     pypi.org
     files.pythonhosted.org
+    cdn.playwright.dev
+    playwright.download.prss.microsoft.com
 )
 
 # Host-only pattern (no protocol/path/port), lowercase, wildcard only as a

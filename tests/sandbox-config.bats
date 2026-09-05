@@ -151,7 +151,7 @@ GEN_SETTINGS() {
     [ "$status" -eq 0 ]
 
     allowed="$(jq -c '.network.allowedDomains' <<<"$output")"
-    expected='["api.anthropic.com","claude.ai","console.anthropic.com","platform.claude.com","statsig.anthropic.com","*.sentry.io","github.com","api.github.com","*.githubusercontent.com","registry.npmjs.org","pypi.org","files.pythonhosted.org","example.com","*.internal.example.org"]'
+    expected='["api.anthropic.com","claude.ai","console.anthropic.com","platform.claude.com","statsig.anthropic.com","*.sentry.io","github.com","api.github.com","*.githubusercontent.com","registry.npmjs.org","pypi.org","files.pythonhosted.org","cdn.playwright.dev","playwright.download.prss.microsoft.com","example.com","*.internal.example.org"]'
     [ "$allowed" = "$expected" ]
 
     run jq -e '.network.strictAllowlist == true
