@@ -13,3 +13,7 @@ attachments/
 .claude/logs/
 .claude/settings.local.json
 .DS_Store
+
+# Test-only: a real (non-stub) srt install, fetched on demand by
+# ensure_real_srt() in tests/helpers/setup.bash for schema validation.
+tests/.cache/
