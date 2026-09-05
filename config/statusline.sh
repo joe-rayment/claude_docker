@@ -15,8 +15,10 @@ bar=""
 for ((i=0; i<filled; i++)); do bar+="●"; done
 for ((i=0; i<empty; i++)); do bar+="○"; done
 
-# Fetch usage limits (cached 60s)
-cache="/tmp/claude-usage-cache.json"
+# Fetch usage limits (cached 60s). STATUSLINE_CACHE_FILE overrides the path
+# (tests) -- the default is a real machine-wide file shared by every
+# concurrent session, which a test must never read or clobber.
+cache="${STATUSLINE_CACHE_FILE:-/tmp/claude-usage-cache.json}"
 max_age=60
 refresh=1
 
