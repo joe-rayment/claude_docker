@@ -91,7 +91,7 @@ without_managed() {
     # Host-side, user-owned hooks are never imported.
     ! grep -q 'host-only-session-start' "$config_dir/settings.json"
     ! grep -q 'host-only-notification' "$config_dir/settings.json"
-    [ "$(jq '.hooks.Notification | length' "$config_dir/settings.json")" = "null" ]
+    [ "$(jq '.hooks.Notification | length' "$config_dir/settings.json")" = "0" ]
 }
 
 @test "our hooks are kept and not duplicated across two merges" {
