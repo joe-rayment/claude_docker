@@ -184,6 +184,9 @@ JSON
     cmd_rc_install >/dev/null
 
     echo "Project '$project_name' registered at $dir"
+    # S6 (claude-orca-3sk.18): one-time Orca setting -- worktrees created
+    # outside the project folder are outside the sandbox's write scope.
+    echo "Orca: Settings → Repository → worktree base path: $dir/.orca-worktrees (keeps worktrees inside the sandboxed folder)"
 
     # S3 (claude-orca-3sk.15): prove the sandbox from the inside before
     # ever handing off to Orca -- see .claude/plans/orca-port.md S3.
