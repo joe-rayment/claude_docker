@@ -219,6 +219,17 @@ make_real_home() {
     printf '%s\n' "$home"
 }
 
+# S2b (claude-orca-3sk.24): seeds $HOME's three shell rc files with one
+# identical pre-existing line each (e.g. a Homebrew shellenv eval),
+# standing in for a user's existing dotfiles that claude-dev rc-install
+# must always append AFTER, never disturb.
+seed_pre_existing_rc_line() {
+    local line="$1"
+    printf '%s\n' "$line" > "$HOME/.zprofile"
+    printf '%s\n' "$line" > "$HOME/.zshrc"
+    printf '%s\n' "$line" > "$HOME/.bash_profile"
+}
+
 # Canonical absolute path -- matches how gen-settings.sh/claude-orca-shell
 # resolve every path (`cd ... && pwd -P`), so expected-value strings built
 # in tests agree with what the scripts under test actually produce.

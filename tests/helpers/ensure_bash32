@@ -1,0 +1,138 @@
+#!/usr/bin/env bash
+#
+# tests/helpers/ensure_bash32 -- ensures a real GNU bash 3.2 is on hand for
+# tests/shell-entry.bats (claude-orca-3sk.24), which must observe actual
+# bash-3.2 semantics -- e.g. `arr+=("${empty[@]}")` throwing "unbound
+# variable" under `set -u`, a bug the host's bash (>= 4) does not have --
+# not a bash-version-agnostic stand-in for it. Sets/exports $BASH32 to a
+# working, `--version`-confirmed 3.2.x binary.
+#
+# Sourceable (`. helpers/ensure_bash32`, e.g. from a bats setup_file, which
+# then exports BASH32 for every test in the file) or directly executable
+# (prints the resolved path on stdout). The shell-entry contract forbids
+# "# skip" lines, so this fails loudly -- a message on stderr plus a
+# non-zero return (sourced) or exit (executed) -- rather than ever silently
+# falling back to the host bash.
+#
+# Resolution order, cheapest first:
+#   0. the system bash is already 3.2 (true on a real Mac -- /bin/bash)
+#   1. tests/.cache/bash32/bin/bash (gitignored; left by a previous run)
+#   2. a prebuilt install already sitting in this session's scratchpad,
+#      built by this same bead (CLAUDE_ORCA_BASH32_PREBUILT overrides it)
+#   3. build GNU bash-3.2.57 from source (ftp.gnu.org) into the cache --
+#      needs a C compiler and yacc/bison. The tarball's builtins/*.c are
+#      generated from old K&R-style .def files whose prototypes
+#      (`void write_endifs ();` = "unspecified args" pre-C23) fail to
+#      compile as errors under gcc >= 14's default C23 dialect, hence
+#      -std=gnu89 on both the host and *_FOR_BUILD compiler flags -- bash's
+#      build uses a separately-flagged host tool (mkbuiltins) to generate
+#      those .c files, so CFLAGS alone (without CFLAGS_FOR_BUILD) is not
+#      enough.
+
+_ensure_bash32_have_32() {
+    [ -x "$1" ] || return 1
+    "$1" --version 2>/dev/null | head -1 | grep -q ' version 3\.2'
+}
+
+_ensure_bash32() {
+    local repo_root cache_dir prebuilt tarball_url build_dir src_dir permissive build_triple
+
+    if _ensure_bash32_have_32 /bin/bash; then
+        BASH32=/bin/bash
+        return 0
+    fi
+
+    repo_root="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/../.." && pwd)"
+    cache_dir="$repo_root/tests/.cache/bash32"
+
+    if _ensure_bash32_have_32 "$cache_dir/bin/bash"; then
+        BASH32="$cache_dir/bin/bash"
+        return 0
+    fi
+
+    rm -rf "$cache_dir"
+    mkdir -p "$cache_dir"
+
+    prebuilt="${CLAUDE_ORCA_BASH32_PREBUILT:-/tmp/claude-1000/-workspace/7037bfad-67da-4b5e-9adb-944b260fc264/scratchpad/bash32/install}"
+    if _ensure_bash32_have_32 "$prebuilt/bin/bash"; then
+        if cp -R "$prebuilt/." "$cache_dir/" && _ensure_bash32_have_32 "$cache_dir/bin/bash"; then
+            BASH32="$cache_dir/bin/bash"
+            return 0
+        fi
+        echo "ensure_bash32: copy from prebuilt $prebuilt failed or didn't verify -- falling back to a source build" >&2
+    fi
+
+    # --- build from source ------------------------------------------------
+
+    if ! command -v gcc >/dev/null 2>&1 && ! command -v cc >/dev/null 2>&1; then
+        echo "ensure_bash32: no C compiler (gcc/cc) on PATH -- cannot build GNU bash 3.2.57" >&2
+        return 1
+    fi
+
+    if ! command -v yacc >/dev/null 2>&1 && ! command -v bison >/dev/null 2>&1; then
+        sudo -n apt-get install -y bison >/dev/null 2>&1
+    fi
+    if ! command -v yacc >/dev/null 2>&1 && ! command -v bison >/dev/null 2>&1; then
+        echo "ensure_bash32: no yacc/bison on PATH -- cannot regenerate bash-3.2.57's patched parser" >&2
+        return 1
+    fi
+
+    build_dir="$(mktemp -d)"
+    src_dir="bash-3.2.57"
+    tarball_url="${CLAUDE_ORCA_BASH32_URL:-https://ftp.gnu.org/gnu/bash/bash-3.2.57.tar.gz}"
+
+    if ! (cd "$build_dir" && curl -fsSL "$tarball_url" -o bash-3.2.57.tar.gz) 2>/dev/null \
+        && ! (cd "$build_dir" && wget -q "$tarball_url" -O bash-3.2.57.tar.gz) 2>/dev/null; then
+        echo "ensure_bash32: failed to download $tarball_url (no curl/wget, or no network)" >&2
+        rm -rf "$build_dir"
+        return 1
+    fi
+
+    if ! (cd "$build_dir" && tar xzf bash-3.2.57.tar.gz); then
+        echo "ensure_bash32: failed to extract bash-3.2.57.tar.gz" >&2
+        rm -rf "$build_dir"
+        return 1
+    fi
+
+    # config.guess in this tarball predates aarch64 (and most other current
+    # triples) and can't guess the build system; --build sidesteps it
+    # instead of patching the script. The mkbuiltins/mksyntax/etc. host
+    # tools are old K&R C -- see the file header for why both CFLAGS and
+    # CFLAGS_FOR_BUILD need the permissive dialect.
+    build_triple="$(uname -m)-unknown-linux-gnu"
+    permissive="-std=gnu89 -fcommon -Wno-implicit-function-declaration -Wno-implicit-int -g -O0"
+
+    if ! (cd "$build_dir/$src_dir" \
+            && ./configure --build="$build_triple" --prefix="$cache_dir" \
+                   CC=gcc CFLAGS="$permissive" CFLAGS_FOR_BUILD="$permissive" \
+                   >configure.log 2>&1 \
+            && make -j4 >make.log 2>&1 \
+            && make install >install.log 2>&1); then
+        echo "ensure_bash32: building GNU bash-3.2.57 failed -- logs under $build_dir/$src_dir/{configure,make,install}.log" >&2
+        tail -n 40 "$build_dir/$src_dir/make.log" 2>/dev/null >&2
+        return 1
+    fi
+
+    rm -rf "$build_dir"
+
+    if _ensure_bash32_have_32 "$cache_dir/bin/bash"; then
+        BASH32="$cache_dir/bin/bash"
+        return 0
+    fi
+
+    echo "ensure_bash32: built a bash at $cache_dir/bin/bash but it doesn't report version 3.2" >&2
+    return 1
+}
+
+if _ensure_bash32; then
+    export BASH32
+    if [ "${BASH_SOURCE[0]:-x}" = "${0:-y}" ]; then
+        printf '%s\n' "$BASH32"
+    fi
+else
+    echo "ensure_bash32: FATAL -- no GNU bash 3.2 could be obtained; the shell-entry contract forbids skipping this check" >&2
+    if [ "${BASH_SOURCE[0]:-x}" = "${0:-y}" ]; then
+        exit 1
+    fi
+    return 1 2>/dev/null || exit 1
+fi
