@@ -36,6 +36,13 @@ setup_file() {
     [ -f "$REPO_ROOT/bootstrap.sh" ] && cp "$REPO_ROOT/bootstrap.sh" "$TEMPLATE_SRC/bootstrap.sh"
     [ -f "$REPO_ROOT/Brewfile" ] && cp "$REPO_ROOT/Brewfile" "$TEMPLATE_SRC/Brewfile"
     [ -d "$REPO_ROOT/scripts" ] && cp -R "$REPO_ROOT/scripts" "$TEMPLATE_SRC/scripts"
+    # S4 (claude-orca-3sk.4): config-sync's source and the bin/ symlinks it
+    # and tier-gate/tier-set etc. are resolved through -- `cp -R` preserves
+    # bin/<name>'s relative symlinks (e.g. bin/tier-set -> ../scripts/
+    # tier-set.sh) as symlinks, so they still resolve correctly once re-rooted
+    # under $TEMPLATE_SRC and, later, under $CLAUDE_ORCA_HOME/template.
+    [ -d "$REPO_ROOT/config" ] && cp -R "$REPO_ROOT/config" "$TEMPLATE_SRC/config"
+    [ -d "$REPO_ROOT/bin" ] && cp -R "$REPO_ROOT/bin" "$TEMPLATE_SRC/bin"
 
     git -C "$TEMPLATE_SRC" add -A >/dev/null 2>&1
     git -C "$TEMPLATE_SRC" \
