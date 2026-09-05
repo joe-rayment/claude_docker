@@ -353,7 +353,7 @@ probe the user sees in `claude-dev --doctor`.
 
 ### 9.5 Status at 2026-09-05 (v2 complete)
 
-All six v2 slices are in on `main`; `./run-tests.sh` is **711 green, 0 skipped**.
+All eight v2 slices are in on `main`; `./run-tests.sh` is **711 green, 0 skipped**.
 
 What landed, by slice: **V1** the per-folder layout — bootstrap and launcher rewritten around
 `<project>/.claude-dev/{template,srt,claude,app,bin,home,tmp,state,run}`, the Orca DMG pinned by
