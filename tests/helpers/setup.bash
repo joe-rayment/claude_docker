@@ -80,19 +80,39 @@ echo "npm $*" >> "$STUB_LOG"
 
 prefix=""
 do_install=0
+spec=""
 prev=""
 for arg in "$@"; do
     case "$arg" in
         install) do_install=1 ;;
         --prefix=*) prefix="${arg#--prefix=}" ;;
+        @*/*@*) spec="$arg" ;;
     esac
     [ "$prev" = "--prefix" ] && prefix="$arg"
     prev="$arg"
 done
 
+# The version actually asked for, so a moved pin is observable in the
+# fabricated package.json and not just in $STUB_LOG.
+want_version="${spec##*@}"
+
+# V1 (claude-orca-qt9.1): Claude Code now installs per folder through the
+# same `npm --prefix` path as srt -- fabricate its package.json and the
+# node_modules/.bin/claude executable a real install would leave.
+if [ "$do_install" = "1" ] && [ -n "$prefix" ] && [ "${spec#*claude-code}" != "$spec" ]; then
+    mkdir -p "$prefix/node_modules/@anthropic-ai/claude-code" "$prefix/node_modules/.bin"
+    printf '{"name":"@anthropic-ai/claude-code","version":"%s"}' "$want_version" \
+        > "$prefix/node_modules/@anthropic-ai/claude-code/package.json"
+    printf '#!/usr/bin/env bash\necho "claude-code %s"\n' "$want_version" \
+        > "$prefix/node_modules/.bin/claude"
+    chmod +x "$prefix/node_modules/.bin/claude"
+    exit 0
+fi
+
 if [ "$do_install" = "1" ] && [ -n "$prefix" ]; then
     mkdir -p "$prefix/node_modules/@anthropic-ai/sandbox-runtime"
-    printf '{"name":"@anthropic-ai/sandbox-runtime","version":"0.0.75"}' \
+    printf '{"name":"@anthropic-ai/sandbox-runtime","version":"%s"}' \
+        "${want_version:-0.0.75}" \
         > "$prefix/node_modules/@anthropic-ai/sandbox-runtime/package.json"
 
     # S3 (claude-orca-3sk.15): real `npm install` of a package with a
@@ -155,6 +175,72 @@ if [ "$1" = "api" ]; then
     echo ""
     exit 0
 fi
+exit 0
+STUB
+    chmod +x "$1"
+}
+
+# V1 (claude-orca-qt9.1): the Orca DMG download. Only a download (`-o
+# <file>`) is faked -- every other curl call is handed to the real binary
+# so suites that probe reachability keep their unstubbed behaviour.
+write_stub_curl() {
+    cat > "$1" <<'STUB'
+#!/usr/bin/env bash
+out=""
+prev=""
+for arg in "$@"; do
+    [ "$prev" = "-o" ] && out="$arg"
+    prev="$arg"
+done
+
+if [ -z "$out" ]; then
+    PATH="${ORIGINAL_PATH:-/usr/bin:/bin}" exec curl "$@"
+fi
+
+echo "curl $*" >> "$STUB_LOG"
+mkdir -p "$(dirname "$out")"
+printf 'FAKE-DMG %s\n' "${STUB_DMG_BODY:-orca}" > "$out"
+exit "${STUB_CURL_EXIT:-0}"
+STUB
+    chmod +x "$1"
+}
+
+# V1: `hdiutil attach -nobrowse -readonly -mountpoint <mnt> <dmg>` fakes a
+# mounted Orca.app (Info.plist carrying $STUB_ORCA_DMG_VERSION); `detach`
+# unmounts it. macOS-only tool, so there is nothing to fall back to.
+write_stub_hdiutil() {
+    cat > "$1" <<'STUB'
+#!/usr/bin/env bash
+echo "hdiutil $*" >> "$STUB_LOG"
+
+mnt=""
+prev=""
+for arg in "$@"; do
+    [ "$prev" = "-mountpoint" ] && mnt="$arg"
+    prev="$arg"
+done
+
+case "$1" in
+    attach)
+        [ -n "$mnt" ] || exit 1
+        [ "${STUB_HDIUTIL_EXIT:-0}" = "0" ] || exit "$STUB_HDIUTIL_EXIT"
+        mkdir -p "$mnt/Orca.app/Contents/MacOS"
+        printf 'fake orca binary\n' > "$mnt/Orca.app/Contents/MacOS/Orca"
+        chmod +x "$mnt/Orca.app/Contents/MacOS/Orca"
+        cat > "$mnt/Orca.app/Contents/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+	<key>CFBundleShortVersionString</key>
+	<string>${STUB_ORCA_DMG_VERSION:-1.4.197}</string>
+</dict>
+</plist>
+PLIST
+        ;;
+    detach)
+        [ -d "$2" ] && rm -rf "$2"
+        ;;
+esac
 exit 0
 STUB
     chmod +x "$1"
@@ -403,10 +489,17 @@ setup() {
     write_stub_npm  "$STUB_BIN/npm"
     write_stub_gh   "$STUB_BIN/gh"
     write_stub_node "$STUB_BIN/node"
+    write_stub_curl "$STUB_BIN/curl"
+    write_stub_hdiutil "$STUB_BIN/hdiutil"
     export PATH="$STUB_BIN:$PATH"
 
     export PROJECT_DIR="$BATS_TEST_TMPDIR/project"
     mkdir -p "$PROJECT_DIR"
+
+    # V1 (claude-orca-qt9.1): the per-folder host root -- everything the
+    # bootstrap installs lives under the project itself now, so this is
+    # derived from $PROJECT_DIR rather than being a place of its own.
+    export ORCA_HOST="$PROJECT_DIR/.claude-dev"
 
     # S3 (claude-orca-3sk.15): `claude-dev register` now runs the sandbox
     # self-test (scripts/sandbox/selftest.sh via claude-orca-shell
