@@ -294,6 +294,33 @@ cmd_doctor() {
     fi
     [ -n "$root" ] || return 0
 
+    # S9 (claude-orca-3sk.20): the Orca CLI mode is opt-in because the
+    # socket it opens is a remote control for an UNSANDBOXED app. Whenever
+    # it is on, say so and name what is still reachable -- a mode whose
+    # residual surface is only written down in a plan is not opt-in in any
+    # useful sense. Printed for the CWD project only, and never a failure
+    # by itself: the exit code below is still the self-test's verdict.
+    local orca_cli="false"
+    if [ -f "$root/.claude-dev/sandbox.json" ] && command -v jq >/dev/null 2>&1; then
+        orca_cli="$(jq -r '.orca.cli // false' "$root/.claude-dev/sandbox.json" 2>/dev/null || true)"
+    fi
+    if [ "$orca_cli" = "true" ]; then
+        cat <<WARN
+
+Orca CLI mode is ON for $root (.claude-dev/sandbox.json: orca.cli).
+  The sandbox can reach Orca's control socket, and that socket drives an
+  app that is NOT sandboxed:
+    - 'orca terminal create --command ...' runs outside this sandbox unless
+      the shell it opens lands in one of this project's worktrees
+    - 'orca goto' / 'orca exec' drive an unsandboxed browser
+    - automations and artifacts run outside the sandbox too
+  Harden in Orca's settings while this is on:
+    - Floating Workspace: off
+    - public artifact links: off
+    - no per-repo setup hooks in orca.yaml
+WARN
+    fi
+
     echo ""
     echo "Sandbox self-test ($root):"
     local results="$root/.claude-dev/state/selftest.json"
