@@ -136,6 +136,15 @@ if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
     [ "${STUB_GH_UNAUTH:-}" = "1" ] && exit 1
     exit 0
 fi
+# S5 (claude-orca-3sk.17): the wrapper reads the GitHub token on the HOST
+# side via `gh auth token` and passes it to srt as GH_TOKEN. Fixed fake
+# value (override with STUB_GH_TOKEN); STUB_GH_UNAUTH=1 stands in for "no
+# token on this machine" (real gh exits nonzero, prints nothing).
+if [ "$1" = "auth" ] && [ "$2" = "token" ]; then
+    [ "${STUB_GH_UNAUTH:-}" = "1" ] && exit 1
+    printf '%s\n' "${STUB_GH_TOKEN:-gho_stubfaketoken0123456789abcdef}"
+    exit 0
+fi
 if [ "$1" = "api" ]; then
     echo ""
     exit 0

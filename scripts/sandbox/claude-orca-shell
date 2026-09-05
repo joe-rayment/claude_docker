@@ -31,7 +31,15 @@
 # srt's stderr (SRT_DEBUG=true, the generated Seatbelt profile) is saved
 # to <primary>/.claude-dev/state/srt-debug-<sha1>.log for audit.
 #
-# Exit codes: 0 ok; 2 invalid input / scope rejected by gen-settings.sh;
+# Auth (S5, claude-orca-3sk.17): --check also reports
+# "auth: credentials present|absent" for Claude Code's own
+# <config dir>/.credentials.json; run mode prints the guided first-run
+# line while that file is absent, runs bin/auth-guard before touching
+# anything (fatal on ANTHROPIC_API_KEY/_AUTH_TOKEN/_BASE_URL unless
+# CLAUDE_DEV_ALLOW_API_BILLING=1), and passes the host's `gh auth token`
+# into srt as a masked GH_TOKEN.
+#
+# Exit codes: 0 ok; 1 auth-guard veto; 2 invalid input / scope rejected by gen-settings.sh;
 # 3 already sandboxed (CLAUDE_ORCA_SANDBOXED=1); 4 srt/sandbox-exec
 # missing.
 
@@ -53,6 +61,7 @@ resolve_script_path() {
 SCRIPT_PATH="$(resolve_script_path)"
 SANDBOX_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
 GEN_SETTINGS="$SANDBOX_DIR/gen-settings.sh"
+TEMPLATE_DIR="$(cd "$SANDBOX_DIR/../.." && pwd)"
 ROOT_BIN="$SANDBOX_DIR/claude-orca-root"
 
 # HOST = ~/.claude-orca (override: CLAUDE_ORCA_HOME), independent of
@@ -193,11 +202,30 @@ fi
 
 SANDBOX_JSON="$PRIMARY/.claude-dev/sandbox.json"
 
+# S5 (claude-orca-3sk.17): the GitHub token is read HERE, on the host,
+# where the Keychain and ~/.config/gh still exist -- inside the sandbox
+# neither does. It is handed to srt through the process environment only
+# (masked there via credentials.envVars, see gen-settings.sh), never
+# written under the project and never echoed: --print-env deliberately
+# omits it. `gh auth token` failing (not installed, not logged in) is not
+# an error -- the project simply runs without a token.
+GH_TOKEN_HOST=""
+if command -v gh >/dev/null 2>&1; then
+    GH_TOKEN_HOST="$(gh auth token 2>/dev/null || true)"
+fi
+# Unquoted on purpose: always set (so `set -u` is happy) and either empty
+# -- expanding to no argument at all -- or exactly one flag word.
+GH_TOKEN_FLAG=""
+if [ -n "$GH_TOKEN_HOST" ]; then
+    GH_TOKEN_FLAG="--gh-token-present"
+fi
+
 if ! SETTINGS_JSON="$("$GEN_SETTINGS" \
     --primary "$PRIMARY" \
     --worktree "$WORKTREE" \
     --real-home "$REAL_HOME" \
     --host "$HOST" \
+    $GH_TOKEN_FLAG \
     --sandbox-json "$SANDBOX_JSON" 2>&1)"; then
     die "invalid sandbox scope for $PRIMARY: $SETTINGS_JSON" 2
 fi
@@ -243,11 +271,31 @@ if [ "$MODE" = "print-env" ]; then
     exit 0
 fi
 
+# S5: Claude Code's own OAuth credentials, written by the guided first run
+# INSIDE the sandbox (Apple Events are denied and there is no `open`, so
+# the login URL is printed and the code pasted back). 0600, under the
+# faked HOME's config dir -- never in the repo, never in the Keychain.
+CREDENTIALS_FILE="$ENV_CLAUDE_CONFIG_DIR/.credentials.json"
+
 if [ "$MODE" = "check" ]; then
+    if [ -f "$CREDENTIALS_FILE" ]; then
+        echo "auth: credentials present"
+    else
+        echo "auth: credentials absent"
+    fi
     exit 0
 fi
 
 # --- MODE = run / selftest: side effects start here -----------------------
+
+# S5: billing hard-guard, before anything is written and before srt is
+# ever reached -- ANTHROPIC_API_KEY/_AUTH_TOKEN/_BASE_URL silently flip
+# Claude Code from subscription to API billing. Run mode only: --selftest
+# exits with the self-test's own probe status, which a guard veto must not
+# impersonate.
+if [ "$MODE" = "run" ] && [ -x "$TEMPLATE_DIR/bin/auth-guard" ]; then
+    "$TEMPLATE_DIR/bin/auth-guard" || die "auth-guard refused to start this shell" 1
+fi
 
 mkdir -p "$SANDBOX_HOME" "$SANDBOX_TMP" "$PRIMARY/.claude-dev/state"
 
@@ -267,6 +315,13 @@ export CLAUDE_ORCA_SANDBOXED=1
 export CLAUDE_ORCA_REAL_HOME="$REAL_HOME"
 export CLAUDE_ORCA_ROOT="$PRIMARY"
 export PATH="$ENV_PATH"
+
+# Env-only, and only when there is something to pass: srt masks it inside
+# the sandbox (credentials.envVars) and injects the real value on egress
+# to github.com/api.github.com.
+if [ -n "$GH_TOKEN_HOST" ]; then
+    export GH_TOKEN="$GH_TOKEN_HOST"
+fi
 
 if [ "$MODE" = "selftest" ]; then
     # Extra exports for the selftest process only -- never added to
@@ -320,6 +375,10 @@ if [ "$PRIMARY" = "$WORKTREE" ]; then
     echo "[claude-orca] sandboxed: writes limited to $PRIMARY" >&2
 else
     echo "[claude-orca] sandboxed: writes limited to $WORKTREE (+ $PRIMARY/.git, .beads, .claude-dev)" >&2
+fi
+
+if [ ! -f "$CREDENTIALS_FILE" ]; then
+    echo "[claude-orca] no Claude credentials yet -- run 'claude', open the printed URL on the Mac, paste the code; stored at $CREDENTIALS_FILE" >&2
 fi
 
 if [ "$HAVE_SHELL_CMD" -eq 1 ]; then
