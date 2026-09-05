@@ -62,8 +62,11 @@ GEN_SETTINGS() {
         --sandbox-json "$PROJECT_DIR/.claude-dev/sandbox.json"
     [ "$status" -eq 0 ]
 
+    # V2d (claude-orca-qt9.9): .claude-dev/run is on the list too -- what a
+    # sandbox writes goes there, and a linked worktree names every shared
+    # path outright instead of inheriting them from "$primary".
     expected="$(jq -nc --arg w "$worktree" --arg p "$primary" \
-        '[$w, ($p+"/.git"), ($p+"/.beads"), ($p+"/.claude-dev/home"), ($p+"/.claude-dev/tmp")]')"
+        '[$w, ($p+"/.git"), ($p+"/.beads"), ($p+"/.claude-dev/home"), ($p+"/.claude-dev/tmp"), ($p+"/.claude-dev/run")]')"
     actual="$(jq -c '.filesystem.allowWrite' <<<"$output")"
     [ "$actual" = "$expected" ]
 }

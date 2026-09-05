@@ -211,7 +211,13 @@ if [ "$primary" = "$worktree" ]; then
     allow_write=("$primary" "$primary/.claude-dev/home" "$primary/.claude-dev/tmp")
     allow_read=("$primary" "$host" "$real_home/.local/bin" "$real_home/.local/share/claude" "$real_home/.orca/agent-hooks")
 else
-    allow_write=("$worktree" "$primary/.git" "$primary/.beads" "$primary/.claude-dev/home" "$primary/.claude-dev/tmp")
+    # V2d (claude-orca-qt9.9): .claude-dev/run too -- a primary session
+    # gets it inside "$primary" above, but a linked worktree's scope names
+    # each shared path outright, and run/ is where everything written from
+    # INSIDE a sandbox goes (tier.json, selftest.json, config-sync's
+    # checksum, the srt-debug captures). Without it the same in-sandbox
+    # writers that work in the primary fail in a worktree.
+    allow_write=("$worktree" "$primary/.git" "$primary/.beads" "$primary/.claude-dev/home" "$primary/.claude-dev/tmp" "$primary/.claude-dev/run")
     allow_read=("$primary" "$worktree" "$host" "$real_home/.local/bin" "$real_home/.local/share/claude" "$real_home/.orca/agent-hooks")
 fi
 
