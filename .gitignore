@@ -8,6 +8,7 @@
 # claude_orca template runtime artifacts (never committed)
 .claude-dev/
 /claude-dev
+/Orca.app
 .mcp.json
 attachments/
 .claude/logs/

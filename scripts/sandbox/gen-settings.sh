@@ -36,6 +36,21 @@
 
 set -euo pipefail
 
+# V2 (claude-orca-qt9.2): the host-executed paths inside a project come
+# from ONE shared list, so this (layer 2, the agents) and the Orca-layer
+# Seatbelt profile can never drift apart. Resolved through any symlink
+# chain, so it is found however this script was invoked.
+_self="${BASH_SOURCE[0]}"
+while [ -L "$_self" ]; do
+    _link="$(readlink "$_self")"
+    case "$_link" in
+        /*) _self="$_link" ;;
+        *)  _self="$(cd "$(dirname "$_self")" && pwd)/$_link" ;;
+    esac
+done
+# shellcheck source=scripts/sandbox/host-owned-paths.sh
+. "$(cd "$(dirname "$_self")" && pwd)/host-owned-paths.sh"
+
 DEFAULT_DOMAINS=(
     api.anthropic.com
     claude.ai
@@ -172,15 +187,27 @@ ORCA_RUNTIME_DIR="$real_home/Library/Application Support/orca"
 
 if [ "$primary" = "$worktree" ]; then
     allow_write=("$primary" "$primary/.claude-dev/home" "$primary/.claude-dev/tmp")
-    deny_write=("$primary/orca.yaml" "$primary/.worktreeinclude" "$primary/.envrc" "$primary/.beads/hooks")
     allow_read=("$primary" "$host" "$real_home/.local/bin" "$real_home/.local/share/claude" "$real_home/.orca/agent-hooks")
 else
     allow_write=("$worktree" "$primary/.git" "$primary/.beads" "$primary/.claude-dev/home" "$primary/.claude-dev/tmp")
-    deny_write=(
-        "$primary/orca.yaml" "$primary/.worktreeinclude" "$primary/.envrc" "$primary/.beads/hooks"
-        "$worktree/orca.yaml" "$worktree/.worktreeinclude" "$worktree/.envrc"
-    )
     allow_read=("$primary" "$worktree" "$host" "$real_home/.local/bin" "$real_home/.local/share/claude" "$real_home/.orca/agent-hooks")
+fi
+
+# Everything the host executes or trusts inside the folder, on top of
+# srt's own mandatory deny list -- the shared list (host-owned-paths.sh),
+# never a copy of it. A linked worktree adds its own copy of the same
+# paths: Orca runs its setup files from whichever checkout it opened.
+deny_write=()
+add_host_owned() {
+    local hop
+    while IFS= read -r hop; do
+        [ -z "$hop" ] && continue
+        deny_write=(${deny_write[@]+"${deny_write[@]}"} "$hop")
+    done < <(host_owned_paths "$1")
+}
+add_host_owned "$primary"
+if [ "$primary" != "$worktree" ]; then
+    add_host_owned "$worktree"
 fi
 
 # Bash 3.2 (macOS /bin/bash) throws "unbound variable" under `set -u` when

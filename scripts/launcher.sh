@@ -60,7 +60,7 @@ seed_gitignore() {
         } >> "$gitignore"
     fi
     local pattern
-    for pattern in '.claude-dev/' '.mcp.json' 'attachments/' '.claude/logs/'; do
+    for pattern in '.claude-dev/' '/Orca.app' '.mcp.json' 'attachments/' '.claude/logs/'; do
         grep -qxF "$pattern" "$gitignore" || echo "$pattern" >> "$gitignore"
     done
 }
@@ -217,6 +217,10 @@ JSON
     # claude-orca-3sk.7) before anything -- including the self-test below --
     # runs against this project. Checksum-gated, so a re-register is cheap.
     "$SCRIPT_DIR/config-sync.sh" --project "$dir" --host "$HOST_DIR"
+
+    # V2 (claude-orca-qt9.2): the double-clickable launcher bundle in the
+    # project root -- rebuilt every register, gitignored, host-owned.
+    "$SCRIPT_DIR/sandbox/make-launcher-app.sh" --project "$dir" >/dev/null
 
     # Idempotent and cheap -- covers `claude-dev register` run standalone
     # against an already-bootstrapped host (e.g. a second project), not
@@ -382,7 +386,8 @@ gitignore_unseed() {
     tmp="$(mktemp "${file}.XXXXXX")"
     awk -v marker="$GITIGNORE_MARKER" '
         function seeded(l) {
-            return l == ".claude-dev/" || l == ".mcp.json" || \
+            return l == ".claude-dev/" || l == "/Orca.app" || \
+                   l == ".mcp.json" || \
                    l == "attachments/" || l == ".claude/logs/"
         }
         $0 == marker {
@@ -508,6 +513,13 @@ cmd_teardown() {
     fi
 
     rm -rf "$dir/.claude-dev"
+    # V2 (claude-orca-qt9.2): the generated launcher bundle would now point
+    # at a .claude-dev that is gone. Only ever OUR bundle -- identified by
+    # the bundle id make-launcher-app.sh writes -- never a real Orca.app a
+    # user happens to keep in the folder.
+    if grep -qF "dev.onorca.sandboxed." "$dir/Orca.app/Contents/Info.plist" 2>/dev/null; then
+        rm -rf "$dir/Orca.app"
+    fi
     gitignore_unseed "$dir"
 
     if [ "$purge" = "1" ]; then

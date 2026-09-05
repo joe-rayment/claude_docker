@@ -89,8 +89,13 @@ load helpers/setup
 
     # No executable lands anywhere in the project EXCEPT inside .claude-dev/
     # itself, where config-sync (S7, claude-orca-3sk.7) intentionally makes
-    # the synced statusline.sh executable as part of the config dir.
-    run find "$PROJECT_DIR" -type f -perm -u+x -not -path "$PROJECT_DIR/.claude-dev/*"
+    # the synced statusline.sh executable as part of the config dir, and
+    # Orca.app/Contents/MacOS/Orca, the generated launcher bundle's entry
+    # point (V2, claude-orca-qt9.2). Both are host-owned: write-denied
+    # inside both sandboxes (scripts/sandbox/host-owned-paths.sh).
+    run find "$PROJECT_DIR" -type f -perm -u+x \
+        -not -path "$PROJECT_DIR/.claude-dev/*" \
+        -not -path "$PROJECT_DIR/Orca.app/*"
     [ "$status" -eq 0 ]
     [ -z "$output" ]
 }

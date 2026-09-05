@@ -104,12 +104,14 @@ GEN_SETTINGS() {
     [ "$allow_read" = "$expected_worktree" ]
 }
 
-@test "host-executed files are denyWrite: orca.yaml, .worktreeinclude, .envrc, .beads/hooks" {
+@test "host-executed files are denyWrite: every entry of the shared host-owned list, for the primary and any linked worktree" {
     make_project "$PROJECT_DIR"
     wt="$(make_worktree "$PROJECT_DIR" feature)"
     real_home="$(make_real_home)"
     primary="$(abspath "$PROJECT_DIR")"
     worktree="$(abspath "$wt")"
+    # V2 (claude-orca-qt9.2): one list, shared with the Orca-layer profile.
+    . "$REPO_ROOT/scripts/sandbox/host-owned-paths.sh"
 
     run GEN_SETTINGS \
         --primary "$primary" --worktree "$primary" \
@@ -118,8 +120,7 @@ GEN_SETTINGS() {
     [ "$status" -eq 0 ]
 
     deny_write="$(jq -c '.filesystem.denyWrite' <<<"$output")"
-    expected="$(jq -nc --arg p "$primary" \
-        '[($p+"/orca.yaml"), ($p+"/.worktreeinclude"), ($p+"/.envrc"), ($p+"/.beads/hooks")]')"
+    expected="$(host_owned_paths "$primary" | jq -R . | jq -s -c .)"
     [ "$deny_write" = "$expected" ]
 
     run GEN_SETTINGS \
@@ -129,9 +130,8 @@ GEN_SETTINGS() {
     [ "$status" -eq 0 ]
 
     deny_write="$(jq -c '.filesystem.denyWrite' <<<"$output")"
-    expected="$(jq -nc --arg p "$primary" --arg w "$worktree" \
-        '[($p+"/orca.yaml"), ($p+"/.worktreeinclude"), ($p+"/.envrc"), ($p+"/.beads/hooks"),
-          ($w+"/orca.yaml"), ($w+"/.worktreeinclude"), ($w+"/.envrc")]')"
+    expected="$({ host_owned_paths "$primary"; host_owned_paths "$worktree"; } \
+        | jq -R . | jq -s -c .)"
     [ "$deny_write" = "$expected" ]
 }
 

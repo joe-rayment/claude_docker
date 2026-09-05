@@ -74,3 +74,18 @@ host_dir() {
     t="$(template_dir)" || return 1
     (cd "$t/.." && pwd)
 }
+
+# V2 (claude-orca-qt9.2): the project folder itself. There is no central
+# install any more -- the template lives at <project>/.claude-dev/
+# template, so host_dir() is <project>/.claude-dev and its parent is the
+# project. $CLAUDE_ORCA_ROOT wins when set (the sandboxed side always has
+# it). Exit 1, no output, when neither resolves.
+project_dir() {
+    if [ -n "${CLAUDE_ORCA_ROOT:-}" ]; then
+        printf '%s\n' "$CLAUDE_ORCA_ROOT"
+        return 0
+    fi
+    local h
+    h="$(host_dir)" || return 1
+    (cd "$h/.." && pwd)
+}
