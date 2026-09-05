@@ -255,35 +255,6 @@ SETTINGS_FILE="$PRIMARY/.claude-dev/state/srt-$(sha1_of "$WORKTREE").json"
 printf '%s\n' "$SETTINGS_JSON" > "$SETTINGS_FILE"
 chmod 600 "$SETTINGS_FILE"
 
-# S6 (claude-orca-3sk.18): carry Orca's managed hook entries from the real
-# (unsandboxed) home's .claude/settings.json into the sandboxed config dir
-# (the agent never reads that one), and chain Orca's statusline. Cosmetic
-# integration -- never fatal to a launch. See scripts/orca-hooks-merge.sh
-# and .claude/plans/orca-port.md S3.5.
-ORCA_MERGE="$SANDBOX_DIR/../orca-hooks-merge.sh"
-if [ -x "$ORCA_MERGE" ]; then
-    "$ORCA_MERGE" --real-home "$REAL_HOME" --config-dir "$ENV_CLAUDE_CONFIG_DIR" || \
-        echo "[claude-orca] Orca hook merge skipped (see above)" >&2
-fi
-
-# S6: Orca reads $CLAUDE_CONFIG_DIR/projects from its OWN process env, not
-# the agent's, so a project whose sandbox.json says Orca cannot see the
-# config dir gets a .claude/projects/<slug> link under the real home,
-# pointed at the sandboxed transcripts dir. <slug> is Claude Code's slug: the
-# worktree path with `/` and `.` replaced by `-`. Opt-in, and a real
-# directory already sitting in that slot is never touched.
-if [ "$(jq -r '.orca.transcriptSymlink // false' "$SANDBOX_JSON" 2>/dev/null)" = "true" ]; then
-    TRANSCRIPT_SLUG="$(printf '%s' "$WORKTREE" | tr '/.' '-')"
-    TRANSCRIPT_LINK="$REAL_HOME/.claude/projects/$TRANSCRIPT_SLUG"
-    TRANSCRIPT_TARGET="$ENV_CLAUDE_CONFIG_DIR/projects/$TRANSCRIPT_SLUG"
-    if [ -e "$TRANSCRIPT_LINK" ] && [ ! -L "$TRANSCRIPT_LINK" ]; then
-        echo "[claude-orca] not replacing existing $TRANSCRIPT_LINK with a symlink" >&2
-    else
-        mkdir -p "$REAL_HOME/.claude/projects" "$TRANSCRIPT_TARGET"
-        ln -sfn "$TRANSCRIPT_TARGET" "$TRANSCRIPT_LINK"
-    fi
-fi
-
 export HOME="$ENV_HOME"
 export CLAUDE_CONFIG_DIR="$ENV_CLAUDE_CONFIG_DIR"
 export TMPDIR="$ENV_TMPDIR"
