@@ -184,7 +184,41 @@ JSON
     cmd_rc_install >/dev/null
 
     echo "Project '$project_name' registered at $dir"
-    echo "Next: open this folder in Orca and pick Claude Code."
+
+    # S3 (claude-orca-3sk.15): prove the sandbox from the inside before
+    # ever handing off to Orca -- see .claude/plans/orca-port.md S3.
+    if [ "${CLAUDE_ORCA_SKIP_SELFTEST:-0}" = "1" ]; then
+        echo "Skipping sandbox self-test (CLAUDE_ORCA_SKIP_SELFTEST=1) -- 'claude-dev --doctor' will show it as not run"
+        echo "Next: open this folder in Orca and pick Claude Code."
+        return 0
+    fi
+
+    local selftest_bin="$SCRIPT_DIR/sandbox/claude-orca-shell"
+    if [ -x "$selftest_bin" ] && "$selftest_bin" --selftest --root "$dir" --cwd "$dir"; then
+        echo "Next: open this folder in Orca and pick Claude Code."
+        return 0
+    fi
+
+    local results="$dir/.claude-dev/state/selftest.json"
+    if [ -f "$results" ]; then
+        doctor_print_probes "$results"
+    fi
+    echo "Refusing to hand off to Orca until the sandbox self-test passes (claude-dev --doctor)" >&2
+    return 2
+}
+
+# Prints one row per probe from a selftest.json results file: status,
+# name, detail (see scripts/sandbox/selftest.sh for the schema). Shared
+# by cmd_doctor and cmd_register's failure path.
+doctor_print_probes() {
+    local results="$1" entry name status detail
+    while IFS= read -r entry; do
+        [ -z "$entry" ] && continue
+        name="$(jq -r '.name' <<<"$entry" 2>/dev/null)"
+        status="$(jq -r '.status' <<<"$entry" 2>/dev/null)"
+        detail="$(jq -r '.detail' <<<"$entry" 2>/dev/null)"
+        printf '  [%-4s] %-28s %s\n' "$status" "$name" "$detail"
+    done < <(jq -c '.probes[]?' "$results" 2>/dev/null)
 }
 
 cmd_doctor() {
@@ -208,6 +242,48 @@ cmd_doctor() {
     else
         printf '  [missing] orca (cask)\n'
     fi
+
+    # S3: outside a registered project there is nothing more to check --
+    # tool table only, exit 0 (see .claude/plans/orca-port.md S3).
+    local root_bin="$SCRIPT_DIR/sandbox/claude-orca-root" root=""
+    if [ -x "$root_bin" ]; then
+        root="$("$root_bin" 2>/dev/null)" || root=""
+    fi
+    [ -n "$root" ] || return 0
+
+    echo ""
+    echo "Sandbox self-test ($root):"
+    local results="$root/.claude-dev/state/selftest.json"
+
+    if [ ! -f "$results" ]; then
+        echo "  not run -- run 'claude-dev register' or 'claude-orca-shell --selftest --root $root'"
+        return 2
+    fi
+
+    local mtime now age_secs
+    mtime="$(stat -c '%Y' "$results" 2>/dev/null || stat -f '%m' "$results" 2>/dev/null || echo 0)"
+    now="$(date +%s)"
+    age_secs=$((now - mtime))
+    echo "  age: $((age_secs / 3600))h $(((age_secs % 3600) / 60))m"
+
+    doctor_print_probes "$results"
+
+    local fail_count launch_fail rc=0
+    fail_count="$(jq -r '.summary.fail // 0' "$results" 2>/dev/null || echo 1)"
+    launch_fail="$(jq -r '[.probes[]? | select(.name == "srt-launch")] | length' "$results" 2>/dev/null || echo 1)"
+
+    if [ "$age_secs" -gt 86400 ]; then
+        echo "  STALE: results are older than 24h"
+        rc=2
+    fi
+    if [ "$launch_fail" != "0" ]; then
+        echo "  srt failed to launch during the self-test -- see the detail above"
+        rc=2
+    fi
+    if [ "$fail_count" != "0" ]; then
+        rc=2
+    fi
+    return "$rc"
 }
 
 cmd_help() {
@@ -233,7 +309,7 @@ cmd_not_implemented() {
 
 case "${1:-}" in
     register)      shift; cmd_register "${1:-$PWD}" ;;
-    --doctor)      cmd_doctor; exit 0 ;;
+    --doctor)      cmd_doctor || exit $?; exit 0 ;;
     --update)      cmd_not_implemented "--update" ;;
     --teardown)    cmd_not_implemented "--teardown" ;;
     --uninstall)   cmd_not_implemented "--uninstall" ;;

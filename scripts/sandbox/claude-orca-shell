@@ -13,16 +13,27 @@
 #   claude-orca-shell --check --root <primary> [--cwd <dir>]
 #   claude-orca-shell --print-settings --root <primary> [--cwd <dir>]
 #   claude-orca-shell --print-env --root <primary> [--cwd <dir>]
-#   claude-orca-shell --selftest [--root <primary>]
+#   claude-orca-shell --selftest [--root <primary>] [--cwd <dir>]
 #
 # `-- <shell> -c <cmd>` (e.g. `-- zsh -c "$cmd"`) preserves a non-
 # interactive login shell's pending command through the re-exec: the
 # inner shell becomes `exec <shell> -l -c '<cmd>'`, with <cmd> shell-quoted
 # exactly once (see shell_quote below).
 #
+# --selftest [--root <primary>] [--cwd <dir>] (--root defaults to
+# claude-orca-root's detection from --cwd/$PWD when omitted): runs
+# scripts/sandbox/selftest.sh's 13 probes inside the sandbox (S3, see
+# .claude/plans/orca-port.md S3) and writes
+# <primary>/.claude-dev/state/selftest.json. Exits with the self-test's
+# own exit code (0 = all probes PASS/N/A, 1 = at least one FAIL). If srt
+# itself can't even start -- no results JSON appears -- writes a
+# synthetic single-probe "srt-launch" FAIL result instead and exits 1.
+# srt's stderr (SRT_DEBUG=true, the generated Seatbelt profile) is saved
+# to <primary>/.claude-dev/state/srt-debug-<sha1>.log for audit.
+#
 # Exit codes: 0 ok; 2 invalid input / scope rejected by gen-settings.sh;
 # 3 already sandboxed (CLAUDE_ORCA_SANDBOXED=1); 4 srt/sandbox-exec
-# missing; 64 --selftest (not implemented until S3).
+# missing.
 
 set -euo pipefail
 
@@ -68,6 +79,16 @@ shell_quote() {
     printf "'%s'" "$q"
 }
 
+# Shared by the run and --selftest side-effect paths below (both need a
+# stable per-worktree settings-file name).
+sha1_of() {
+    if command -v sha1sum >/dev/null 2>&1; then
+        printf '%s' "$1" | sha1sum | cut -d' ' -f1
+    else
+        printf '%s' "$1" | shasum -a 1 | cut -d' ' -f1
+    fi
+}
+
 usage() {
     cat <<'USAGE'
 Usage:
@@ -75,7 +96,7 @@ Usage:
   claude-orca-shell --check --root <primary> [--cwd <dir>]
   claude-orca-shell --print-settings --root <primary> [--cwd <dir>]
   claude-orca-shell --print-env --root <primary> [--cwd <dir>]
-  claude-orca-shell --selftest [--root <primary>]
+  claude-orca-shell --selftest [--root <primary>] [--cwd <dir>]
 USAGE
 }
 
@@ -118,9 +139,13 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-if [ "$MODE" = "selftest" ]; then
-    echo "claude-orca-shell --selftest: not implemented until S3" >&2
-    exit 64
+if [ "$MODE" = "selftest" ] && [ -z "$PRIMARY" ]; then
+    # --root is optional for --selftest: default to claude-orca-root's
+    # detection from --cwd/$PWD, same as shellrc.zsh/.bash do.
+    if [ -x "$ROOT_BIN" ]; then
+        PRIMARY="$("$ROOT_BIN" --cwd "${CWD_OPT:-$PWD}" 2>/dev/null)" || PRIMARY=""
+    fi
+    [ -n "$PRIMARY" ] || die "--selftest: not inside a bootstrapped project and --root not given" 2
 fi
 
 [ -n "$PRIMARY" ] || die "--root is required" 2
@@ -222,26 +247,13 @@ if [ "$MODE" = "check" ]; then
     exit 0
 fi
 
-# --- MODE = run: side effects start here ---------------------------------
+# --- MODE = run / selftest: side effects start here -----------------------
 
 mkdir -p "$SANDBOX_HOME" "$SANDBOX_TMP" "$PRIMARY/.claude-dev/state"
 
-sha1_of() {
-    if command -v sha1sum >/dev/null 2>&1; then
-        printf '%s' "$1" | sha1sum | cut -d' ' -f1
-    else
-        printf '%s' "$1" | shasum -a 1 | cut -d' ' -f1
-    fi
-}
 SETTINGS_FILE="$PRIMARY/.claude-dev/state/srt-$(sha1_of "$WORKTREE").json"
 printf '%s\n' "$SETTINGS_JSON" > "$SETTINGS_FILE"
 chmod 600 "$SETTINGS_FILE"
-
-if [ "$PRIMARY" = "$WORKTREE" ]; then
-    echo "[claude-orca] sandboxed: writes limited to $PRIMARY" >&2
-else
-    echo "[claude-orca] sandboxed: writes limited to $WORKTREE (+ $PRIMARY/.git, .beads, .claude-dev)" >&2
-fi
 
 export HOME="$ENV_HOME"
 export CLAUDE_CONFIG_DIR="$ENV_CLAUDE_CONFIG_DIR"
@@ -255,6 +267,60 @@ export CLAUDE_ORCA_SANDBOXED=1
 export CLAUDE_ORCA_REAL_HOME="$REAL_HOME"
 export CLAUDE_ORCA_ROOT="$PRIMARY"
 export PATH="$ENV_PATH"
+
+if [ "$MODE" = "selftest" ]; then
+    # Extra exports for the selftest process only -- never added to
+    # print_env_lines/the run-mode env block above, which
+    # tests/sandbox-config.bats pins to an exact line count.
+    export CLAUDE_ORCA_SETTINGS="$SETTINGS_FILE"
+    export CLAUDE_ORCA_HOST="$HOST"
+    if [ -n "${CLAUDE_ORCA_SELFTEST_FAKE:-}" ]; then
+        export CLAUDE_ORCA_SELFTEST_FAKE
+    fi
+    if [ -n "${CLAUDE_ORCA_SELFTEST_TRACE:-}" ]; then
+        export CLAUDE_ORCA_SELFTEST_TRACE
+    fi
+
+    RESULTS_JSON="$PRIMARY/.claude-dev/state/selftest.json"
+    DEBUG_LOG="$PRIMARY/.claude-dev/state/srt-debug-$(sha1_of "$WORKTREE").log"
+    SELFTEST_SCRIPT="$HOST/template/scripts/sandbox/selftest.sh"
+
+    rm -f "$RESULTS_JSON"
+    SELFTEST_CMD="$(shell_quote "$SELFTEST_SCRIPT") --json-out $(shell_quote "$RESULTS_JSON")"
+
+    set +e
+    SRT_DEBUG=true "$SRT_BIN" --settings "$SETTINGS_FILE" -c "$SELFTEST_CMD" 2>"$DEBUG_LOG"
+    SELFTEST_RC=$?
+    set -e
+
+    if [ ! -f "$RESULTS_JSON" ]; then
+        STDERR_TAIL="$(tail -n 40 "$DEBUG_LOG" 2>/dev/null)"
+        jq -n \
+            --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg root "$PRIMARY" \
+            --arg worktree "$WORKTREE" \
+            --arg platform "$(uname -s)" \
+            --arg detail "srt exited $SELFTEST_RC before the self-test could run: $STDERR_TAIL" \
+            '{
+                timestamp: $ts,
+                srt_version: "",
+                platform: $platform,
+                root: $root,
+                worktree: $worktree,
+                probes: [{name: "srt-launch", status: "FAIL", detail: $detail}],
+                summary: {pass: 0, fail: 1, na: 0}
+            }' > "$RESULTS_JSON"
+        exit 1
+    fi
+
+    exit "$SELFTEST_RC"
+fi
+
+if [ "$PRIMARY" = "$WORKTREE" ]; then
+    echo "[claude-orca] sandboxed: writes limited to $PRIMARY" >&2
+else
+    echo "[claude-orca] sandboxed: writes limited to $WORKTREE (+ $PRIMARY/.git, .beads, .claude-dev)" >&2
+fi
 
 if [ "$HAVE_SHELL_CMD" -eq 1 ]; then
     exec "$SRT_BIN" --settings "$SETTINGS_FILE" -c "exec $SHELL_BIN -l -c $(shell_quote "$SHELL_CMD")"

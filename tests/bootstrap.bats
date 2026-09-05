@@ -117,3 +117,33 @@ load helpers/setup
     [ "$status" -eq 0 ]
     ! grep -q '^brew ' "$STUB_LOG"
 }
+
+# S3 addition (claude-orca-3sk.15): registration now runs the sandbox
+# self-test as its last step and refuses to hand off to Orca on failure
+# -- see tests/selftest.bats for the self-test's own contract.
+@test "registration exits 2 and omits the Orca hand-off line when the sandbox self-test fails" {
+    cat > "$CLAUDE_ORCA_SELFTEST_FAKE" <<'FAKE'
+write-outside-denied=1
+read-real-home-denied=0
+keychain-denied=0
+project-writable=0
+worktree-writable=0
+sibling-worktree-denied=0
+tmp-outside-denied=0
+network-blocked-domain=0
+network-allowed-domain=0
+orca-socket-unreachable=0
+sandbox-exec-present=0
+srt-version-pinned=0
+git-hooks-audit=0
+FAKE
+
+    run bash "$REPO_ROOT/bootstrap.sh" "$PROJECT_DIR"
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"Refusing to hand off to Orca"* ]]
+    [[ "$output" != *"Next: open this folder in Orca"* ]]
+    [[ "$output" == *"write-outside-denied"* ]]
+
+    run jq -e '.summary.fail == 1' "$PROJECT_DIR/.claude-dev/state/selftest.json"
+    [ "$status" -eq 0 ]
+}
