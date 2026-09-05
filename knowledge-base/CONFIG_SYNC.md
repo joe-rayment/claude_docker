@@ -1,0 +1,82 @@
+# Config sync
+
+The agents' Claude configuration is **not** your `~/.claude`. Each project
+gets its own config dir inside the sandbox, populated from this repo by
+`scripts/config-sync.sh` (on PATH as `config-sync`).
+
+```
+repo config/                    -->  <project>/.claude-dev/home/.claude/
+  claude-settings.json          -->    settings.json      (__HOST__ rewritten)
+  claude-user-memory.md         -->    CLAUDE.md          (the rulebook)
+  statusline.sh                 -->    statusline.sh      (chmod +x)
+  agents/*.md                   -->    agents/
+  claude-commands/*.md          -->    commands/
+  skills/**                     -->    skills/
+  .zshrc                        -->  <project>/.claude-dev/home/.zshrc
+```
+
+Invocation: `config-sync --project <primary checkout> --host ~/.claude-orca`.
+The source is always `$HOST/template/config` — the host-owned clone — never
+the project's own copy.
+
+## The checksum gate
+
+A sync is a no-op unless `config/**` changed. The gate is a sorted sha1 over
+every file's **relative path and its content** (so a rename with identical
+bytes still counts), stored in
+`<project>/.claude-dev/state/config-hash`. A matching hash exits 0 without
+touching anything; that is a success, not a skip, and callers do not need to
+tell the two apart.
+
+Because it is content-addressed and not timestamped, hand-edits inside
+`.claude-dev/home/.claude/` survive until the template changes — and are
+then silently overwritten. Do not treat that directory as editable.
+
+## `__HOST__`
+
+Hook commands in `config/claude-settings.json` are written as
+`__HOST__/template/bin/<name>`. The sync rewrites `__HOST__` to the actual
+host directory, so every hook command in the synced `settings.json` is an
+**absolute path Claude Code can exec directly** — never a bare name left for
+the agent's PATH to resolve. A hook that fails with "command not found" is
+almost always an unsynced settings file, not a broken script.
+
+## `settings.local.json` — the one override channel
+
+`.claude-dev/home/.claude/settings.local.json` is only ever **read**: it is
+never rewritten, moved or deleted by the sync, and it is merged *into* the
+freshly generated `settings.json` on every run, so it wins again after each
+template change.
+
+The merge is a deep `*` merge with one refinement: `permissions.allow`,
+`.deny` and `.ask` are **unioned and de-duplicated** rather than replaced, so
+a local allowlist extends the base one instead of wiping it. Invalid JSON is
+ignored (the base file stands) rather than failing the sync.
+
+Everything else — `agents/`, `commands/`, `skills/` — is a full mirror:
+removed in the template means removed in the project.
+
+## Tier state
+
+`/tier` cannot rewrite agent frontmatter: `.claude/agents/**` is
+write-denied inside the sandbox by `srt`'s mandatory list. So the binding is
+**state, not files**:
+
+- `tier-set` writes `<project>/.claude-dev/state/tier.json` —
+  `{top, worker, recon, pinned, overdrive, updated}` — and mirrors the
+  session model into `settings.local.json`'s `.model`.
+- `tier-gate` (PreToolUse on the `Agent` tool) reads that file and **injects
+  `model`** into `executor` and `scout` spawns that omit it. An explicit
+  `model` in the tool call beats the agent frontmatter, which is why this
+  works without editing any agent file.
+- `tier-prime` (SessionStart) reads the same file to print the binding;
+  `tier-reconcile` refreshes it after a model switch.
+- Overrides for tests: `TIER_GATE_STATE_FILE`, `TIER_GATE_SETTINGS`.
+
+`tier-gate` **fails open** everywhere — malformed input, missing `jq`, no
+`tier.json` and no settings fallback all mean "spawn unchanged". A tier that
+seems to be ignored is a state-file problem: `cat
+.claude-dev/state/tier.json` before suspecting the hook.
+
+See [TIERED_ORCHESTRATION.md](TIERED_ORCHESTRATION.md) for what the tiers
+mean and [HOOK_AUTHORING.md](HOOK_AUTHORING.md) for writing new hooks.
