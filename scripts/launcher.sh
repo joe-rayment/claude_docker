@@ -7,9 +7,9 @@
 # Usage:
 #   claude-dev [register] [dir]   Register a project (default: current dir)
 #   claude-dev --doctor           Show presence of required tools
-#   claude-dev --update           (stub until S12)
-#   claude-dev --teardown         (stub until S12)
-#   claude-dev --uninstall        (stub until S12)
+#   claude-dev --update           Pull the template, re-pin srt, re-sync, re-test
+#   claude-dev --teardown         Snapshot beads, remove the project artifacts
+#   claude-dev --uninstall        Teardown, then remove the host-side install
 #   claude-dev --help             Show this help
 #
 # Trust boundary (see .claude/plans/orca-port.md §3.1): register() only
@@ -178,6 +178,10 @@ JSON
     seed_gitignore "$dir"
     mkdir -p "$dir/attachments"
 
+    # S12 (claude-orca-3sk.23): resume a torn-down project -- pull the most
+    # recent beads snapshot back in when this project has none of its own.
+    restore_beads_snapshot "$dir" "$project_name"
+
     # Populate .claude-dev/home/.claude from this template's config/ (S7,
     # claude-orca-3sk.7) before anything -- including the self-test below --
     # runs against this project. Checksum-gated, so a re-register is cheap.
@@ -291,6 +295,195 @@ cmd_doctor() {
     return "$rc"
 }
 
+# --- S12 (claude-orca-3sk.23): update / teardown / uninstall -------------
+#
+# The template must be updatable and removable without losing beads (see
+# .claude/plans/orca-port.md S3.1 and knowledge-base/TEARDOWN_RECOVERY.md).
+# Beads state is the one thing in a project that is expensive to lose and
+# that lives nowhere else, so teardown snapshots it OUT of the project
+# tree, into the host dir, and a later registration pulls it back.
+
+# The exact lines seed_gitignore writes -- kept next to each other so the
+# unseed below can only ever remove what register put there.
+GITIGNORE_MARKER="# claude_orca"
+
+# Removes the marker block seed_gitignore added (marker line, the blank
+# separator before it, and the seeded patterns that follow) and nothing
+# else: any other line -- including a user's own '.mcp.json' elsewhere in
+# the file -- is left byte-identical. Same one-line-lookahead trick as
+# rc_remove_block.
+gitignore_unseed() {
+    local file="$1/.gitignore"
+    [ -f "$file" ] || return 0
+    grep -qF "$GITIGNORE_MARKER" "$file" || return 0
+
+    local tmp
+    tmp="$(mktemp "${file}.XXXXXX")"
+    awk -v marker="$GITIGNORE_MARKER" '
+        function seeded(l) {
+            return l == ".claude-dev/" || l == ".mcp.json" || \
+                   l == "attachments/" || l == ".claude/logs/"
+        }
+        $0 == marker {
+            skip = 1
+            if (have_pending && pending != "") { print pending }
+            have_pending = 0
+            next
+        }
+        skip && seeded($0) { next }
+        {
+            skip = 0
+            if (have_pending) { print pending }
+            pending = $0
+            have_pending = 1
+        }
+        END { if (have_pending) print pending }
+    ' "$file" > "$tmp"
+    mv "$tmp" "$file"
+}
+
+# Copies .beads/issues.jsonl (+ metadata.json) to
+# $HOST/state/<project>/<timestamp>/ and prints the snapshot dir. Silent
+# no-op when the project has no exported beads. The Dolt DB itself is not
+# copied -- it rebuilds from the JSONL.
+snapshot_beads() {
+    local dir="$1" name="$2" ts snap
+    [ -f "$dir/.beads/issues.jsonl" ] || return 0
+    ts="$(date +%Y%m%d-%H%M%S)"
+    snap="$HOST_DIR/state/$name/$ts"
+    mkdir -p "$snap"
+    cp "$dir/.beads/issues.jsonl" "$snap/issues.jsonl"
+    if [ -f "$dir/.beads/metadata.json" ]; then
+        cp "$dir/.beads/metadata.json" "$snap/metadata.json"
+    fi
+    printf '%s\n' "$snap"
+}
+
+# The other half of the round trip, called from cmd_register: automatic and
+# unprompted ONLY when the project side has no issues.jsonl of its own --
+# that case is unambiguous (nothing here to lose). A project that already
+# carries beads data keeps it; we never overwrite it with a possibly older
+# snapshot.
+restore_beads_snapshot() {
+    local dir="$1" name="$2" state_root latest
+    state_root="$HOST_DIR/state/$name"
+    [ -d "$state_root" ] || return 0
+    if [ -f "$dir/.beads/issues.jsonl" ]; then
+        return 0
+    fi
+    latest="$(ls -1 "$state_root" 2>/dev/null | sort -r | head -1)"
+    [ -n "$latest" ] || return 0
+    [ -f "$state_root/$latest/issues.jsonl" ] || return 0
+
+    mkdir -p "$dir/.beads"
+    cp "$state_root/$latest/issues.jsonl" "$dir/.beads/issues.jsonl"
+    if [ -f "$state_root/$latest/metadata.json" ]; then
+        cp "$state_root/$latest/metadata.json" "$dir/.beads/metadata.json"
+    fi
+    echo "Restored beads snapshot $latest from $state_root/$latest (Dolt DB rebuilds from the JSONL)"
+}
+
+cmd_update() {
+    local dir="${1:-$PWD}" tmpl before after
+    tmpl="$HOST_DIR/template"
+    if [ ! -d "$tmpl/.git" ]; then
+        echo "Error: no template clone at $tmpl -- re-run the bootstrap one-liner." >&2
+        return 1
+    fi
+
+    echo "==> Updating the template at $tmpl"
+    before="$(git -C "$tmpl" rev-parse HEAD 2>/dev/null || echo unknown)"
+    git -C "$tmpl" pull --ff-only
+    after="$(git -C "$tmpl" rev-parse HEAD)"
+    if [ "$before" = "$after" ]; then
+        echo "  template: already up to date (${after:0:7})"
+    else
+        echo "  template: ${before:0:7} -> ${after:0:7}"
+        git -C "$tmpl" log --oneline "$before..$after" 2>/dev/null | sed 's/^/    /' || true
+    fi
+
+    # After the pull, so a moved srt pin in the new template takes effect.
+    echo "==> Installing sandbox-runtime at the template's pinned version"
+    "$SCRIPT_DIR/install-srt.sh"
+
+    dir="$(cd "$dir" && pwd)"
+    if [ ! -d "$dir/.claude-dev" ]; then
+        echo "  $dir is not a registered project -- skipped config sync and self-test"
+        echo "Update complete."
+        return 0
+    fi
+
+    echo "==> Syncing config into $dir"
+    "$SCRIPT_DIR/config-sync.sh" --project "$dir" --host "$HOST_DIR"
+
+    echo "==> Re-running the sandbox self-test"
+    local selftest_bin="$SCRIPT_DIR/sandbox/claude-orca-shell"
+    if [ -x "$selftest_bin" ] && "$selftest_bin" --selftest --root "$dir" --cwd "$dir"; then
+        echo "Update complete."
+        return 0
+    fi
+    echo "Sandbox self-test failed after the update -- run 'claude-dev --doctor'" >&2
+    return 2
+}
+
+cmd_teardown() {
+    local purge=0 dir="$PWD"
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --purge-beads) purge=1 ;;
+            -*) echo "Unknown option: $1" >&2; return 1 ;;
+            *)  dir="$1" ;;
+        esac
+        shift
+    done
+    [ -d "$dir" ] || { echo "Error: directory does not exist: $dir" >&2; return 1; }
+    dir="$(cd "$dir" && pwd)"
+
+    local name snap
+    name="$(derive_project_name "$dir")"
+    snap="$(snapshot_beads "$dir" "$name")"
+    if [ -n "$snap" ]; then
+        echo "Beads snapshot saved to $snap"
+    fi
+
+    rm -rf "$dir/.claude-dev"
+    gitignore_unseed "$dir"
+
+    if [ "$purge" = "1" ]; then
+        rm -rf "$dir/.beads"
+        echo "Removed $dir/.beads (--purge-beads)"
+    fi
+
+    echo "Teardown complete for '$name' at $dir"
+    if [ -n "$snap" ]; then
+        echo "Re-register this directory later to restore the snapshot."
+    fi
+}
+
+cmd_uninstall() {
+    # Safety: only ever delete the host dir this very launcher was resolved
+    # through. A CLAUDE_ORCA_HOME pointing somewhere else means the user is
+    # running the wrong claude-dev, and rm -rf is not the place to guess.
+    local host_env resolved
+    host_env="${CLAUDE_ORCA_HOME:-$HOME/.claude-orca}"
+    if [ -d "$host_env" ]; then
+        host_env="$(cd "$host_env" && pwd -P)"
+    fi
+    resolved="$(cd "$HOST_DIR" && pwd -P)"
+    if [ "$host_env" != "$resolved" ]; then
+        echo "Error: refusing to uninstall -- this launcher lives under $resolved, but CLAUDE_ORCA_HOME resolves to $host_env." >&2
+        return 2
+    fi
+
+    if [ -d "$PWD/.claude-dev" ]; then
+        cmd_teardown "$PWD"
+    fi
+    cmd_rc_uninstall
+    echo "Removing $resolved"
+    rm -rf "$resolved"
+    echo "claude_orca uninstalled. Open a new shell to drop the hook from this session."
+}
+
 cmd_help() {
     cat <<'HELP'
 claude-dev -- claude_orca project launcher
@@ -299,7 +492,8 @@ Usage:
   claude-dev [register] [dir]   Register a project (default: current directory)
   claude-dev --doctor           Show presence of required tools
   claude-dev --update           Update the host-side template and tools
-  claude-dev --teardown         Remove a project's claude_orca artifacts
+  claude-dev --teardown [--purge-beads]
+                                Snapshot beads, then remove this project's artifacts
   claude-dev --uninstall        Remove the host-side install
   claude-dev rc-install         Install the shell hook in ~/.zprofile, ~/.zshrc, ~/.bash_profile
   claude-dev rc-uninstall       Remove the shell hook
@@ -307,17 +501,12 @@ Usage:
 HELP
 }
 
-cmd_not_implemented() {
-    echo "claude-dev $1: not implemented until S12" >&2
-    exit 64
-}
-
 case "${1:-}" in
     register)      shift; cmd_register "${1:-$PWD}" ;;
     --doctor)      cmd_doctor || exit $?; exit 0 ;;
-    --update)      cmd_not_implemented "--update" ;;
-    --teardown)    cmd_not_implemented "--teardown" ;;
-    --uninstall)   cmd_not_implemented "--uninstall" ;;
+    --update)      shift; cmd_update "${1:-$PWD}" || exit $?; exit 0 ;;
+    --teardown)    shift; cmd_teardown "$@" || exit $?; exit 0 ;;
+    --uninstall)   shift; cmd_uninstall || exit $?; exit 0 ;;
     rc-install)    cmd_rc_install; exit 0 ;;
     rc-uninstall)  cmd_rc_uninstall; exit 0 ;;
     --help|-h)     cmd_help ;;
