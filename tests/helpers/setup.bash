@@ -23,7 +23,13 @@ setup_file() {
     # pinned srt package, never the stub) can ask for it explicitly.
     export ORIGINAL_PATH="$PATH"
 
-    TEMPLATE_SRC="$BATS_TMPDIR/template.git"
+    # $BATS_RUN_TMPDIR (private per bats invocation), never $BATS_TMPDIR
+    # (== ${TMPDIR:-/tmp}, machine-wide and identical for every concurrent
+    # agent in this container when TMPDIR is unset) -- a shared literal
+    # /tmp/template.git meant two agents' parallel bats runs could rm -rf
+    # and rebuild out from under each other, seen as random failures in
+    # unrelated suites.
+    TEMPLATE_SRC="$BATS_RUN_TMPDIR/template.git"
     rm -rf "$TEMPLATE_SRC"
     mkdir -p "$TEMPLATE_SRC"
     git init --quiet -b main "$TEMPLATE_SRC" >/dev/null 2>&1

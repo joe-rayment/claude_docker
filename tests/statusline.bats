@@ -8,27 +8,19 @@
 
 STATUSLINE=${STATUSLINE_BIN:-"$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)/config/statusline.sh"}
 FIXTURES="${BATS_TEST_DIRNAME}/fixtures"
-CACHE_FILE="/tmp/claude-usage-cache.json"
 
 setup() {
     export TMPDIR="$BATS_TEST_TMPDIR"
-    # statusline.sh reads a live usage-limits cache at a hardcoded absolute
-    # path (not parameterized by TMPDIR/HOME), refreshing it from a real API
-    # call once it's stale. Freeze it to a known-fresh, known-value file so
-    # the pre-existing session/weekly segments are deterministic and no
-    # network fetch can race the assertions below.
-    if [ -f "$CACHE_FILE" ]; then
-        cp "$CACHE_FILE" "$BATS_TEST_TMPDIR/cache.orig"
-    fi
-    printf '{"five_hour":{"utilization":17.0},"seven_day":{"utilization":54.0}}\n' > "$CACHE_FILE"
-}
-
-teardown() {
-    if [ -f "$BATS_TEST_TMPDIR/cache.orig" ]; then
-        cp "$BATS_TEST_TMPDIR/cache.orig" "$CACHE_FILE"
-    else
-        rm -f "$CACHE_FILE"
-    fi
+    # statusline.sh reads a live usage-limits cache, refreshing it from a
+    # real API call once it's stale. STATUSLINE_CACHE_FILE (config/
+    # statusline.sh) redirects it to a private per-test path instead of the
+    # real, machine-wide /tmp/claude-usage-cache.json -- every concurrent
+    # session/test on this host shares that default path, so seeding a
+    # known-fresh value there raced (and could be clobbered by) any other
+    # session's own statusline hook. A private file makes the pre-existing
+    # session/weekly segments deterministic with no such race.
+    export STATUSLINE_CACHE_FILE="$BATS_TEST_TMPDIR/claude-usage-cache.json"
+    printf '{"five_hour":{"utilization":17.0},"seven_day":{"utilization":54.0}}\n' > "$STATUSLINE_CACHE_FILE"
 }
 
 @test "statusline: full fixture renders the prompt-cache hit-ratio percent" {
