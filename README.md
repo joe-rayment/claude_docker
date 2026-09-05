@@ -49,6 +49,32 @@ Upgrading from a pre-v2 install? `claude-dev --doctor` flags the old central
 `~/.claude-orca`; `claude-dev --uninstall` and `claude-dev --remove-v1` both
 remove it, naming the path first.
 
+### If the bootstrap stops
+
+Every dependency and precondition is checked before anything is written, so
+a refusal leaves your folder untouched. The script prints the fix; these are
+the ones it can't apply for you. **In every case, re-run the same one-liner
+afterwards — it is idempotent and picks up where it left off.**
+
+| It says | Paste this |
+|---|---|
+| `git is required` | macOS opens the Xcode Command Line Tools installer for you — click Install, wait, re-run |
+| `brew is required` | `/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"` (it asks for your password) |
+| `gh is required` | `brew install gh` — though with Homebrew present the bootstrap runs this itself |
+| `gh is not authenticated` | `gh auth login --web` |
+| `the claude_orca shell hook cannot be installed` | `sudo chown $(id -un) <file> && chmod u+w <file>` for each file it names (`ls -l <file>` shows who owns it) — only reachable for a file it cannot even read |
+| `cannot write to the project folder` | `sudo chown -R $(id -un) <folder>` |
+
+A shell rc file left root-owned by some earlier `sudo`-ed installer is *not*
+in that list: as long as it is readable and your home directory is yours,
+both the bootstrap and `claude-dev rc-install` rebuild it in place with
+identical contents and your own ownership, print one `Reclaimed …` line, and
+carry on. No sudo, no re-run.
+
+If it stops *after* the preflight, the last line names the step —
+`Bootstrap failed during: …` — with the failing command's own output above
+it.
+
 ## Run it
 
 Double-click **`Orca.app` in the project folder** — not a copy in

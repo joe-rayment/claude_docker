@@ -144,14 +144,54 @@ rc_remove_block() {
     mv "$tmp" "$file"
 }
 
+# A no-sudo reclaim of an rc file that exists but is not writable -- an
+# installer that ran under sudo and left it root-owned is the usual cause.
+# Deleting a file needs write permission on its DIRECTORY, not on the file
+# itself, so while $HOME is ours the file can be rebuilt in place with
+# byte-identical contents and our own ownership, and registration carries
+# on without asking anyone for sudo. Returns 1 silently whenever that
+# cannot apply -- nothing to reclaim, an unreadable file, or a directory we
+# cannot write -- leaving rc_install_one's fail-closed message to take over.
+rc_reclaim() {
+    local file="$1" dir tmp
+    [ -e "$file" ] || return 1
+    [ ! -w "$file" ] || return 1
+    [ -r "$file" ] || return 1
+
+    dir="$(dirname "$file")"
+    [ -w "$dir" ] || return 1
+
+    tmp="$(mktemp "$dir/.claude-orca-reclaim.XXXXXX")" || return 1
+    if ! cat "$file" > "$tmp" 2>/dev/null; then
+        rm -f "$tmp"
+        return 1
+    fi
+    if ! rm -f "$file" 2>/dev/null; then
+        rm -f "$tmp"
+        return 1
+    fi
+    mv "$tmp" "$file"
+    chmod 644 "$file"
+
+    echo "==> Reclaimed $file: it was not writable (likely left root-owned by an installer); rebuilt with identical contents, now owned by $(id -un)" >&2
+}
+
 rc_install_one() {
     local file="$1" shellrc_name="$2"
-    # Fail closed with a usable message: a root-owned or otherwise
-    # unwritable rc file (a sudo'd installer is the usual culprit) must
-    # stop registration -- a login shell of that flavour would run
-    # unconfined without its hook -- but 'touch: Permission denied' told
-    # the user nothing about which file or how to fix it.
-    if ! touch "$file" 2>/dev/null; then
+    rc_reclaim "$file" || true
+
+    # Fail closed with a usable message, for the cases even rc_reclaim
+    # above cannot rescue -- a file we cannot read, or a $HOME we cannot
+    # write. An unusable rc file must stop registration either way: a login
+    # shell of that flavour would run unconfined without its hook, and
+    # 'touch: Permission denied' told the user nothing about which file or
+    # how to fix it.
+    #
+    # touch alone is not the test: its owner may set a file's timestamps
+    # whatever the mode bits say, so `touch` sails through a mode-000 file
+    # of our own that the read and the rewrite below would both fail on.
+    # After a successful touch the file certainly exists, so -r/-w decide.
+    if ! touch "$file" 2>/dev/null || [ ! -r "$file" ] || [ ! -w "$file" ]; then
         {
             echo "Error: cannot write $file -- the shell hook cannot be installed there."
             echo "  Check who owns it:   ls -l $file"

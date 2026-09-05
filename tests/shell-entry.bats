@@ -242,3 +242,47 @@ require_bash32() {
     [ "$(sha256sum "$HOME/.zshrc" | cut -d' ' -f1)" = "$orig_zshrc_sum" ]
     [ "$(sha256sum "$HOME/.bash_profile" | cut -d' ' -f1)" = "$orig_bp_sum" ]
 }
+
+# V6 addition (rc_reclaim): an rc file left root-owned by a sudo'd
+# installer used to stop registration dead with a sudo instruction. Removing
+# a file needs write permission on its DIRECTORY, not on the file, so while
+# $HOME is ours the file is rebuilt in place with identical contents and no
+# sudo at all. Neither case can run as root, for whom -w is always true.
+@test "rc-install reclaims an unwritable-but-readable rc file without sudo" {
+    if [ "$(id -u)" -eq 0 ]; then
+        skip "root can write anything, so -w never reports the problem"
+    fi
+
+    make_project "$PROJECT_DIR"
+
+    pre_existing='export CLAUDE_ORCA_RC_RECLAIM_TEST=1'
+    printf '%s\n' "$pre_existing" > "$HOME/.bash_profile"
+    chmod 444 "$HOME/.bash_profile"
+
+    run "$ORCA_HOST/bin/claude-dev" rc-install
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Reclaimed"* ]]
+    [[ "$output" == *".bash_profile"* ]]
+
+    [ -w "$HOME/.bash_profile" ]
+    grep -qxF "$pre_existing" "$HOME/.bash_profile"
+    [ "$(grep -c '# >>> claude_orca >>>' "$HOME/.bash_profile")" -eq 1 ]
+}
+
+@test "rc-install still fails closed when the rc file is unreadable" {
+    if [ "$(id -u)" -eq 0 ]; then
+        skip "root can read anything, so the refusal never fires"
+    fi
+
+    make_project "$PROJECT_DIR"
+
+    : > "$HOME/.bash_profile"
+    chmod 000 "$HOME/.bash_profile"
+
+    run "$ORCA_HOST/bin/claude-dev" rc-install
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"cannot write"* ]]
+    [[ "$output" == *".bash_profile"* ]]
+    [[ "$output" == *"chown"* ]]
+    [[ "$output" != *"Reclaimed"* ]]
+}

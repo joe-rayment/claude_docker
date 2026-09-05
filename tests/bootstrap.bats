@@ -18,6 +18,118 @@ load helpers/setup
     [ ! -d "$ORCA_HOST" ]
 }
 
+# V6: bootstrap.sh preflights every precondition BEFORE the first
+# mkdir/clone/install, so a fixable problem costs nothing and leaves
+# nothing behind. Registration's rc-install (rc_install_one in
+# scripts/launcher.sh) is the last thing that runs, and a root-owned or
+# read-only rc file used to fail there -- after the clone and every
+# install.
+#
+# Read-only is not the same as unrecoverable: deleting a file needs write
+# permission on its directory, never on the file, so a readable one is
+# rebuilt in place with no sudo (rc_reclaim, duplicated in bootstrap.sh
+# because the template carrying the launcher's copy is not cloned yet).
+@test "preflight reclaims an unwritable-but-readable rc file and carries on" {
+    if [ "$(id -u)" -eq 0 ]; then
+        skip "root can write anything, so -w never reports the problem"
+    fi
+
+    printf '%s\n' 'export EDITOR=vi' > "$HOME/.bash_profile"
+    chmod 444 "$HOME/.bash_profile"
+
+    run bash "$REPO_ROOT/bootstrap.sh" "$PROJECT_DIR"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Reclaimed"* ]]
+    [[ "$output" == *".bash_profile"* ]]
+
+    [ -w "$HOME/.bash_profile" ]
+    grep -qxF 'export EDITOR=vi' "$HOME/.bash_profile"
+    [ "$(grep -c '# >>> claude_orca >>>' "$HOME/.bash_profile")" -eq 1 ]
+    [ -d "$ORCA_HOST/template" ]
+}
+
+@test "preflight refuses an unreadable rc file before cloning anything" {
+    if [ "$(id -u)" -eq 0 ]; then
+        skip "root can read and write anything, so the refusal never fires"
+    fi
+
+    : > "$HOME/.bash_profile"
+    chmod 000 "$HOME/.bash_profile"
+
+    run bash "$REPO_ROOT/bootstrap.sh" "$PROJECT_DIR"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *".bash_profile"* ]]
+    [[ "$output" == *"chown"* ]]
+    [[ "$output" == *"re-run this same command"* ]]
+
+    [ ! -e "$ORCA_HOST/template" ]
+    [ ! -d "$ORCA_HOST" ]
+}
+
+# Past the preflight, a step that dies mid-install says which one, so the
+# fix-and-re-run loop has somewhere to start.
+@test "a failing step is named by the error trap" {
+    cat > "$STUB_BIN/brew" <<'STUB'
+#!/usr/bin/env bash
+echo "brew $*" >> "$STUB_LOG"
+[ "$1" = "bundle" ] && exit 1
+exit 0
+STUB
+    chmod +x "$STUB_BIN/brew"
+
+    run bash "$REPO_ROOT/bootstrap.sh" "$PROJECT_DIR"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"Bootstrap failed during: brew bundle"* ]]
+    [[ "$output" == *"idempotent and picks up where it left off"* ]]
+}
+
+# gh is the one missing dependency bootstrap fixes for you rather than
+# printing instructions for. $ORIGINAL_PATH is shadowed into a directory of
+# symlinks minus gh, because this container ships a real /usr/bin/gh that
+# removing the stub would otherwise expose.
+@test "missing gh with brew present auto-installs gh" {
+    export STUB_BIN
+    export STUB_GH_SRC="$BATS_TEST_TMPDIR/gh-src"
+    write_stub_gh "$STUB_GH_SRC"
+    rm -f "$STUB_BIN/gh"
+
+    local shadow="$BATS_TEST_TMPDIR/shadow" d oifs
+    mkdir -p "$shadow"
+    oifs="$IFS"; IFS=:
+    for d in $ORIGINAL_PATH; do
+        IFS="$oifs"
+        [ -d "$d" ] || continue
+        ln -s "$d"/* "$shadow/" 2>/dev/null || true
+        IFS=:
+    done
+    IFS="$oifs"
+    rm -f "$shadow/gh"
+    export PATH="$STUB_BIN:$shadow"
+    ! command -v gh >/dev/null 2>&1
+
+    cat > "$STUB_BIN/brew" <<'STUB'
+#!/usr/bin/env bash
+echo "brew $*" >> "$STUB_LOG"
+if [ "$1" = "install" ] && [ "$2" = "gh" ]; then
+    cp "$STUB_GH_SRC" "$STUB_BIN/gh"
+    chmod +x "$STUB_BIN/gh"
+    exit 0
+fi
+if [ "$1" = "list" ] && [ "$2" = "--cask" ] && [ "$3" = "orca" ]; then
+    [ "${STUB_ORCA_INSTALLED:-}" = "1" ] && exit 0
+    exit 1
+fi
+exit 0
+STUB
+    chmod +x "$STUB_BIN/brew"
+
+    run bash "$REPO_ROOT/bootstrap.sh" "$PROJECT_DIR"
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"gh is required"* ]]
+    grep -qF "brew install gh" "$STUB_LOG"
+    [ -x "$STUB_BIN/gh" ]
+}
+
 @test "bootstrap installs everything under <project>/.claude-dev (bin, template clone, srt pinned to 0.0.75 via stubbed npm)" {
     run bash "$REPO_ROOT/bootstrap.sh" "$PROJECT_DIR"
     [ "$status" -eq 0 ]
