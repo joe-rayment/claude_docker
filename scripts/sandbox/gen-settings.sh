@@ -31,6 +31,28 @@
 # at it. The alternative it offers, credentials.allowPlaintextInject,
 # would put the real token on the cleartext path; not taken.
 #
+# What LAYER 2 -- this file's output, one srt sandbox per shell -- may
+# WRITE (V2d, claude-orca-qt9.9):
+#   <worktree>                   the checkout the shell sits in (the whole
+#                                folder when that is the primary)
+#   <primary>/.git, .beads       shared with a linked worktree
+#   <primary>/.claude-dev/home   the faked HOME: config dir, credentials
+#   <primary>/.claude-dev/tmp    the faked TMPDIR
+#   + filesystem.extraAllowWrite from sandbox.json -- every entry checked
+#     above to resolve INSIDE the folder
+#   - filesystem.denyWrite: every host-owned path (host-owned-paths.sh),
+#     .claude-dev/state and .claude-dev/sandbox.json among them
+#
+# Layer 2's write scope therefore stops at the folder boundary, by
+# construction. That is what makes the wrapper's private per-launch
+# directory outside the folder (see claude-orca-shell) the right home for
+# the settings file this script produces: an agent confined by layer 2
+# cannot reach it, so it cannot widen its own sandbox by rewriting the
+# file between the wrapper's write and its exec into srt. Inside the
+# folder, .claude-dev/run is agent-writable and .claude-dev/state is
+# write-denied to BOTH layers -- which is why what a sandbox produces
+# goes to the former, and what defines a sandbox goes to neither.
+#
 # Exit 0 with the JSON on stdout; exit 2 with a one-line reason on stderr
 # for any malformed or out-of-scope input.
 

@@ -311,12 +311,18 @@ GEN_SETTINGS() {
     unset STUB_SRT_NOEXEC CLAUDE_ORCA_REAL_HOME
     [ "$status" -eq 0 ]
 
+    # V2d (claude-orca-qt9.9): the settings file is written to a private
+    # per-launch directory outside the folder (the wrapper runs inside
+    # layer 1, which write-denies the host-owned tree, and the file
+    # defines layer 2, so nowhere layer 2 can write either) -- name it
+    # from what srt was handed, and keep the file-name hash pinned.
     settings_hash="$(printf '%s' "$primary" | sha1sum | cut -d' ' -f1)"
-    settings_file="$primary/.claude-dev/state/srt-$settings_hash.json"
+    settings_file="$(grep -A1 -Fx -- '--settings' "$STUB_LOG" | sed -n 2p)"
+    [ "$(basename "$settings_file")" = "srt-$settings_hash.json" ]
+    [ "${settings_file#$primary/}" = "$settings_file" ]
     [ -f "$settings_file" ]
     [ "$(file_mode "$settings_file")" = "600" ]
 
-    grep -A1 -Fx -- '--settings' "$STUB_LOG" | grep -qF "$settings_file"
     grep -A1 -Fx -- '-c' "$STUB_LOG" | grep -qxF 'exec zsh -l'
 }
 

@@ -5,12 +5,12 @@
 # Checksum-gated: a no-op when config/**'s content hasn't changed since the
 # last sync into this project. Idempotent; never touches anything outside
 # <project>/.claude-dev/home (or its own gate file under
-# <project>/.claude-dev/state/).
+# <project>/.claude-dev/run/).
 #
 # Usage: config-sync --project <primary> --host <HOST>
 #
 #   --project  the primary checkout. Its .claude-dev/home/.claude is the
-#              sync target, and .claude-dev/state/config-hash the gate.
+#              sync target, and .claude-dev/run/config-hash the gate.
 #   --host     the host dir (<project>/.claude-dev) whose template/config/ is the
 #              SOURCE; hook commands in the synced settings.json get the
 #              __HOST__ placeholder rewritten to this exact value, so every
@@ -123,7 +123,16 @@ config_checksum() {
     fi ) | sha1sum | cut -d' ' -f1
 }
 
-HASH_FILE="$project/.claude-dev/state/config-hash"
+# V2d (claude-orca-qt9.9): the gate lives in .claude-dev/run, beside
+# everything else written from inside a sandbox. This script runs INSIDE
+# layer 1 (the wrapper calls it on every launch, and layer 1 write-denies
+# the folder's host-owned tree), so a gate parked there could never be
+# updated on a Mac -- every launch would re-sync the whole config dir.
+# run/ is agent-writable, which costs nothing here: the hash only decides
+# whether to re-sync, so forging it can at most force a sync or skip one,
+# and an agent that wants either can already get it by editing the config
+# dir this script syncs into.
+HASH_FILE="$project/.claude-dev/run/config-hash"
 NEW_HASH="$(config_checksum)"
 OLD_HASH=""
 [ -f "$HASH_FILE" ] && OLD_HASH="$(cat "$HASH_FILE" 2>/dev/null)"

@@ -103,7 +103,7 @@ JSON
     run CONFIG_SYNC --project "$primary" --host "$ORCA_HOST"
     [ "$status" -eq 0 ]
     sum1="$(tree_checksum "$dest")"
-    hash1="$(cat "$primary/.claude-dev/state/config-hash")"
+    hash1="$(cat "$primary/.claude-dev/run/config-hash")"
 
     run CONFIG_SYNC --project "$primary" --host "$ORCA_HOST"
     [ "$status" -eq 0 ]
@@ -121,7 +121,7 @@ JSON
     run CONFIG_SYNC --project "$primary" --host "$ORCA_HOST"
     [ "$status" -eq 0 ]
     [ ! -f "$dest/agents/CANARY.md" ]
-    hash2="$(cat "$primary/.claude-dev/state/config-hash")"
+    hash2="$(cat "$primary/.claude-dev/run/config-hash")"
     [ "$hash1" != "$hash2" ]
     diff "$ORCA_HOST/template/config/claude-user-memory.md" "$dest/CLAUDE.md"
 }

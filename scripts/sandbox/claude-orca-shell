@@ -329,10 +329,13 @@ fi
 # --- MODE = run / selftest: side effects start here -----------------------
 
 # .claude-dev/run is the agent-writable half of the folder's own state
-# (V2c, plans/orca-port.md S9.2): what the SANDBOX writes goes there,
-# state/ stays host-written and write-denied in both layers.
-mkdir -p "$SANDBOX_HOME" "$SANDBOX_TMP" "$PRIMARY/.claude-dev/state" \
-         "$PRIMARY/.claude-dev/run"
+# (V2c, plans/orca-port.md S9.2): what the SANDBOX writes goes there.
+# Its host-written sibling is deliberately absent from this list (V2d,
+# claude-orca-qt9.9): this script runs INSIDE layer 1, which write-denies
+# every host-owned path in the folder, so a launch that tried to create
+# or touch that tree would simply fail here on a Mac. The launcher
+# creates it, once, on the host at registration time.
+mkdir -p "$SANDBOX_HOME" "$SANDBOX_TMP" "$PRIMARY/.claude-dev/run"
 
 # Host side, before exec/selftest: keep the primary checkout's config dir
 # current with this template's config/ (S7, claude-orca-3sk.7). Best-effort
@@ -436,8 +439,43 @@ if [ "$MODE" = "run" ] && [ -x "$TEMPLATE_DIR/bin/auth-guard" ]; then
     "$TEMPLATE_DIR/bin/auth-guard" || die "auth-guard refused to start this shell" 1
 fi
 
-SETTINGS_FILE="$PRIMARY/.claude-dev/state/srt-$(sha1_of "$WORKTREE").json"
-printf '%s\n' "$SETTINGS_JSON" > "$SETTINGS_FILE"
+# V2d (claude-orca-qt9.9): where the srt settings file lands matters
+# twice. It is written from INSIDE layer 1, so it cannot go under the
+# folder's host-owned tree -- that is write-denied there, and every Orca
+# terminal on the Mac would fail to start right here. And it IS the
+# definition of layer 2, so it must not go anywhere layer 2 can write:
+# .claude-dev/run and .claude-dev/tmp are agent-writable, and an agent
+# could swap the file between this write and the exec below, handing
+# itself a wider sandbox on the next launch.
+#
+# The per-user temp dir is the one place that is neither. On Darwin
+# `getconf DARWIN_USER_TEMP_DIR` names it (under /private/var/folders):
+# the Orca profile allows file-write* there, and srt's allowWrite can
+# never reach it -- gen-settings.sh rejects any extraAllowWrite entry
+# resolving outside the folder, so layer 2's write scope stops at the
+# folder boundary. Elsewhere, plain `mktemp -d` under $TMPDIR.
+#
+# One private directory per launch (mode 700, file mode 600). srt reads
+# the file at startup, before it sandboxes anything, so it only has to
+# survive until the exec below -- and nothing survives that exec to
+# clean up after itself, so each launch first sweeps the per-launch
+# directories older than an hour that earlier launches left behind.
+LAUNCH_TMP_ROOT=""
+if [ "$(uname -s)" = "Darwin" ]; then
+    LAUNCH_TMP_ROOT="$(getconf DARWIN_USER_TEMP_DIR 2>/dev/null || true)"
+fi
+[ -n "$LAUNCH_TMP_ROOT" ] || LAUNCH_TMP_ROOT="${TMPDIR:-/tmp}"
+LAUNCH_TMP_ROOT="$(canon_if_dir "${LAUNCH_TMP_ROOT%/}")"
+
+find "$LAUNCH_TMP_ROOT" -maxdepth 1 -type d -name 'claude-orca.*' -mmin +60 \
+     -exec rm -rf {} + >/dev/null 2>&1 || true
+
+LAUNCH_DIR="$(mktemp -d "$LAUNCH_TMP_ROOT/claude-orca.XXXXXX")" \
+    || die "could not create a private launch directory under $LAUNCH_TMP_ROOT" 2
+chmod 700 "$LAUNCH_DIR"
+
+SETTINGS_FILE="$LAUNCH_DIR/srt-$(sha1_of "$WORKTREE").json"
+(umask 077; printf '%s\n' "$SETTINGS_JSON" > "$SETTINGS_FILE")
 chmod 600 "$SETTINGS_FILE"
 
 export HOME="$ENV_HOME"
