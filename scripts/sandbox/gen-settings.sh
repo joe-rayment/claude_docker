@@ -9,7 +9,13 @@
 #
 # Usage:
 #   gen-settings.sh --primary <dir> --worktree <dir> --real-home <dir> \
-#       --host <CLAUDE_ORCA_HOME> --sandbox-json <file> [--gh-token-present]
+#       --host <CLAUDE_ORCA_HOME> --sandbox-json <file> [--gh-token-present] \
+#       [--openrouter-key-present] [--openai-key-present] [--gemini-key-present]
+#
+# The three provider-key flags (S8, claude-orca-3sk.19) are the delegation
+# equivalent of --gh-token-present: the caller found OPENROUTER_API_KEY /
+# OPENAI_API_KEY / GEMINI_API_KEY in the host environment and will pass it
+# in, so mask it and open its API host. See "credential masks" below.
 #
 # --gh-token-present (S5, claude-orca-3sk.17): the caller found a GitHub
 # token on the host (`gh auth token`) and will pass it into srt as
@@ -72,10 +78,16 @@ real_home=""
 host=""
 sandbox_json=""
 gh_token_present=0
+openrouter_key_present=0
+openai_key_present=0
+gemini_key_present=0
 
 while [ $# -gt 0 ]; do
     case "$1" in
         --gh-token-present) gh_token_present=1; shift ;;
+        --openrouter-key-present) openrouter_key_present=1; shift ;;
+        --openai-key-present) openai_key_present=1; shift ;;
+        --gemini-key-present) gemini_key_present=1; shift ;;
         --primary)      primary="$2"; shift 2 ;;
         --worktree)     worktree="$2"; shift 2 ;;
         --real-home)    real_home="$2"; shift 2 ;;
@@ -208,6 +220,59 @@ while IFS= read -r d; do
     fi
 done < <(jq -r '.[]' <<<"$extra_domains_json")
 
+# --- credential masks ------------------------------------------------------
+
+# S5 (GH_TOKEN) and S8 (claude-orca-3sk.19, the delegation provider keys):
+# a secret the caller found on the host becomes an srt credentials mask --
+# the sandboxed process sees a sentinel and the host proxy substitutes the
+# real value only on egress to that secret's own inject hosts. Each inject
+# host also joins allowedDomains, because srt rejects an injectHosts entry
+# the allowlist cannot reach; the two GitHub hosts are already there, so
+# the settings a project without any provider key gets are unchanged.
+cred_json='[]'
+
+# add_credential <env-var-name> <inject-host> [inject-host]
+add_credential() {
+    local name="$1" host1="$2" host2="${3:-}"
+    local h existing dup hosts_json
+    for h in "$host1" "$host2"; do
+        if [ -z "$h" ]; then
+            continue
+        fi
+        dup=0
+        for existing in "${allowed_domains[@]}"; do
+            if [ "$existing" = "$h" ]; then
+                dup=1
+                break
+            fi
+        done
+        if [ "$dup" -eq 0 ]; then
+            allowed_domains+=("$h")
+        fi
+    done
+    if [ -n "$host2" ]; then
+        hosts_json="$(printf '%s\n%s\n' "$host1" "$host2" | jq -R . | jq -s -c .)"
+    else
+        hosts_json="$(printf '%s\n' "$host1" | jq -R . | jq -s -c .)"
+    fi
+    cred_json="$(jq -c --arg n "$name" --argjson h "$hosts_json" \
+        '. + [{name: $n, mode: "mask", injectHosts: $h}]' <<<"$cred_json")"
+    return 0
+}
+
+if [ "$gh_token_present" -eq 1 ]; then
+    add_credential GH_TOKEN github.com api.github.com
+fi
+if [ "$openrouter_key_present" -eq 1 ]; then
+    add_credential OPENROUTER_API_KEY openrouter.ai
+fi
+if [ "$openai_key_present" -eq 1 ]; then
+    add_credential OPENAI_API_KEY api.openai.com
+fi
+if [ "$gemini_key_present" -eq 1 ]; then
+    add_credential GEMINI_API_KEY generativelanguage.googleapis.com
+fi
+
 # --- JSON emission ---------------------------------------------------------
 
 # Bash-array -> compact JSON array, via jq -R/-s. printf with ZERO args
@@ -229,13 +294,12 @@ deny_read_json="$(to_json_array "$real_home")"
 allowed_domains_json="$(to_json_array "${allowed_domains[@]}")"
 allow_unix_sockets_json="$(to_json_array ${allow_unix_sockets[@]+"${allow_unix_sockets[@]}"})"
 
-# S5: masked GH_TOKEN, or nothing at all. injectHosts names two hosts that
-# are always in DEFAULT_DOMAINS -- srt rejects an injectHosts entry that is
-# not reachable via allowedDomains.
-if [ "$gh_token_present" -eq 1 ]; then
-    credentials_json='{"envVars":[{"name":"GH_TOKEN","mode":"mask","injectHosts":["github.com","api.github.com"]}]}'
-else
+# Masked secrets, or nothing at all: an entry naming an unset variable
+# buys nothing, and the settings must stay schema-valid either way.
+if [ "$cred_json" = "[]" ]; then
     credentials_json='null'
+else
+    credentials_json="$(jq -c -n --argjson e "$cred_json" '{envVars: $e}')"
 fi
 
 jq -n \

@@ -247,6 +247,142 @@ STUB
     chmod +x "$1"
 }
 
+# --- S8 delegation stubs (claude-orca-3sk.19) ------------------------------
+#
+# delegate.sh hands every runner a scrubbed env (`env -i` + only PATH, HOME,
+# XDG_CONFIG_HOME, TERM and the route's provider key), so an arbitrary
+# "record here" variable never reaches the stub. The job's own HOME does,
+# by design -- so every runner stub records into $HOME: <name>.argv (one
+# argv element per line), <name>.env (a full env dump) and `runner` (the
+# name that ran). Each emits a realistic NDJSON stream carrying one
+# usage/cost event, and exits with $STUB_RUNNER_EXIT (default 0).
+
+write_stub_opencode() {
+    mkdir -p "$(dirname "$1")"
+    cat > "$1" <<'STUB'
+#!/usr/bin/env bash
+mkdir -p "$HOME"
+printf '%s\n' "$@" > "$HOME/opencode.argv"
+env > "$HOME/opencode.env"
+echo opencode > "$HOME/runner"
+cat <<'JSON'
+{"type":"session.updated","timestamp":1788224900000,"sessionID":"ses_fake"}
+{"type":"message","timestamp":1788224900500,"role":"assistant","text":"working"}
+{"type":"finish","timestamp":1788224901000,"sessionID":"ses_fake","usage":{"inputTokens":1234,"outputTokens":567,"cost":0.0089}}
+JSON
+exit "${STUB_RUNNER_EXIT:-0}"
+STUB
+    chmod +x "$1"
+}
+
+write_stub_codex() {
+    mkdir -p "$(dirname "$1")"
+    cat > "$1" <<'STUB'
+#!/usr/bin/env bash
+mkdir -p "$HOME"
+printf '%s\n' "$@" > "$HOME/codex.argv"
+env > "$HOME/codex.env"
+echo codex > "$HOME/runner"
+cat <<'JSON'
+{"type":"thread.started","thread_id":"th_fake"}
+{"type":"item.completed","item":{"type":"agent_message","text":"working"}}
+{"type":"turn.completed","usage":{"input_tokens":2048,"output_tokens":301,"cost":0.0042}}
+JSON
+exit "${STUB_RUNNER_EXIT:-0}"
+STUB
+    chmod +x "$1"
+}
+
+write_stub_gemini() {
+    mkdir -p "$(dirname "$1")"
+    cat > "$1" <<'STUB'
+#!/usr/bin/env bash
+mkdir -p "$HOME"
+printf '%s\n' "$@" > "$HOME/gemini.argv"
+env > "$HOME/gemini.env"
+echo gemini > "$HOME/runner"
+pwd > "$HOME/gemini.cwd"
+cat <<'JSON'
+{"type":"content","text":"working"}
+{"type":"result","usage":{"promptTokens":900,"completionTokens":120,"cost":0.0011}}
+JSON
+exit "${STUB_RUNNER_EXIT:-0}"
+STUB
+    chmod +x "$1"
+}
+
+# A `bd` stub backed by one JSON file per project dir (<dir>/.bd-stub.json).
+# Covers exactly the four calls delegate.sh makes -- create (tests only),
+# show --json, update --append-notes, list --notes-contains --json -- and
+# logs every invocation's argv to $BD_STUB_LOG when set. Never touches a
+# real Dolt DB, so no test can reach this repo's own beads.
+write_stub_bd() {
+    mkdir -p "$(dirname "$1")"
+    cat > "$1" <<'STUB'
+#!/usr/bin/env bash
+[ -n "${BD_STUB_LOG:-}" ] && printf '%s\n' "$*" >> "$BD_STUB_LOG"
+
+dir="$PWD"
+args=()
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -C) dir="$2"; shift 2 ;;
+        *) args+=("$1"); shift ;;
+    esac
+done
+db="$dir/.bd-stub.json"
+[ -f "$db" ] || echo '[]' > "$db"
+
+cmd="${args[0]}"
+case "$cmd" in
+    create)
+        title="${args[1]}"; desc=""; acc=""
+        i=2
+        while [ "$i" -lt "${#args[@]}" ]; do
+            case "${args[$i]}" in
+                -d|--description) i=$((i+1)); desc="${args[$i]}" ;;
+                --acceptance) i=$((i+1)); acc="${args[$i]}" ;;
+            esac
+            i=$((i+1))
+        done
+        id="test-$(jq 'length + 1' "$db")"
+        jq --arg id "$id" --arg t "$title" --arg d "$desc" --arg a "$acc" \
+            '. + [{id: $id, title: $t, description: $d, acceptance_criteria: $a, notes: ""}]' \
+            "$db" > "$db.tmp" && mv "$db.tmp" "$db"
+        echo "created $id"
+        ;;
+    show)
+        jq --arg id "${args[1]}" '[.[] | select(.id == $id)]' "$db"
+        ;;
+    update)
+        id="${args[1]}"; notes=""
+        i=2
+        while [ "$i" -lt "${#args[@]}" ]; do
+            [ "${args[$i]}" = "--append-notes" ] && { i=$((i+1)); notes="${args[$i]}"; }
+            i=$((i+1))
+        done
+        jq --arg id "$id" --arg n "$notes" \
+            'map(if .id == $id then .notes = ((.notes // "") + (if (.notes // "") == "" then "" else "\n" end) + $n) else . end)' \
+            "$db" > "$db.tmp" && mv "$db.tmp" "$db"
+        ;;
+    list)
+        needle=""
+        i=1
+        while [ "$i" -lt "${#args[@]}" ]; do
+            [ "${args[$i]}" = "--notes-contains" ] && { i=$((i+1)); needle="${args[$i]}"; }
+            i=$((i+1))
+        done
+        jq --arg n "$needle" '[.[] | select(($n == "") or ((.notes // "") | contains($n))) | {id: .id}]' "$db"
+        ;;
+    *)
+        exit 0
+        ;;
+esac
+exit 0
+STUB
+    chmod +x "$1"
+}
+
 # --- per-test environment -------------------------------------------------
 
 setup() {
