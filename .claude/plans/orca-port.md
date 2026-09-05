@@ -270,3 +270,16 @@ Order: S1 → S2 → S3 → S4 → S7 → S5 → S6 → S8 → S12 → S11 → S
   carried through the re-exec, block also in `.zprofile`).
 - **macOS bash 3.2**: one real incompatibility found (empty-array `+=` under `set -u`); every script
   now runs under a real GNU bash 3.2.57 in the suite (S2b).
+
+## 8. Status at 2026-09-05 (end of implementation)
+All twelve slices (S1–S12, plus S2b) are implemented, independently verified under their
+contracts, and merged into `main` at 3d59e31; `./run-tests.sh` = 673 cases green on main,
+`scripts/lint-bash32.sh` clean, every script parses under GNU bash 3.2.57 and 5.x.
+Open items, none blocking the Mac trial:
+- Mac self-test still unrun (this container is Linux): `claude-dev --doctor` after the bootstrap
+  one-liner is the proof for the Seatbelt path, and it decides the gh-token masking default (§7).
+- `delegate run --prompt-file` is implemented but its old test case was not carried (S8 notes).
+- Three of eleven frozen contracts needed re-registration for executor test bugs (S4, S6, S9)
+  plus S8; each new bead carries the identical contract and a fresh RED/GREEN pair.
+- The rulebook's Delegation section was tightened by 23 words to fit the route rule under the
+  1000-word budget (S8 notes list every sentence).
