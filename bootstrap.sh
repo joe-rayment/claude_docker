@@ -22,7 +22,13 @@ require() {
 
 require git
 require gh
-require brew
+
+# CLAUDE_ORCA_SKIP_BREW=1 (Linux/CI hosts with no Homebrew) skips this
+# requirement too, not just the `brew bundle` call below -- otherwise the
+# skip flag was useless: bootstrap.sh died here before ever reaching it.
+if [ "${CLAUDE_ORCA_SKIP_BREW:-0}" != "1" ]; then
+    require brew
+fi
 
 if ! gh auth status >/dev/null 2>&1; then
     echo "Error: gh is not authenticated -- run 'gh auth login' first." >&2

@@ -109,3 +109,11 @@ load helpers/setup
     [ "$host_sum1" = "$host_sum2" ]
     [ "$project_sum1" = "$project_sum2" ]
 }
+
+@test "CLAUDE_ORCA_SKIP_BREW=1 succeeds with brew entirely absent from PATH" {
+    rm -f "$STUB_BIN/brew"
+    export CLAUDE_ORCA_SKIP_BREW=1
+    run bash "$REPO_ROOT/bootstrap.sh" "$PROJECT_DIR"
+    [ "$status" -eq 0 ]
+    ! grep -q '^brew ' "$STUB_LOG"
+}
