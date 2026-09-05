@@ -283,3 +283,55 @@ Open items, none blocking the Mac trial:
   plus S8; each new bead carries the identical contract and a fresh RED/GREEN pair.
 - The rulebook's Delegation section was tightened by 23 words to fit the route rule under the
   1000-word budget (S8 notes list every sentence).
+
+## 9. v2 — Orca itself lives in the folder and runs inside the sandbox (2026-09-05)
+
+The user's clarification after the first Mac run: Orca must be installed **by the bootstrap, into
+the project folder**, and run **entirely isolated in that folder** ("sees only what's in that
+folder and nothing else"), with **no central install** (a central Orca would let someone run the
+unsandboxed one by mistake), while feeling **like regular Orca** and carrying the claude_docker
+rulebook, beads, tiers and hooks. "Apple's container format" is read as Apple's native process
+sandbox (Seatbelt / `sandbox-exec`, the same mechanism as App Sandbox) — a native GUI is the only
+way to feel like regular Orca; Apple's Linux-VM `container` tool would not run the macOS app.
+
+### 9.1 Two sandbox layers, one folder
+- **Layer 1 — the Orca app.** `<project>/.claude-dev/app/Orca.app` (pinned DMG, 1.4.197, arch by
+  `uname -m`) is launched by a host-side script under a generated Seatbelt profile
+  `<project>/.claude-dev/state/orca.sb`: `(allow default)` for GUI services, then filesystem
+  confinement — reads and writes denied under `/Users` and `/Volumes` except `<project>`; writes
+  denied everywhere else except `<project>`, the per-user temp/cache tree (`/private/var/folders`),
+  `/dev`; host-owned paths inside the folder write-denied (§9.2). `HOME=<project>/.claude-dev/home`,
+  `TMPDIR=<project>/.claude-dev/tmp`, so Orca's own state (`~/Library/Application Support/orca`,
+  `~/.orca`, `~/.claude`) lands inside the folder — Node's `os.homedir()` follows `HOME`; whether
+  Electron's `appData` does is the first thing the Mac probes check, with the documented fallback of
+  allowing Orca's real `~/Library/Application Support/orca` only.
+- **Layer 2 — agents.** Unchanged: every shell Orca opens re-execs into `srt` (network allowlist,
+  credential masking, deny-default). Nested Seatbelt only tightens. Children inherit layer 1 even
+  if layer 2 is bypassed.
+- Mediated OS services (WindowServer, Keychain via securityd, cfprefsd) stay reachable: they are
+  not filesystem access, and Orca's login persistence needs the Keychain. Documented exception.
+
+### 9.2 No central install; trust boundary v2
+Everything lives under `<project>/.claude-dev/`: `template/` (this repo), `srt/`, `claude/` (Claude
+Code from the pinned npm package), `app/Orca.app`, `bin/` (launcher, wrapper, root finder),
+`home/`, `tmp/`, `state/`, `sandbox.json`. The project root gets `./claude-dev` (stub → `.claude-dev/
+bin/launcher.sh`) and `Orca.app` (a tiny launcher bundle whose `Contents/MacOS/Orca` runs
+`.claude-dev/bin/orca-launch`; double-click = sandboxed Orca with this folder added via
+`orca repo add --path`). `~/.claude-orca` disappears; the only thing outside the folder is the
+marker block in `~/.zshrc`/`~/.zprofile`/`~/.bash_profile`, which walks up from `$PWD` to find
+`.claude-dev/bin/claude-orca-shell` and execs it (Terminal shells in the folder get layer 2 too).
+Host-executed files now live inside the agent-writable folder, so **both** profiles write-deny
+them: `./claude-dev`, `Orca.app/**`, `.claude-dev/{bin,template,app,srt,claude,state/orca.sb,
+sandbox-generated files}`, plus the earlier list (`orca.yaml`, `.worktreeinclude`, `.envrc`,
+`.beads/hooks`). One list, one generator, both profiles.
+
+### 9.3 Slices (new epic; contracts on the beads)
+| # | Slice | Depends on |
+|---|-------|-----------|
+| V1 | Per-folder layout: bootstrap/launcher rewrite, Orca DMG + Claude Code npm into `.claude-dev/`, `./claude-dev` stub, generic rc snippet, no `~/.claude-orca` (grep gate) | — |
+| V2 | Orca Seatbelt profile generator + `orca-launch` + `Orca.app` launcher bundle; shared host-owned deny list feeding both profiles | V1 |
+| V3 | Orca-layer self-test probes + doctor rows + `claude-dev --how-to-run` / run-it print | V2 |
+| V4 | Orca data in-folder: config-sync preserves Orca-managed hooks in the shared settings.json; transcript symlink retired | V1 |
+| V5 | Lifecycle + docs v2 (update/teardown/uninstall for the per-folder layout, v1 leftovers cleanup, README/SANDBOX/ORCA_INTEGRATION rewrite) | V1–V4 |
+Linux can test everything but the Seatbelt behaviour itself; each slice's MAC-CHECK names the
+probe the user sees in `claude-dev --doctor`.
