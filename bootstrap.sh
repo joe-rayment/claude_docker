@@ -56,4 +56,15 @@ echo "==> Verifying tools"
 mkdir -p "$HOST/bin"
 ln -sf "$HOST/template/scripts/launcher.sh" "$HOST/bin/claude-dev"
 
+# S2 (claude-orca-3sk.14): the sandbox wrapper and its shell-rc hooks --
+# same symlink-into-template pattern as bin/claude-dev above, so a
+# `--update` pull picks up fixes with no re-bootstrap.
+ln -sf "$HOST/template/scripts/sandbox/claude-orca-root" "$HOST/bin/claude-orca-root"
+ln -sf "$HOST/template/scripts/sandbox/claude-orca-shell" "$HOST/bin/claude-orca-shell"
+ln -sf "$HOST/template/scripts/sandbox/shellrc.zsh" "$HOST/shellrc.zsh"
+ln -sf "$HOST/template/scripts/sandbox/shellrc.bash" "$HOST/shellrc.bash"
+
+echo "==> Installing shell hook (sources shellrc.zsh/.bash from ~/.zshrc, ~/.bash_profile)"
+"$HOST/bin/claude-dev" rc-install
+
 exec "$HOST/bin/claude-dev" register "${1:-$PWD}"

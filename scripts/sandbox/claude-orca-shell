@@ -1,0 +1,228 @@
+#!/usr/bin/env bash
+#
+# claude-orca-shell -- the S2 wrapper. Every shell opened inside a
+# bootstrapped project's folder re-execs itself through this before any
+# agent binary runs (see shellrc.zsh/shellrc.bash and
+# .claude/plans/orca-port.md S3.2). Trust boundary: this script never
+# sources or executes anything under <primary>/<worktree> --
+# <primary>/.claude-dev/sandbox.json is read only as validated data, by
+# gen-settings.sh.
+#
+# Usage:
+#   claude-orca-shell --root <primary> [--cwd <dir>] -- <shell> [args...]
+#   claude-orca-shell --check --root <primary> [--cwd <dir>]
+#   claude-orca-shell --print-settings --root <primary> [--cwd <dir>]
+#   claude-orca-shell --print-env --root <primary> [--cwd <dir>]
+#   claude-orca-shell --selftest [--root <primary>]
+#
+# Exit codes: 0 ok; 2 invalid input / scope rejected by gen-settings.sh;
+# 3 already sandboxed (CLAUDE_ORCA_SANDBOXED=1); 4 srt/sandbox-exec
+# missing; 64 --selftest (not implemented until S3).
+
+set -euo pipefail
+
+resolve_script_path() {
+    local src="${BASH_SOURCE[0]}"
+    while [ -L "$src" ]; do
+        local link dir
+        link="$(readlink "$src")"
+        case "$link" in
+            /*) src="$link" ;;
+            *)  dir="$(cd "$(dirname "$src")" && pwd)"; src="$dir/$link" ;;
+        esac
+    done
+    echo "$src"
+}
+
+SCRIPT_PATH="$(resolve_script_path)"
+SANDBOX_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
+GEN_SETTINGS="$SANDBOX_DIR/gen-settings.sh"
+ROOT_BIN="$SANDBOX_DIR/claude-orca-root"
+
+# HOST = ~/.claude-orca (override: CLAUDE_ORCA_HOME), independent of
+# where this copy of the script physically lives (template checkout vs.
+# the ~/.claude-orca/bin symlink) -- see .claude/plans/orca-port.md S3.1.
+HOST="${CLAUDE_ORCA_HOME:-$HOME/.claude-orca}"
+REAL_HOME="${CLAUDE_ORCA_REAL_HOME:-$HOME}"
+
+die() {
+    echo "claude-orca-shell: $1" >&2
+    exit "$2"
+}
+
+usage() {
+    cat <<'USAGE'
+Usage:
+  claude-orca-shell --root <primary> [--cwd <dir>] -- <shell> [args...]
+  claude-orca-shell --check --root <primary> [--cwd <dir>]
+  claude-orca-shell --print-settings --root <primary> [--cwd <dir>]
+  claude-orca-shell --print-env --root <primary> [--cwd <dir>]
+  claude-orca-shell --selftest [--root <primary>]
+USAGE
+}
+
+MODE="run"
+PRIMARY=""
+CWD_OPT=""
+SHELL_BIN="zsh"
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --root)            PRIMARY="$2"; shift 2 ;;
+        --cwd)             CWD_OPT="$2"; shift 2 ;;
+        --check)           MODE="check"; shift ;;
+        --print-settings)  MODE="print-settings"; shift ;;
+        --print-env)       MODE="print-env"; shift ;;
+        --selftest)        MODE="selftest"; shift ;;
+        --help|-h)         usage; exit 0 ;;
+        --)
+            shift
+            if [ $# -gt 0 ]; then
+                SHELL_BIN="$1"
+                shift
+            fi
+            break
+            ;;
+        *) die "unknown argument: $1" 2 ;;
+    esac
+done
+
+if [ "$MODE" = "selftest" ]; then
+    echo "claude-orca-shell --selftest: not implemented until S3" >&2
+    exit 64
+fi
+
+[ -n "$PRIMARY" ] || die "--root is required" 2
+
+if [ -n "${CLAUDE_ORCA_SANDBOXED:-}" ]; then
+    die "already sandboxed (CLAUDE_ORCA_SANDBOXED=1) -- refusing to nest" 3
+fi
+
+if [ ! -d "$PRIMARY" ]; then
+    die "--root is not a directory: $PRIMARY" 2
+fi
+PRIMARY="$(cd "$PRIMARY" && pwd -P)"
+
+CWD_DIR="${CWD_OPT:-$PWD}"
+if [ ! -d "$CWD_DIR" ]; then
+    die "--cwd is not a directory: $CWD_DIR" 2
+fi
+CWD_DIR="$(cd "$CWD_DIR" && pwd -P)"
+
+# Best-effort canonicalization -- if HOST/REAL_HOME don't exist yet, leave
+# them as-is and let the checks below (srt presence, gen-settings.sh's own
+# --real-home validation) fail with a precise, specific reason instead.
+canon_if_dir() {
+    if [ -d "$1" ]; then
+        (cd "$1" && pwd -P)
+    else
+        printf '%s\n' "$1"
+    fi
+}
+HOST="$(canon_if_dir "$HOST")"
+REAL_HOME="$(canon_if_dir "$REAL_HOME")"
+
+SRT_BIN="$HOST/srt/node_modules/.bin/srt"
+[ -x "$SRT_BIN" ] || die "srt not found at $SRT_BIN -- run claude-dev bootstrap again" 4
+
+if [ "$(uname -s)" = "Darwin" ]; then
+    command -v sandbox-exec >/dev/null 2>&1 || die "sandbox-exec not found on PATH (macOS Seatbelt)" 4
+fi
+
+WORKTREE=""
+if [ -x "$ROOT_BIN" ]; then
+    WORKTREE="$("$ROOT_BIN" --worktree --cwd "$CWD_DIR" 2>/dev/null)" || WORKTREE=""
+fi
+[ -n "$WORKTREE" ] || WORKTREE="$CWD_DIR"
+
+SANDBOX_JSON="$PRIMARY/.claude-dev/sandbox.json"
+
+if ! SETTINGS_JSON="$("$GEN_SETTINGS" \
+    --primary "$PRIMARY" \
+    --worktree "$WORKTREE" \
+    --real-home "$REAL_HOME" \
+    --host "$HOST" \
+    --sandbox-json "$SANDBOX_JSON" 2>&1)"; then
+    die "invalid sandbox scope for $PRIMARY: $SETTINGS_JSON" 2
+fi
+
+if [ "$MODE" = "print-settings" ]; then
+    printf '%s\n' "$SETTINGS_JSON"
+    exit 0
+fi
+
+# --- env block (single source of truth for run/--print-env) -------------
+
+SANDBOX_HOME="$PRIMARY/.claude-dev/home"
+SANDBOX_TMP="$PRIMARY/.claude-dev/tmp"
+
+ENV_HOME="$SANDBOX_HOME"
+ENV_CLAUDE_CONFIG_DIR="$SANDBOX_HOME/.claude"
+ENV_TMPDIR="$SANDBOX_TMP"
+ENV_GIT_CONFIG_GLOBAL="$SANDBOX_HOME/.gitconfig"
+ENV_GH_CONFIG_DIR="$SANDBOX_HOME/.config/gh"
+ENV_BEADS_DIR="$PRIMARY/.beads"
+ENV_ORCA_USER_DATA_PATH="$REAL_HOME/Library/Application Support/orca"
+ENV_PATH="/opt/homebrew/bin:/opt/homebrew/sbin:$REAL_HOME/.local/bin:$HOST/template/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+
+print_env_lines() {
+    cat <<EOF
+HOME=$ENV_HOME
+CLAUDE_CONFIG_DIR=$ENV_CLAUDE_CONFIG_DIR
+TMPDIR=$ENV_TMPDIR
+GIT_CONFIG_GLOBAL=$ENV_GIT_CONFIG_GLOBAL
+GH_CONFIG_DIR=$ENV_GH_CONFIG_DIR
+BEADS_DIR=$ENV_BEADS_DIR
+ORCA_USER_DATA_PATH=$ENV_ORCA_USER_DATA_PATH
+DISABLE_AUTOUPDATER=1
+CLAUDE_ORCA_SANDBOXED=1
+CLAUDE_ORCA_REAL_HOME=$REAL_HOME
+CLAUDE_ORCA_ROOT=$PRIMARY
+PATH=$ENV_PATH
+EOF
+}
+
+if [ "$MODE" = "print-env" ]; then
+    print_env_lines
+    exit 0
+fi
+
+if [ "$MODE" = "check" ]; then
+    exit 0
+fi
+
+# --- MODE = run: side effects start here ---------------------------------
+
+mkdir -p "$SANDBOX_HOME" "$SANDBOX_TMP" "$PRIMARY/.claude-dev/state"
+
+sha1_of() {
+    if command -v sha1sum >/dev/null 2>&1; then
+        printf '%s' "$1" | sha1sum | cut -d' ' -f1
+    else
+        printf '%s' "$1" | shasum -a 1 | cut -d' ' -f1
+    fi
+}
+SETTINGS_FILE="$PRIMARY/.claude-dev/state/srt-$(sha1_of "$WORKTREE").json"
+printf '%s\n' "$SETTINGS_JSON" > "$SETTINGS_FILE"
+chmod 600 "$SETTINGS_FILE"
+
+if [ "$PRIMARY" = "$WORKTREE" ]; then
+    echo "[claude-orca] sandboxed: writes limited to $PRIMARY" >&2
+else
+    echo "[claude-orca] sandboxed: writes limited to $WORKTREE (+ $PRIMARY/.git, .beads, .claude-dev)" >&2
+fi
+
+export HOME="$ENV_HOME"
+export CLAUDE_CONFIG_DIR="$ENV_CLAUDE_CONFIG_DIR"
+export TMPDIR="$ENV_TMPDIR"
+export GIT_CONFIG_GLOBAL="$ENV_GIT_CONFIG_GLOBAL"
+export GH_CONFIG_DIR="$ENV_GH_CONFIG_DIR"
+export BEADS_DIR="$ENV_BEADS_DIR"
+export ORCA_USER_DATA_PATH="$ENV_ORCA_USER_DATA_PATH"
+export DISABLE_AUTOUPDATER=1
+export CLAUDE_ORCA_SANDBOXED=1
+export CLAUDE_ORCA_REAL_HOME="$REAL_HOME"
+export CLAUDE_ORCA_ROOT="$PRIMARY"
+export PATH="$ENV_PATH"
+
+exec "$SRT_BIN" --settings "$SETTINGS_FILE" -c "exec $SHELL_BIN -l"
