@@ -191,14 +191,15 @@ seed_state() {  # seed_state <worker> <recon> -- a bound, unpinned, non-overdriv
 
     gate '{"tool_name":"Agent","tool_input":{"subagent_type":"executor","prompt":"p","description":"d"}}'
     [ "$status" -eq 0 ]
-    run jq -e '.hookSpecificOutput.updatedInput.model == "sonnet"' <<<"$output"
+    exec_out="$output"   # save before the next `run` overwrites $output/$status
+    run jq -e '.hookSpecificOutput.updatedInput.model == "sonnet"' <<<"$exec_out"
     [ "$status" -eq 0 ]
     # original tool_input fields survive the rewrite; systemMessage names it
-    run jq -e '.hookSpecificOutput.updatedInput.prompt == "p" and .hookSpecificOutput.updatedInput.description == "d"' <<<"$output"
+    run jq -e '.hookSpecificOutput.updatedInput.prompt == "p" and .hookSpecificOutput.updatedInput.description == "d"' <<<"$exec_out"
     [ "$status" -eq 0 ]
-    run jq -e '.systemMessage | test("tier-gate")' <<<"$output"
+    run jq -e '.systemMessage | test("tier-gate")' <<<"$exec_out"
     [ "$status" -eq 0 ]
-    run jq -r '.hookSpecificOutput.hookEventName' <<<"$output"
+    run jq -r '.hookSpecificOutput.hookEventName' <<<"$exec_out"
     [ "$output" = "PreToolUse" ]
 
     gate '{"tool_name":"Agent","tool_input":{"subagent_type":"scout","prompt":"p"}}'
