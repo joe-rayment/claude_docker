@@ -1,0 +1,71 @@
+{
+  "model": "opus",
+  "respondToBashCommands": false,
+  "env": {
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1",
+    "BEADS_ACTOR": "claude"
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "__HOST__/template/bin/statusline",
+    "padding": 0
+  },
+  "permissions": {
+    "allow": [
+      "Bash(*)",
+      "Bash(view-logs)",
+      "Bash(dev-log:*)",
+      "Bash(csearch:*)",
+      "WebSearch",
+      "WebFetch(domain:docs.anthropic.com)",
+      "WebFetch(domain:www.anthropic.com)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:api.github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:gist.github.com)",
+      "WebFetch(domain:deepwiki.com)",
+      "WebFetch(domain:medium.com)",
+      "WebFetch(domain:dev.to)"
+    ],
+    "deny": [
+      "Bash(snow *)",
+      "Bash(snowsql *)"
+    ]
+  },
+  "enableAllProjectMcpServers": true,
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          { "type": "command", "command": "__HOST__/template/bin/tier-reconcile" },
+          { "type": "command", "command": "__HOST__/template/bin/tier-prime" }
+        ]
+      }
+    ],
+    "PostModelSwitch": [
+      {
+        "matcher": "",
+        "hooks": [
+          { "type": "command", "command": "__HOST__/template/bin/tier-reconcile" }
+        ]
+      }
+    ],
+    "ConfigChange": [
+      {
+        "matcher": "user_settings",
+        "hooks": [
+          { "type": "command", "command": "__HOST__/template/bin/tier-reconcile" }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Agent",
+        "hooks": [
+          { "type": "command", "command": "__HOST__/template/bin/tier-gate" }
+        ]
+      }
+    ]
+  }
+}
