@@ -425,8 +425,14 @@ patch_orca_web_theme() {
         say "orca web theme: no /opt/Orca/resources/app.asar, nothing to seed"
         return 0
     fi
-    python3 "$patcher" --asar /opt/Orca/resources/app.asar \
-        --theme "${CLAUDE_ORCA_THEME:-dark}"
+    # Never fatal. This is a colour preference reaching into Orca's own
+    # archive: a future Orca whose web-index.html has a different shape
+    # must leave the folder booting in light mode, not refuse to start.
+    if ! python3 "$patcher" --asar /opt/Orca/resources/app.asar \
+        --theme "${CLAUDE_ORCA_THEME:-dark}"; then
+        warn "orca web theme: could not seed ${CLAUDE_ORCA_THEME:-dark} (Orca starts in its own default)"
+    fi
+    return 0
 }
 
 phase_template() {

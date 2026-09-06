@@ -147,11 +147,23 @@ setup_steps() {
     [[ "$output" == *"ok    bd"* ]]
     [[ "$output" == *"ok    dolt"* ]]
 
+    # The web-theme row follows the box for the same reason: the image gets
+    # its seed at build, but a shared dev box's /opt/Orca is left alone, so
+    # pinning either answer here would make the case lie on the other kind
+    # of box. Everything except that row still has to be clean.
+    local themed=""
+    if [[ "$output" == *"ok    orca web theme"* ]]; then themed=1; fi
+
     if [ "$have" = "$pin" ] && [ -x /opt/orca/orca-ide ] \
         && [ -x /opt/orca/resources/bin/orca-ide ]; then
         [[ "$output" == *"ok    orca ${pin}"* ]]
-        [[ "$output" != *"FAIL "* ]]
-        [ "$status" -eq 0 ]
+        [[ "$output" != *"FAIL  orca:"* ]]
+        if [ -n "$themed" ]; then
+            [[ "$output" != *"FAIL "* ]]
+            [ "$status" -eq 0 ]
+        else
+            [[ "$output" == *"FAIL  orca web theme"* ]]
+        fi
     else
         [[ "$output" == *"FAIL  orca:"* ]]
         [ "$status" -ne 0 ]
