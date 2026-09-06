@@ -178,8 +178,9 @@ JSON
 # terminal needs (.claude/plans/orca-orchestration.md, Container side) --
 # where opencode finds its provider config inside the VM, the argv each
 # agent id is launched with (the VM is the boundary, so Claude Code needs
-# no permission prompts and opencode auto-approves), and one level of
-# nesting: an orchestrator delegates to workers, workers do not delegate.
+# no permission prompts and opencode auto-approves), and two levels of
+# nesting: an orchestrator may dispatch an epic coordinator that runs
+# orca-run over its own executors; those executors do not delegate.
 @test "seed-orca-state sets agentDefaultEnv.opencode.OPENCODE_CONFIG, agentDefaultArgs for claude and opencode, and nestedWorkerMaxDepth" {
     udd="$BATS_TEST_TMPDIR/udd"
     proj="$BATS_TEST_TMPDIR/seedproj"
@@ -199,7 +200,7 @@ JSON
     [ "$(jq -r '.settings.agentDefaultArgs.claude' "$data")" \
         = "--dangerously-skip-permissions" ]
     [ "$(jq -r '.settings.agentDefaultArgs.opencode' "$data")" = "--auto" ]
-    [ "$(jq -r '.settings.nestedWorkerMaxDepth' "$data")" = "1" ]
+    [ "$(jq -r '.settings.nestedWorkerMaxDepth' "$data")" = "2" ]
 
     # Nothing the earlier seed contract pinned is displaced by them.
     [ "$(jq -r '.settings.agentDefaultEnv.claude.CLAUDE_ORCA_ROOT' "$data")" = "$proj" ]

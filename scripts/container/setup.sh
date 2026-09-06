@@ -398,8 +398,40 @@ phase_user() {
 # /opt/claude-orca-host/template -> /opt/claude-orca gives config-sync.sh
 # the <host>/template/config layout it expects without a --template flag
 # and without touching its contract (tests/config-sync.bats).
+# Orca Web keeps its theme in the browser (localStorage), not in the
+# orca-data.json seed-orca-state.sh writes, so the served web-index.html
+# inside app.asar carries a one-time seed (claude-orca-qa2.18). Runs at
+# image build (dark) and again at every boot, where the folder's
+# claude-orca.json theme arrives as CLAUDE_ORCA_THEME; a no-op once the
+# archive already seeds that theme.
+web_theme_patcher() {
+    local here
+    here="$(cd "$(dirname "$0")" && pwd)"
+    if [ -f "$here/patch-orca-web-theme.py" ]; then
+        printf '%s\n' "$here/patch-orca-web-theme.py"
+    elif [ -f /opt/claude-orca/scripts/container/patch-orca-web-theme.py ]; then
+        printf '%s\n' /opt/claude-orca/scripts/container/patch-orca-web-theme.py
+    fi
+}
+
+patch_orca_web_theme() {
+    local patcher
+    patcher="$(web_theme_patcher)"
+    if [ -z "$patcher" ]; then
+        say "orca web theme: patcher is not here yet, nothing to seed"
+        return 0
+    fi
+    if [ ! -f /opt/Orca/resources/app.asar ]; then
+        say "orca web theme: no /opt/Orca/resources/app.asar, nothing to seed"
+        return 0
+    fi
+    python3 "$patcher" --asar /opt/Orca/resources/app.asar \
+        --theme "${CLAUDE_ORCA_THEME:-dark}"
+}
+
 phase_template() {
     need_root template
+    patch_orca_web_theme
     if [ ! -d /opt/claude-orca ]; then
         say "template: /opt/claude-orca is not here yet, nothing to link"
         return 0
@@ -486,6 +518,15 @@ run_checks() {
         ck_ok "orca ${v} (/opt/orca/orca-ide executable, not run)"
     else
         ck_fail "orca: want ${ORCA_VERSION} in /opt/orca/VERSION with an executable orca-ide, got ${v:-none}"
+    fi
+
+    v="$(web_theme_patcher)"
+    if [ -n "$v" ] && [ -f /opt/Orca/resources/app.asar ] \
+        && python3 "$v" --check --asar /opt/Orca/resources/app.asar \
+            --theme "${CLAUDE_ORCA_THEME:-dark}" >/dev/null 2>&1; then
+        ck_ok "orca web theme seeded ${CLAUDE_ORCA_THEME:-dark} in app.asar"
+    else
+        ck_fail "orca web theme: app.asar does not seed ${CLAUDE_ORCA_THEME:-dark} (patch-orca-web-theme.py)"
     fi
 
     v="$(id -u agent 2>/dev/null || true)"
