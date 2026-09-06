@@ -3,13 +3,13 @@
 # Acceptance contract for claude-orca-qa2.2 (v3 S2, the Mac half) --
 # FROZEN from RED-AT onward.
 #
-# v3 replaces the Seatbelt install with one Linux VM per project: the Mac
-# side only has to preflight Apple's `container` CLI, seed the folder, pull
-# the pinned image, run the container with the project and the folder-local
-# home mounted, and open the pairing URL the entrypoint publishes. Nothing
-# here needs a Mac: `container`, `open`, `sw_vers` and `uname` are stubbed
-# by tests/helpers/setup.bash, and the `container` stub stands in for the
-# entrypoint by writing run/orca-web-url.txt when it is asked to `run`.
+# v3 replaces the Seatbelt install with one Linux container per project: the
+# Mac side only has to preflight `docker`, seed the folder, pull the pinned
+# image, run the container with the project and the folder-local home
+# mounted, and open the pairing URL the entrypoint publishes. Nothing here
+# needs a Mac or a daemon: `docker`, `open`, `sw_vers` and `uname` are
+# stubbed by tests/helpers/setup.bash, and the `docker` stub stands in for
+# the entrypoint by writing run/orca-web-url.txt when it is asked to `run`.
 #
 # See .claude/plans/container-v3.md S5 and scripts/container/entrypoint.sh
 # (the env contract asserted in case 3: PROJECT_DIR, ORCA_PORT, HOST_UID,
@@ -19,55 +19,72 @@ load helpers/setup
 
 STUB_TOKEN="gho_stubfaketoken0123456789abcdef"
 
-# The one line the `container` stub logged for the invocation whose argv
+# The one line the `docker` stub logged for the invocation whose argv
 # starts with $1 (its log is one line per invocation, argv joined).
 ctr_line() {
     grep "^$1" "$CONTAINER_STUB_LOG" | head -1
 }
 
-@test "bootstrap preflight requires macOS 26 on Apple silicon and the container CLI, starts the container service, and never installs brew, srt or a DMG" {
+# A PATH with no docker on it at all. Removing the stub is not enough: this
+# box ships a real /usr/bin/docker AND a real daemon, and the preflight case
+# would then drive them for real. $ORIGINAL_PATH is shadowed into one
+# directory of symlinks minus docker, and PATH becomes $STUB_BIN plus it --
+# so brew, gh and the rest still answer with their stubs.
+path_without_docker() {
+    local shadow="$BATS_TEST_TMPDIR/shadow" d oifs
+    mkdir -p "$shadow"
+    oifs="$IFS"; IFS=:
+    for d in $ORIGINAL_PATH; do
+        IFS="$oifs"
+        [ -d "$d" ] || continue
+        ln -s "$d"/* "$shadow/" 2>/dev/null || true
+        IFS=:
+    done
+    IFS="$oifs"
+    rm -f "$shadow/docker" "$STUB_BIN/docker"
+    export PATH="$STUB_BIN:$shadow"
+}
+
+@test "bootstrap preflight requires macOS or Linux and the docker CLI, checks the daemon, and never installs brew, srt or a DMG" {
     export STUB_UNAME_S=Darwin
     export STUB_UNAME_M=arm64
 
-    # Not a Mac at all.
-    export STUB_UNAME_S=Linux
+    # An OS Docker does not run on at all.
+    export STUB_UNAME_S=FreeBSD
     run bash "$REPO_ROOT/bootstrap.sh" "$PROJECT_DIR"
     [ "$status" -ne 0 ]
-    [[ "$output" == *"macOS 26"* ]]
+    [[ "$output" == *"macOS or Linux"* ]]
     [ ! -e "$PROJECT_DIR/.claude-dev" ]
     export STUB_UNAME_S=Darwin
 
-    # An Intel Mac: Apple's container CLI is Apple-silicon only.
+    # An Intel Mac and an old macOS are both supported now -- Docker Desktop
+    # runs on both, so the Apple-silicon and macOS-26 gates are gone.
     export STUB_UNAME_M=x86_64
-    run bash "$REPO_ROOT/bootstrap.sh" "$PROJECT_DIR"
-    [ "$status" -ne 0 ]
-    [[ "$output" == *"Apple silicon"* ]]
-    [ ! -e "$PROJECT_DIR/.claude-dev" ]
-    export STUB_UNAME_M=arm64
-
-    # A Mac too old for `container`.
     export CLAUDE_ORCA_TEST_MACOS=15.5
     run bash "$REPO_ROOT/bootstrap.sh" "$PROJECT_DIR"
-    [ "$status" -ne 0 ]
-    [[ "$output" == *"macOS 26"* ]]
-    [ ! -e "$PROJECT_DIR/.claude-dev" ]
+    [ "$status" -eq 0 ]
+    export STUB_UNAME_M=arm64
     unset CLAUDE_ORCA_TEST_MACOS
 
-    # No container CLI: the preflight installs Apple's signed .pkg for you
-    # and carries on in the same run.
-    export STUB_CONTAINER_SRC="$BATS_TEST_TMPDIR/container-stub"
-    mv "$STUB_BIN/container" "$STUB_CONTAINER_SRC"
+    # No docker CLI: the preflight installs the Homebrew cask for you and
+    # carries on in the same run.
+    export STUB_DOCKER_SRC="$BATS_TEST_TMPDIR/docker-stub"
+    cp "$STUB_BIN/docker" "$STUB_DOCKER_SRC"
+    path_without_docker
+    ! command -v docker >/dev/null 2>&1
     run bash "$REPO_ROOT/bootstrap.sh" "$PROJECT_DIR"
     [ "$status" -eq 0 ]
-    grep -q "^sudo installer -pkg " "$STUB_LOG"
-    [ -x "$STUB_BIN/container" ]
+    grep -q "^brew install --cask docker" "$STUB_LOG"
+    [ -x "$STUB_BIN/docker" ]
 
-    # And the whole preflight, passing: the service is started, the
-    # template is cloned, and not one v2 install step runs.
+    # And the whole preflight, passing: the daemon answered, the
+    # template is cloned, and not one v2 install step runs. A clean log, so
+    # the negatives below are about this run and not about the cask install
+    # the previous one was asked to do.
+    : > "$STUB_LOG"
     run make_project_v3 "$PROJECT_DIR"
     [ "$status" -eq 0 ]
-    grep -q "^system start" "$CONTAINER_STUB_LOG"
-    grep "^system start" "$CONTAINER_STUB_LOG" | head -1 | grep -q -- "--enable-kernel-install"
+    grep -q "^info" "$CONTAINER_STUB_LOG"
 
     [ -d "$PROJECT_DIR/.claude-dev/template/.git" ]
     [ -L "$PROJECT_DIR/.claude-dev/bin/claude-dev" ]
@@ -107,7 +124,7 @@ ctr_line() {
     [ "$port" -ge 6768 ]
     [ "$(cat "$primary/.claude-dev/run/port")" = "$port" ]
 
-    # The identity crosses the boundary as env on the `container run`; the
+    # The identity crosses the boundary as env on the `docker run`; the
     # entrypoint is what writes /home/agent/.gitconfig from it.
     identity="$(ctr_line "run ")"
     [[ "$identity" == *"-e CLAUDE_ORCA_GIT_NAME=Test User"* ]]
@@ -122,7 +139,7 @@ ctr_line() {
     [ ! -e "$primary/.beads" ]
 
     # The registry login: username in argv, token on stdin and nowhere else.
-    login="$(ctr_line "registry login")"
+    login="$(ctr_line "login ")"
     [[ "$login" == *"ghcr.io"* ]]
     [[ "$login" == *"joe-rayment"* ]]
     [[ "$login" == *"--password-stdin"* ]]
@@ -133,7 +150,7 @@ ctr_line() {
     [ -f "$REPO_ROOT/IMAGE_TAG" ]
     tag="$(cat "$primary/.claude-dev/template/IMAGE_TAG")"
     [ -n "$tag" ]
-    grep -qF "image pull ghcr.io/joe-rayment/claude_orca:$tag" "$CONTAINER_STUB_LOG"
+    grep -qF "pull ghcr.io/joe-rayment/claude_orca:$tag" "$CONTAINER_STUB_LOG"
     ! grep -q "^build " "$CONTAINER_STUB_LOG"
 }
 
@@ -170,7 +187,7 @@ ctr_line() {
     [[ "$output" == *"./claude-dev shell"* ]]
 }
 
-@test "open on an existing container starts it when stopped and only opens the URL when running; stop, shell and logs call container with the project name" {
+@test "open on an existing container starts it when stopped and only opens the URL when running; stop, shell and logs call docker with the project name" {
     mkdir -p "$PROJECT_DIR"
     primary="$(abspath "$PROJECT_DIR")"
     make_project_v3 "$primary" >/dev/null
@@ -215,7 +232,7 @@ ctr_line() {
     grep -qx "logs -f $name" "$CONTAINER_STUB_LOG"
 }
 
-@test "doctor reports the container CLI, service, image, container state, port and web url and exits 2 on a finding; teardown stops and removes the container and the install" {
+@test "doctor reports the docker CLI, daemon, image, container state, port and web url and exits 2 on a finding; teardown stops and removes the container and the install" {
     mkdir -p "$PROJECT_DIR"
     primary="$(abspath "$PROJECT_DIR")"
     make_project_v3 "$primary" >/dev/null
@@ -224,8 +241,8 @@ ctr_line() {
 
     run bash -c "cd '$primary' && ./claude-dev --doctor"
     [ "$status" -eq 0 ]
-    [[ "$output" == *"container CLI"* ]]
-    [[ "$output" == *"container service"* ]]
+    [[ "$output" == *"docker CLI"* ]]
+    [[ "$output" == *"docker daemon"* ]]
     [[ "$output" == *"image"* ]]
     [[ "$output" == *"ghcr.io/joe-rayment/claude_orca:"* ]]
     [[ "$output" == *"$name"* ]]

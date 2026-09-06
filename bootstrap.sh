@@ -4,10 +4,10 @@
 #
 # v3 (claude-orca-qa2.2; see .claude/plans/container-v3.md S5): the Mac
 # installs almost nothing. Everything an agent runs lives inside one Linux
-# VM per project, started from the pinned image by Apple's `container`, so
-# all this script leaves on the Mac is <project>/.claude-dev/{template,
-# bin,home,run,state} -- no Homebrew bundle, no sandbox-runtime, no Orca
-# DMG, and no shell-rc hook.
+# container per project, started from the pinned image by Docker, so all
+# this script leaves on the Mac is <project>/.claude-dev/{template,bin,
+# home,run,state} -- no Homebrew bundle, no sandbox-runtime, no Orca DMG,
+# and no shell-rc hook.
 #
 #   cd /path/to/your/project
 #   gh api repos/joe-rayment/claude_orca/contents/bootstrap.sh \
@@ -20,8 +20,8 @@
 # mkdir/clone -- so a failed dependency costs nothing and leaves nothing
 # behind. What the preflight finds missing it INSTALLS, then carries on in
 # the same run: the Xcode Command Line Tools (git), the GitHub CLI, and
-# Apple's signed `container` .pkg. Only the unfixable checks stop it -- not
-# a Mac, not Apple silicon, or macOS older than 26.
+# Docker Desktop. Only the unfixable checks stop it -- an operating system
+# that is neither macOS nor Linux, or a Docker that will not install.
 #
 # This script is piped into bash, so stdin is the script itself: it asks no
 # questions of its own, and every child that could read stdin is given
@@ -55,39 +55,21 @@ have() { command -v "$1" >/dev/null 2>&1; }
 
 UNAME_S="$(uname -s)"
 
-# Apple's `container` runs one lightweight Linux VM per container and needs
-# macOS 26 on Apple silicon. There is no fallback: Docker Desktop is not
-# what this template drives, and an Intel Mac cannot run it at all.
-if [ "$UNAME_S" != "Darwin" ]; then
-    {
-        echo "Error: claude_orca needs macOS 26 or newer on Apple silicon -- this host reports $UNAME_S."
-        echo "  Everything an agent runs lives in a Linux VM started by Apple's 'container'"
-        echo "  CLI, which exists only on macOS."
-    } >&2
-    exit 1
-fi
-
-UNAME_M="$(uname -m)"
-if [ "$UNAME_M" != "arm64" ] && [ "$UNAME_M" != "aarch64" ]; then
-    {
-        echo "Error: claude_orca needs Apple silicon -- this Mac reports $UNAME_M."
-        echo "  Apple's 'container' CLI does not support Intel Macs."
-    } >&2
-    exit 1
-fi
-
-MACOS_VERSION="$(sw_vers -productVersion 2>/dev/null || echo 0)"
-MACOS_MAJOR="${MACOS_VERSION%%.*}"
-case "$MACOS_MAJOR" in
-    ''|*[!0-9]*) MACOS_MAJOR=0 ;;
+# The runtime is Docker, so the host requirement is only that Docker can
+# run on it: macOS (Docker Desktop) or Linux (any engine). Apple's
+# `container` used to gate this on macOS 26 and Apple silicon; nothing here
+# needs either any more, and dropping the gate is what lets CI exercise the
+# same runtime the Mac drives.
+case "$UNAME_S" in
+    Darwin|Linux) ;;
+    *)
+        {
+            echo "Error: claude_orca needs macOS or Linux -- this host reports $UNAME_S."
+            echo "  Everything an agent runs lives in a Linux container started by Docker."
+        } >&2
+        exit 1
+        ;;
 esac
-if [ "$MACOS_MAJOR" -lt 26 ]; then
-    {
-        echo "Error: claude_orca needs macOS 26 or newer -- this Mac reports $MACOS_VERSION."
-        echo "  Apple's 'container' CLI requires macOS 26."
-    } >&2
-    exit 1
-fi
 
 # Everything past here is fixable, and the preflight fixes it. One scratch
 # directory carries every download; it is removed when the preflight ends
@@ -97,7 +79,7 @@ TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/claude-orca-bootstrap.XXXXXX")"
 # git ships inside the Xcode Command Line Tools. `softwareupdate` installs
 # them headlessly when the on-demand trigger file exists; the GUI installer
 # is the fallback, and the only one that needs a click.
-if ! have git; then
+if ! have git && [ "$UNAME_S" = "Darwin" ]; then
     step "Installing the Xcode Command Line Tools (git)"
     CLT_TRIGGER="/tmp/.com.apple.dt.CommandLineTools.installondemand.in-progress"
     touch "$CLT_TRIGGER" 2>/dev/null || true
@@ -136,6 +118,16 @@ if ! have git; then
         } >&2
         exit 1
     fi
+fi
+
+# On Linux git comes from the distro, not from this script.
+if ! have git; then
+    {
+        echo "Error: git is required but was not found on PATH."
+        echo "  Install it with your package manager, e.g.:  sudo apt-get install -y git"
+        echo "  $RERUN_NOTE"
+    } >&2
+    exit 1
 fi
 
 # gh: Homebrew when it is there, otherwise cli/cli's own signed macOS pkg.
@@ -230,42 +222,34 @@ if [ "$SCOPE_RC" -eq 1 ] && ( : </dev/tty ) 2>/dev/null; then
     gh auth refresh -h github.com -s read:packages </dev/tty || true
 fi
 
-# Apple ships `container` as a signed .pkg on its releases page; gh (now
-# authenticated) fetches it and `installer` puts it in /usr/local/bin. The
-# admin password is the only thing this asks of you.
-if ! have container; then
-    step "Installing Apple's container CLI (signed .pkg from github.com/apple/container/releases)"
-    gh release download --repo apple/container \
-        --pattern '*-installer-signed.pkg' --dir "$TMP_DIR" --clobber </dev/null || true
-    CONTAINER_PKG="$(ls "$TMP_DIR"/*-installer-signed.pkg 2>/dev/null | head -1 || true)"
-
-    if [ -z "$CONTAINER_PKG" ]; then
-        {
-            echo "Error: could not download Apple's 'container' installer."
-            echo "  Get the signed installer (container-*-installer-signed.pkg) by hand from:"
-            echo "    https://github.com/apple/container/releases"
-            echo "  Then install it (it will ask for your password):"
-            echo "    sudo installer -pkg ~/Downloads/container-installer-signed.pkg -target /"
-            echo "  $RERUN_NOTE"
-        } >&2
-        exit 1
+# Docker is the runtime. On a Mac that means Docker Desktop, which
+# Homebrew installs as a cask; without Homebrew there is nothing this
+# script can safely install for you, so it names the download instead. On
+# Linux the engine belongs to the distro.
+if ! have docker; then
+    if have brew; then
+        step "Installing Docker Desktop (brew install --cask docker)"
+        brew install --cask docker </dev/null || true
+        PATH="/usr/local/bin:/opt/homebrew/bin:$PATH"
+        hash -r
     fi
+fi
 
-    echo "    macOS will ask for your password to run the installer."
-    sudo installer -pkg "$CONTAINER_PKG" -target / </dev/null || true
-    PATH="/usr/local/bin:$PATH"
-    hash -r
-
-    if ! have container; then
-        {
-            echo "Error: Apple's 'container' CLI is still not on PATH after installing it."
-            echo "  Install the signed .pkg by hand from:"
-            echo "    https://github.com/apple/container/releases"
-            echo "    sudo installer -pkg ~/Downloads/container-installer-signed.pkg -target /"
-            echo "  $RERUN_NOTE"
-        } >&2
-        exit 1
-    fi
+if ! have docker; then
+    {
+        echo "Error: docker is required but was not found on PATH."
+        if [ "$UNAME_S" = "Darwin" ]; then
+            echo "  Install Docker Desktop by hand from:"
+            echo "    https://www.docker.com/products/docker-desktop/"
+            echo "  Or with Homebrew:"
+            echo "    brew install --cask docker"
+        else
+            echo "  Install Docker Engine by hand from:"
+            echo "    https://docs.docker.com/engine/install/"
+        fi
+        echo "  $RERUN_NOTE"
+    } >&2
+    exit 1
 fi
 
 rm -rf "$TMP_DIR"
@@ -285,35 +269,40 @@ if [ ! -w "$PROJECT" ]; then
     exit 1
 fi
 
-# The container service (one per Mac, not per project). Idempotent: a
-# second call reports that it is already running, which is not an error.
-# --enable-kernel-install answers, up front, the one question the CLI asks
-# on stdin (whether to download the default Linux kernel) -- and stdin here
-# is the rest of this script. An older CLI without the flag retries plain.
-step "Starting the container service (container system start)"
-service_rc=0
-service_out="$(container system start --enable-kernel-install 2>&1 </dev/null)" || service_rc=$?
-if [ "$service_rc" -ne 0 ]; then
-    case "$service_out" in
-        *"Unknown option"*|*"unexpected argument"*)
-            service_rc=0
-            service_out="$(container system start 2>&1 </dev/null)" || service_rc=$?
-            ;;
-    esac
+# The Docker daemon (one per machine, not per project). `docker info`
+# succeeding IS the daemon being up -- there is no service verb to call,
+# and asking twice is idempotent by construction. On a Mac the daemon is
+# Docker Desktop, which `open` starts and which takes a while to answer;
+# on Linux the daemon is the host's business and this starts nothing.
+step "Checking the Docker daemon (docker info)"
+docker_up() { docker info >/dev/null 2>&1 </dev/null; }
+
+if ! docker_up; then
+    if [ "$UNAME_S" = "Darwin" ]; then
+        echo "    Starting Docker Desktop; this can take a minute."
+        open -a Docker >/dev/null 2>&1 </dev/null || true
+        docker_waited=0
+        while [ "$docker_waited" -lt 60 ]; do
+            sleep 1
+            docker_waited=$((docker_waited + 1))
+            if docker_up; then break; fi
+        done
+    fi
 fi
-if [ "$service_rc" -ne 0 ]; then
-    case "$service_out" in
-        *"already running"*|*"already started"*) ;;
-        *)
-            {
-                printf '%s\n' "$service_out"
-                echo "Error: 'container system start' failed."
-                echo "  Check it by hand:  container system status"
-                echo "  $RERUN_NOTE"
-            } >&2
-            exit 1
-            ;;
-    esac
+
+if ! docker_up; then
+    {
+        echo "Error: the Docker daemon is not responding -- 'docker info' failed."
+        if [ "$UNAME_S" = "Darwin" ]; then
+            echo "  Start Docker Desktop and wait for the whale to settle:"
+            echo "    open -a Docker"
+        else
+            echo "  Start the daemon:"
+            echo "    sudo systemctl start docker"
+        fi
+        echo "  $RERUN_NOTE"
+    } >&2
+    exit 1
 fi
 
 # --- install ---------------------------------------------------------------

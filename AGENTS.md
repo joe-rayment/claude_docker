@@ -136,23 +136,29 @@ bats tests/docs.bats     # one file
 ```
 
 Tests are bats-core, and they run on Linux as well as macOS: the suite stubs
-the Mac tooling (`container`, `open`, `sw_vers`, `uname`, `gh`) and exercises
-the scripts' logic rather than Apple's container runtime itself. The
-in-container half is exercised natively — this box is the same Ubuntu arm64
-the image is built on — and the image itself is built, smoke-tested and
-published by `.github/workflows/image.yml`, because containers cannot run
-here.
+the host tooling (`docker`, `open`, `uname`, `gh`) and exercises the
+scripts' logic rather than the Docker daemon itself. The in-container half
+is exercised natively — this box is the same Ubuntu arm64 the image is built
+on — but containers still cannot run here: Docker on this box dies with
+`failed to register layer: unshare: operation not permitted`, no images
+cached, user namespaces denied. So `.github/workflows/image.yml` is where the
+image is built, smoke-tested and published, and — now that the runtime is
+Docker rather than Apple's `container` — it is also where the host-side
+launcher is driven end to end against a real daemon (the `e2e` steps: a
+throwaway folder, a real container, a real HTTP request to the URL Orca
+published). That check was impossible while the runtime ran only on macOS.
 
 ## Architecture Overview
 
 One command (`gh api … bootstrap.sh | bash`), run from inside a project
-folder, gives that folder **its own Linux VM**. `<project>/.claude-dev/`
-carries the template clone, `bin/claude-dev`, the folder's `claude-orca.json`
-and the `home/` that becomes the agent's home directory. There is no central
-install and nothing on the Mac runs an agent.
+folder, gives that folder **its own Linux container** (on a Mac, inside
+Docker Desktop's own Linux VM). `<project>/.claude-dev/` carries the template
+clone, `bin/claude-dev`, the folder's `claude-orca.json` and the `home/` that
+becomes the agent's home directory. There is no central install and nothing
+on the Mac runs an agent.
 
-The boundary is the VM's. `claude-dev` runs one Apple `container` per folder
-from `ghcr.io/joe-rayment/claude_orca` (pinned by the `IMAGE_TAG` file),
+The boundary is the container's. `claude-dev` runs one Docker container per
+folder from `ghcr.io/joe-rayment/claude_orca` (pinned by the `IMAGE_TAG` file),
 mounting the project at its own absolute path and `.claude-dev/home` as
 `/home/agent`, publishing Orca's port on `127.0.0.1` only. Inside,
 `scripts/container/entrypoint.sh` runs as PID 1, drops to the `agent` user,
@@ -162,7 +168,7 @@ which is the handshake the Mac side waits on before calling `open`. Claude
 Code signs in on its own first run inside Orca. Registration seeds the stack
 this template assumes — Claude Code as the master, low-cost OpenRouter models
 as delegate-route workers, and Orca's native coordination, which needs no
-opt-in now that Orca runs in the VM.
+opt-in now that Orca runs in the container.
 
 `HOME` is `<project>/.claude-dev/home`, whose `.claude` config dir is
 populated from this repo's `config/` by a checksum-gated sync that preserves

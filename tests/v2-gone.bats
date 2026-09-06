@@ -35,7 +35,7 @@ load helpers/setup
 
     # And the README's quick start is the container one.
     readme="$REPO_ROOT/README.md"
-    grep -qF -- 'container system start' "$readme"
+    grep -qi -- 'docker' "$readme"
     grep -qF -- 'claude-orca.json' "$readme"
     run grep -qF -- 'Orca.app' "$readme"
     [ "$status" -ne 0 ]

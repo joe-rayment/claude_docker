@@ -1,8 +1,8 @@
 #!/usr/bin/env bats
 #
 # Acceptance contract for claude-orca-qa2.10 -- FROZEN from RED-AT onward.
-# It replaces qa2.8's contract for this file: there is no `container build`
-# on the Mac any more, so the cases that asserted one are gone.
+# It replaces qa2.8's contract for this file: there is no image build on
+# the Mac any more, so the cases that asserted one are gone.
 #
 # startup v4 (.claude/plans/startup-v4.md): the Mac side cannot be tested
 # anywhere but against stubs, so it does as little as possible. Pulling the
@@ -35,9 +35,9 @@ BASE_IMAGE="docker.io/library/ubuntu:24.04"
     [[ "$output" == *"No prebuilt image: the VM installs its toolchain on first start (several minutes); progress: ./claude-dev logs"* ]]
 
     # No login and no pull that could only ever be refused -- and no build:
-    # `container build` is not a path the launcher has any more.
-    ! grep -q "^image pull " "$CONTAINER_STUB_LOG"
-    ! grep -q "^registry login " "$CONTAINER_STUB_LOG"
+    # `docker build` is not a path the launcher has any more.
+    ! grep -q "^pull " "$CONTAINER_STUB_LOG"
+    ! grep -q "^login " "$CONTAINER_STUB_LOG"
     ! grep -q "^build " "$CONTAINER_STUB_LOG"
 
     runline="$(grep "^run " "$CONTAINER_STUB_LOG" | head -1)"
@@ -60,8 +60,8 @@ BASE_IMAGE="docker.io/library/ubuntu:24.04"
     [ "$status" -eq 0 ]
 
     [[ "$output" != *"No prebuilt image"* ]]
-    grep -q "^registry login " "$CONTAINER_STUB_LOG"
-    grep -q "^image pull ghcr.io/joe-rayment/claude_orca:" "$CONTAINER_STUB_LOG"
+    grep -q "^login " "$CONTAINER_STUB_LOG"
+    grep -q "^pull ghcr.io/joe-rayment/claude_orca:" "$CONTAINER_STUB_LOG"
     ! grep -q "^build " "$CONTAINER_STUB_LOG"
 
     second_run="$(grep "^run " "$CONTAINER_STUB_LOG" | head -1)"
@@ -76,11 +76,48 @@ BASE_IMAGE="docker.io/library/ubuntu:24.04"
     [[ "$output" == *"pulled"* ]]
 }
 
+# CLAUDE_ORCA_IMAGE names a whole image ref and wins over the IMAGE_TAG
+# file. When the daemon already holds it there is nothing to fetch, so the
+# scope check, the login and the pull are all skipped: consulting GHCR from
+# there can only fail and drop a working folder onto the slow runtime path.
+# That is CI pointing the launcher at an image it just built, and equally
+# anyone holding the image with no registry access.
+@test "CLAUDE_ORCA_IMAGE runs a locally held image with no login and no pull" {
+    export CLAUDE_ORCA_IMAGE="claude-orca-local:e2e"
+    # The daemon already has it -- the stub's marker file IS "present".
+    printf '%s\n' "$CLAUDE_ORCA_IMAGE" > "$CONTAINER_STUB_STATE/image"
+
+    mkdir -p "$PROJECT_DIR"
+    primary="$(abspath "$PROJECT_DIR")"
+    run make_project_v3 "$primary"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Using the local image $CLAUDE_ORCA_IMAGE"* ]]
+
+    ! grep -q "^pull " "$CONTAINER_STUB_LOG"
+    ! grep -q "^login " "$CONTAINER_STUB_LOG"
+    [ "$(cat "$primary/.claude-dev/run/image-source")" = "pulled" ]
+
+    runline="$(grep "^run " "$CONTAINER_STUB_LOG" | head -1)"
+    [[ "$runline" == *"$CLAUDE_ORCA_IMAGE"* ]]
+    [[ "$runline" != *"ghcr.io/joe-rayment/claude_orca"* ]]
+    [[ "$runline" != *"entrypoint.sh"* ]]
+
+    # And a ref the daemon does NOT hold falls through to the normal path
+    # rather than pretending: the pull is attempted as usual.
+    rm -f "$CONTAINER_STUB_STATE/image"
+    : > "$CONTAINER_STUB_LOG"
+    mkdir -p "$BATS_TEST_TMPDIR/project2"
+    second="$(abspath "$BATS_TEST_TMPDIR/project2")"
+    run make_project_v3 "$second"
+    [ "$status" -eq 0 ]
+    grep -q "^pull $CLAUDE_ORCA_IMAGE" "$CONTAINER_STUB_LOG"
+}
+
 # A scoped token is no guarantee: GHCR can refuse the manifest for reasons
 # the Mac cannot fix (a revoked package, a network that eats the registry).
 # The pull's own last line is the diagnosis, and the folder still starts --
 # on the base image, installing as it goes.
-@test "a failed pull falls back to the base image path and never runs container build" {
+@test "a failed pull falls back to the base image path and never runs an image build" {
     export CLAUDE_ORCA_TEST_PULL_FAIL=1
 
     mkdir -p "$PROJECT_DIR"
@@ -88,7 +125,7 @@ BASE_IMAGE="docker.io/library/ubuntu:24.04"
     run make_project_v3 "$primary"
     [ "$status" -eq 0 ]
 
-    grep -q "^image pull ghcr.io/joe-rayment/claude_orca:" "$CONTAINER_STUB_LOG"
+    grep -q "^pull ghcr.io/joe-rayment/claude_orca:" "$CONTAINER_STUB_LOG"
     ! grep -q "^build " "$CONTAINER_STUB_LOG"
 
     # What the pull said, then what happens instead of a build.
@@ -108,14 +145,14 @@ BASE_IMAGE="docker.io/library/ubuntu:24.04"
     [ "$(cat "$primary/.claude-dev/run/image-source")" = "runtime" ]
 }
 
-@test "a failed container run stops open with an error instead of waiting for Orca" {
+@test "a failed docker run stops open with an error instead of waiting for Orca" {
     mkdir -p "$PROJECT_DIR"
     primary="$(abspath "$PROJECT_DIR")"
     run make_project_v3 "$primary"
     [ "$status" -eq 0 ]
 
     # Back to "registered, but no container": the next ./claude-dev creates
-    # one, and this time `container run` is the one that fails.
+    # one, and this time `docker run` is the one that fails.
     name="claude-orca-$(basename "$primary")"
     rm -f "$CONTAINER_STUB_STATE/containers/$name"
     : > "$CONTAINER_STUB_LOG"
@@ -124,7 +161,7 @@ BASE_IMAGE="docker.io/library/ubuntu:24.04"
 
     run bash -c "cd '$primary' && ./claude-dev"
     [ "$status" -ne 0 ]
-    [[ "$output" == *"'container run' failed"* ]]
+    [[ "$output" == *"'docker run' failed"* ]]
     [[ "$output" != *"Waiting for Orca"* ]]
 }
 

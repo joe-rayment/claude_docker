@@ -79,6 +79,35 @@ stop_entrypoint() {
     fi
 }
 
+# Orca is an Electron app and needs an X display; a bats run has none, so
+# the real-Orca case below brings its own up and exports DISPLAY at it.
+# Asking Xvfb to take a display rather than trusting a file check is what
+# makes this race-free -- a display already in use makes Xvfb exit. Peers
+# on this box hold their own displays and must never be touched, so this
+# only ever kills the server it started itself (see teardown).
+start_xvfb() {
+    local n=180
+    EP_DISPLAY=""
+    EP_XVFB_PID=""
+    while [ "$n" -lt 220 ]; do
+        if [ ! -e "/tmp/.X11-unix/X$n" ] && [ ! -e "/tmp/.X$n-lock" ]; then
+            Xvfb ":$n" -screen 0 1280x900x24 -nolisten tcp \
+                > "$TMP/xvfb.log" 2>&1 &
+            EP_XVFB_PID=$!
+            sleep 2
+            if kill -0 "$EP_XVFB_PID" 2>/dev/null && [ -e "/tmp/.X11-unix/X$n" ]; then
+                EP_DISPLAY=":$n"
+                export DISPLAY="$EP_DISPLAY"
+                return 0
+            fi
+            kill -KILL "$EP_XVFB_PID" 2>/dev/null || true
+            EP_XVFB_PID=""
+        fi
+        n=$((n + 1))
+    done
+    return 1
+}
+
 wait_for_file() {
     local path="$1" deadline="$2" i=0
     while [ "$i" -lt "$deadline" ]; do
@@ -98,6 +127,8 @@ setup() {
 
 teardown() {
     stop_entrypoint
+    # Only the Xvfb this test started, never a peer's.
+    [ -n "${EP_XVFB_PID:-}" ] && kill -TERM "$EP_XVFB_PID" 2>/dev/null
     # Orca's daemon is detached and outlives the entrypoint's process group,
     # so it needs its own kill -- scoped to THIS test's user-data dir
     # ($HOME/.config/orca under the per-test $TMP), which every process of
@@ -231,6 +262,10 @@ STUB
     export ORCA_BIN="$REAL_ORCA_BIN"
     export CLAUDE_ORCA_ENTRYPOINT_NO_PRIVDROP=1
     export CLAUDE_ORCA_WEBURL_TIMEOUT=120
+
+    # Orca is Electron: with no DISPLAY it segfaults before it can serve.
+    # A bats run has none, so this case brings its own X server up.
+    start_xvfb
 
     start_entrypoint_bg
 

@@ -80,6 +80,15 @@ if [ "$1" = "install" ] && [ "$2" = "gh" ]; then
     fi
     exit 0
 fi
+# ...and the Docker Desktop cask, the same way: the saved docker stub goes
+# back on PATH, so the bootstrap carries on in the same run.
+if [ "$1" = "install" ] && [ "$2" = "--cask" ] && [ "$3" = "docker" ]; then
+    if [ -n "${STUB_DOCKER_SRC:-}" ] && [ -e "$STUB_DOCKER_SRC" ]; then
+        cp "$STUB_DOCKER_SRC" "$STUB_BIN/docker"
+        chmod +x "$STUB_BIN/docker"
+    fi
+    exit 0
+fi
 exit 0
 STUB
     chmod +x "$1"
@@ -88,9 +97,10 @@ STUB
 # --- dependency-install stubs (bootstrap installs what it finds missing) ---
 #
 # `sudo` logs the command and runs it unprivileged; `installer` fakes a .pkg
-# by restoring the stub the test saved aside ($STUB_CONTAINER_SRC /
-# $STUB_GH_SRC); `softwareupdate` and `xcode-select` stand in for the Xcode
-# Command Line Tools install that carries git.
+# by restoring the stub the test saved aside ($STUB_GH_SRC);
+# `softwareupdate` and `xcode-select` stand in for the Xcode Command Line
+# Tools install that carries git. Docker is a brew cask, not a .pkg, so it
+# is write_stub_brew that puts $STUB_DOCKER_SRC back.
 
 write_stub_sudo() {
     cat > "$1" <<'STUB'
@@ -112,12 +122,6 @@ for arg in "$@"; do
     prev="$arg"
 done
 case "$pkg" in
-    *container*-installer-signed.pkg)
-        if [ -n "${STUB_CONTAINER_SRC:-}" ] && [ -e "$STUB_CONTAINER_SRC" ]; then
-            cp "$STUB_CONTAINER_SRC" "$STUB_BIN/container"
-            chmod +x "$STUB_BIN/container"
-        fi
-        ;;
     *gh*.pkg)
         if [ -n "${STUB_GH_SRC:-}" ] && [ -e "$STUB_GH_SRC" ]; then
             cp "$STUB_GH_SRC" "$STUB_BIN/gh"
@@ -289,63 +293,69 @@ STUB
     chmod +x "$1"
 }
 
-# --- v3 stubs (claude-orca-qa2.2) ----------------------------------------
+# --- v3 stubs (claude-orca-qa2.2; Docker runtime) ------------------------
 #
-# The Mac half of v3 drives Apple's `container` CLI, `open`, `sw_vers` and
-# `uname`; none of them exists (or means anything) on this Linux box, so
-# each is faked here. `container` is the substantial one: it logs every
-# invocation's argv as one line to $CONTAINER_STUB_LOG and keeps its whole
-# world -- service up, image present, per-container state -- as marker
-# files under $CONTAINER_STUB_STATE, so a test can put the folder into any
-# state ("stopped", no image) by touching one file.
+# The Mac half of v3 drives `docker`, `open`, `sw_vers` and `uname`; none of
+# them means anything on this Linux box (there is no daemon here and the
+# suite must never talk to one), so each is faked. `docker` is the
+# substantial one: it logs every invocation's argv as one line to
+# $CONTAINER_STUB_LOG and keeps its whole world -- daemon up, image present,
+# per-container state -- as marker files under $CONTAINER_STUB_STATE, so a
+# test can put the folder into any state ("stopped", no image) by touching
+# one file. The two variable names predate the runtime switch and are kept:
+# renaming them would touch every suite for nothing.
 
-write_stub_container() {
+write_stub_docker() {
     cat > "$1" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "${CONTAINER_STUB_LOG:-/dev/null}"
 state="${CONTAINER_STUB_STATE:-${TMPDIR:-/tmp}/container-stub}"
 mkdir -p "$state/containers"
 
+# `docker image inspect REF` -- two words, so it is matched before the
+# one-word dispatch below.
 case "$1 ${2:-}" in
-    "system start")
-        if [ -f "$state/service" ]; then
-            echo "container system is already running"
-        else
-            : > "$state/service"
-        fi
-        exit 0 ;;
-    "system status")
-        [ "${CLAUDE_ORCA_TEST_SERVICE_DOWN:-0}" = "1" ] && exit 1
-        echo "apiserver is running"
-        exit 0 ;;
-    "system stop")
-        rm -f "$state/service"; exit 0 ;;
-    "image pull")
-        [ "${CLAUDE_ORCA_TEST_PULL_FAIL:-0}" = "1" ] && { echo "pull failed" >&2; exit 1; }
-        printf '%s\n' "$3" > "$state/image"; exit 0 ;;
-    "image ls"|"image list"|"image inspect")
+    "image inspect"|"image ls"|"image list")
         [ -f "$state/image" ] || exit 1
-        echo "NAME                                  TAG"
-        printf '%-38s%s\n' "$(sed 's/:[^:]*$//' "$state/image")" "$(sed 's/^.*://' "$state/image")"
-        exit 0 ;;
-    "registry login")
-        # The password must arrive on stdin -- never in argv.
-        cat > "$state/registry-password"
-        printf '%s\n' "$*" > "$state/registry-argv"
-        exit 0 ;;
-    "registry logout")
-        rm -f "$state/registry-password" "$state/registry-argv"
+        cat "$state/image"
         exit 0 ;;
 esac
 
 cmd="$1"; shift
 case "$cmd" in
+    info)
+        # `docker info` succeeding IS the daemon being up, on both sides.
+        [ "${CLAUDE_ORCA_TEST_SERVICE_DOWN:-0}" = "1" ] && exit 1
+        : > "$state/service"
+        echo "Server Version: 27.0-stub"
+        exit 0 ;;
+    pull)
+        [ "${CLAUDE_ORCA_TEST_PULL_FAIL:-0}" = "1" ] && { echo "pull failed" >&2; exit 1; }
+        printf '%s\n' "$1" > "$state/image"; exit 0 ;;
+    login)
+        # The password must arrive on stdin -- never in argv.
+        cat > "$state/registry-password"
+        printf 'login %s\n' "$*" > "$state/registry-argv"
+        exit 0 ;;
+    logout)
+        rm -f "$state/registry-password" "$state/registry-argv"
+        exit 0 ;;
+    inspect)
+        # `docker inspect -f '{{.State.Status}}' NAME`: the name is the last
+        # argument, and the state word is what the launcher parses.
+        [ "${CLAUDE_ORCA_TEST_SERVICE_DOWN:-0}" = "1" ] && exit 1
+        name=""
+        for a in "$@"; do name="$a"; done
+        [ -n "$name" ] || exit 1
+        [ -f "$state/containers/$name" ] || exit 1
+        cat "$state/containers/$name"
+        exit 0 ;;
     run)
-        # CLAUDE_ORCA_TEST_RUN_FAIL=1: `container run` pulling an image that
-        # is not there, denied by ghcr's own auth challenge. No container
-        # marker, so nothing is left running.
+        # CLAUDE_ORCA_TEST_RUN_FAIL=1: `docker run` pulling an image that is
+        # not there, refused by the registry. No container marker, so
+        # nothing is left running.
         if [ "${CLAUDE_ORCA_TEST_RUN_FAIL:-0}" = "1" ]; then
-            echo "Error: refusing insecure credential exchange" >&2
+            echo "docker: Error response from daemon: pull access denied" >&2
             exit 1
         fi
         name=""; port=""; proj=""; prev=""
@@ -360,7 +370,7 @@ case "$cmd" in
             esac
             prev="$a"
         done
-        [ -n "$name" ] || { echo "container: run needs --name" >&2; exit 1; }
+        [ -n "$name" ] || { echo "docker: run needs --name" >&2; exit 1; }
         echo running > "$state/containers/$name"
         # Stands in for the entrypoint (scripts/container/entrypoint.sh):
         # Orca comes up and publishes its pairing URL and bound port.
@@ -380,12 +390,12 @@ case "$cmd" in
         echo running > "$state/containers/$1"; exit 0 ;;
     stop)
         [ -f "$state/containers/$1" ] || exit 1
-        echo stopped > "$state/containers/$1"; exit 0 ;;
-    rm|delete)
+        echo exited > "$state/containers/$1"; exit 0 ;;
+    rm)
         rm -f "$state/containers/$1"; exit 0 ;;
-    ls|list|ps)
+    ps)
         [ "${CLAUDE_ORCA_TEST_SERVICE_DOWN:-0}" = "1" ] && exit 1
-        printf '%-38s%s\n' "NAME" "STATE"
+        printf '%-38s%s\n' "NAMES" "STATUS"
         for f in "$state"/containers/*; do
             [ -e "$f" ] || continue
             printf '%-38s%s\n' "$(basename "$f")" "$(cat "$f")"
@@ -738,16 +748,17 @@ setup() {
     write_stub_hdiutil "$STUB_BIN/hdiutil"
 
     # v3 (claude-orca-qa2.2): the Mac tooling the v3 bootstrap and launcher
-    # drive. `container`, `open` and `sw_vers` do not exist on this box at
-    # all, and the `uname` stub is a pass-through until a test pins it, so
-    # putting all four on PATH for every suite is inert.
+    # drive. `open` and `sw_vers` do not exist on this box at all, the
+    # `uname` stub is a pass-through until a test pins it, and the `docker`
+    # stub shadows any real daemon -- so putting all four on PATH for every
+    # suite is inert.
     export CONTAINER_STUB_LOG="$BATS_TEST_TMPDIR/container.log"
     : > "$CONTAINER_STUB_LOG"
     export CONTAINER_STUB_STATE="$BATS_TEST_TMPDIR/container-state"
     mkdir -p "$CONTAINER_STUB_STATE/containers"
     export OPEN_STUB_LOG="$BATS_TEST_TMPDIR/open.log"
     : > "$OPEN_STUB_LOG"
-    write_stub_container "$STUB_BIN/container"
+    write_stub_docker "$STUB_BIN/docker"
     write_stub_open "$STUB_BIN/open"
     write_stub_sw_vers "$STUB_BIN/sw_vers"
     write_stub_uname "$STUB_BIN/uname"

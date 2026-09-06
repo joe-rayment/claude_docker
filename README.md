@@ -1,10 +1,11 @@
 # claude_orca
 
 One command turns any folder on your Mac into an isolated agent workspace.
-The folder gets its **own Linux virtual machine**, and the session manager
+The folder gets its **own Linux container**, and the session manager
 ([Orca](https://onorca.dev)) runs *inside* it, serving its UI back to your
-browser. Nothing this installs on the Mac runs an agent, so there is no
-unconfined copy to start by mistake.
+browser. On a Mac it lives inside Docker's own Linux virtual machine, a
+whole kernel away from your files. Nothing this installs on the Mac runs an
+agent, so there is no unconfined copy to start by mistake.
 
 **The stack it assumes.** Claude Code is the master: it plans, decomposes,
 reviews and decides. Low-cost **OpenRouter** models are the workers — a bead
@@ -15,38 +16,42 @@ losing quality](knowledge-base/DELEGATION_ROUTES.md#cheap-workers-without-losing
 registers, so worker terminals and orchestration are part of the setup
 rather than an add-on.
 
-One boundary does the confining, and it is the VM's own: the only Mac paths
-that exist inside it are your project folder, mounted at its real absolute
-path, and that folder's `.claude-dev/home`, mounted as the agent's home
-directory. The rest of your Mac is not missing a permission — it is not
+One boundary does the confining, and it is the container's own: the only
+host paths that exist inside it are your project folder, mounted at its real
+absolute path, and that folder's `.claude-dev/home`, mounted as the agent's
+home directory. The rest of your Mac is not missing a permission — it is not
 there. The worst a runaway `rm -rf` can do is empty the project folder.
 
 ## Requirements
 
-**macOS 26 on Apple silicon** is the only one you have to satisfy yourself.
-Apple's `container` runtime supports nothing older, and an Intel Mac cannot
-run it at all.
+**Docker** is the runtime, and it is the only thing you might have to
+satisfy yourself:
+
+- **On a Mac** — Docker Desktop. The bootstrap installs it with Homebrew
+  (`brew install --cask docker`) when it is missing; you start it once and
+  leave it running. Any Mac Docker Desktop supports will do — there is no
+  macOS 26 or Apple-silicon requirement any more.
+- **On Linux** — whatever Docker your distribution ships, with your user
+  able to talk to the daemon.
 
 Everything else the bootstrap installs for you, in the same run, and then
 carries on:
 
-- **Apple's `container` CLI** — the signed `.pkg` from
-  [github.com/apple/container/releases](https://github.com/apple/container/releases),
-  downloaded and installed for you.
 - **The GitHub CLI** (`gh`), by Homebrew if you have it and from cli/cli's
   own macOS `.pkg` if you do not, then signed in. Its token rides into the
-  VM, so `gh` works there too.
+  container, so `gh` works there too.
 - **git**, via the Xcode Command Line Tools.
 
 The only thing it ever asks you for is your **admin password**, which macOS
-needs to run a `.pkg`.
+needs to install those.
 
-The VM's image comes one of two ways, and you do not choose: if your `gh`
-token carries `read:packages`, the prebuilt image is pulled and the first
-start takes seconds. If it does not, the folder runs the public
-`ubuntu:24.04` base image and the VM installs its own toolchain the first
-time it starts — several minutes, once, with `./claude-dev logs` showing the
-progress. Either way the same command is all you run.
+The container's image comes one of two ways, and you do not choose: if your
+`gh` token carries `read:packages`, the prebuilt image is pulled and the
+first start takes seconds. If it does not, the folder runs the public
+`ubuntu:24.04` base image and installs its own toolchain inside the
+container the first time it starts — several minutes, once, with
+`./claude-dev logs` showing the progress. Either way the same command is all
+you run.
 
 ## Quickstart
 
@@ -56,8 +61,8 @@ progress. Either way the same command is all you run.
 gh api repos/joe-rayment/claude_orca/contents/bootstrap.sh -H "Accept: application/vnd.github.raw" | bash
 ```
 
-That installs any of the dependencies above you are missing, starts the
-container service if it is not running, clones this template into
+That installs any of the dependencies above you are missing, makes sure
+Docker is running, clones this template into
 `.claude-dev/template`, writes the
 `./claude-dev` launcher stub, seeds `.claude-dev/claude-orca.json`, pulls the
 pinned image, starts the folder's container, and opens Orca in your default
@@ -74,21 +79,25 @@ Everything below this is reference.
 
 ### If the bootstrap stops
 
-- **`container: command not found`** — the bootstrap installs the `.pkg`
-  itself; if that download failed, take it from the releases page above and
-  run `sudo installer -pkg <file> -target /`, then re-run the one-liner.
-- **`container system status` fails** — start the service by hand:
+- **`docker: command not found`** — the bootstrap installs Docker Desktop
+  with Homebrew itself; if that failed, install it by hand from
+  [docker.com](https://www.docker.com/products/docker-desktop/) (or
+  `brew install --cask docker`), then re-run the one-liner.
+- **`Cannot connect to the Docker daemon`** — Docker is installed but not
+  running. Start it by hand:
 
   ```bash
-  container system start
+  open -a Docker          # macOS
+  sudo systemctl start docker   # Linux
+  docker info             # says yes when it is up
   ```
 
   The bootstrap does this for you; it only reports when it cannot.
 - **`No prebuilt image: the VM installs its toolchain on first start`** — not
   an error. The prebuilt image is private, so pulling it needs a `gh` token
   carrying `read:packages`; without one, the folder runs the public
-  `ubuntu:24.04` base image instead and installs everything inside the VM the
-  first time it starts. That takes several minutes, once, and
+  `ubuntu:24.04` base image instead and installs everything inside the
+  container the first time it starts. That takes several minutes, once, and
   `./claude-dev logs` shows the progress. Every later start is fast, and
   nothing else about the folder differs.
 - **Orca never publishes a URL.** `./claude-dev logs` follows the
@@ -107,23 +116,23 @@ of them is about *this* folder:
 ```bash
 ./claude-dev                  # open Orca (starts or creates the container)
 ./claude-dev stop             # stop this folder's container
-./claude-dev shell            # a login shell inside the VM, in the project
+./claude-dev shell            # a login shell inside the container, in the project
 ./claude-dev logs             # follow the container's output
 ./claude-dev --how-to-run     # print the URL and the two commands again
-./claude-dev --doctor         # CLI, service, image, container, port, web url
+./claude-dev --doctor         # CLI, daemon, image, container, port, web url
 ./claude-dev --update         # pull the template and the image, recreate
 ./claude-dev --teardown       # snapshot beads, remove this folder's install
 ```
 
 `./claude-dev shell` is where you run `claude`, `bd` or `git` by hand: it is
-a shell in the same VM, in the same directory, with the same home the agents
-use. `--teardown` copies `.beads/issues.jsonl` to
+a shell in the same container, in the same directory, with the same home the
+agents use. `--teardown` copies `.beads/issues.jsonl` to
 `.claude-dev-snapshots/<timestamp>/` before it deletes anything, and a later
 registration restores it.
 
 ## What is isolated
 
-| Inside the VM | On the Mac |
+| Inside the container | On the Mac |
 |---|---|
 | Orca, Claude Code, every agent and every shell they open | the `./claude-dev` launcher and nothing else |
 | the project folder, at its real absolute path, read-write | — |
@@ -156,33 +165,33 @@ every update:
 - **`port`** — the host port Orca is published on. Chosen from 6768 upward
   at registration; the same number is used on both sides, because the
   pairing code names it.
-- **`cpus`, `memory`** — `null` means whatever `container` defaults to.
-- **`theme`** — `dark` (the default), `light` or `system`. It reaches the VM
-  as `CLAUDE_ORCA_THEME`, and the entrypoint writes it into Orca's own
+- **`cpus`, `memory`** — `null` means whatever Docker defaults to.
+- **`theme`** — `dark` (the default), `light` or `system`. It reaches the
+  container as `CLAUDE_ORCA_THEME`, and the entrypoint writes it into Orca's own
   settings the first time a folder starts — alongside a worktree base path of
   `<project>/.orca-worktrees`, so worktrees live in the bind mount and are
   still there on the Mac. That seed happens **once**: after Orca has run,
   whatever you change in its settings pane is what sticks, and this key stops
   mattering.
-- **`dns`** — the resolver the VM is started with, `1.1.1.1` by default. Set
-  it to `auto` to pass no `--dns` flag at all and leave `container`'s own
-  choice alone. It exists because a VM that boots with a resolver answering
-  nothing fails the toolchain install on `Temporary failure resolving
-  'ports.ubuntu.com'`. `CLAUDE_ORCA_DNS` overrides it for one run, and an
-  empty value there means no flag either.
+- **`dns`** — the resolver the container is started with, `1.1.1.1` by
+  default. Set it to `auto` to pass no `--dns` flag at all and leave Docker's
+  own choice alone. It exists because a container that starts with a resolver
+  answering nothing fails the toolchain install on `Temporary failure
+  resolving 'ports.ubuntu.com'`. `CLAUDE_ORCA_DNS` overrides it for one run,
+  and an empty value there means no flag either.
 - **`extraMounts`** — `host:guest` pairs mounted **read-only**, always. They
-  are outside the project, so the VM boundary is the only thing keeping them
-  safe.
+  are outside the project, so the container boundary is the only thing
+  keeping them safe.
 
 Apply a change with `./claude-dev --update`, which recreates the container.
 
 ## Orca coordination (on by default)
 
-Orca runs natively inside the VM, so its CLI, its orchestration mode and its
-worker terminals are simply there — no socket to expose, no key to set.
-`orca orchestration worker-start --agent codex`, terminals, automations and
-artifacts all work, and everything they spawn is inside the same VM and the
-same boundary. This is a first-class part of the setup, not an add-on.
+Orca runs natively inside the container, so its CLI, its orchestration mode
+and its worker terminals are simply there — no socket to expose, no key to
+set. `orca orchestration worker-start --agent codex`, terminals, automations
+and artifacts all work, and everything they spawn is inside the same
+container and the same boundary. This is a first-class part of the setup, not an add-on.
 
 Because of that, a delegated slice is an Orca worker by default rather than an
 in-process sub-agent. `orca-dispatch <bead-id>` turns one bead into one
@@ -214,7 +223,7 @@ yours to edit**: any model id from
 `openrouter/<id>`. Each job gets an ephemeral worktree under
 `.claude-dev/delegate/<job>`, and the receipt lands in the bead's notes.
 Interactive Codex, Gemini and OpenCode sessions you open in Orca share the
-same VM and the same beads database.
+same container and the same beads database.
 
 **Which slices go there, and how quality survives it** —
 [knowledge-base/DELEGATION_ROUTES.md](knowledge-base/DELEGATION_ROUTES.md#cheap-workers-without-losing-quality)
@@ -252,8 +261,11 @@ root of this template, so a folder that only ever runs `./claude-dev
 - `scripts/container/smoke.sh` — run inside the freshly built image by CI;
   starts the entrypoint against a throwaway project and fails the build
   unless Orca serves and the URL answers.
-- `.github/workflows/image.yml` — builds, smoke-tests and publishes the
-  image for both architectures.
+- `.github/workflows/image.yml` — builds the image, smoke-tests it, drives
+  the real `./claude-dev` launcher against it on a live Docker daemon (the
+  `e2e` steps: a throwaway project folder, a real container, and a real HTTP
+  request to the URL Orca published), and only then publishes both
+  architectures.
 
 ## Tests
 

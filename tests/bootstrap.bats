@@ -2,13 +2,13 @@
 #
 # S1 acceptance contract (claude-orca-3sk.1), rebased onto the v2
 # per-folder layout by V1 (claude-orca-qt9.1) and re-pointed at the v3
-# container install by claude-orca-qa2.2: bootstrap.sh no longer runs brew
-# bundle, installs sandbox-runtime or Claude Code, mounts an Orca DMG or
+# container install by claude-orca-qa2.2 (Docker runtime): bootstrap.sh no
+# longer runs brew bundle, installs sandbox-runtime or Claude Code, mounts an Orca DMG or
 # writes a shell-rc hook, and registration seeds claude-orca.json rather
 # than sandbox.json -- so every assertion that named one of those now
 # names its v3 replacement. Exercises bootstrap.sh + scripts/launcher.sh
 # against a local git fixture (built from the working tree by
-# helpers/setup.bash) with container/open/sw_vers/uname/gh stubbed on
+# helpers/setup.bash) with docker/open/sw_vers/uname/gh stubbed on
 # PATH -- no Mac and no network required. The layout itself is pinned by
 # tests/layout.bats.
 
@@ -51,64 +51,68 @@ shadow_path_without() {
     [ ! -d "$ORCA_HOST" ]
 }
 
-# v3 (claude-orca-qa2.2): Apple's `container` is macOS 26 + Apple silicon
-# only, and there is no fallback runtime -- so an unsupported Mac is
-# refused in the preflight, before the first mkdir.
-@test "preflight refuses an unsupported Mac before cloning anything" {
+# The runtime is Docker, so the host requirement is only "somewhere Docker
+# runs": macOS or Linux. Anything else is refused in the preflight, before
+# the first mkdir. (Apple's `container` needed macOS 26 on Apple silicon;
+# that gate is what the switch removed.)
+@test "preflight refuses an unsupported OS before cloning anything" {
     mac_env
 
-    export STUB_UNAME_M=x86_64
+    export STUB_UNAME_S=FreeBSD
     run bash "$REPO_ROOT/bootstrap.sh" "$PROJECT_DIR"
     [ "$status" -ne 0 ]
-    [[ "$output" == *"Apple silicon"* ]]
+    [[ "$output" == *"macOS or Linux"* ]]
+    [[ "$output" == *"FreeBSD"* ]]
     [ ! -e "$ORCA_HOST" ]
-    export STUB_UNAME_M=arm64
+    export STUB_UNAME_S=Darwin
 
+    # An Intel Mac and an older macOS are both fine now: Docker Desktop runs
+    # on both, so neither is a preflight failure any more.
+    export STUB_UNAME_M=x86_64
     export CLAUDE_ORCA_TEST_MACOS=15.7
-    run bash "$REPO_ROOT/bootstrap.sh" "$PROJECT_DIR"
-    [ "$status" -ne 0 ]
-    [[ "$output" == *"macOS 26"* ]]
-    [[ "$output" == *"15.7"* ]]
-    [ ! -e "$ORCA_HOST" ]
+    run make_project_v3 "$PROJECT_DIR"
+    [ "$status" -eq 0 ]
+    [ -d "$ORCA_HOST/template/.git" ]
 }
 
 # The bootstrap installs what it finds missing rather than handing the user
-# a command: Apple's signed .pkg is downloaded with gh and run through
-# `installer`, and the same run carries straight on into the install.
-@test "a missing container CLI is downloaded and installed, then bootstrap continues" {
+# a command: Docker Desktop is a Homebrew cask, and the same run carries
+# straight on into the install.
+@test "a missing docker is installed with brew, then bootstrap continues" {
     mac_env
-    export STUB_CONTAINER_SRC="$BATS_TEST_TMPDIR/container-stub"
-    mv "$STUB_BIN/container" "$STUB_CONTAINER_SRC"
-    ! command -v container >/dev/null 2>&1
+    # This box ships a real /usr/bin/docker AND a real daemon: dropping only
+    # the stub would point the whole case at it. shadow_path_without takes
+    # both away, and brew stays to put the stub back.
+    export STUB_DOCKER_SRC="$BATS_TEST_TMPDIR/docker-stub"
+    cp "$STUB_BIN/docker" "$STUB_DOCKER_SRC"
+    shadow_path_without docker
+    ! command -v docker >/dev/null 2>&1
+    command -v brew >/dev/null 2>&1
 
     run make_project_v3 "$PROJECT_DIR"
     [ "$status" -eq 0 ]
 
-    run grep "^gh release download" "$STUB_LOG"
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"apple/container"* ]]
-    [[ "$output" == *"installer-signed.pkg"* ]]
+    grep -q "^brew install --cask docker" "$STUB_LOG"
 
-    grep -qE "^sudo installer -pkg .*container-1\.3\.1-installer-signed\.pkg -target /$" "$STUB_LOG"
-
-    # And the run continued past the install: the service came up and the
+    # And the run continued past the install: the daemon answered and the
     # template was cloned by the CLI that had just been put on PATH.
-    grep -q "^system start" "$CONTAINER_STUB_LOG"
+    grep -q "^info" "$CONTAINER_STUB_LOG"
     [ -d "$ORCA_HOST/template/.git" ]
 }
 
-# The install can still fail -- a release with no signed .pkg on it -- and
-# then the old contract holds: name the page, name `installer`, write
-# nothing.
-@test "when the container download yields no .pkg, bootstrap stops with the releases URL and nothing is written" {
+# The install can still be impossible -- no Homebrew to install the cask
+# with -- and then the old contract holds: name the download, name the
+# command, write nothing.
+@test "when docker cannot be installed, bootstrap stops with the download page and nothing is written" {
     mac_env
-    mv "$STUB_BIN/container" "$BATS_TEST_TMPDIR/container-stub"
-    export STUB_GH_NO_ASSET=1
+    shadow_path_without docker brew
+    ! command -v docker >/dev/null 2>&1
+    ! command -v brew >/dev/null 2>&1
 
     run bash "$REPO_ROOT/bootstrap.sh" "$PROJECT_DIR"
     [ "$status" -ne 0 ]
-    [[ "$output" == *"github.com/apple/container/releases"* ]]
-    [[ "$output" == *"installer"* ]]
+    [[ "$output" == *"docker.com/products/docker-desktop"* ]]
+    [[ "$output" == *"brew install --cask docker"* ]]
     [[ "$output" == *"re-run this same command"* ]]
 
     [ ! -e "$ORCA_HOST" ]
@@ -200,14 +204,14 @@ shadow_path_without() {
     ! grep -q "sandbox-runtime" "$STUB_LOG"
 }
 
-@test "the container service is started and brew is never called" {
+@test "the docker daemon is checked and brew is never called" {
     run make_project_v3 "$PROJECT_DIR"
     [ "$status" -eq 0 ]
 
-    grep -q "^system start" "$CONTAINER_STUB_LOG"
-    # --enable-kernel-install answers the CLI's own stdin prompt up front;
-    # stdin here is the rest of the piped script.
-    grep "^system start" "$CONTAINER_STUB_LOG" | head -1 | grep -q -- "--enable-kernel-install"
+    # `docker info` succeeding IS the daemon being up -- there is no service
+    # verb to call and nothing to answer on stdin, which matters here
+    # because stdin is the rest of the piped script.
+    grep -q "^info" "$CONTAINER_STUB_LOG"
     ! grep -q "^brew " "$STUB_LOG"
     ! grep -q "hdiutil" "$STUB_LOG"
 }

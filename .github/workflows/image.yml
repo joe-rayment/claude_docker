@@ -1,9 +1,10 @@
 name: image
 
-# Builds the claude_orca v3 VM image, proves Orca actually comes up inside
-# it, and only then publishes it. This box cannot run containers, so this
-# workflow is where "the image builds and Orca serves in it" is checked
-# for real (.claude/plans/container-v3.md S7).
+# Builds the claude_orca v3 image, proves Orca actually comes up inside it,
+# drives the real host-side launcher against it, and only then publishes
+# it. This box cannot run containers, so this workflow is where "the image
+# builds, Orca serves in it, and ./claude-dev starts it" is checked for
+# real (.claude/plans/container-v3.md S7).
 
 on:
   push:
@@ -72,6 +73,121 @@ jobs:
           docker run --rm -v "$PWD:/opt/claude-orca-mount" -e CLAUDE_ORCA_SMOKE=1 \
             docker.io/library/ubuntu:24.04 \
             bash /opt/claude-orca-mount/scripts/container/smoke.sh
+
+      # e2e: the host side, which nothing could exercise while the runtime
+      # was Apple's `container` -- it runs on no CI machine and on no dev
+      # box here. With Docker as the runtime it is just bash and a daemon:
+      # ubuntu-latest has both, so the folder is laid out the way
+      # bootstrap.sh leaves it and the REAL scripts/launcher.sh is driven
+      # through a normal start. Nothing is fetched: CLAUDE_ORCA_IMAGE names
+      # the tag the build step above already loaded into this daemon, and
+      # CLAUDE_ORCA_OPEN=0 stops the launcher reaching for a browser.
+      - name: e2e (the real launcher starts a real container)
+        env:
+          CLAUDE_ORCA_OPEN: "0"
+          CLAUDE_ORCA_IMAGE: ${{ env.IMAGE }}:smoke
+          CLAUDE_ORCA_WEBURL_TIMEOUT: "300"
+        run: |
+          set -euo pipefail
+          project="$RUNNER_TEMP/e2e-project"
+
+          rm -rf "$project"
+          mkdir -p "$project"
+          git init -q -b main "$project"
+          git -C "$project" -c user.email=e2e@example.com -c user.name=e2e \
+              commit -q --allow-empty -m e2e
+
+          # What bootstrap.sh leaves in a folder: the template clone and
+          # the bin/ symlinks into it. Bootstrap clones from GitHub; here
+          # the checkout under test IS the template, copied rather than
+          # cloned so the working tree is what gets exercised.
+          mkdir -p "$project/.claude-dev/template"
+          cp -a "$GITHUB_WORKSPACE/." "$project/.claude-dev/template/"
+          "$project/.claude-dev/template/scripts/link-bin.sh" "$project/.claude-dev"
+
+          # ... and the two files `register` would write before it opens the
+          # folder. They are seeded here rather than by running `register`
+          # because acquire_image decides pulled-vs-runtime by attempting a
+          # GHCR pull, and this job must contact no registry: the image it
+          # exercises is the one built above, already in this daemon.
+          # Everything after this point is the launcher's own work.
+          mkdir -p "$project/.claude-dev/run"
+          printf '%s\n' '{"version":3,"port":null,"cpus":null,"memory":null,"extraMounts":[]}' \
+              > "$project/.claude-dev/claude-orca.json"
+          printf 'pulled\n' > "$project/.claude-dev/run/image-source"
+
+          # The everyday command: choose the port, create the container,
+          # wait for the handshake file the entrypoint writes.
+          "$project/.claude-dev/bin/claude-dev"
+
+      - name: e2e (the container is up and Orca answers on the published port)
+        run: |
+          set -euo pipefail
+          project="$RUNNER_TEMP/e2e-project"
+          # container_name() in scripts/launcher.sh: claude-orca-<folder>.
+          name="claude-orca-e2e-project"
+          url_file="$project/.claude-dev/run/orca-web-url.txt"
+
+          fail() { echo "e2e FAIL: $*" >&2; exit 1; }
+
+          state="$(docker inspect -f '{{.State.Status}}' "$name")" \
+              || fail "no container named $name"
+          [ "$state" = "running" ] || fail "$name is '$state', expected running"
+          echo "ok -- container $name is running"
+
+          # A fallback image here would mean the launcher ignored
+          # CLAUDE_ORCA_IMAGE and went looking for a registry.
+          ran="$(docker inspect -f '{{.Config.Image}}' "$name")"
+          [ "$ran" = "$IMAGE:smoke" ] \
+              || fail "$name runs '$ran', expected $IMAGE:smoke"
+          echo "ok -- it runs the locally built $ran"
+
+          ports="$(docker inspect -f '{{json .NetworkSettings.Ports}}' "$name")"
+          case "$ports" in
+              *127.0.0.1*) echo "ok -- published on 127.0.0.1 only: $ports" ;;
+              *) fail "the port is not bound to 127.0.0.1: $ports" ;;
+          esac
+
+          [ -s "$url_file" ] || fail "no $url_file (Orca published no web url)"
+          mode="$(stat -c '%a' "$url_file")"
+          [ "$mode" = "600" ] || fail "$url_file is mode $mode, expected 600"
+          url="$(head -1 "$url_file")"
+          [ -n "$url" ] || fail "$url_file is empty"
+          echo "ok -- web url published, mode $mode"
+
+          # The fragment carries the pairing code, so it is dropped before
+          # the request rather than sent to the server.
+          base="${url%%#*}"
+          body="$RUNNER_TEMP/e2e-body.html"
+          code="$(curl -sSL -o "$body" -w '%{http_code}' --max-time 30 "$base")"
+          case "$code" in
+              2??|3??) echo "ok -- GET $base -> $code" ;;
+              *) fail "GET $base -> $code" ;;
+          esac
+          grep -qi 'orca' "$body" \
+              || fail "the served page does not look like Orca: $(head -c 200 "$body")"
+          echo "ok -- the page it served is Orca Web"
+          echo "e2e: all checks passed"
+
+      - name: e2e diagnostics
+        if: failure()
+        run: |
+          project="$RUNNER_TEMP/e2e-project"
+          name="claude-orca-e2e-project"
+          for f in container.log setup.log orca-serve.log; do
+              echo "===== .claude-dev/run/$f ====="
+              tail -200 "$project/.claude-dev/run/$f" 2>/dev/null || echo "(absent)"
+          done
+          echo "===== docker ps -a ====="
+          docker ps -a || true
+          echo "===== docker logs $name ====="
+          docker logs --tail 300 "$name" 2>&1 || true
+
+      - name: e2e teardown
+        if: always()
+        run: |
+          docker rm -f claude-orca-e2e-project >/dev/null 2>&1 || true
+          rm -rf "$RUNNER_TEMP/e2e-project" "$RUNNER_TEMP/e2e-body.html"
 
       - name: Build and push multi-arch
         uses: docker/build-push-action@v6

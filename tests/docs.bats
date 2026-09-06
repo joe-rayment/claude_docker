@@ -56,7 +56,11 @@ project_sections() {
     done
 }
 
-@test "no doc mentions Docker Desktop, tmux, fleet, or /workspace as the project path" {
+# Docker Desktop was on this list while the runtime was Apple's `container`
+# and naming Docker meant naming the wrong design. The runtime IS Docker
+# now, so the term is the docs' own vocabulary and only the other three
+# stay banned.
+@test "no doc mentions tmux, fleet, or /workspace as the project path" {
     local files=("$README_MD" "$CLAUDE_MD" "$AGENTS_MD")
     while IFS= read -r f; do
         files+=("$f")
@@ -64,7 +68,7 @@ project_sections() {
 
     local f term hits=""
     for f in "${files[@]}"; do
-        for term in "Docker Desktop" "tmux" "fleet" "/workspace"; do
+        for term in "tmux" "fleet" "/workspace"; do
             if grep -F -i -q -- "$term" "$f"; then
                 hits="$hits${f}: ${term}"$'\n'
             fi
@@ -103,7 +107,7 @@ project_sections() {
     grep -qF -- "./claude-dev shell" "$README_MD"
 
     # The boundary, named, with the runtime that enforces it.
-    grep -qF -- "container system start" "$README_MD"
+    grep -qi -- "docker" "$README_MD"
     grep -qi -- "virtual machine" "$README_MD"
     grep -qF -- "/home/agent" "$README_MD"
 

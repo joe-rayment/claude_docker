@@ -9,7 +9,7 @@
 #   1. the entrypoint repairs the VM's resolv.conf before anything uses the
 #      network (scripts/container/entrypoint.sh, ensure_dns);
 #   2. setup.sh names DNS, not a package, when apt cannot resolve;
-#   3. the launcher passes --dns on `container run`, stops waiting the
+#   3. the launcher passes --dns on `docker run`, stops waiting the
 #      moment the container is gone, and shows the install log's tail;
 #   4. bootstrap asks for the read:packages scope that avoids the runtime
 #      path altogether.
@@ -149,7 +149,7 @@ echo 'apt-get install -y fonts-liberation would run here'"
     [[ "$output" != *"Unable to locate package"* ]]
 }
 
-@test "container run carries --dns and claude-orca.json overrides it" {
+@test "docker run carries --dns and claude-orca.json overrides it" {
     mkdir -p "$PROJECT_DIR"
     primary="$(abspath "$PROJECT_DIR")"
     unset CLAUDE_ORCA_DNS
@@ -323,8 +323,8 @@ run_bootstrap_tty() {
     run make_project_v3 "$primary"
     [ "$status" -eq 0 ]
 
-    grep -q "^registry login " "$CONTAINER_STUB_LOG"
-    grep -q "^image pull ghcr.io/joe-rayment/claude_orca:" "$CONTAINER_STUB_LOG"
+    grep -q "^login " "$CONTAINER_STUB_LOG"
+    grep -q "^pull ghcr.io/joe-rayment/claude_orca:" "$CONTAINER_STUB_LOG"
     [ "$(cat "$primary/.claude-dev/run/image-source")" = "pulled" ]
     [[ "$output" != *"No prebuilt image"* ]]
     runline="$(grep "^run " "$CONTAINER_STUB_LOG" | head -1)"
@@ -341,8 +341,8 @@ run_bootstrap_tty() {
     run make_project_v3 "$primary"
     [ "$status" -eq 0 ]
 
-    ! grep -q "^image pull " "$CONTAINER_STUB_LOG"
-    ! grep -q "^registry login " "$CONTAINER_STUB_LOG"
+    ! grep -q "^pull " "$CONTAINER_STUB_LOG"
+    ! grep -q "^login " "$CONTAINER_STUB_LOG"
     [ "$(cat "$primary/.claude-dev/run/image-source")" = "runtime" ]
     [[ "$output" == *"No prebuilt image"* ]]
 }

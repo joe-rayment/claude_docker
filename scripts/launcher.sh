@@ -4,7 +4,7 @@
 # to <project>/.claude-dev/bin/claude-dev: one launcher per folder, no
 # central install (V1, claude-orca-qt9.1).
 #
-# v3 (claude-orca-qa2.2 / qa2.3): one Apple `container` Linux VM per folder
+# v3 (claude-orca-qa2.2 / qa2.3): one Docker Linux VM per folder
 # (.claude/plans/container-v3.md). The Mac side owns exactly four things --
 # the folder's config (claude-orca.json), the port, the image and the
 # container -- and runs no agent itself, so there is no profile to generate,
@@ -212,7 +212,7 @@ snapshot_beads() {
 # from startup v4 (claude-orca-qa2.10): it runs there, before `bd init`,
 # against the same .claude-dev-snapshots directory.
 
-# ===== the Apple container launcher (claude-orca-qa2.2) ==================
+# ===== the container launcher (claude-orca-qa2.2, Docker) ================
 #
 # See .claude/plans/container-v3.md S5. Everything an agent runs is inside
 # the VM, so the Mac side is only ever starting one, publishing its port,
@@ -234,20 +234,44 @@ image_tag() {
     printf '%s\n' "$tag"
 }
 
-image_ref()      { printf '%s:%s\n' "$IMAGE_REPO" "$(image_tag)"; }
+# CLAUDE_ORCA_IMAGE names a whole ref and wins over the IMAGE_TAG file: CI
+# builds the image locally and points the launcher at it, so the runtime the
+# workflow exercises is the one the Mac runs.
+image_ref() {
+    if [ -n "${CLAUDE_ORCA_IMAGE:-}" ]; then
+        printf '%s\n' "$CLAUDE_ORCA_IMAGE"
+        return 0
+    fi
+    printf '%s:%s\n' "$IMAGE_REPO" "$(image_tag)"
+}
 image_registry() { printf '%s\n' "${IMAGE_REPO%%/*}"; }
 container_name() { printf 'claude-orca-%s\n' "$(derive_project_name "$1")"; }
 
-# Every `container` invocation goes through ctr(), so there is exactly one
+# Every runtime invocation goes through ctr(), so there is exactly one
 # place that knows how to reach the runtime and one record of what was
 # asked of it. GH_TOKEN rides into the VM as an env var, so the copy kept
 # on disk has the value struck out; nothing else ever puts a secret in
 # argv (the registry password goes in on stdin).
+#
+# The runtime is Docker. Apple's `container` was the v3 choice and could
+# not be exercised anywhere this repo can test -- and its registry client
+# refuses GHCR outright ("missing Bearer challenge in WWW-Authenticate
+# header"). Docker is what CI runs, so the switch makes CI verify the
+# runtime the Mac actually drives. The handful of subcommands whose shape
+# differs are translated here rather than at every call site; `run`,
+# `start`, `stop`, `rm`, `logs`, `exec` and `inspect` are already Docker's
+# own and pass straight through.
+#
+# CLAUDE_ORCA_RUNTIME picks the backend: `docker` (the default, and what a
+# Mac runs) or `local` (below).
+CTR_RUNTIME="${CLAUDE_ORCA_RUNTIME:-docker}"
 CTR_LOG=""
+CTR_RUN_DIR=""
 
 ctr_init() {
     mkdir -p "$1/.claude-dev/run" 2>/dev/null || true
     CTR_LOG="$1/.claude-dev/run/container.log"
+    CTR_RUN_DIR="$1/.claude-dev/run"
 }
 
 ctr_log_line() {
@@ -259,14 +283,261 @@ ctr_log_line() {
         esac
         out="$out $a"
     done
-    printf 'container%s\n' "$out"
+    printf '%s%s\n' "$CTR_RUNTIME" "$out"
 }
 
-ctr() {
+# Every backend mirrors its argv into the folder's log, redaction and all.
+ctr_mirror() {
     if [ -n "${CTR_LOG:-}" ]; then
         ctr_log_line "$@" >> "$CTR_LOG" 2>/dev/null || true
     fi
-    command container "$@"
+}
+
+# The one call site of the docker binary: everything else goes through ctr().
+ctr_docker() {
+    ctr_mirror "$@"
+    command docker "$@"
+}
+
+# `docker info` succeeding IS the daemon being up -- there is no separate
+# service verb to ask. On a Mac the daemon is Docker Desktop, which `open`
+# starts and which takes a while to answer; on Linux the daemon is the
+# host's business and this never tries to start anything.
+ctr_daemon_up() { ctr_docker info >/dev/null 2>&1; }
+
+ctr_daemon_start() {
+    local waited=0
+    if ctr_daemon_up; then return 0; fi
+    if [ "$(uname -s)" = "Darwin" ]; then
+        echo "==> Starting Docker Desktop"
+        open -a Docker >/dev/null 2>&1 || true
+        while [ "$waited" -lt 60 ]; do
+            sleep 1
+            waited=$((waited + 1))
+            if ctr_daemon_up; then return 0; fi
+        done
+    fi
+    {
+        echo "Error: the Docker daemon is not responding -- 'docker info' failed."
+        echo "  Start it and try again:"
+        echo "    macOS:  open -a Docker"
+        echo "    Linux:  sudo systemctl start docker"
+    } >&2
+    return 1
+}
+
+# ===== the `local` runtime backend =======================================
+#
+# CLAUDE_ORCA_RUNTIME=local runs the SAME in-VM entrypoint
+# (scripts/container/entrypoint.sh) as an ordinary child process on this
+# host, with the identical environment contract, instead of inside a
+# container. It exists because a container cannot be started everywhere the
+# launcher has to be provable: this repo's own dev box has an empty
+# capability set (CapEff 0000000000000000, no CAP_SYS_ADMIN in the bounding
+# set), so mount and unshare fail even for root and docker, podman and a
+# private dockerd all die the same way. With this backend the launcher, the
+# entrypoint and Orca can be exercised together for real.
+#
+# There is NO BOUNDARY here, and this does not pretend otherwise: --volume,
+# -p, --cpus, --memory and --dns are parsed off the argv and ignored,
+# because a plain child process has no filesystem, network or resource
+# isolation to configure. `local` is a test and escape-hatch backend; the
+# boundary this template ships is the container one.
+#
+# One record per container name under <project>/.claude-dev/run/local/:
+# .project (the folder), .env (the -e values), .pid, .log.
+
+ctr_local_dir() {
+    if [ -n "${CTR_RUN_DIR:-}" ]; then
+        printf '%s\n' "$CTR_RUN_DIR/local"
+    else
+        printf '%s\n' "${TMPDIR:-/tmp}/claude-orca-local"
+    fi
+}
+
+# The recorded PROCESS GROUP id, not a bare pid: the entrypoint spawns
+# Orca, which spawns more, and stop has to be able to signal the whole tree
+# at once rather than trust one process to pass a signal down.
+ctr_local_pid() {
+    local f
+    f="$(ctr_local_dir)/$1.pgid"
+    [ -s "$f" ] || return 1
+    head -1 "$f" | tr -d '[:space:]'
+}
+
+# running/exited, the same words Docker answers with -- and empty when
+# there is no such container, which is what container_state needs.
+ctr_local_state() {
+    local pgid
+    [ -f "$(ctr_local_dir)/$1.project" ] || return 0
+    pgid="$(ctr_local_pid "$1")" || { printf 'exited\n'; return 0; }
+    # A negative pid is the whole group: alive while any member is.
+    if kill -0 -- "-$pgid" 2>/dev/null; then
+        printf 'running\n'
+    else
+        printf 'exited\n'
+    fi
+}
+
+# Starts (or restarts) the entrypoint for a recorded container. The child
+# inherits this shell's environment -- DISPLAY above all, which is what
+# Orca needs -- and the recorded -e values are layered on top of it.
+ctr_local_spawn() {
+    local name="$1" d proj entry log line waited
+    d="$(ctr_local_dir)"
+    [ -f "$d/$name.project" ] || { echo "local runtime: no container $name" >&2; return 1; }
+    proj="$(head -1 "$d/$name.project")"
+    entry="$proj/.claude-dev/template/scripts/container/entrypoint.sh"
+    [ -f "$entry" ] || { echo "local runtime: no entrypoint at $entry" >&2; return 1; }
+    log="$d/$name.log"
+
+    set --
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        set -- "$@" "$line"
+    done < "$d/$name.env"
+    # The folder's own home is HOME here, so Orca's user-data dir lands
+    # inside the project exactly as it does under /home/agent in the VM.
+    # No privilege drop: there is no agent user on this side to drop to.
+    set -- "$@" "HOME=$proj/.claude-dev/home" \
+        "ORCA_BIN=${CLAUDE_ORCA_ORCA_BIN:-/opt/Orca/orca-ide}" \
+        CLAUDE_ORCA_SKIP_SETUP=1 \
+        CLAUDE_ORCA_SKIP_BEADS=1 \
+        CLAUDE_ORCA_ENTRYPOINT_NO_PRIVDROP=1
+
+    mkdir -p "$proj/.claude-dev/home"
+    : > "$log"
+    rm -f "$d/$name.pgid"
+
+    # Its own session, so the entrypoint and everything it spawns share one
+    # process group that stop can signal as a unit. The group id is written
+    # from INSIDE that shell rather than taken from $!: setsid may or may
+    # not fork depending on whether the caller already leads a group, so $!
+    # is not reliably the leader -- $$ in there always is.
+    CTR_LOCAL_PGID="$d/$name.pgid" CTR_LOCAL_ENTRY="$entry" \
+        nohup setsid bash -c \
+            'printf "%s\n" "$$" > "$CTR_LOCAL_PGID"; exec env "$@" bash "$CTR_LOCAL_ENTRY"' \
+            _ "$@" >> "$log" 2>&1 &
+
+    waited=0
+    while [ "$waited" -lt 50 ]; do
+        [ -s "$d/$name.pgid" ] && break
+        sleep 0.1
+        waited=$((waited + 1))
+    done
+    [ -s "$d/$name.pgid" ] || { echo "local runtime: $name did not start" >&2; return 1; }
+    printf '%s\n' "$name"
+}
+
+ctr_local_run() {
+    local d name="" proj="" a prev=""
+    for a in "$@"; do
+        case "$prev" in
+            --name) name="$a" ;;
+        esac
+        prev="$a"
+    done
+    [ -n "$name" ] || { echo "local runtime: run needs --name" >&2; return 1; }
+    d="$(ctr_local_dir)"
+    mkdir -p "$d"
+    : > "$d/$name.env"
+    prev=""
+    for a in "$@"; do
+        case "$prev" in
+            -e|--env)
+                printf '%s\n' "$a" >> "$d/$name.env"
+                case "$a" in PROJECT_DIR=*) proj="${a#PROJECT_DIR=}" ;; esac
+                ;;
+        esac
+        prev="$a"
+    done
+    [ -n "$proj" ] || { echo "local runtime: run needs -e PROJECT_DIR=..." >&2; return 1; }
+    printf '%s\n' "$proj" > "$d/$name.project"
+    ctr_local_spawn "$name"
+}
+
+# TERM the whole process group -- the entrypoint has its own trap for
+# taking Orca down with it, and signalling the group catches whatever the
+# trap does not. KILL only when the group will not go.
+ctr_local_stop() {
+    local name="$1" pgid waited=0
+    pgid="$(ctr_local_pid "$name")" || return 0
+    kill -TERM -- "-$pgid" 2>/dev/null || return 0
+    while [ "$waited" -lt 15 ]; do
+        kill -0 -- "-$pgid" 2>/dev/null || return 0
+        sleep 1
+        waited=$((waited + 1))
+    done
+    kill -KILL -- "-$pgid" 2>/dev/null || true
+    return 0
+}
+
+ctr_local_exec() {
+    local wd=""
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            -i|-t|-it|-ti)  shift ;;
+            --workdir)      wd="${2:-}"; shift 2 ;;
+            --workdir=*)    wd="${1#--workdir=}"; shift ;;
+            -*)             shift ;;
+            *)              shift; break ;;
+        esac
+    done
+    [ -n "$wd" ] || wd="$PWD"
+    [ "$#" -gt 0 ] || set -- "${SHELL:-/bin/sh}" -l
+    ( cd "$wd" 2>/dev/null || cd /; exec "$@" )
+}
+
+ctr_local() {
+    local d name
+    ctr_mirror "$@"
+    d="$(ctr_local_dir)"
+    case "${1:-} ${2:-}" in
+        # No image and no daemon to speak to, so these succeed as no-ops.
+        "image pull"|"image ls"|"image list"|"image inspect") return 0 ;;
+        "registry login"|"registry logout")                   return 0 ;;
+        "system start"|"system status"|"system stop")         return 0 ;;
+    esac
+    case "${1:-}" in
+        pull|login|logout|info) return 0 ;;
+    esac
+    case "${1:-}" in
+        run)     shift; ctr_local_run "$@"; return $? ;;
+        inspect)
+            # `inspect -f '{{.State.Status}}' NAME`: the name is last.
+            for name; do :; done
+            ctr_local_state "$name"
+            return 0 ;;
+        start)   ctr_local_spawn "$2" >/dev/null; return $? ;;
+        stop)    ctr_local_stop "$2"; return $? ;;
+        rm)      ctr_local_stop "$2"
+                 rm -f "$d/$2.pgid" "$d/$2.env" "$d/$2.project" "$d/$2.log"
+                 return 0 ;;
+        logs)    shift
+                 case "${1:-}" in -f) shift; tail -n +1 -f "$d/${1:-}.log" ;;
+                                  *)  cat "$d/${1:-}.log" ;; esac
+                 return $? ;;
+        exec)    shift; ctr_local_exec "$@"; return $? ;;
+    esac
+    return 0
+}
+
+ctr() {
+    if [ "$CTR_RUNTIME" = "local" ]; then
+        ctr_local "$@"
+        return $?
+    fi
+    case "${1:-} ${2:-}" in
+        "system start")  ctr_daemon_start; return $? ;;
+        "system status") ctr_daemon_up;    return $? ;;
+        "system stop")   return 0 ;;
+        "image pull")    shift 2; ctr_docker pull "$@"; return $? ;;
+        "image ls"|"image list"|"image inspect")
+                         shift 2; ctr_docker image inspect "$@"; return $? ;;
+        "registry login")  shift 2; ctr_docker login "$@";  return $? ;;
+        "registry logout") shift 2; ctr_docker logout "$@"; return $? ;;
+    esac
+    ctr_docker "$@"
 }
 
 # qa2.8: a stock gh OAuth token (repo, read:org, gist, workflow) can log in
@@ -308,9 +579,9 @@ gh_has_scope() {
 # startup v4 (claude-orca-qa2.10): when the prebuilt image is out of reach
 # the folder runs the PUBLIC base image instead, with the mounted
 # template's own entrypoint as its command -- setup.sh then installs the
-# toolchain inside the VM on that first start. No `container build` on the
+# toolchain inside the VM on that first start. No image build on the
 # Mac: an image build is the one step this repo can never test here, and
-# Apple's builder VM was where registration kept dying.
+# the builder VM was where registration kept dying.
 BASE_IMAGE="${CLAUDE_ORCA_BASE_IMAGE:-docker.io/library/ubuntu:24.04}"
 RUNTIME_INSTALL_NOTE="No prebuilt image: the VM installs its toolchain on first start (several minutes); progress: ./claude-dev logs"
 
@@ -343,11 +614,11 @@ registry_login() {
               >/dev/null 2>&1; then
         echo "Signed in to $registry as ${user:-the gh token}"
     else
-        echo "Warning: 'container registry login $registry' failed -- the pull may fail too" >&2
+        echo "Warning: 'docker login $registry' failed -- the pull may fail too" >&2
     fi
 }
 
-# One `container image pull`, keeping what it printed: with this registry the
+# One `docker pull`, keeping what it printed: with this registry the
 # reason a pull was refused IS the diagnosis, so the caller reads PULL_OUT
 # rather than guessing from the exit status.
 PULL_OUT=""
@@ -364,6 +635,23 @@ try_pull() {
 # fails -- there is nothing left for it to fail at.
 acquire_image() {
     local dir="$1" ref="$2" scope_rc=0
+    # The local backend runs no image at all, so there is nothing to log in
+    # for, pull, or fall back from.
+    if [ "$CTR_RUNTIME" = "local" ]; then
+        echo "==> Local runtime: no image to acquire"
+        record_image_source "$dir" pulled
+        return 0
+    fi
+    # An image the daemon already holds is the whole answer: CI builds one
+    # locally and points CLAUDE_ORCA_IMAGE at it, and so does anyone who has
+    # the image but no working registry access. Consulting GHCR from there
+    # can only fail and drop a perfectly good folder onto the slow runtime
+    # path, so this returns before the scope check, the login and the pull.
+    if [ -n "${CLAUDE_ORCA_IMAGE:-}" ] && ctr image inspect "$ref" >/dev/null 2>&1; then
+        echo "==> Using the local image $ref (CLAUDE_ORCA_IMAGE)"
+        record_image_source "$dir" pulled
+        return 0
+    fi
     # qa2.8: a classic token whose header lacks read:packages can only ever
     # be denied the manifest, so skip the login and the pull entirely rather
     # than make the user watch both fail. A token with no scopes header at
@@ -506,25 +794,20 @@ persist_port() {
     fi
 }
 
-# The container's state word ("running", "stopped", ...) or empty when
-# there is no container by that name -- read from `container ls --all`,
-# header-driven so a column order change cannot silently invert it.
+# The container's state word or empty when there is no container by that
+# name. Docker answers it directly rather than in a table, so there is no
+# column to parse and nothing a format change can silently invert: the
+# states are created, running, paused, restarting, removing, exited and
+# dead, and every caller here treats "running" as up and any other
+# non-empty word as down.
 container_state() {
     local name="$1" out=""
-    out="$(ctr ls --all 2>/dev/null)" || out=""
-    [ -n "$out" ] || return 0
-    printf '%s\n' "$out" | awk -v want="$name" '
-        NR == 1 {
-            for (i = 1; i <= NF; i++) {
-                if ($i == "NAME" || $i == "ID") namec = i
-                if ($i == "STATE" || $i == "STATUS") statec = i
-            }
-            if (!namec) namec = 1
-            if (!statec) statec = NF
-            next
-        }
-        $namec == want { print tolower($statec); exit }
-    '
+    out="$(ctr inspect -f '{{.State.Status}}' "$name" 2>/dev/null)" || out=""
+    printf '%s' "$out" \
+        | head -1 \
+        | tr '[:upper:]' '[:lower:]' \
+        | tr -d '[:space:]'
+    printf '\n'
 }
 
 # The entrypoint writes <project>/.claude-dev/run/orca-web-url.txt (0600 --
@@ -680,8 +963,7 @@ container_create() {
 
     # qa2.7: only when the folder has a key -- an empty OPENROUTER_API_KEY
     # would read as "set" to the delegate routes. The value is in argv for
-    # this one call (Apple's `container` has no --env-file); the log mirror
-    # redacts it.
+    # this one call; the log mirror redacts it.
     orkey="$(openrouter_key_value "$dir")"
     if [ -n "$orkey" ]; then
         set -- "$@" -e "OPENROUTER_API_KEY=$orkey"
@@ -689,7 +971,7 @@ container_create() {
 
     # The VM's resolver. A real Mac run on 2026-09-06 booted a VM whose
     # own resolv.conf answered nothing, so the toolchain install died on
-    # "Temporary failure resolving". Apple's CLI takes --dns <ip>:
+    # "Temporary failure resolving". `docker run` takes --dns <ip>:
     # CLAUDE_ORCA_DNS wins, then claude-orca.json's `dns`, then 1.1.1.1;
     # "auto" (or CLAUDE_ORCA_DNS set empty) passes no flag and leaves the
     # runtime's own choice alone.
@@ -720,12 +1002,16 @@ EXTRA
     if [ "$src" = "runtime" ]; then
         set -- "$@" bash "$dir/.claude-dev/template/scripts/container/entrypoint.sh"
     fi
-    echo "==> Starting the container $name ($ref)"
+    if [ "$CTR_RUNTIME" = "local" ]; then
+        echo "==> Starting $name (local runtime: the entrypoint as a host process)"
+    else
+        echo "==> Starting the container $name ($ref)"
+    fi
     # Checked, not trusted: errexit is off inside a function called under
     # `|| return`, so an unchecked failure here would fall through to a
     # two-minute wait for a URL no container is ever going to write.
     if ! ctr "$@" >/dev/null; then
-        echo "Error: 'container run' failed for $name -- see $dir/.claude-dev/run/container.log" >&2
+        echo "Error: 'docker run' failed for $name -- see $dir/.claude-dev/run/container.log" >&2
         return 1
     fi
 }
@@ -852,7 +1138,13 @@ cmd_shell_v3() {
         echo "==> Starting $name (was $state)"
         ctr start "$name" >/dev/null
     fi
-    ctr exec -it --workdir "$dir" "$name" zsh -l
+    # -i -t only when there IS a terminal: `docker exec -t` with no tty
+    # fails outright, and the suite runs this with stdin on a pipe.
+    if [ -t 0 ]; then
+        ctr exec -it --workdir "$dir" "$name" zsh -l
+    else
+        ctr exec --workdir "$dir" "$name" zsh -l
+    fi
 }
 
 cmd_logs_v3() {
@@ -882,29 +1174,39 @@ cmd_doctor_v3() {
         ref="$(image_ref)"
     fi
 
-    if command -v container >/dev/null 2>&1; then
-        doctor_row ok "container CLI" "$(command -v container)"
+    # The local backend has no CLI, no daemon and no image to ask after, so
+    # asking would be three findings about things it does not use. One row
+    # naming the runtime, and the rows below carry the rest.
+    if [ "$CTR_RUNTIME" = "local" ]; then
+        doctor_row ok "runtime" "local -- the entrypoint runs as a host process, no container boundary"
+        if [ -d "$dir/.claude-dev" ]; then
+            ctr_init "$dir"
+        fi
     else
-        doctor_row missing "container CLI" "install it: re-run the bootstrap one-liner (or https://github.com/apple/container/releases)"
-        rc=2
-    fi
+        if command -v docker >/dev/null 2>&1; then
+            doctor_row ok "docker CLI" "$(command -v docker)"
+        else
+            doctor_row missing "docker CLI" "install it: re-run the bootstrap one-liner (or https://docs.docker.com/get-docker/)"
+            rc=2
+        fi
 
-    if [ -d "$dir/.claude-dev" ]; then
-        ctr_init "$dir"
-    fi
+        if [ -d "$dir/.claude-dev" ]; then
+            ctr_init "$dir"
+        fi
 
-    if ctr system status >/dev/null 2>&1; then
-        doctor_row ok "container service" "running"
-    else
-        doctor_row missing "container service" "start it: container system start"
-        rc=2
-    fi
+        if ctr system status >/dev/null 2>&1; then
+            doctor_row ok "docker daemon" "running"
+        else
+            doctor_row missing "docker daemon" "start it: open -a Docker (macOS) or sudo systemctl start docker"
+            rc=2
+        fi
 
-    if ctr image inspect "$ref" >/dev/null 2>&1; then
-        doctor_row ok "image" "$ref"
-    else
-        doctor_row missing "image" "$ref (pull it: ./claude-dev --update)"
-        rc=2
+        if ctr image inspect "$ref" >/dev/null 2>&1; then
+            doctor_row ok "image" "$ref"
+        else
+            doctor_row missing "image" "$ref (pull it: ./claude-dev --update)"
+            rc=2
+        fi
     fi
 
     # pulled or runtime -- which one it is says whether this folder is
