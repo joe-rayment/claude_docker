@@ -94,9 +94,13 @@ after `container registry login ghcr.io` with the `gh` token; if the pull fails 
 
 ## 5. Mac side (`bootstrap.sh`, `claude-dev`)
 
-Preflight (nothing written before it passes): Apple silicon + macOS 26; `container` on PATH
-(else print the releases URL and the `installer` line — a `.pkg` needs an admin password, so it
-is instructed, not run); `container system start` (idempotent); `gh` authenticated; git. Then
+Preflight (nothing written before it passes): Apple silicon + macOS 26 are the only unfixable
+checks; git (Xcode Command Line Tools via `softwareupdate`), `gh` (brew or the cli/cli `.pkg`)
+and `container` (Apple's signed `.pkg`, fetched with `gh release download` and run through
+`installer`) are each INSTALLED when missing and the same run carries on, with the admin
+password `sudo` reads from `/dev/tty` the only prompt; then `gh auth login` if there is a tty;
+`container system start --enable-kernel-install` (idempotent, `</dev/null` so the CLI's own
+kernel prompt cannot eat the piped script). Then
 clone the template into `.claude-dev/template`, link `bin/`, and `register`: seed `sandbox.json`
 → becomes `claude-orca.json` (port, cpus, memory, extra mounts ro), seed home + gitconfig, pull
 the image, run the container, wait for `run/orca-web-url.txt`, `open` it in the default browser.

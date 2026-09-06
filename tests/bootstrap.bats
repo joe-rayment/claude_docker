@@ -21,6 +21,27 @@ mac_env() {
     export STUB_UNAME_M=arm64
 }
 
+# A PATH that genuinely lacks the named tools. Removing a stub is not
+# enough: this container ships a real /usr/bin/gh and /usr/bin/git that
+# would then be exposed. So $ORIGINAL_PATH is shadowed into one directory
+# of symlinks, minus those names, and PATH becomes $STUB_BIN plus it.
+shadow_path_without() {
+    local shadow="$BATS_TEST_TMPDIR/shadow" d oifs tool
+    mkdir -p "$shadow"
+    oifs="$IFS"; IFS=:
+    for d in $ORIGINAL_PATH; do
+        IFS="$oifs"
+        [ -d "$d" ] || continue
+        ln -s "$d"/* "$shadow/" 2>/dev/null || true
+        IFS=:
+    done
+    IFS="$oifs"
+    for tool in "$@"; do
+        rm -f "$shadow/$tool" "$STUB_BIN/$tool"
+    done
+    export PATH="$STUB_BIN:$shadow"
+}
+
 @test "bootstrap refuses without gh auth" {
     mac_env
     export STUB_GH_UNAUTH=1
@@ -51,11 +72,38 @@ mac_env() {
     [ ! -e "$ORCA_HOST" ]
 }
 
-# The one dependency a bootstrap cannot install for you: the .pkg needs an
-# admin password, so it is instructed and the run stops there.
-@test "preflight refuses a missing container CLI before cloning anything" {
+# The bootstrap installs what it finds missing rather than handing the user
+# a command: Apple's signed .pkg is downloaded with gh and run through
+# `installer`, and the same run carries straight on into the install.
+@test "a missing container CLI is downloaded and installed, then bootstrap continues" {
+    mac_env
+    export STUB_CONTAINER_SRC="$BATS_TEST_TMPDIR/container-stub"
+    mv "$STUB_BIN/container" "$STUB_CONTAINER_SRC"
+    ! command -v container >/dev/null 2>&1
+
+    run make_project_v3 "$PROJECT_DIR"
+    [ "$status" -eq 0 ]
+
+    run grep "^gh release download" "$STUB_LOG"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"apple/container"* ]]
+    [[ "$output" == *"installer-signed.pkg"* ]]
+
+    grep -qE "^sudo installer -pkg .*container-1\.3\.1-installer-signed\.pkg -target /$" "$STUB_LOG"
+
+    # And the run continued past the install: the service came up and the
+    # template was cloned by the CLI that had just been put on PATH.
+    grep -q "^system start" "$CONTAINER_STUB_LOG"
+    [ -d "$ORCA_HOST/template/.git" ]
+}
+
+# The install can still fail -- a release with no signed .pkg on it -- and
+# then the old contract holds: name the page, name `installer`, write
+# nothing.
+@test "when the container download yields no .pkg, bootstrap stops with the releases URL and nothing is written" {
     mac_env
     mv "$STUB_BIN/container" "$BATS_TEST_TMPDIR/container-stub"
+    export STUB_GH_NO_ASSET=1
 
     run bash "$REPO_ROOT/bootstrap.sh" "$PROJECT_DIR"
     [ "$status" -ne 0 ]
@@ -63,8 +111,7 @@ mac_env() {
     [[ "$output" == *"installer"* ]]
     [[ "$output" == *"re-run this same command"* ]]
 
-    [ ! -e "$ORCA_HOST/template" ]
-    [ ! -d "$ORCA_HOST" ]
+    [ ! -e "$ORCA_HOST" ]
 }
 
 # Past the preflight, a step that dies mid-install says which one, so the
@@ -79,33 +126,57 @@ mac_env() {
     [[ "$output" == *"idempotent and picks up where it left off"* ]]
 }
 
-# v3 installs nothing on the Mac, so gh is instructed rather than brewed in
-# ($ORIGINAL_PATH is shadowed into a directory of symlinks minus gh,
-# because this container ships a real /usr/bin/gh that removing the stub
-# would otherwise expose).
-@test "missing gh is instructed, never installed" {
+# gh is a dependency the bootstrap installs, and Homebrew is the path it
+# takes when brew is already there.
+@test "missing gh is installed with brew when brew is present" {
     mac_env
-    rm -f "$STUB_BIN/gh"
-
-    local shadow="$BATS_TEST_TMPDIR/shadow" d oifs
-    mkdir -p "$shadow"
-    oifs="$IFS"; IFS=:
-    for d in $ORIGINAL_PATH; do
-        IFS="$oifs"
-        [ -d "$d" ] || continue
-        ln -s "$d"/* "$shadow/" 2>/dev/null || true
-        IFS=:
-    done
-    IFS="$oifs"
-    rm -f "$shadow/gh"
-    export PATH="$STUB_BIN:$shadow"
+    export STUB_GH_SRC="$BATS_TEST_TMPDIR/gh-stub"
+    cp "$STUB_BIN/gh" "$STUB_GH_SRC"
+    shadow_path_without gh
     ! command -v gh >/dev/null 2>&1
+    command -v brew >/dev/null 2>&1
+
+    run make_project_v3 "$PROJECT_DIR"
+    [ "$status" -eq 0 ]
+    grep -q "^brew install gh" "$STUB_LOG"
+    [ -d "$ORCA_HOST/template/.git" ]
+}
+
+# Without Homebrew it is cli/cli's own signed macOS .pkg, found by reading
+# the latest release and picking the universal build out of it.
+@test "missing gh without brew is installed from the cli/cli .pkg" {
+    mac_env
+    export STUB_GH_SRC="$BATS_TEST_TMPDIR/gh-stub"
+    cp "$STUB_BIN/gh" "$STUB_GH_SRC"
+    shadow_path_without gh brew
+    ! command -v gh >/dev/null 2>&1
+    ! command -v brew >/dev/null 2>&1
+
+    run make_project_v3 "$PROJECT_DIR"
+    [ "$status" -eq 0 ]
+
+    run grep "^curl " "$STUB_LOG"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"cli/cli/releases"* ]]
+
+    grep -qE "^sudo installer -pkg .*gh\.pkg -target /$" "$STUB_LOG"
+    ! grep -q "^brew " "$STUB_LOG"
+    [ -d "$ORCA_HOST/template/.git" ]
+}
+
+# git lives in the Xcode Command Line Tools, which softwareupdate installs
+# headlessly -- no dialog, just the admin password sudo asks for.
+@test "missing git installs the Xcode Command Line Tools headlessly" {
+    mac_env
+    STUB_GIT_RESTORE="$(command -v git)"
+    export STUB_GIT_RESTORE
+    shadow_path_without git
+    ! command -v git >/dev/null 2>&1
 
     run bash "$REPO_ROOT/bootstrap.sh" "$PROJECT_DIR"
-    [ "$status" -eq 1 ]
-    [[ "$output" == *"gh is required"* ]]
-    ! grep -q "^brew " "$STUB_LOG"
-    [ ! -d "$ORCA_HOST" ]
+    [ "$status" -eq 0 ]
+    grep -q "softwareupdate -i Command Line Tools for Xcode-16.4" "$STUB_LOG"
+    [ -d "$ORCA_HOST/template/.git" ]
 }
 
 @test "bootstrap installs the template clone and bin under <project>/.claude-dev, and nothing else" {
@@ -133,7 +204,10 @@ mac_env() {
     run make_project_v3 "$PROJECT_DIR"
     [ "$status" -eq 0 ]
 
-    grep -qx "system start" "$CONTAINER_STUB_LOG"
+    grep -q "^system start" "$CONTAINER_STUB_LOG"
+    # --enable-kernel-install answers the CLI's own stdin prompt up front;
+    # stdin here is the rest of the piped script.
+    grep "^system start" "$CONTAINER_STUB_LOG" | head -1 | grep -q -- "--enable-kernel-install"
     ! grep -q "^brew " "$STUB_LOG"
     ! grep -q "hdiutil" "$STUB_LOG"
 }

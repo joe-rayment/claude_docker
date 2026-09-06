@@ -23,16 +23,23 @@ there. The worst a runaway `rm -rf` can do is empty the project folder.
 
 ## Requirements
 
-- **macOS 26 on Apple silicon.** Apple's `container` runtime supports
-  nothing older.
-- **Apple's `container` CLI** —
-  [github.com/apple/container/releases](https://github.com/apple/container/releases).
-  Install the signed `.pkg`; the bootstrap prints the exact command and
-  stops rather than asking for your admin password.
-- **An authenticated GitHub CLI** (`brew install gh && gh auth login`). It
-  fetches the bootstrap, signs in to the image registry, and its token rides
-  into the VM so `gh` works there too.
-- **git.**
+**macOS 26 on Apple silicon** is the only one you have to satisfy yourself.
+Apple's `container` runtime supports nothing older, and an Intel Mac cannot
+run it at all.
+
+Everything else the bootstrap installs for you, in the same run, and then
+carries on:
+
+- **Apple's `container` CLI** — the signed `.pkg` from
+  [github.com/apple/container/releases](https://github.com/apple/container/releases),
+  downloaded and installed for you.
+- **The GitHub CLI** (`gh`), by Homebrew if you have it and from cli/cli's
+  own macOS `.pkg` if you do not, then signed in. Its token rides into the
+  VM, so `gh` works there too.
+- **git**, via the Xcode Command Line Tools.
+
+The only thing it ever asks you for is your **admin password**, which macOS
+needs to run a `.pkg`.
 
 ## Quickstart
 
@@ -42,8 +49,9 @@ there. The worst a runaway `rm -rf` can do is empty the project folder.
 gh api repos/joe-rayment/claude_orca/contents/bootstrap.sh -H "Accept: application/vnd.github.raw" | bash
 ```
 
-That checks the four requirements above, starts the container service if it
-is not running, clones this template into `.claude-dev/template`, writes the
+That installs any of the dependencies above you are missing, starts the
+container service if it is not running, clones this template into
+`.claude-dev/template`, writes the
 `./claude-dev` launcher stub, seeds `.claude-dev/claude-orca.json`, pulls the
 pinned image, starts the folder's container, and opens Orca in your default
 browser. Re-running is safe. To isolate another folder, run the same
@@ -59,8 +67,9 @@ Everything below this is reference.
 
 ### If the bootstrap stops
 
-- **`container: command not found`** — install the `.pkg` from the releases
-  page above, then re-run the one-liner.
+- **`container: command not found`** — the bootstrap installs the `.pkg`
+  itself; if that download failed, take it from the releases page above and
+  run `sudo installer -pkg <file> -target /`, then re-run the one-liner.
 - **`container system status` fails** — start the service by hand:
 
   ```bash

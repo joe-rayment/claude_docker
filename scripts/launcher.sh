@@ -774,7 +774,7 @@ cmd_doctor_v3() {
     if command -v container >/dev/null 2>&1; then
         doctor_row ok "container CLI" "$(command -v container)"
     else
-        doctor_row missing "container CLI" "install it from https://github.com/apple/container/releases"
+        doctor_row missing "container CLI" "install it: re-run the bootstrap one-liner (or https://github.com/apple/container/releases)"
         rc=2
     fi
 

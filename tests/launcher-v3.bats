@@ -53,21 +53,21 @@ ctr_line() {
     [ ! -e "$PROJECT_DIR/.claude-dev" ]
     unset CLAUDE_ORCA_TEST_MACOS
 
-    # No container CLI: instructed, never installed for you, and nothing
-    # is written before the preflight passes.
-    mv "$STUB_BIN/container" "$BATS_TEST_TMPDIR/container-stub"
+    # No container CLI: the preflight installs Apple's signed .pkg for you
+    # and carries on in the same run.
+    export STUB_CONTAINER_SRC="$BATS_TEST_TMPDIR/container-stub"
+    mv "$STUB_BIN/container" "$STUB_CONTAINER_SRC"
     run bash "$REPO_ROOT/bootstrap.sh" "$PROJECT_DIR"
-    [ "$status" -ne 0 ]
-    [[ "$output" == *"github.com/apple/container/releases"* ]]
-    [[ "$output" == *"installer"* ]]
-    [ ! -e "$PROJECT_DIR/.claude-dev" ]
-    mv "$BATS_TEST_TMPDIR/container-stub" "$STUB_BIN/container"
+    [ "$status" -eq 0 ]
+    grep -q "^sudo installer -pkg " "$STUB_LOG"
+    [ -x "$STUB_BIN/container" ]
 
     # And the whole preflight, passing: the service is started, the
     # template is cloned, and not one v2 install step runs.
     run make_project_v3 "$PROJECT_DIR"
     [ "$status" -eq 0 ]
-    grep -qx "system start" "$CONTAINER_STUB_LOG"
+    grep -q "^system start" "$CONTAINER_STUB_LOG"
+    grep "^system start" "$CONTAINER_STUB_LOG" | head -1 | grep -q -- "--enable-kernel-install"
 
     [ -d "$PROJECT_DIR/.claude-dev/template/.git" ]
     [ -L "$PROJECT_DIR/.claude-dev/bin/claude-dev" ]

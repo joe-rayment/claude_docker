@@ -17,9 +17,17 @@
 #   ... | bash -s -- /path/to/project
 #
 # Every precondition is checked in the preflight below, BEFORE the first
-# mkdir/clone -- so a missing tool costs nothing and leaves nothing behind.
-# This script is piped into bash, so stdin is the script itself: it never
-# prompts, it only instructs.
+# mkdir/clone -- so a failed dependency costs nothing and leaves nothing
+# behind. What the preflight finds missing it INSTALLS, then carries on in
+# the same run: the Xcode Command Line Tools (git), the GitHub CLI, and
+# Apple's signed `container` .pkg. Only the unfixable checks stop it -- not
+# a Mac, not Apple silicon, or macOS older than 26.
+#
+# This script is piped into bash, so stdin is the script itself: it asks no
+# questions of its own, and every child that could read stdin is given
+# </dev/null so it can never swallow the rest of the script. The one prompt
+# you will see is macOS asking for your admin password, which sudo reads
+# from /dev/tty rather than stdin.
 
 set -Eeuo pipefail
 
@@ -33,6 +41,7 @@ step() {
 RERUN_NOTE="Then re-run this same command -- bootstrap is idempotent and picks up where it left off."
 
 on_err() {
+    rm -rf "${TMP_DIR:-/nonexistent/claude-orca-bootstrap}" 2>/dev/null || true
     {
         echo "Bootstrap failed during: ${CURRENT_STEP:-preflight}"
         echo "Fix the issue above, then re-run this same command -- bootstrap is idempotent and picks up where it left off."
@@ -45,21 +54,6 @@ have() { command -v "$1" >/dev/null 2>&1; }
 # --- preflight -------------------------------------------------------------
 
 UNAME_S="$(uname -s)"
-
-if ! have git; then
-    {
-        echo "Error: git is required but was not found on PATH."
-        if [ "$UNAME_S" = "Darwin" ]; then
-            xcode-select --install >/dev/null 2>&1 || true
-            echo "  Opened the Xcode Command Line Tools installer -- click Install and wait"
-            echo "  for it to finish (that is where macOS keeps git)."
-        else
-            echo "  Install git with your package manager, e.g. 'sudo apt-get install git'."
-        fi
-        echo "  $RERUN_NOTE"
-    } >&2
-    exit 1
-fi
 
 # Apple's `container` runs one lightweight Linux VM per container and needs
 # macOS 26 on Apple silicon. There is no fallback: Docker Desktop is not
@@ -95,27 +89,94 @@ if [ "$MACOS_MAJOR" -lt 26 ]; then
     exit 1
 fi
 
-# A .pkg install needs an admin password, so it is instructed, never run.
-if ! have container; then
-    {
-        echo "Error: Apple's 'container' CLI is required but was not found on PATH."
-        echo "  Download the signed installer (container-*-installer-signed.pkg) from:"
-        echo "    https://github.com/apple/container/releases"
-        echo "  Then install it (it will ask for your password):"
-        echo "    sudo installer -pkg ~/Downloads/container-installer-signed.pkg -target /"
-        echo "  $RERUN_NOTE"
-    } >&2
-    exit 1
+# Everything past here is fixable, and the preflight fixes it. One scratch
+# directory carries every download; it is removed when the preflight ends
+# (and by the error trap if one of them fails).
+TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/claude-orca-bootstrap.XXXXXX")"
+
+# git ships inside the Xcode Command Line Tools. `softwareupdate` installs
+# them headlessly when the on-demand trigger file exists; the GUI installer
+# is the fallback, and the only one that needs a click.
+if ! have git; then
+    step "Installing the Xcode Command Line Tools (git)"
+    CLT_TRIGGER="/tmp/.com.apple.dt.CommandLineTools.installondemand.in-progress"
+    touch "$CLT_TRIGGER" 2>/dev/null || true
+    CLT_LABEL="$(softwareupdate -l 2>/dev/null </dev/null \
+        | grep -o 'Command Line Tools for Xcode-[0-9.]*' | sort | tail -1 || true)"
+    if [ -n "$CLT_LABEL" ]; then
+        echo "    macOS will ask for your password."
+        sudo softwareupdate -i "$CLT_LABEL" --verbose </dev/null || true
+    fi
+    rm -f "$CLT_TRIGGER" 2>/dev/null || true
+    hash -r
+
+    if ! have git; then
+        xcode-select --install </dev/null >/dev/null 2>&1 || true
+        echo "    Click Install in the dialog that just opened; waiting for it to finish."
+        CLT_WAITED=0
+        while [ "$CLT_WAITED" -lt 1800 ]; do
+            if xcode-select -p >/dev/null 2>&1; then
+                hash -r
+                # An `if`, not `have git && break`: under set -e a false
+                # && at the end of the body would end the whole script.
+                if have git; then break; fi
+            fi
+            sleep 5
+            CLT_WAITED=$((CLT_WAITED + 5))
+        done
+        hash -r
+    fi
+
+    if ! have git; then
+        {
+            echo "Error: git is required but was not found on PATH."
+            echo "  The Xcode Command Line Tools install did not finish -- run it by hand:"
+            echo "    xcode-select --install"
+            echo "  $RERUN_NOTE"
+        } >&2
+        exit 1
+    fi
 fi
 
+# gh: Homebrew when it is there, otherwise cli/cli's own signed macOS pkg.
 if ! have gh; then
-    {
-        echo "Error: gh is required but was not found on PATH."
-        echo "  Install it:  brew install gh"
-        echo "  Or from https://github.com/cli/cli#installation"
-        echo "  $RERUN_NOTE"
-    } >&2
-    exit 1
+    step "Installing the GitHub CLI (gh)"
+    if have brew; then
+        brew install gh </dev/null || true
+    else
+        curl -fsSL -o "$TMP_DIR/gh-release.json" \
+            https://api.github.com/repos/cli/cli/releases/latest </dev/null || true
+        GH_PKG_URL="$(grep -o 'https://[^"]*macOS_universal\.pkg' \
+            "$TMP_DIR/gh-release.json" 2>/dev/null | head -1 || true)"
+        if [ -n "$GH_PKG_URL" ]; then
+            curl -fsSL -o "$TMP_DIR/gh.pkg" "$GH_PKG_URL" </dev/null || true
+        fi
+        if [ -s "$TMP_DIR/gh.pkg" ]; then
+            echo "    macOS will ask for your password to run the installer."
+            sudo installer -pkg "$TMP_DIR/gh.pkg" -target / </dev/null || true
+        fi
+    fi
+    PATH="/usr/local/bin:/opt/homebrew/bin:$PATH"
+    hash -r
+
+    if ! have gh; then
+        {
+            echo "Error: gh is required but was not found on PATH."
+            echo "  Installing it did not work -- do it by hand:  brew install gh"
+            echo "  Or from https://github.com/cli/cli#installation"
+            echo "  $RERUN_NOTE"
+        } >&2
+        exit 1
+    fi
+fi
+
+# gh auth login is interactive by nature, so it needs a terminal. sudo and
+# gh both read /dev/tty, which survives this script arriving on stdin.
+if ! gh auth status >/dev/null 2>&1; then
+    if ( : </dev/tty ) 2>/dev/null; then
+        step "Signing in to GitHub (gh auth login)"
+        gh auth login --web --git-protocol https </dev/tty || true
+    fi
 fi
 
 if ! gh auth status >/dev/null 2>&1; then
@@ -126,6 +187,46 @@ if ! gh auth status >/dev/null 2>&1; then
     } >&2
     exit 1
 fi
+
+# Apple ships `container` as a signed .pkg on its releases page; gh (now
+# authenticated) fetches it and `installer` puts it in /usr/local/bin. The
+# admin password is the only thing this asks of you.
+if ! have container; then
+    step "Installing Apple's container CLI (signed .pkg from github.com/apple/container/releases)"
+    gh release download --repo apple/container \
+        --pattern '*-installer-signed.pkg' --dir "$TMP_DIR" --clobber </dev/null || true
+    CONTAINER_PKG="$(ls "$TMP_DIR"/*-installer-signed.pkg 2>/dev/null | head -1 || true)"
+
+    if [ -z "$CONTAINER_PKG" ]; then
+        {
+            echo "Error: could not download Apple's 'container' installer."
+            echo "  Get the signed installer (container-*-installer-signed.pkg) by hand from:"
+            echo "    https://github.com/apple/container/releases"
+            echo "  Then install it (it will ask for your password):"
+            echo "    sudo installer -pkg ~/Downloads/container-installer-signed.pkg -target /"
+            echo "  $RERUN_NOTE"
+        } >&2
+        exit 1
+    fi
+
+    echo "    macOS will ask for your password to run the installer."
+    sudo installer -pkg "$CONTAINER_PKG" -target / </dev/null || true
+    PATH="/usr/local/bin:$PATH"
+    hash -r
+
+    if ! have container; then
+        {
+            echo "Error: Apple's 'container' CLI is still not on PATH after installing it."
+            echo "  Install the signed .pkg by hand from:"
+            echo "    https://github.com/apple/container/releases"
+            echo "    sudo installer -pkg ~/Downloads/container-installer-signed.pkg -target /"
+            echo "  $RERUN_NOTE"
+        } >&2
+        exit 1
+    fi
+fi
+
+rm -rf "$TMP_DIR"
 
 PROJECT="${1:-$PWD}"
 [ -d "$PROJECT" ] || { echo "Error: directory does not exist: $PROJECT" >&2; exit 1; }
@@ -144,8 +245,21 @@ fi
 
 # The container service (one per Mac, not per project). Idempotent: a
 # second call reports that it is already running, which is not an error.
+# --enable-kernel-install answers, up front, the one question the CLI asks
+# on stdin (whether to download the default Linux kernel) -- and stdin here
+# is the rest of this script. An older CLI without the flag retries plain.
 step "Starting the container service (container system start)"
-if ! service_out="$(container system start 2>&1)"; then
+service_rc=0
+service_out="$(container system start --enable-kernel-install 2>&1 </dev/null)" || service_rc=$?
+if [ "$service_rc" -ne 0 ]; then
+    case "$service_out" in
+        *"Unknown option"*|*"unexpected argument"*)
+            service_rc=0
+            service_out="$(container system start 2>&1 </dev/null)" || service_rc=$?
+            ;;
+    esac
+fi
+if [ "$service_rc" -ne 0 ]; then
     case "$service_out" in
         *"already running"*|*"already started"*) ;;
         *)

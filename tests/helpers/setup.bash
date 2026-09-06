@@ -71,6 +71,99 @@ if [ "$1" = "list" ] && [ "$2" = "--cask" ] && [ "$3" = "orca" ]; then
     [ "${STUB_ORCA_INSTALLED:-}" = "1" ] && exit 0
     exit 1
 fi
+# The bootstrap's gh install, brew branch: stand in for the formula by
+# putting the saved gh stub back on PATH.
+if [ "$1" = "install" ] && [ "$2" = "gh" ]; then
+    if [ -n "${STUB_GH_SRC:-}" ] && [ -e "$STUB_GH_SRC" ]; then
+        cp "$STUB_GH_SRC" "$STUB_BIN/gh"
+        chmod +x "$STUB_BIN/gh"
+    fi
+    exit 0
+fi
+exit 0
+STUB
+    chmod +x "$1"
+}
+
+# --- dependency-install stubs (bootstrap installs what it finds missing) ---
+#
+# `sudo` logs the command and runs it unprivileged; `installer` fakes a .pkg
+# by restoring the stub the test saved aside ($STUB_CONTAINER_SRC /
+# $STUB_GH_SRC); `softwareupdate` and `xcode-select` stand in for the Xcode
+# Command Line Tools install that carries git.
+
+write_stub_sudo() {
+    cat > "$1" <<'STUB'
+#!/usr/bin/env bash
+echo "sudo $*" >> "$STUB_LOG"
+exec "$@"
+STUB
+    chmod +x "$1"
+}
+
+write_stub_installer() {
+    cat > "$1" <<'STUB'
+#!/usr/bin/env bash
+echo "installer $*" >> "$STUB_LOG"
+pkg=""
+prev=""
+for arg in "$@"; do
+    [ "$prev" = "-pkg" ] && pkg="$arg"
+    prev="$arg"
+done
+case "$pkg" in
+    *container*-installer-signed.pkg)
+        if [ -n "${STUB_CONTAINER_SRC:-}" ] && [ -e "$STUB_CONTAINER_SRC" ]; then
+            cp "$STUB_CONTAINER_SRC" "$STUB_BIN/container"
+            chmod +x "$STUB_BIN/container"
+        fi
+        ;;
+    *gh*.pkg)
+        if [ -n "${STUB_GH_SRC:-}" ] && [ -e "$STUB_GH_SRC" ]; then
+            cp "$STUB_GH_SRC" "$STUB_BIN/gh"
+            chmod +x "$STUB_BIN/gh"
+        fi
+        ;;
+esac
+exit 0
+STUB
+    chmod +x "$1"
+}
+
+write_stub_softwareupdate() {
+    cat > "$1" <<'STUB'
+#!/usr/bin/env bash
+echo "softwareupdate $*" >> "$STUB_LOG"
+case "$1" in
+    -l|--list)
+        echo "Software Update Tool"
+        echo "Finding available software"
+        echo "* Label: Command Line Tools for Xcode-16.4"
+        echo "	Title: Command Line Tools for Xcode, Version: 16.4"
+        exit 0
+        ;;
+    -i|--install)
+        if [ -n "${STUB_GIT_RESTORE:-}" ]; then
+            ln -sf "$STUB_GIT_RESTORE" "$STUB_BIN/git"
+        fi
+        exit 0
+        ;;
+esac
+exit 0
+STUB
+    chmod +x "$1"
+}
+
+write_stub_xcode_select() {
+    cat > "$1" <<'STUB'
+#!/usr/bin/env bash
+echo "xcode-select $*" >> "$STUB_LOG"
+case "$1" in
+    -p|--print-path)
+        [ -e "$STUB_BIN/git" ] && { echo "/Library/Developer/CommandLineTools"; exit 0; }
+        exit 1
+        ;;
+esac
 exit 0
 STUB
     chmod +x "$1"
@@ -123,6 +216,28 @@ write_stub_gh() {
 #!/usr/bin/env bash
 if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
     [ "${STUB_GH_UNAUTH:-}" = "1" ] && exit 1
+    exit 0
+fi
+# The bootstrap signs in itself when a terminal is available.
+if [ "$1" = "auth" ] && [ "$2" = "login" ]; then
+    echo "gh $*" >> "$STUB_LOG"
+    exit 0
+fi
+# The bootstrap's container install: Apple's signed .pkg off the releases
+# page. STUB_GH_NO_ASSET=1 stands in for "the release carries no such
+# asset" -- nothing is written to --dir.
+if [ "$1" = "release" ] && [ "$2" = "download" ]; then
+    echo "gh $*" >> "$STUB_LOG"
+    [ "${STUB_GH_NO_ASSET:-}" = "1" ] && exit 1
+    dir=""
+    prev=""
+    for arg in "$@"; do
+        [ "$prev" = "--dir" ] && dir="$arg"
+        prev="$arg"
+    done
+    [ -n "$dir" ] || exit 1
+    mkdir -p "$dir"
+    printf 'FAKE-PKG\n' > "$dir/container-1.3.1-installer-signed.pkg"
     exit 0
 fi
 # S5 (claude-orca-3sk.17): the launcher reads the GitHub token on the Mac
@@ -329,6 +444,18 @@ fi
 
 echo "curl $*" >> "$STUB_LOG"
 mkdir -p "$(dirname "$out")"
+
+# The bootstrap's no-brew gh install reads cli/cli's latest release and
+# picks the macOS universal .pkg out of it.
+case "$*" in
+    *api.github.com/repos/cli/cli/releases*)
+        cat > "$out" <<'JSON'
+{"tag_name":"v2.100.0","assets":[{"name":"gh_2.100.0_macOS_universal.pkg","browser_download_url":"https://github.com/cli/cli/releases/download/v2.100.0/gh_2.100.0_macOS_universal.pkg"}]}
+JSON
+        exit "${STUB_CURL_EXIT:-0}"
+        ;;
+esac
+
 printf 'FAKE-DMG %s\n' "${STUB_DMG_BODY:-orca}" > "$out"
 exit "${STUB_CURL_EXIT:-0}"
 STUB
@@ -586,7 +713,9 @@ setup() {
     export STUB_ENV="$BATS_TEST_TMPDIR/stub.env"
     : > "$STUB_ENV"
 
-    STUB_BIN="$BATS_TEST_TMPDIR/stubs"
+    # Exported: the install stubs (installer, softwareupdate) put a
+    # restored binary back here, so they have to know where "here" is.
+    export STUB_BIN="$BATS_TEST_TMPDIR/stubs"
     mkdir -p "$STUB_BIN"
     write_stub_brew "$STUB_BIN/brew"
     write_stub_npm  "$STUB_BIN/npm"
@@ -609,6 +738,14 @@ setup() {
     write_stub_open "$STUB_BIN/open"
     write_stub_sw_vers "$STUB_BIN/sw_vers"
     write_stub_uname "$STUB_BIN/uname"
+
+    # The bootstrap installs a missing dependency rather than instructing
+    # it, so the tools that install things are stubbed too. All four are
+    # inert until a test removes a dependency from PATH.
+    write_stub_sudo "$STUB_BIN/sudo"
+    write_stub_installer "$STUB_BIN/installer"
+    write_stub_softwareupdate "$STUB_BIN/softwareupdate"
+    write_stub_xcode_select "$STUB_BIN/xcode-select"
 
     export PATH="$STUB_BIN:$PATH"
 
