@@ -124,18 +124,38 @@ setup_steps() {
     run bash -n "$REPO_ROOT/scripts/container/verify-rootfs.sh"
     [ "$status" -eq 0 ]
 
-    # This box is not the image: Orca is not installed here, so --check
-    # must say so and exit non-zero rather than quietly passing. The rows
-    # this box DOES satisfy have to come back ok, or the check is not
-    # reading anything real.
+    # --check reads the box, never a script constant: the rows this box
+    # satisfies have to come back ok, or it is not reading anything real.
+    # The orca row follows the box too. A dev box has no Orca, so --check
+    # must SAY so and exit non-zero rather than quietly passing; a box
+    # that has grown a real Orca (this one did, for the Orca-native
+    # orchestration work) must report it ok at the pinned version. Pinning
+    # either answer into the test only makes the case lie on the other
+    # kind of box.
+    local pin have=""
+    pin="$(sed -n 's/^ORCA_VERSION="\${ORCA_VERSION:-\([^}]*\)}".*/\1/p' \
+        "$SETUP" | head -1)"
+    [ -n "$pin" ]
+    if [ -f /opt/orca/VERSION ]; then
+        have="$(tr -d '[:space:]' < /opt/orca/VERSION)"
+    fi
+
     run bash "$SETUP" --check
-    [ "$status" -ne 0 ]
-    [[ "$output" == *"FAIL  orca:"* ]]
     [[ "$output" == *"ok    node"* ]]
     [[ "$output" == *"ok    gh"* ]]
     [[ "$output" == *"ok    bats"* ]]
     [[ "$output" == *"ok    bd"* ]]
     [[ "$output" == *"ok    dolt"* ]]
+
+    if [ "$have" = "$pin" ] && [ -x /opt/orca/orca-ide ] \
+        && [ -x /opt/orca/resources/bin/orca-ide ]; then
+        [[ "$output" == *"ok    orca ${pin}"* ]]
+        [[ "$output" != *"FAIL "* ]]
+        [ "$status" -eq 0 ]
+    else
+        [[ "$output" == *"FAIL  orca:"* ]]
+        [ "$status" -ne 0 ]
+    fi
 }
 
 # startup v4 (claude-orca-qa2.10): the Mac side has no `container build`
