@@ -60,6 +60,22 @@ check_version "claude" claude --version
 check_version "bd" bd --version
 check_version "orca cli" "${ORCA_CLI:-/opt/orca/resources/bin/orca-ide}" --version
 
+# Orca serve refuses to start with no usable display server, and spawns a
+# virtual one of its own when the binary is installed -- so what matters
+# here is only that an X server exists. Reported by glob rather than by
+# name so a bare image says so up front instead of at the serve timeout.
+x_servers=""
+for x in /usr/bin/X?*; do
+    if [ -x "$x" ] && [ ! -d "$x" ]; then
+        x_servers="$x_servers $x"
+    fi
+done
+if [ -n "$x_servers" ]; then
+    pass "display server(s):$x_servers"
+else
+    printf 'WARN -- no X display server under /usr/bin; Orca serve will refuse to start on a bare image\n' >&2
+fi
+
 # --- a throwaway project ------------------------------------------------
 
 rm -rf "$PROJECT_DIR"

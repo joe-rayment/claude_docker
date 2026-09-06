@@ -25,10 +25,17 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # libasound2t64 (not libasound2) on 24.04; xdg-utils and fonts-liberation
 # keep Chromium from complaining on startup. util-linux carries setpriv,
 # which the entrypoint uses to drop root.
+#
+# xvfb is not optional: `orca-ide --serve` refuses to start with no usable
+# display server and spawns its OWN virtual one (Xvfb :99 -screen 0
+# 1280x1024x24 -nolisten tcp -terminate) when the binary is on PATH -- so
+# the image only has to supply it, never run it. Leaving it out is what
+# failed CI's first smoke stage ("On a bare server, install xvfb").
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates curl wget gnupg git jq ripgrep zsh less \
         python3 python3-pip locales tini util-linux procps psmisc \
         build-essential unzip xz-utils sudo \
+        xvfb xauth \
         libgtk-3-0t64 libnss3 libasound2t64 libxss1 libgbm1 libnotify4 \
         libsecret-1-0 libatk-bridge2.0-0 libatk1.0-0t64 libdrm2 \
         libxkbcommon0 libxcomposite1 libxdamage1 libxrandr2 libxfixes3 \
