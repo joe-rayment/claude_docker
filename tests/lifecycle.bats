@@ -58,32 +58,10 @@ load helpers/setup
     [ "$(cat "$HOME/.zprofile")" = 'eval "$(/opt/homebrew/bin/brew shellenv)"' ]
     [ "$(cat "$PROJECT_DIR/keep.txt")" = "mine" ]
     [ -f "$PROJECT_DIR/.beads/issues.jsonl" ]
-    [ -d "$PROJECT_DIR/attachments" ]
 }
 
-@test "registration after teardown restores the newest snapshot when issues.jsonl is absent" {
-    make_project "$PROJECT_DIR"
-
-    mkdir -p "$PROJECT_DIR/.beads"
-    printf '{"id":"x-1"}\n' > "$PROJECT_DIR/.beads/issues.jsonl"
-    printf '{"prefix":"x"}\n' > "$PROJECT_DIR/.beads/metadata.json"
-
-    cd "$PROJECT_DIR"
-    run "$ORCA_HOST/bin/claude-dev" --teardown
-    [ "$status" -eq 0 ]
-
-    # Teardown leaves .beads alone (only --purge-beads removes it), so the
-    # restore is only observable once the project side is empty again.
-    rm -rf "$PROJECT_DIR/.beads"
-
-    # An older snapshot as well, to prove the NEWEST one is chosen.
-    local root old
-    root="$PROJECT_DIR/.claude-dev-snapshots"
-    old="$root/19990101-000000"
-    mkdir -p "$old"
-    printf '{"id":"ancient"}\n' > "$old/issues.jsonl"
-
-    make_project "$PROJECT_DIR"
-    [ "$(cat "$PROJECT_DIR/.beads/issues.jsonl")" = '{"id":"x-1"}' ]
-    [ "$(cat "$PROJECT_DIR/.beads/metadata.json")" = '{"prefix":"x"}' ]
-}
+# The other half of the round trip -- restoring the newest snapshot on the
+# next registration -- moved into the container with the rest of the
+# seeding (startup v4, claude-orca-qa2.9): the entrypoint restores it
+# before `bd init`, and tests/container-entrypoint.bats runs that natively.
+# Snapshotting stays here, because teardown is the Mac's own command.

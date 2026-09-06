@@ -60,6 +60,19 @@ jobs:
           docker run --rm -e CLAUDE_ORCA_SMOKE=1 ${{ env.IMAGE }}:smoke \
             /opt/claude-orca/scripts/container/smoke.sh
 
+      # The other half of startup v4 (claude-orca-qa2.10): a folder whose gh
+      # token cannot pull the prebuilt image runs plain ubuntu:24.04 with
+      # the mounted template's entrypoint, and setup.sh installs the
+      # toolchain inside the VM on that first start. Nothing on a dev box
+      # can run that, so this is where it is proven -- same smoke.sh, no
+      # /opt/claude-orca, the checkout mounted the way `container run`
+      # mounts the project.
+      - name: Smoke test (runtime install on plain ubuntu:24.04)
+        run: |
+          docker run --rm -v "$PWD:/opt/claude-orca-mount" -e CLAUDE_ORCA_SMOKE=1 \
+            docker.io/library/ubuntu:24.04 \
+            bash /opt/claude-orca-mount/scripts/container/smoke.sh
+
       - name: Build and push multi-arch
         uses: docker/build-push-action@v6
         with:

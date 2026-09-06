@@ -82,11 +82,17 @@ ctr_line() {
     [ ! -e "$HOME/.bash_profile" ]
 }
 
-@test "register seeds claude-orca.json, the home gitconfig and a port, logs in to ghcr and pulls the pinned image, falling back to container build when the pull fails" {
+# startup v4 (claude-orca-qa2.10): the Mac side reads its own global git
+# config and passes the two values in as env; every file that used to be
+# seeded here -- the home .gitconfig, the project .gitignore, attachments/,
+# a restored beads snapshot -- is now written by the entrypoint inside the
+# VM, where it can be exercised for real (tests/container-entrypoint.bats).
+@test "register passes the Mac git identity as CLAUDE_ORCA_GIT_NAME and CLAUDE_ORCA_GIT_EMAIL and writes no gitconfig, gitignore, attachments or beads files itself" {
     git config --global user.name "Test User"
     git config --global user.email "test@example.com"
 
     mkdir -p "$PROJECT_DIR"
+    printf 'node_modules/\n' > "$PROJECT_DIR/.gitignore"
     primary="$(abspath "$PROJECT_DIR")"
     run make_project_v3 "$primary"
     [ "$status" -eq 0 ]
@@ -101,8 +107,19 @@ ctr_line() {
     [ "$port" -ge 6768 ]
     [ "$(cat "$primary/.claude-dev/run/port")" = "$port" ]
 
-    grep -q "Test User" "$primary/.claude-dev/home/.gitconfig"
-    grep -q "test@example.com" "$primary/.claude-dev/home/.gitconfig"
+    # The identity crosses the boundary as env on the `container run`; the
+    # entrypoint is what writes /home/agent/.gitconfig from it.
+    identity="$(ctr_line "run ")"
+    [[ "$identity" == *"-e CLAUDE_ORCA_GIT_NAME=Test User"* ]]
+    [[ "$identity" == *"-e CLAUDE_ORCA_GIT_EMAIL=test@example.com"* ]]
+    [ ! -e "$primary/.claude-dev/home/.gitconfig" ]
+
+    # Nothing else the container seeds for itself is written out here: the
+    # user's own .gitignore is untouched, and there is no attachments/ and
+    # no .beads/ on the Mac side.
+    [ "$(cat "$primary/.gitignore")" = "node_modules/" ]
+    [ ! -e "$primary/attachments" ]
+    [ ! -e "$primary/.beads" ]
 
     # The registry login: username in argv, token on stdin and nowhere else.
     login="$(ctr_line "registry login")"
@@ -118,20 +135,6 @@ ctr_line() {
     [ -n "$tag" ]
     grep -qF "image pull ghcr.io/joe-rayment/claude_orca:$tag" "$CONTAINER_STUB_LOG"
     ! grep -q "^build " "$CONTAINER_STUB_LOG"
-
-    # A pull that fails falls back to building the image from the folder's
-    # own template clone.
-    export CLAUDE_ORCA_TEST_PULL_FAIL=1
-    : > "$CONTAINER_STUB_LOG"
-    mkdir -p "$BATS_TEST_TMPDIR/project2"
-    second="$(abspath "$BATS_TEST_TMPDIR/project2")"
-    run make_project_v3 "$second"
-    [ "$status" -eq 0 ]
-
-    grep -q "^image pull " "$CONTAINER_STUB_LOG"
-    build="$(ctr_line "build ")"
-    [[ "$build" == *"-t ghcr.io/joe-rayment/claude_orca:$tag"* ]]
-    [[ "$build" == *"-f $second/.claude-dev/template/Dockerfile"* ]]
 }
 
 @test "open runs the container with the project and home mounted at the same paths, the port published on 127.0.0.1, PROJECT_DIR/ORCA_PORT/HOST_UID/GH_TOKEN in the environment, waits for run/orca-web-url.txt and opens it" {

@@ -276,32 +276,10 @@ shadow_path_without() {
     [ "$(tail -1 "$OPEN_STUB_LOG")" = "$url" ]
 }
 
-@test "gitignore seeded idempotently with .claude-dev/, /claude-dev, Orca.app/, .mcp.json, attachments/, .claude/logs/" {
-    echo "node_modules/" > "$PROJECT_DIR/.gitignore"
-
-    run make_project_v3 "$PROJECT_DIR"
-    [ "$status" -eq 0 ]
-
-    grep -qxF "node_modules/" "$PROJECT_DIR/.gitignore"
-    grep -qxF ".claude-dev/" "$PROJECT_DIR/.gitignore"
-    grep -qxF "/claude-dev" "$PROJECT_DIR/.gitignore"
-    grep -qxF "Orca.app/" "$PROJECT_DIR/.gitignore"
-    grep -qxF ".mcp.json" "$PROJECT_DIR/.gitignore"
-    grep -qxF "attachments/" "$PROJECT_DIR/.gitignore"
-    grep -qxF ".claude/logs/" "$PROJECT_DIR/.gitignore"
-    [ "$(grep -c '# claude_orca' "$PROJECT_DIR/.gitignore")" -eq 1 ]
-
-    local before after
-    before="$(wc -l < "$PROJECT_DIR/.gitignore")"
-
-    run make_project_v3 "$PROJECT_DIR"
-    [ "$status" -eq 0 ]
-
-    after="$(wc -l < "$PROJECT_DIR/.gitignore")"
-    [ "$before" -eq "$after" ]
-    [ "$(grep -c '# claude_orca' "$PROJECT_DIR/.gitignore")" -eq 1 ]
-    [ "$(grep -cxF '.claude-dev/' "$PROJECT_DIR/.gitignore")" -eq 1 ]
-}
+# The .gitignore seeding moved into the container (startup v4,
+# claude-orca-qa2.9): the entrypoint owns it now, and
+# tests/container-entrypoint.bats exercises it natively rather than through
+# a stubbed Mac.
 
 # V1 (claude-orca-qt9.1) inverts S1's rule: the project root DOES get one
 # executable, the ./claude-dev stub that execs the in-folder launcher. It
@@ -324,20 +302,21 @@ shadow_path_without() {
 
 # v3 (claude-orca-qa2.2): the Claude config dir is synced INSIDE the VM by
 # scripts/container/entrypoint.sh, into the same folder-local home the Mac
-# mounts -- so registration seeds the git identity and leaves .claude to
-# the container.
-@test "register seeds the home gitconfig and leaves .claude to the entrypoint" {
+# mounts. startup v4 (claude-orca-qa2.10) puts the git identity on the same
+# footing: the Mac reads its own global config and passes the two values as
+# env, and the entrypoint writes the folder home's .gitconfig from them.
+@test "register leaves the home gitconfig and .claude to the entrypoint, passing only the identity in" {
     git config --global user.name "Test User"
     git config --global user.email "test@example.com"
 
     run make_project_v3 "$PROJECT_DIR"
     [ "$status" -eq 0 ]
 
-    gc="$PROJECT_DIR/.claude-dev/home/.gitconfig"
-    [ -f "$gc" ]
-    grep -q "Test User" "$gc"
-    grep -q "test@example.com" "$gc"
+    run_line="$(grep "^run " "$CONTAINER_STUB_LOG" | head -1)"
+    [[ "$run_line" == *"-e CLAUDE_ORCA_GIT_NAME=Test User"* ]]
+    [[ "$run_line" == *"-e CLAUDE_ORCA_GIT_EMAIL=test@example.com"* ]]
 
+    [ ! -e "$PROJECT_DIR/.claude-dev/home/.gitconfig" ]
     [ ! -e "$PROJECT_DIR/.claude-dev/home/.claude/settings.json" ]
 }
 

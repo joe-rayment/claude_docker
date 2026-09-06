@@ -8,13 +8,25 @@
 #   <runtime> run --rm -e CLAUDE_ORCA_SMOKE=1 <image> \
 #       /opt/claude-orca/scripts/container/smoke.sh
 #
-# (see .github/workflows/image.yml for the exact invocation)
+# startup v4 (claude-orca-qa2.10) gives it a second job: the same script,
+# run on the PUBLIC base image with this checkout mounted, is the only
+# proof of the runtime-install path a folder takes when it cannot pull the
+# prebuilt image --
 #
-# It creates its own throwaway git project, runs the real entrypoint
-# against it, and asserts that Orca comes up headless and serves Orca Web
-# -- plus that the pinned toolchain (Claude Code, beads, the Orca CLI) is
-# on PATH. Any failure prints the serve log and exits non-zero, so a
-# broken image never reaches the registry.
+#   docker run --rm -v "$PWD:/opt/claude-orca-mount" -e CLAUDE_ORCA_SMOKE=1 \
+#       docker.io/library/ubuntu:24.04 \
+#       bash /opt/claude-orca-mount/scripts/container/smoke.sh
+#
+# (see .github/workflows/image.yml for both invocations)
+#
+# So nothing here may assume /opt/claude-orca exists or that the toolchain
+# is installed yet: it creates its own throwaway git project, puts the
+# checkout it was run from at <project>/.claude-dev/template (which is
+# exactly where the entrypoint looks when /opt/claude-orca is absent), runs
+# the real entrypoint against it -- setup.sh and all -- and only then
+# asserts that the pinned toolchain is on PATH and that Orca comes up
+# headless and serves Orca Web. Any failure prints the serve log and exits
+# non-zero, so a broken image never reaches the registry.
 #
 # bash 3.2 clean (scripts/lint-bash32.sh scans all of scripts/).
 
@@ -22,10 +34,25 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 ENTRYPOINT="$SCRIPT_DIR/entrypoint.sh"
+SETUP="$SCRIPT_DIR/setup.sh"
+# The root of the copy this script was read from -- /opt/claude-orca on the
+# prebuilt image, the mount on a base image.
+TEMPLATE_SRC="$(cd "$SCRIPT_DIR/../.." && pwd -P)"
+
+PREBUILT=0
+if [ -d /opt/claude-orca ]; then
+    PREBUILT=1
+fi
 
 PROJECT_DIR="${CLAUDE_ORCA_SMOKE_PROJECT:-/tmp/claude-orca-smoke}"
 ORCA_PORT="${ORCA_PORT:-6768}"
-TIMEOUT="${CLAUDE_ORCA_WEBURL_TIMEOUT:-120}"
+# On the prebuilt image the entrypoint's setup is a no-op and Orca serves in
+# seconds; on a base image the same wait covers a whole toolchain install.
+if [ "$PREBUILT" = "1" ]; then
+    TIMEOUT="${CLAUDE_ORCA_WEBURL_TIMEOUT:-120}"
+else
+    TIMEOUT="${CLAUDE_ORCA_WEBURL_TIMEOUT:-1800}"
+fi
 
 RUN_DIR="$PROJECT_DIR/.claude-dev/run"
 URL_FILE="$RUN_DIR/orca-web-url.txt"
@@ -56,30 +83,42 @@ check_version() {
     pass "$label: $(printf '%s' "$out" | head -1)"
 }
 
-check_version "claude" claude --version
-check_version "bd" bd --version
-check_version "orca cli" "${ORCA_CLI:-/opt/orca/resources/bin/orca-ide}" --version
+# The toolchain checks themselves run AFTER the entrypoint, because on a
+# base image nothing is installed until setup.sh has run inside it.
 
-# Orca serve refuses to start with no usable display server, and spawns a
-# virtual one of its own when the binary is installed -- so what matters
-# here is only that an X server exists. Reported by glob rather than by
-# name so a bare image says so up front instead of at the serve timeout.
-x_servers=""
-for x in /usr/bin/X?*; do
-    if [ -x "$x" ] && [ ! -d "$x" ]; then
-        x_servers="$x_servers $x"
+# --- enough of a system to build the fixture ----------------------------
+#
+# git is what makes the throwaway project a repo, and curl is what fetches
+# the served page at the end; the base image has neither. setup.sh's base
+# phase installs both (and zsh, which the user phase's useradd needs), so
+# run those two phases here rather than inventing a second install path.
+# On the prebuilt image both are already there and this is skipped.
+
+if ! command -v git >/dev/null 2>&1; then
+    printf 'no git yet: running setup.sh --phase base and --phase user first\n'
+    if [ ! -x "$SETUP" ]; then
+        fail "no setup script at $SETUP"
+        exit 1
     fi
-done
-if [ -n "$x_servers" ]; then
-    pass "display server(s):$x_servers"
-else
-    printf 'WARN -- no X display server under /usr/bin; Orca serve will refuse to start on a bare image\n' >&2
+    "$SETUP" --phase base || { fail "setup.sh --phase base failed"; exit 1; }
+    "$SETUP" --phase user || { fail "setup.sh --phase user failed"; exit 1; }
 fi
 
 # --- a throwaway project ------------------------------------------------
 
 rm -rf "$PROJECT_DIR"
 mkdir -p "$RUN_DIR" "$PROJECT_DIR/.claude-dev/home"
+
+# Where the entrypoint looks for the template when /opt/claude-orca is not
+# there (claude-orca-qa2.9): the folder's own clone, inside the project.
+# `container run` bind-mounts that for real; here a symlink to the checkout
+# this script came from does the same job.
+if [ "$PREBUILT" != "1" ]; then
+    ln -sfn "$TEMPLATE_SRC" "$PROJECT_DIR/.claude-dev/template"
+    printf 'template for this run: %s -> %s\n' \
+        "$PROJECT_DIR/.claude-dev/template" "$TEMPLATE_SRC"
+fi
+
 git init --quiet -b main "$PROJECT_DIR" >/dev/null 2>&1
 git -C "$PROJECT_DIR" -c user.email=smoke@example.com -c user.name=smoke \
     commit --quiet --allow-empty -m smoke >/dev/null 2>&1
@@ -112,6 +151,32 @@ if [ ! -s "$URL_FILE" ]; then
     dump_and_exit
 fi
 pass "web url file written after ${waited} s"
+
+# --- the toolchain the image promises -----------------------------------
+#
+# Installed by the Dockerfile on the prebuilt image and by the entrypoint's
+# own setup.sh run on a base image -- either way it has to be here by the
+# time Orca is serving.
+
+check_version "claude" claude --version
+check_version "bd" bd --version
+check_version "orca cli" "${ORCA_CLI:-/opt/orca/resources/bin/orca-ide}" --version
+
+# Orca serve refuses to start with no usable display server, and spawns a
+# virtual one of its own when the binary is installed -- so what matters
+# here is only that an X server exists. Reported by glob rather than by
+# name so a bare image says so up front instead of at the serve timeout.
+x_servers=""
+for x in /usr/bin/X?*; do
+    if [ -x "$x" ] && [ ! -d "$x" ]; then
+        x_servers="$x_servers $x"
+    fi
+done
+if [ -n "$x_servers" ]; then
+    pass "display server(s):$x_servers"
+else
+    printf 'WARN -- no X display server under /usr/bin\n' >&2
+fi
 
 if grep -q 'Orca server ready' "$SERVE_LOG"; then
     pass "serve log says: Orca server ready"

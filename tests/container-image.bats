@@ -21,6 +21,8 @@
 REPO_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)"
 DOCKERFILE="$REPO_ROOT/Dockerfile"
 SETUP="$REPO_ROOT/scripts/container/setup.sh"
+SMOKE="$REPO_ROOT/scripts/container/smoke.sh"
+IMAGE_YML="$REPO_ROOT/.github/workflows/image.yml"
 
 # The Orca phase alone: from its function header to the closing brace at
 # column 0. Scoping the positive assertions this way keeps them from being
@@ -129,6 +131,42 @@ setup_steps() {
     [[ "$output" == *"ok    bats"* ]]
     [[ "$output" == *"ok    bd"* ]]
     [[ "$output" == *"ok    dolt"* ]]
+}
+
+# startup v4 (claude-orca-qa2.10): the Mac side has no `container build`
+# any more. A folder whose gh token cannot pull the prebuilt image runs
+# plain docker.io/library/ubuntu:24.04 with the mounted template's
+# entrypoint, and setup.sh installs the toolchain inside the VM on that
+# first start. Nothing on this box can run that -- so CI proves it, in a
+# container, on the public base image, with the checkout mounted the same
+# way `container run` mounts the project.
+@test "image.yml smoke-tests the runtime-install path on plain ubuntu:24.04" {
+    local yml
+    [ -f "$IMAGE_YML" ]
+    yml="$(cat "$IMAGE_YML")"
+
+    # The step, named for what it proves, running the PUBLIC base image
+    # rather than the image this workflow just built.
+    [[ "$yml" == *"Smoke test (runtime install on plain ubuntu:24.04)"* ]]
+    [[ "$yml" == *"docker.io/library/ubuntu:24.04"* ]]
+    [[ "$yml" == *'-v "$PWD:/opt/claude-orca-mount"'* ]]
+    [[ "$yml" == *"CLAUDE_ORCA_SMOKE=1"* ]]
+    [[ "$yml" == *"bash /opt/claude-orca-mount/scripts/container/smoke.sh"* ]]
+
+    # And the existing gate on the prebuilt image is still there.
+    [[ "$yml" == *"/opt/claude-orca/scripts/container/smoke.sh"* ]]
+
+    # smoke.sh's half: on a base image /opt/claude-orca does not exist, so
+    # the entrypoint resolves the template out of the project -- which is
+    # where smoke.sh has to put the checkout it was run from. And the base
+    # image has no git or curl yet, so it installs the base phase first.
+    local smoke
+    [ -f "$SMOKE" ]
+    run bash -n "$SMOKE"
+    [ "$status" -eq 0 ]
+    smoke="$(cat "$SMOKE")"
+    [[ "$smoke" == *".claude-dev/template"* ]]
+    [[ "$smoke" == *"--phase base"* ]]
 }
 
 @test "setup.sh's Claude Code pin is install-claude.sh's, character for character" {
