@@ -182,11 +182,14 @@ same VM and the same beads database.
 has the one explanation, with a worked `bd create` → `delegate run` →
 verify sequence.
 
-**Your OpenRouter key.** Export `OPENROUTER_API_KEY` in the shell that runs
-the worker — `./claude-dev shell`, then your usual secret store, or a line
-in `.claude-dev/home/.zshrc`, which is inside the folder and inside the VM.
-`delegate check` says `OPENROUTER_API_KEY not set` until it is there, and no
-key means no OpenRouter surface at all.
+**Your OpenRouter key.** Run `./claude-dev key openrouter` on the Mac: it
+reads the key without echoing it, stores it at
+`.claude-dev/home/.openrouter.key` (mode 600, inside the folder and
+gitignored), and every container from then on gets it as
+`OPENROUTER_API_KEY`. Exporting the variable yourself inside
+`./claude-dev shell` still works. `delegate check` says
+`OPENROUTER_API_KEY not set` until it is there, and no key means no
+OpenRouter surface at all.
 
 ## Knowledge base
 

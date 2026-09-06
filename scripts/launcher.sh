@@ -15,6 +15,7 @@
 #   claude-dev                    Open this folder's Orca in a browser
 #   claude-dev [register] [dir]   Register a project (default: current dir)
 #   claude-dev stop|shell|logs    Stop it / a shell inside it / its output
+#   claude-dev key openrouter     Store this folder's OpenRouter key
 #   claude-dev --how-to-run       Print the URL and the two commands
 #   claude-dev --doctor           CLI, service, image, container, port, web url
 #   claude-dev --update           Pull the template and the image, recreate
@@ -304,7 +305,8 @@ ctr_log_line() {
     local out="" a
     for a in "$@"; do
         case "$a" in
-            GH_TOKEN=*) a="GH_TOKEN=***" ;;
+            GH_TOKEN=*)           a="GH_TOKEN=***" ;;
+            OPENROUTER_API_KEY=*) a="OPENROUTER_API_KEY=***" ;;
         esac
         out="$out $a"
     done
@@ -362,6 +364,65 @@ build_image_locally() {
 }
 
 orca_json() { printf '%s\n' "$1/.claude-dev/claude-orca.json"; }
+
+# qa2.7: the OpenRouter key the delegate routes need inside the VM. It
+# belongs to the folder, so it lives in the folder-local home -- which is
+# /home/agent in the container and gitignored on the Mac -- rather than in
+# a shell rc or a keychain the container cannot see. Mode 600, never in
+# argv on the Mac beyond the one `container run`, and struck out of the
+# container.log mirror.
+openrouter_key_file() { printf '%s\n' "$1/.claude-dev/home/.openrouter.key"; }
+
+openrouter_key_value() {
+    local f
+    f="$(openrouter_key_file "$1")"
+    [ -f "$f" ] || return 0
+    head -1 "$f" | tr -d '[:space:]'
+}
+
+# The terminal, not stdin: a key typed into a pipe would sit in the shell's
+# history and in whatever produced the pipe. CLAUDE_ORCA_KEY_INPUT names a
+# file to read instead, for tests, which have no /dev/tty.
+read_secret_value() {
+    local prompt="$1" value=""
+    if [ -n "${CLAUDE_ORCA_KEY_INPUT:-}" ]; then
+        if [ -f "$CLAUDE_ORCA_KEY_INPUT" ]; then
+            value="$(head -1 "$CLAUDE_ORCA_KEY_INPUT")"
+        fi
+    elif [ -r /dev/tty ]; then
+        printf '%s' "$prompt" > /dev/tty
+        stty -echo < /dev/tty 2>/dev/null || true
+        IFS= read -r value < /dev/tty || value=""
+        stty echo < /dev/tty 2>/dev/null || true
+        printf '\n' > /dev/tty
+    fi
+    printf '%s\n' "$value" | tr -d '[:space:]'
+}
+
+cmd_key_v3() {
+    local dir="$PROJECT_SELF" what="${1:-}" key file
+    case "$what" in
+        openrouter) ;;
+        *) echo "Usage: claude-dev key openrouter" >&2; return 1 ;;
+    esac
+    shift
+    if [ $# -gt 0 ] && [ -n "$1" ]; then dir="$1"; fi
+    [ -d "$dir" ] || { echo "Error: directory does not exist: $dir" >&2; return 1; }
+    dir="$(cd "$dir" && pwd -P)"
+
+    key="$(read_secret_value "OpenRouter API key (not echoed): ")"
+    if [ -z "$key" ]; then
+        echo "Error: no key given -- nothing written." >&2
+        return 1
+    fi
+
+    mkdir -p "$dir/.claude-dev/home"
+    file="$(openrouter_key_file "$dir")"
+    ( umask 077; printf '%s\n' "$key" > "$file" )
+    chmod 600 "$file"
+    echo "Saved the OpenRouter key to .claude-dev/home/.openrouter.key (mode 600)."
+    echo "It rides into the container as OPENROUTER_API_KEY next time you run ./claude-dev."
+}
 
 # One scalar out of claude-orca.json, empty when absent, null or unreadable.
 json_get() {
@@ -498,7 +559,7 @@ RUNIT
 # thing on both sides; the folder-local home becomes /home/agent, so
 # credentials and Orca state live and die with the folder.
 container_create() {
-    local dir="$1" name="$2" port="$3" ref token cpus memory mount theme
+    local dir="$1" name="$2" port="$3" ref token cpus memory mount theme orkey
     ref="$(image_ref)"
     token="$(gh auth token 2>/dev/null || true)"
     # claude-orca.json's `theme` picks the Orca theme the entrypoint seeds
@@ -520,6 +581,15 @@ container_create() {
         -e "GH_TOKEN=$token" \
         -e "CLAUDE_ORCA_THEME=$theme" \
         -e "CLAUDE_ORCA_PROJECT_NAME=$(derive_project_name "$dir")"
+
+    # qa2.7: only when the folder has a key -- an empty OPENROUTER_API_KEY
+    # would read as "set" to the delegate routes. The value is in argv for
+    # this one call (Apple's `container` has no --env-file); the log mirror
+    # redacts it.
+    orkey="$(openrouter_key_value "$dir")"
+    if [ -n "$orkey" ]; then
+        set -- "$@" -e "OPENROUTER_API_KEY=$orkey"
+    fi
 
     cpus="$(json_get "$dir" '.cpus')"
     if [ -n "$cpus" ]; then
@@ -762,6 +832,14 @@ cmd_doctor_v3() {
         rc=2
     fi
 
+    # qa2.7: optional, so absence is a fact and never a finding -- the
+    # value itself is never printed, only whether the folder has one.
+    if [ -n "$(openrouter_key_value "$dir")" ]; then
+        doctor_row ok "openrouter key" "present -- $(openrouter_key_file "$dir")"
+    else
+        doctor_row n/a "openrouter key" "absent -- optional: ./claude-dev key openrouter"
+    fi
+
     # The URL itself is a credential (the fragment carries the pairing
     # code), so the doctor names the file, never its contents.
     url_file="$dir/.claude-dev/run/orca-web-url.txt"
@@ -880,6 +958,8 @@ Usage:
   claude-dev stop               Stop this folder's container
   claude-dev shell              A login shell inside the container
   claude-dev logs               Follow the container's output
+  claude-dev key openrouter     Store this folder's OpenRouter key (not
+                                echoed) for the delegate routes
   claude-dev --how-to-run       Print the URL and the two commands
   claude-dev --doctor           CLI, service, image, container, port, web url
   claude-dev --update           Pull the template and the image, recreate
@@ -895,6 +975,7 @@ case "${1:-}" in
     stop)          shift; cmd_stop_v3 "${1:-$PROJECT_SELF}" || exit $?; exit 0 ;;
     shell)         shift; cmd_shell_v3 "${1:-$PROJECT_SELF}" || exit $?; exit 0 ;;
     logs)          shift; cmd_logs_v3 "${1:-$PROJECT_SELF}" || exit $?; exit 0 ;;
+    key)           shift; cmd_key_v3 "$@" || exit $?; exit 0 ;;
     --how-to-run)  print_run_it_block_v3 "$PROJECT_SELF"; exit 0 ;;
     --doctor)      cmd_doctor_v3 || exit $?; exit 0 ;;
     --update)      shift; cmd_update_v3 "${1:-$PROJECT_SELF}" || exit $?; exit 0 ;;
