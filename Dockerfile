@@ -117,15 +117,20 @@ RUN set -eu; \
     claude --version
 
 # --- Orca Linux, pinned, extracted (no FUSE in a container) ------------
+#
+# The two Linux AppImage assets are NOT named symmetrically: arm64 carries
+# its arch, amd64 is the bare `orca-linux.AppImage` (there is no
+# orca-linux-x64.AppImage -- an assumed one 404'd CI's first real build).
+# Asset names read off the release itself; both URLs return 200.
 ARG ORCA_VERSION=1.4.197
 RUN set -eu; \
     arch="$(uname -m)"; \
     case "$arch" in \
-        x86_64|amd64) orcaarch=x64 ;; \
-        arm64|aarch64) orcaarch=arm64 ;; \
+        x86_64|amd64) asset="orca-linux.AppImage" ;; \
+        arm64|aarch64) asset="orca-linux-arm64.AppImage" ;; \
         *) echo "unsupported arch: $arch" >&2; exit 1 ;; \
     esac; \
-    url="https://github.com/stablyai/orca/releases/download/v${ORCA_VERSION}/orca-linux-${orcaarch}.AppImage"; \
+    url="https://github.com/stablyai/orca/releases/download/v${ORCA_VERSION}/${asset}"; \
     tmp="$(mktemp -d)"; \
     curl -fsSL -o "${tmp}/orca.AppImage" "$url"; \
     chmod +x "${tmp}/orca.AppImage"; \
