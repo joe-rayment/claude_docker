@@ -136,6 +136,39 @@ else
     fail "run/port is '$port', expected '$ORCA_PORT'"
 fi
 
+# The entrypoint seeds Orca's own state before serve starts (v3 S4,
+# claude-orca-qa2.5): the per-repo worktree base path inside the folder,
+# the theme, the agent env. Orca keeps it per profile, so glob the profile
+# dir rather than naming `local-default` here.
+# The entrypoint drops to `agent` when it can, so look where IT put the
+# user-data dir, not where root's HOME points.
+agent_home=""
+if [ -n "${ORCA_USER_DATA_DIR:-}" ]; then
+    user_data_dir="$ORCA_USER_DATA_DIR"
+else
+    agent_home="$(getent passwd "${CLAUDE_ORCA_AGENT_USER:-agent}" 2>/dev/null | cut -d: -f6)"
+    [ -n "$agent_home" ] || agent_home="$HOME"
+    user_data_dir="$agent_home/.config/orca"
+fi
+
+seed_file=""
+for f in "$user_data_dir"/profiles/*/orca-data.json; do
+    if [ -f "$f" ]; then
+        seed_file="$f"
+        break
+    fi
+done
+if [ -n "$seed_file" ]; then
+    pass "orca state seeded: $seed_file"
+    if grep -q "$PROJECT_DIR/.orca-worktrees" "$seed_file"; then
+        pass "seeded worktree base path is inside the project"
+    else
+        fail "no $PROJECT_DIR/.orca-worktrees in $seed_file"
+    fi
+else
+    fail "no orca-data.json under $user_data_dir/profiles/"
+fi
+
 origin="$(printf '%s' "$web_url" | sed -E 's#^(https?://[^/]+).*#\1#')"
 code="$(curl -s -o /tmp/smoke-body.html -w '%{http_code}' --max-time 30 "$origin/")"
 if [ "$code" = "200" ]; then

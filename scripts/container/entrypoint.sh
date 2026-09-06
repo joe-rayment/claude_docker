@@ -6,7 +6,9 @@
 # and publishes the pairing URL the Mac side opens in a browser.
 #
 # Sequence: resolve the project -> re-map and drop to `agent` -> sync this
-# template's config/ into the agent's Claude config dir -> start `--serve`
+# template's config/ into the agent's Claude config dir -> seed Orca's own
+# state (worktree base path, theme, agent env) and `bd init` the project
+# folder, both once -> start `--serve`
 # with its output in <project>/.claude-dev/run/orca-serve.log -> wait for
 # the "Web client URL:" line -> write run/orca-web-url.txt (0600, it
 # carries the pairing code) and run/port -> register the project with
@@ -24,6 +26,12 @@
 #   HOST_UID      the Mac uid owning the bind mount; `agent` is re-mapped
 #                 to it so files written inside look right outside.
 #   GH_TOKEN      passed through to the agent environment untouched.
+#   CLAUDE_ORCA_THEME         dark|light|system for the seeded Orca
+#                 settings (default dark); the Mac side passes
+#                 claude-orca.json's `theme` through.
+#   CLAUDE_ORCA_PROJECT_NAME  the beads prefix for `bd init` (default:
+#                 the project folder's basename).
+#   CLAUDE_ORCA_SKIP_BEADS=1  do not `bd init` the project folder.
 #   CLAUDE_ORCA_WEBURL_TIMEOUT        seconds to wait for serve (120).
 #   CLAUDE_ORCA_ENTRYPOINT_NO_PRIVDROP=1   skip usermod/setpriv (tests,
 #                 and any run that is already unprivileged).
@@ -160,6 +168,48 @@ if [ -n "$sync_host" ]; then
     fi
 else
     log "no template config found (looked in $PROJECT_DIR/.claude-dev and $HOST_DIR); skipping config-sync"
+fi
+
+# --- seed Orca's own state, once (claude-orca-qa2.5) --------------------
+#
+# Before serve starts, so Orca reads it rather than racing it: the
+# project's worktree base path inside the folder, the theme, and the
+# agent env. Never fatal -- an unseeded Orca still works, it just needs
+# the settings pane.
+
+if run_as_agent bash "$SCRIPT_DIR/seed-orca-state.sh" \
+        --user-data-dir "$USER_DATA_DIR" \
+        --project "$PROJECT_DIR" \
+        --theme "${CLAUDE_ORCA_THEME:-}"; then
+    :
+else
+    warn "seeding Orca state failed (continuing)"
+fi
+if [ "$PRIVDROP" = "1" ]; then
+    chown -R "$AGENT_UID:$AGENT_GID" "$USER_DATA_DIR" 2>/dev/null
+fi
+
+# --- beads, once (claude-orca-qa2.5) ------------------------------------
+#
+# v3 does the tracker init in here rather than in `claude-dev register` on
+# the Mac: bd lives in the image, not on the host, so this is the first
+# place that can run it. Opt out with CLAUDE_ORCA_SKIP_BEADS=1.
+
+if [ "${CLAUDE_ORCA_SKIP_BEADS:-0}" = "1" ]; then
+    log "CLAUDE_ORCA_SKIP_BEADS=1; skipping bd init"
+elif ! command -v bd >/dev/null 2>&1; then
+    log "bd not on PATH; skipping bd init"
+elif [ -e "$PROJECT_DIR/.beads" ]; then
+    log "beads already initialized in $PROJECT_DIR; leaving it alone"
+else
+    bd_prefix="${CLAUDE_ORCA_PROJECT_NAME:-}"
+    [ -n "$bd_prefix" ] || bd_prefix="$(basename "$PROJECT_DIR")"
+    if ( cd "$PROJECT_DIR" && run_as_agent bd init --prefix "$bd_prefix" ) \
+            >/dev/null 2>&1; then
+        log "beads initialized in $PROJECT_DIR (prefix $bd_prefix)"
+    else
+        warn "bd init failed in $PROJECT_DIR (continuing)"
+    fi
 fi
 
 # --- start Orca serve ---------------------------------------------------

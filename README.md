@@ -128,6 +128,7 @@ every update:
   "port": 6768,
   "cpus": 4,
   "memory": "8g",
+  "theme": "dark",
   "extraMounts": ["/Users/you/reference-repo:/Users/you/reference-repo"]
 }
 ```
@@ -136,6 +137,13 @@ every update:
   at registration; the same number is used on both sides, because the
   pairing code names it.
 - **`cpus`, `memory`** — `null` means whatever `container` defaults to.
+- **`theme`** — `dark` (the default), `light` or `system`. It reaches the VM
+  as `CLAUDE_ORCA_THEME`, and the entrypoint writes it into Orca's own
+  settings the first time a folder starts — alongside a worktree base path of
+  `<project>/.orca-worktrees`, so worktrees live in the bind mount and are
+  still there on the Mac. That seed happens **once**: after Orca has run,
+  whatever you change in its settings pane is what sticks, and this key stops
+  mattering.
 - **`extraMounts`** — `host:guest` pairs mounted **read-only**, always. They
   are outside the project, so the VM boundary is the only thing keeping them
   safe.

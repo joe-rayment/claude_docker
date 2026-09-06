@@ -455,9 +455,14 @@ RUNIT
 # thing on both sides; the folder-local home becomes /home/agent, so
 # credentials and Orca state live and die with the folder.
 container_create() {
-    local dir="$1" name="$2" port="$3" ref token cpus memory mount
+    local dir="$1" name="$2" port="$3" ref token cpus memory mount theme
     ref="$(image_ref)"
     token="$(gh auth token 2>/dev/null || true)"
+    # claude-orca.json's `theme` picks the Orca theme the entrypoint seeds
+    # on a folder's first run (dark|light|system); the project name is the
+    # beads prefix it inits with.
+    theme="$(json_get "$dir" '.theme')"
+    [ -n "$theme" ] || theme="dark"
     mkdir -p "$dir/.claude-dev/run" "$dir/.claude-dev/home"
     # Never open a stale pairing URL from a previous container.
     rm -f "$dir/.claude-dev/run/orca-web-url.txt"
@@ -469,7 +474,9 @@ container_create() {
         -e "PROJECT_DIR=$dir" \
         -e "ORCA_PORT=$port" \
         -e "HOST_UID=$(id -u)" \
-        -e "GH_TOKEN=$token"
+        -e "GH_TOKEN=$token" \
+        -e "CLAUDE_ORCA_THEME=$theme" \
+        -e "CLAUDE_ORCA_PROJECT_NAME=$(derive_project_name "$dir")"
 
     cpus="$(json_get "$dir" '.cpus')"
     if [ -n "$cpus" ]; then
