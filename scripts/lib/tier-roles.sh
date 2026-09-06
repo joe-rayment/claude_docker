@@ -111,5 +111,10 @@ tier_orca_reachable() {
         out=$($cmd status --json 2>/dev/null) || return 1
     fi
     [ -n "$out" ] || return 1
-    printf '%s' "$out" | jq -e '.runtime.reachable == true' >/dev/null 2>&1
+    # Orca 1.4.197 wraps every CLI answer in {"ok":…,"result":{…}}, so the
+    # status payload lives at .result.runtime; the flat shape is accepted
+    # too, for an older CLI (or a TIER_ORCA_PROBE_CMD stub) that emits it.
+    printf '%s' "$out" |
+        jq -e '((.result.runtime.reachable // .runtime.reachable) == true)' \
+        >/dev/null 2>&1
 }

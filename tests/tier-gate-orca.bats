@@ -75,6 +75,40 @@ gate() { run "$GATE" <<<"$1"; }
     [ -z "$output" ]
 }
 
+# The probe is what decides orca-vs-subagent at bind time, so it has to read
+# the shape the CLI actually prints. Orca 1.4.197 wraps every answer in
+# {"id","ok","result"} -- reading the flat .runtime.reachable made the probe
+# answer "unreachable" against a runtime that was up (found by qa2.13/qa2.19).
+probe_stub() {
+    local json="$1" stub="$BATS_TEST_TMPDIR/orca-stub"
+    printf '#!/usr/bin/env bash\ncat <<%s\n%s\n%s\n' "'JSON'" "$json" "JSON" \
+        >"$stub"
+    chmod +x "$stub"
+    printf '%s' "$stub"
+}
+
+@test "tier_orca_reachable reads the wrapped status envelope the Orca CLI really prints" {
+    # shellcheck disable=SC1091
+    . "$REPO_ROOT/scripts/lib/tier-roles.sh"
+
+    up='{"id":"local-status","ok":true,"result":{"target":{"kind":"local"},"app":{"running":true,"pid":123},"runtime":{"state":"ready","reachable":true,"runtimeId":"ab0c4f52"}},"_meta":{"runtimeId":"ab0c4f52"}}'
+    TIER_ORCA_PROBE_CMD="$(probe_stub "$up")" run tier_orca_reachable
+    [ "$status" -eq 0 ]
+
+    down='{"id":"local-status","ok":true,"result":{"target":{"kind":"local"},"app":{"running":false,"pid":null},"runtime":{"state":"not_running","reachable":false,"runtimeId":null}},"_meta":{"runtimeId":"none"}}'
+    TIER_ORCA_PROBE_CMD="$(probe_stub "$down")" run tier_orca_reachable
+    [ "$status" -ne 0 ]
+
+    # an older CLI printing the payload flat still counts as reachable
+    flat='{"runtime":{"state":"ready","reachable":true}}'
+    TIER_ORCA_PROBE_CMD="$(probe_stub "$flat")" run tier_orca_reachable
+    [ "$status" -eq 0 ]
+
+    TIER_ORCA_PROBE_DISABLE=1 TIER_ORCA_PROBE_CMD="$(probe_stub "$up")" \
+        run tier_orca_reachable
+    [ "$status" -ne 0 ]
+}
+
 @test "tier-gate: a non-Claude (opencode) orca worker is note-only — no model the Agent tool would take" {
     TIER_DERIVE="$DERIVE" tier_set fable
     [ "$status" -eq 0 ]
