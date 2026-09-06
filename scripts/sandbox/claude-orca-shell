@@ -330,9 +330,9 @@ if [ "$MODE" = "print-env" ]; then
     exit 0
 fi
 
-# S5: Claude Code's own OAuth credentials, written by the guided first run
-# INSIDE the sandbox (Apple Events are denied and there is no `open`, so
-# the login URL is printed and the code pasted back). 0600, under the
+# S5: Claude Code's own OAuth credentials, written by its own first-run
+# login INSIDE the sandbox (Apple Events are denied and there is no `open`,
+# so the login URL is printed and the code pasted back). 0600, under the
 # faked HOME's config dir -- never in the repo, never in the Keychain.
 CREDENTIALS_FILE="$ENV_CLAUDE_CONFIG_DIR/.credentials.json"
 
@@ -588,7 +588,7 @@ else
 fi
 
 if [ ! -f "$CREDENTIALS_FILE" ]; then
-    echo "[claude-orca] no Claude credentials yet -- run 'claude', open the printed URL on the Mac, paste the code; stored at $CREDENTIALS_FILE" >&2
+    echo "[claude-orca] no Claude credentials yet -- Claude Code will ask you to sign in the first time it runs (from Orca or this shell); stored at $CREDENTIALS_FILE" >&2
 fi
 
 if [ "$HAVE_SHELL_CMD" -eq 1 ]; then

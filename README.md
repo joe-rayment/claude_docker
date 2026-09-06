@@ -113,7 +113,7 @@ it.
 | Command | What it does |
 |---|---|
 | `./claude-dev open` | Start this folder's Orca, sandboxed |
-| `claude-dev setup` | Guided walk-through: Claude login, git identity, `gh`, OpenRouter key, beads, Orca settings |
+| `claude-dev setup` | Guided walk-through: git identity, `gh`, OpenRouter key, beads, Orca settings |
 | `claude-dev --how-to-run` | Print the launch instructions again |
 | `claude-dev --doctor` | Tool presence plus the 17 sandbox probes, with reasons |
 | `claude-dev --update` | Pull the template, re-pin `srt`/Claude Code/Orca, re-sync, re-test |
@@ -210,8 +210,9 @@ data landed there, and that the host-owned files are write-denied.
 
 ## Auth
 
-- **Claude**: log in once inside the sandbox. With the Keychain cut, Claude
-  Code uses its documented plaintext store,
+- **Claude**: nothing to do. Claude Code asks you to sign in the first time
+  it runs inside the sandbox — from Orca, or from a sandboxed shell — and
+  with the Keychain cut it writes its documented plaintext store,
   `.claude-dev/home/.claude/.credentials.json`, mode 0600. It lives and dies
   with the folder.
 - **GitHub**: the wrapper reads the host's `gh auth token` and passes it in

@@ -7,7 +7,7 @@
 #
 # Usage:
 #   claude-dev [register] [dir]   Register a project (default: current dir)
-#   claude-dev setup              Guided walk-through: login, keys, beads, Orca
+#   claude-dev setup              Guided walk-through: identity, keys, beads, Orca
 #   claude-dev open               Open this folder's Orca, sandboxed
 #   claude-dev --how-to-run       Print how to start this folder's Orca
 #   claude-dev --doctor           Show presence of required tools
@@ -1010,8 +1010,8 @@ claude-dev -- claude_orca project launcher (one per folder)
 
 Usage:
   claude-dev [register] [dir]   Register a project (default: this folder)
-  claude-dev setup              Guided walk-through: Claude login, git identity,
-                                gh auth, OpenRouter key, beads, Orca settings
+  claude-dev setup              Guided walk-through: git identity, gh auth,
+                                OpenRouter key, beads, Orca settings
   claude-dev open               Open this folder's Orca, sandboxed
   claude-dev --how-to-run       Print how to start this folder's Orca
   claude-dev --doctor           Show presence of required tools

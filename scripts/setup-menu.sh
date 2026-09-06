@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
 #
 # setup-menu.sh -- `claude-dev setup`, the guided walk-through a first-time
-# user gets instead of a wall of text (V6, claude-orca-riu.5). Six steps --
-# Claude login, git identity, GitHub auth, OpenRouter key, beads, the
-# one-time Orca setting -- then a closing menu. Sourced by
-# scripts/launcher.sh (setup_menu_main <project-dir>), so it runs from the
-# <project>/.claude-dev/template clone exactly as it does from a checkout.
+# user gets instead of a wall of text (V6, claude-orca-riu.5). Five steps --
+# git identity, GitHub auth, OpenRouter key, beads, the one-time Orca
+# setting -- then a closing menu. Signing in to Claude is not among them:
+# Claude Code does its own login the first time it runs from Orca, whose
+# HOME is redirected into the folder, so the credentials land in
+# .claude-dev/home/.claude/.credentials.json with nothing to do here.
+# Sourced by scripts/launcher.sh (setup_menu_main <project-dir>), so it runs
+# from the <project>/.claude-dev/template clone exactly as it does from a
+# checkout.
 #
 # Two rules the whole file follows:
 #   - Interactive input comes from /dev/tty, never stdin: the bootstrap
@@ -107,61 +111,7 @@ setup_warn() {
     printf '  %s!%s  %s\n' "$C_YELLOW" "$C_RESET" "$1"
 }
 
-# Waits for $1 to appear, up to CLAUDE_ORCA_SETUP_POLL_SECONDS (default
-# 180), saying so every 15s. Returns 1 when it never turns up -- the caller
-# records a skip and the walk-through carries on.
-setup_poll_for_file() {
-    local path="$1" waited=0 limit="${CLAUDE_ORCA_SETUP_POLL_SECONDS:-180}"
-    setup_note "waiting for $path (Ctrl+C to stop waiting)"
-    while [ "$waited" -lt "$limit" ]; do
-        if [ -e "$path" ]; then
-            return 0
-        fi
-        sleep 3
-        waited=$((waited + 3))
-        if [ $((waited % 15)) -eq 0 ]; then
-            setup_note "still waiting (${waited}s)"
-        fi
-    done
-    [ -e "$path" ]
-}
-
-# --- step 1: Claude login --------------------------------------------------
-
-setup_step_claude() {
-    local dir="$1" creds="$1/.claude-dev/home/.claude/.credentials.json" ans=0
-    setup_header "Step 1/6: Claude login"
-
-    if [ -f "$creds" ]; then
-        setup_ok "already signed in ($creds)"
-        SETUP_R1="already"
-        setup_ask_choice "  Sign in again? [y/N/a] " n || ans=$?
-        if [ "$ans" = "2" ]; then return 2; fi
-        if [ "$ans" != "0" ]; then return 0; fi
-    else
-        setup_note "Claude Code signs in inside this folder, into its own home:"
-        printf '    %s\n' "$creds"
-        setup_note "In a terminal here (the shell hook sandboxes it for you):"
-        printf '    cd %s && claude    then type /login\n' "$dir"
-        setup_ask_choice "  Wait here until the login lands? [y/N/a] " n || ans=$?
-        if [ "$ans" = "2" ]; then return 2; fi
-        if [ "$ans" != "0" ]; then
-            SETUP_R1="skipped"
-            return 0
-        fi
-    fi
-
-    if setup_poll_for_file "$creds"; then
-        setup_ok "signed in"
-        SETUP_R1="signed-in"
-    else
-        setup_warn "no credentials yet -- run 'claude' and /login when you can"
-        SETUP_R1="skipped"
-    fi
-    return 0
-}
-
-# --- step 2: git identity --------------------------------------------------
+# --- step 1: git identity --------------------------------------------------
 
 # The sandbox runs with GIT_CONFIG_GLOBAL pointed at the folder's own
 # .gitconfig (see launcher.sh's seed_git_identity), so this file -- not the
@@ -174,7 +124,7 @@ setup_gitconfig_get() {
 
 setup_step_git() {
     local dir="$1" gc="$1/.claude-dev/home/.gitconfig" name email ans=0
-    setup_header "Step 2/6: Git identity"
+    setup_header "Step 1/5: Git identity"
 
     name="$(setup_gitconfig_get "$gc" name)"
     email="$(setup_gitconfig_get "$gc" email)"
@@ -183,10 +133,10 @@ setup_step_git() {
         printf '    name:  %s\n' "${name:-(not set)}"
         printf '    email: %s\n' "${email:-(not set)}"
         printf '    file:  %s\n' "$gc"
-        SETUP_R2="kept"
+        SETUP_R1="kept"
     else
         setup_warn "no identity in $gc -- commits inside the sandbox will fail"
-        SETUP_R2="skipped"
+        SETUP_R1="skipped"
     fi
     setup_note "(the Mac's own ~/.gitconfig is not visible in here)"
 
@@ -211,45 +161,36 @@ setup_step_git() {
         [ -n "$new_email" ] && printf '\temail = %s\n' "$new_email"
     } > "$gc"
     setup_ok "identity written to $gc"
-    SETUP_R2="updated"
+    SETUP_R1="updated"
     return 0
 }
 
-# --- step 3: GitHub auth ---------------------------------------------------
+# --- step 2: GitHub auth ---------------------------------------------------
 
+# Informational only: it asks nothing, so it never returns 2. Signing gh in
+# is a one-liner the user runs when they want it, and the host's own token
+# already covers github.com through srt's proxy in the meantime.
 setup_step_gh() {
-    local dir="$1" hosts="$1/.claude-dev/home/.config/gh/hosts.yml" ans=0
-    setup_header "Step 3/6: GitHub auth"
+    local dir="$1" hosts="$1/.claude-dev/home/.config/gh/hosts.yml"
+    setup_header "Step 2/5: GitHub auth"
 
     if [ -f "$hosts" ]; then
         setup_ok "gh is signed in for this folder ($hosts)"
-        SETUP_R3="already"
+        SETUP_R2="already"
     else
         setup_note "gh inside the sandbox keeps its config in this folder:"
         printf '    %s\n' "$hosts"
-        setup_note "In a terminal here:"
+        setup_note "To sign it in, from a terminal here:"
         printf '    cd %s && gh auth login\n' "$dir"
-        SETUP_R3="skipped"
+        SETUP_R2="not-signed-in"
     fi
     if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
-        setup_note "this Mac's own gh is signed in, so the wrapper already passes GH_TOKEN in"
-    fi
-
-    setup_ask_choice "  Wait here until 'gh auth login' lands? [y/N/a] " n || ans=$?
-    if [ "$ans" = "2" ]; then return 2; fi
-    if [ "$ans" != "0" ]; then return 0; fi
-
-    if setup_poll_for_file "$hosts"; then
-        setup_ok "gh signed in"
-        SETUP_R3="signed-in"
-    else
-        setup_warn "still not signed in -- run 'gh auth login' when you can"
-        SETUP_R3="skipped"
+        setup_note "this Mac's own gh is signed in, so the wrapper already passes GH_TOKEN in masked"
     fi
     return 0
 }
 
-# --- step 4: OpenRouter key ------------------------------------------------
+# --- step 3: OpenRouter key ------------------------------------------------
 
 # Last four characters only -- enough to tell two keys apart, useless to
 # anyone reading over a shoulder or a scrollback.
@@ -265,17 +206,17 @@ setup_mask_tail() {
 setup_step_openrouter() {
     local dir="$1" ans=0 pasted key
     key="$(openrouter_key_file "$dir")"
-    setup_header "Step 4/6: OpenRouter key"
+    setup_header "Step 3/5: OpenRouter key"
 
     if [ -f "$key" ]; then
         setup_ok "a key is configured (ends $(setup_mask_tail "$(cat "$key")"))"
-        SETUP_R4="already"
+        SETUP_R3="already"
         setup_ask_choice "  Replace it? [y/N/a] " n || ans=$?
     else
         setup_note "OpenRouter is the default provider for delegated workers."
         setup_note "The key stays host-side in state/, write-denied to the sandbox;"
         setup_note "srt masks it, so an agent in here never sees the value."
-        SETUP_R4="skipped"
+        SETUP_R3="skipped"
         setup_ask_choice "  Paste your OpenRouter key now? [y/N/a] " n || ans=$?
     fi
     if [ "$ans" = "2" ]; then return 2; fi
@@ -291,20 +232,20 @@ setup_step_openrouter() {
 
     if write_openrouter_key "$dir" "$pasted"; then
         setup_ok "key saved: $key (mode 600, ends $(setup_mask_tail "$pasted"))"
-        SETUP_R4="written"
+        SETUP_R3="written"
     else
         # state/ is write-denied inside layer 2, so this is what a
         # walk-through run from an already-sandboxed terminal hits.
         setup_warn "could not write $key -- state/ is host-owned, and a sandboxed shell cannot write it"
         setup_note "From a terminal outside the sandbox (or right after the bootstrap):"
         printf "    printf '%%s\\\\n' '<your key>' > %s && chmod 600 %s\n" "$key" "$key"
-        SETUP_R4="skipped"
+        SETUP_R3="skipped"
     fi
     pasted=""
     return 0
 }
 
-# --- step 5: beads ---------------------------------------------------------
+# --- step 4: beads ---------------------------------------------------------
 
 # The prefix a fresh database gets: the git remote's repo name when there is
 # one, the folder name otherwise -- both squeezed through the launcher's own
@@ -325,11 +266,11 @@ setup_beads_prefix() {
 
 setup_step_beads() {
     local dir="$1" ans=0 prefix chosen
-    setup_header "Step 5/6: Beads"
+    setup_header "Step 4/5: Beads"
 
     if [ -d "$dir/.beads" ]; then
         setup_ok "beads is initialized here ($dir/.beads)"
-        SETUP_R5="already"
+        SETUP_R4="already"
         setup_ask_choice "  Re-run 'bd init' anyway? [y/N/a] " n || ans=$?
         if [ "$ans" = "2" ]; then return 2; fi
         if [ "$ans" != "0" ]; then return 0; fi
@@ -338,7 +279,7 @@ setup_step_beads() {
         prefix="$(setup_beads_prefix "$dir")"
         setup_note "Beads is the task tracker agents in here use as their memory."
         printf '    bd init --prefix %s\n' "$prefix"
-        SETUP_R5="skipped"
+        SETUP_R4="skipped"
         setup_ask_choice "  Initialize beads now? [Y/n/a] " y || ans=$?
         if [ "$ans" = "2" ]; then return 2; fi
         if [ "$ans" != "0" ]; then return 0; fi
@@ -346,7 +287,7 @@ setup_step_beads() {
 
     if ! command -v bd >/dev/null 2>&1; then
         setup_warn "bd is not on PATH -- run 'bd init --prefix $prefix' in here later"
-        SETUP_R5="skipped"
+        SETUP_R4="skipped"
         return 0
     fi
 
@@ -355,19 +296,19 @@ setup_step_beads() {
     [ -n "$chosen" ] || chosen="$prefix"
     if ( cd "$dir" && bd init --prefix "$chosen" ) 2>&1; then
         setup_ok "beads initialized (prefix: $chosen)"
-        SETUP_R5="initialized"
+        SETUP_R4="initialized"
     else
         setup_warn "bd init failed -- run it by hand in $dir"
-        SETUP_R5="skipped"
+        SETUP_R4="skipped"
     fi
     return 0
 }
 
-# --- step 6: the one-time Orca setting -------------------------------------
+# --- step 5: the one-time Orca setting -------------------------------------
 
 setup_step_orca() {
     local dir="$1" ans=0 cli="false"
-    setup_header "Step 6/6: Orca settings"
+    setup_header "Step 5/5: Orca settings"
 
     setup_note "One setting, once, in Orca (Settings -> Repository):"
     printf '    worktree base path: %s/.orca-worktrees\n' "$dir"
@@ -385,9 +326,9 @@ setup_step_orca() {
     setup_ask_choice "  Set it in Orca? [Y/n/a] " y || ans=$?
     if [ "$ans" = "2" ]; then return 2; fi
     if [ "$ans" = "0" ]; then
-        SETUP_R6="done"
+        SETUP_R5="done"
     else
-        SETUP_R6="skipped"
+        SETUP_R5="skipped"
     fi
     return 0
 }
@@ -396,12 +337,11 @@ setup_step_orca() {
 
 setup_print_summary() {
     printf '\n%sSetup summary:%s\n' "$C_BOLD" "$C_RESET"
-    printf '  claude-login: %s\n'   "$SETUP_R1"
-    printf '  git-identity: %s\n'   "$SETUP_R2"
-    printf '  github-auth: %s\n'    "$SETUP_R3"
-    printf '  openrouter-key: %s\n' "$SETUP_R4"
-    printf '  beads: %s\n'          "$SETUP_R5"
-    printf '  orca-settings: %s\n'  "$SETUP_R6"
+    printf '  git-identity: %s\n'   "$SETUP_R1"
+    printf '  github-auth: %s\n'    "$SETUP_R2"
+    printf '  openrouter-key: %s\n' "$SETUP_R3"
+    printf '  beads: %s\n'          "$SETUP_R4"
+    printf '  orca-settings: %s\n'  "$SETUP_R5"
 }
 
 # cmd_open/cmd_doctor when this file is sourced by launcher.sh (the normal
@@ -458,21 +398,21 @@ setup_menu_main() {
     setup_input_open
 
     SETUP_R1="skipped"; SETUP_R2="skipped"; SETUP_R3="skipped"
-    SETUP_R4="skipped"; SETUP_R5="skipped"; SETUP_R6="skipped"
+    SETUP_R4="skipped"; SETUP_R5="skipped"
 
     printf '\n%sclaude-dev setup -- %s%s\n' "$C_BOLD" "$dir" "$C_RESET"
     setup_note "Every step is skippable: Enter or 'n' skips one, 'a' skips the rest."
+    setup_note "Claude Code signs in on its own the first time you run it from Orca -- nothing to do here."
     trap 'printf "\n  Interrupted -- run '\''claude-dev setup'\'' again any time.\n"; exit 0' INT
 
-    for step in 1 2 3 4 5 6; do
+    for step in 1 2 3 4 5; do
         rc=0
         case "$step" in
-            1) setup_step_claude     "$dir" || rc=$? ;;
-            2) setup_step_git        "$dir" || rc=$? ;;
-            3) setup_step_gh         "$dir" || rc=$? ;;
-            4) setup_step_openrouter "$dir" || rc=$? ;;
-            5) setup_step_beads      "$dir" || rc=$? ;;
-            6) setup_step_orca       "$dir" || rc=$? ;;
+            1) setup_step_git        "$dir" || rc=$? ;;
+            2) setup_step_gh         "$dir" || rc=$? ;;
+            3) setup_step_openrouter "$dir" || rc=$? ;;
+            4) setup_step_beads      "$dir" || rc=$? ;;
+            5) setup_step_orca       "$dir" || rc=$? ;;
         esac
         if [ "$rc" = "2" ]; then
             aborted=1
