@@ -371,11 +371,14 @@ socket_probe() {
     launcher="$ORCA_HOST/bin/claude-dev"
 
     # One probe FAILed, everything else fine -- the shape a real refusal
-    # has, and the shape the user has to be able to act on.
+    # has, and the shape the user has to be able to act on. The probe is a
+    # CONFINEMENT one: claude-orca-2qo reclassified network-allowed-domain
+    # (and every other availability probe) as a warning that still hands
+    # off, so only a confinement failure produces a refusal to describe.
     fake="$BATS_TEST_TMPDIR/fake-one-fail.txt"
-    sed 's/^network-allowed-domain=0$/network-allowed-domain=1/' \
+    sed 's/^keychain-denied=0$/keychain-denied=1/' \
         "$CLAUDE_ORCA_SELFTEST_FAKE" > "$fake"
-    grep -qx 'network-allowed-domain=1' "$fake"
+    grep -qx 'keychain-denied=1' "$fake"
     export CLAUDE_ORCA_SELFTEST_FAKE="$fake"
 
     run bash -c "cd '$primary' && '$launcher' register"
@@ -383,7 +386,7 @@ socket_probe() {
 
     # The probe table (which probe, and why) ...
     [[ "$output" == *"[FAIL]"* ]]
-    [[ "$output" == *"network-allowed-domain"* ]]
+    [[ "$output" == *"keychain-denied"* ]]
     # ... the refusal itself ...
     [[ "$output" == *"Refusing to hand off to Orca"* ]]
     # ... and what to do next: re-run the gate, read the per-probe detail.
