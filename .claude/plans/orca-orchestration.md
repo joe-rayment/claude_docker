@@ -102,6 +102,32 @@ dispatch loop; the rulebook § Delegation says executor slices go through
 `delegation-gate` and `tier-prime` wording follow; `config/agents/executor.md`
 is kept as the subagent fallback and says so.
 
+## Parallel by default (user, 2026-09-06)
+
+The bias flips from "slices run sequentially" to "everything independent
+runs at once":
+
+- **Waves.** `orca-run --epic <id> [--epic …]` reads an epic's ready
+  children from bd, mirrors their dependency edges into Orca Tasks
+  (`task-create --deps`), dispatches every ready task in one wave through
+  `orca-dispatch`, then loops `orca-wait` → release → dispatch the newly
+  ready set (`task-list --ready` is the coordinator's external memory).
+  Only beads that freeze the same file, or name the same files, are
+  serialized.
+- **One Orca worktree per epic.** The first worker of an epic starts with
+  `--worktree new-top-level --name <epic>`; later workers of that epic
+  reuse the exact worktree id. Epics therefore run side by side in
+  separate checkouts, visible as separate worktree cards in Orca. When an
+  epic's last task settles, `orca-run` sends `merge_ready` with the branch;
+  merging stays with the orchestrator, after the verifier.
+- **Groups per epic.** `nestedWorkerMaxDepth` = 2, so an orchestrator may
+  dispatch an *epic coordinator* (a Claude worker whose spec is "coordinate
+  epic X with orca-run"); that coordinator runs its own wave loop with its
+  own executors. The top session then supervises coordinators, not slices.
+- **Rulebook invariant rewritten (O4):** independent slices run in parallel
+  in separate Orca worktrees; slices that share files run sequentially in
+  one worktree; recon fans out freely.
+
 ## Slices (deep lane; one bead + contract each)
 
 - **O1 container** — setup.sh opencode phase; opencode config + sync;
@@ -119,5 +145,8 @@ is kept as the subagent fallback and says so.
   → verifier. The OpenRouter worker is proven to launch with the right
   model and config; its model calls need the user's key, which is not here.
 
-O1 and O2 touch disjoint files and run in parallel; O3 after both; O4 and
-O5 after O3.
+- **O6 parallel waves** — `orca-run`, per-epic worktrees, DAG mirroring,
+  `merge_ready`, nested depth 2; integration bats with bash workers.
+
+O1 and O2 touch disjoint files and run in parallel; O3 after both; O6
+after O3; O4 and O5 after O6.
