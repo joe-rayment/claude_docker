@@ -140,3 +140,85 @@ project_sections() {
         return 1
     }
 }
+
+# --- V6 (claude-orca-riu.6): one story for the default stack -------------
+
+# First line number matching a fixed string, or "" when absent.
+first_line_of() {
+    grep -n -F -- "$2" "$1" 2>/dev/null | head -1 | cut -d: -f1
+}
+
+@test "README opens by naming the assumed stack: Claude Code master, OpenRouter workers, Orca coordination on by default" {
+    local head
+    head="$(sed -n '1,45p' "$README_MD")"
+    local term
+    for term in "Claude Code" "OpenRouter" "Orca"; do
+        case "$head" in
+            *"$term"*) ;;
+            *) printf 'opening does not mention %s\n' "$term"; return 1 ;;
+        esac
+    done
+    # The claim itself, not just the three product names.
+    printf '%s' "$head" | grep -qiE 'master|orchestrat'
+    printf '%s' "$head" | grep -qiE 'worker'
+    printf '%s' "$head" | grep -qiE 'on by default|by default'
+}
+
+@test "the quickstart runs bootstrap, then the guided claude-dev setup, then Orca -- all before the reference sections" {
+    grep -qE '^## Quickstart' "$README_MD"
+    local boot setup open ref
+    boot="$(first_line_of "$README_MD" 'gh api repos/joe-rayment/claude_orca/contents/bootstrap.sh')"
+    setup="$(first_line_of "$README_MD" './claude-dev setup')"
+    open="$(first_line_of "$README_MD" 'Orca.app')"
+    ref="$(grep -n -E '^## What is sandboxed' "$README_MD" | head -1 | cut -d: -f1)"
+    [ -n "$boot" ] && [ -n "$setup" ] && [ -n "$open" ] && [ -n "$ref" ]
+    [ "$boot" -lt "$setup" ] || { printf 'bootstrap (%s) not before setup (%s)\n' "$boot" "$setup"; return 1; }
+    [ "$setup" -lt "$ref" ] || { printf 'setup (%s) not before reference sections (%s)\n' "$setup" "$ref"; return 1; }
+    [ "$open" -lt "$ref" ] || { printf 'Orca launch (%s) not before reference sections (%s)\n' "$open" "$ref"; return 1; }
+    # The guided walk-through is named as the path to follow, not an extra.
+    grep -qiE 'guided walk-through' "$README_MD"
+}
+
+@test "exactly one page explains cheap workers without losing quality, with a real worked example, and the README points at it" {
+    local f hits=0
+    for f in "$README_MD" "$KB_DIR"/*.md; do
+        if grep -qE '^#+ .*[Cc]heap workers without losing quality' "$f"; then
+            hits=$((hits + 1))
+        fi
+    done
+    [ "$hits" -eq 1 ] || { printf 'expected 1 "cheap workers" section, found %s\n' "$hits"; return 1; }
+
+    local routes="$KB_DIR/DELEGATION_ROUTES.md"
+    grep -qE '^#+ .*[Cc]heap workers without losing quality' "$routes"
+    # A worked sequence in commands this repo actually has.
+    grep -qF -- 'bd create' "$routes"
+    grep -qF -- '--acceptance' "$routes"
+    grep -qF -- 'delegate run --route deepseek --bead' "$routes"
+    grep -qF -- 'delegate report' "$routes"
+    # ... and the quality half of the claim: contracts and the checker stay
+    # on the strong model.
+    grep -qiE 'verifier' "$routes"
+
+    # The README sends the reader there rather than re-telling it.
+    grep -qF -- 'DELEGATION_ROUTES.md' "$README_MD"
+}
+
+@test "nothing still calls the Orca CLI mode opt-in, in docs or in the code comments that describe it" {
+    local files=("$README_MD" "$CLAUDE_MD" "$AGENTS_MD" \
+                 "$REPO_ROOT/config/orca-cli-addendum.md" \
+                 "$REPO_ROOT/scripts/sandbox/gen-settings.sh" \
+                 "$REPO_ROOT/scripts/sandbox/claude-orca-shell") f hits=""
+    while IFS= read -r f; do
+        files+=("$f")
+    done < <(find "$KB_DIR" -type f -name '*.md' | sort)
+
+    for f in "${files[@]}"; do
+        if grep -q -i -E -- 'opt-in Orca CLI|opt-in orchestration' "$f"; then
+            hits="$hits$f"$'\n'
+        fi
+    done
+    [ -z "$hits" ] || {
+        printf 'stale "opt-in" framing:\n%s' "$hits"
+        return 1
+    }
+}
