@@ -675,3 +675,296 @@ STUB
     run grep -qF '[ -d /opt/claude-orca ]' "$ENTRYPOINT"
     [ "$status" -eq 0 ]
 }
+
+# --- the OpenRouter guard, wired in (claude-orca-qa2.21) ------------------
+#
+# The user's hard rule is that their data never routes to China, and the only
+# thing that can enforce it is a chokepoint no client can edit: the in-VM
+# guard (scripts/container/openrouter-guard.py + config/provider-policy.json,
+# claude-orca-qa2.20) holds the real OPENROUTER_API_KEY alone and forces the
+# provider allowlist onto every completion request. A guard nothing starts
+# enforces nothing, so what these two cases check is the WIRING.
+#
+# Nothing here touches openrouter.ai: OPENROUTER_UPSTREAM points the guard at
+# a python3 stdlib stub, exactly as tests/openrouter-guard.bats does.
+
+# The key that must never be visible to an agent terminal.
+REAL_KEY="sk-or-v1-real-secret-never-in-a-terminal"
+
+# A stub Orca that dumps its own environment before behaving like serve.
+# Orca's process env is what every terminal it spawns inherits, so that dump
+# IS "what an agent terminal sees".
+write_env_dump_orca() {
+    local path="$1"
+    mkdir -p "$(dirname "$path")"
+    cat > "$path" <<'STUB'
+#!/usr/bin/env bash
+env > "$ORCA_ENV_DUMP"
+port=""
+prev=""
+for arg in "$@"; do
+    [ "$prev" = "--port" ] && port="$arg"
+    prev="$arg"
+done
+echo "Web client URL: http://127.0.0.1:${port}/web-index.html#pairing=x"
+exec sleep 300
+STUB
+    chmod +x "$path"
+}
+
+# A stub OpenRouter that records the bytes that would have left the VM. It
+# self-terminates so a failed assertion cannot leave it running.
+write_upstream_stub() {
+    cat > "$TMP/upstream.py" <<'PY'
+import os, sys, threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+REC = os.environ["UPSTREAM_REC"]
+threading.Timer(180, lambda: os._exit(0)).start()
+
+
+class H(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, *a):
+        pass
+
+    def do_POST(self):
+        n = int(self.headers.get("Content-Length") or 0)
+        body = self.rfile.read(n) if n else b""
+        with open(os.path.join(REC, "body.json"), "wb") as f:
+            f.write(body)
+        with open(os.path.join(REC, "headers.txt"), "w") as f:
+            for k, v in self.headers.items():
+                f.write("%s: %s\n" % (k.lower(), v))
+        payload = b'{"id":"cmpl-1","choices":[{"message":{"content":"ok"}}]}'
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+
+ThreadingHTTPServer(("127.0.0.1", int(sys.argv[1])), H).serve_forever()
+PY
+}
+
+wait_tcp_port() {
+    local i=0
+    while [ "$i" -lt 100 ]; do
+        if python3 -c "import socket,sys; s=socket.socket(); s.settimeout(0.3); sys.exit(0 if s.connect_ex(('127.0.0.1',$1))==0 else 1)"; then
+            return 0
+        fi
+        i=$((i + 1))
+        sleep 0.2
+    done
+    echo "port $1 never came up" >&2
+    return 1
+}
+
+# Boots the entrypoint in its own process group with whatever this test has
+# exported, waits for the stub Orca to dump its environment, and stops the
+# whole tree again unless asked to keep it up.
+boot_entrypoint() {  # boot_entrypoint [keep]
+    rm -f "$ORCA_ENV_DUMP" "$TMP/ep.pgid"
+    start_entrypoint_bg || return 1
+    local i=0
+    while [ "$i" -lt 60 ]; do
+        [ -s "$ORCA_ENV_DUMP" ] && break
+        sleep 0.5
+        i=$((i + 1))
+    done
+    [ "${1:-}" = "keep" ] || stop_entrypoint
+    if [ ! -s "$ORCA_ENV_DUMP" ]; then
+        echo "--- entrypoint stdout ---" >&2
+        cat "$TMP/entrypoint.out" >&2 || true
+        return 1
+    fi
+    return 0
+}
+
+# Everything the entrypoint needs to reach the point of launching Orca, with
+# no real Orca, no beads, no setup and no network.
+export_guard_test_env() {  # export_guard_test_env <project> <user-data-dir>
+    export HOME="$TMP/home"
+    export PROJECT_DIR="$1"
+    export ORCA_USER_DATA_DIR="$2"
+    export ORCA_PORT="$(free_port)"
+    export ORCA_BIN="$TMP/bin/orca-ide"
+    export ORCA_CLI=/bin/true
+    export ORCA_ENV_DUMP="$TMP/orca.env"
+    export CLAUDE_ORCA_ENTRYPOINT_NO_PRIVDROP=1
+    export CLAUDE_ORCA_SKIP_SETUP=1
+    export CLAUDE_ORCA_SKIP_BEADS=1
+    export CLAUDE_ORCA_WEBURL_TIMEOUT=30
+    export CLAUDE_ORCA_GUARD_TIMEOUT=20
+}
+
+@test "the entrypoint starts the OpenRouter guard when a key is present and Orca terminals see only the guard token and base URL" {
+    [ -x "$ENTRYPOINT" ]
+    command -v jq >/dev/null 2>&1
+
+    local proj="$TMP/project" gport token gpid data a
+    make_project "$proj"
+    mkdir -p "$TMP/home" "$TMP/bin"
+    write_env_dump_orca "$TMP/bin/orca-ide"
+    gport="$(free_port)"
+
+    export_guard_test_env "$proj" "$TMP/ud"
+    export CLAUDE_ORCA_GUARD_PORT="$gport"
+    export OPENROUTER_API_KEY="$REAL_KEY"
+    # the guard is started, but it is never allowed to reach the internet
+    export OPENROUTER_UPSTREAM="http://127.0.0.1:1"
+
+    boot_entrypoint keep
+
+    # the guard is a real running process, and it is listening
+    [ -s "$proj/.claude-dev/run/openrouter-guard.pid" ]
+    gpid="$(cat "$proj/.claude-dev/run/openrouter-guard.pid")"
+    kill -0 "$gpid"
+    wait_tcp_port "$gport"
+    grep -qF 'openrouter-guard: listening' "$proj/.claude-dev/run/openrouter-guard.log"
+
+    # the token it handed out is a credential of its own: owner-only, and
+    # never the real key
+    [ -s "$proj/.claude-dev/run/openrouter-guard.token" ]
+    run stat -c '%a' "$proj/.claude-dev/run/openrouter-guard.token"
+    [ "$output" = "600" ]
+    token="$(cat "$proj/.claude-dev/run/openrouter-guard.token")"
+    [ -n "$token" ]
+    [ "$token" != "$REAL_KEY" ]
+
+    # what every terminal Orca spawns inherits: the token and the guard's
+    # loopback base URL, and the real key nowhere at all
+    grep -qxF "OPENROUTER_API_KEY=$token" "$ORCA_ENV_DUMP"
+    grep -qxF "OPENROUTER_BASE_URL=http://127.0.0.1:$gport/api/v1" "$ORCA_ENV_DUMP"
+    run grep -c -- "$REAL_KEY" "$ORCA_ENV_DUMP"
+    [ "$output" = "0" ]
+
+    # ... and the same two variables reach the OpenRouter-speaking agents
+    # through Orca's seeded per-agent environment
+    data="$TMP/ud/profiles/local-default/orca-data.json"
+    [ -f "$data" ]
+    for a in opencode codex; do
+        run jq -r --arg a "$a" '.settings.agentDefaultEnv[$a].OPENROUTER_API_KEY' "$data"
+        [ "$output" = "$token" ]
+        run jq -r --arg a "$a" '.settings.agentDefaultEnv[$a].OPENROUTER_BASE_URL' "$data"
+        [ "$output" = "http://127.0.0.1:$gport/api/v1" ]
+    done
+    # the seed's existing content survives, and the key is not in the file
+    run jq -r '.settings.agentDefaultEnv.opencode.OPENCODE_CONFIG' "$data"
+    [ "$output" = "/home/agent/.config/opencode/opencode.json" ]
+    run jq -r --arg p "$proj" '.settings.agentDefaultEnv.claude.CLAUDE_ORCA_ROOT == $p' "$data"
+    [ "$output" = "true" ]
+    run grep -c -- "$REAL_KEY" "$data"
+    [ "$output" = "0" ]
+
+    stop_entrypoint
+
+    # Fail closed on the KEY, not on the boot: a guard that cannot start
+    # leaves the VM without OpenRouter rather than with an unpoliced key in
+    # every terminal.
+    local proj2="$TMP/project2"
+    make_project "$proj2"
+    export_guard_test_env "$proj2" "$TMP/ud2"
+    export CLAUDE_ORCA_GUARD_PORT="$(free_port)"
+    export CLAUDE_ORCA_GUARD_SCRIPT="$TMP/no-such-guard.py"
+    export OPENROUTER_API_KEY="$REAL_KEY"
+    boot_entrypoint
+    run grep -c -- "$REAL_KEY" "$ORCA_ENV_DUMP"
+    [ "$output" = "0" ]
+    run grep -c '^OPENROUTER_BASE_URL=' "$ORCA_ENV_DUMP"
+    [ "$output" = "0" ]
+    [ ! -s "$proj2/.claude-dev/run/openrouter-guard.pid" ]
+    # and it says so loudly rather than failing silently
+    run cat "$TMP/entrypoint.out"
+    [[ "$output" == *"OpenRouter guard"* ]]
+
+    # No key reached the VM at all: no guard, and nothing to inherit.
+    local proj3="$TMP/project3"
+    make_project "$proj3"
+    export_guard_test_env "$proj3" "$TMP/ud3"
+    export CLAUDE_ORCA_GUARD_PORT="$(free_port)"
+    unset CLAUDE_ORCA_GUARD_SCRIPT
+    export OPENROUTER_API_KEY=""
+    boot_entrypoint
+    [ ! -s "$proj3/.claude-dev/run/openrouter-guard.pid" ]
+    run grep -c '^OPENROUTER_BASE_URL=' "$ORCA_ENV_DUMP"
+    [ "$output" = "0" ]
+    run jq -e '.settings.agentDefaultEnv.opencode | has("OPENROUTER_API_KEY") | not' \
+        "$TMP/ud3/profiles/local-default/orca-data.json"
+    [ "$status" -eq 0 ]
+}
+
+@test "a completion request from inside the VM reaches upstream with the real key and the forced provider allowlist" {
+    [ -x "$ENTRYPOINT" ]
+    command -v jq >/dev/null 2>&1
+
+    local proj="$TMP/project" gport upport token base allow rec
+    make_project "$proj"
+    mkdir -p "$TMP/home" "$TMP/bin" "$TMP/rec"
+    rec="$TMP/rec"
+    write_env_dump_orca "$TMP/bin/orca-ide"
+    write_upstream_stub
+    gport="$(free_port)"
+    upport="$(free_port)"
+
+    UPSTREAM_REC="$rec" python3 "$TMP/upstream.py" "$upport" \
+        > "$TMP/upstream.log" 2>&1 &
+    wait_tcp_port "$upport"
+
+    export_guard_test_env "$proj" "$TMP/ud"
+    export CLAUDE_ORCA_GUARD_PORT="$gport"
+    export OPENROUTER_API_KEY="$REAL_KEY"
+    export OPENROUTER_UPSTREAM="http://127.0.0.1:$upport"
+
+    boot_entrypoint keep
+    wait_tcp_port "$gport"
+
+    # exactly what a terminal has to work with -- read out of Orca's own
+    # environment, not out of the test's knowledge of the wiring
+    token="$(sed -n 's/^OPENROUTER_API_KEY=//p' "$ORCA_ENV_DUMP")"
+    base="$(sed -n 's/^OPENROUTER_BASE_URL=//p' "$ORCA_ENV_DUMP")"
+    [ -n "$token" ]
+    [ "$token" != "$REAL_KEY" ]
+    [ "$base" = "http://127.0.0.1:$gport/api/v1" ]
+
+    # a completion request that ASKS for a China-hosted provider
+    run curl -s -o "$TMP/resp.json" -w '%{http_code}' --max-time 30 \
+        -X POST "$base/chat/completions" \
+        -H "Authorization: Bearer $token" \
+        -H 'Content-Type: application/json' \
+        --data-binary '{"model":"z-ai/glm-5.3","provider":{"order":["z-ai"],"allow_fallbacks":true,"data_collection":"allow"},"messages":[{"role":"user","content":"hi"}]}'
+    [ "$status" -eq 0 ]
+    [ "$output" = "200" ]
+
+    # what actually left the VM: the real key, and never the token
+    [ -f "$rec/headers.txt" ]
+    grep -qxF "authorization: Bearer $REAL_KEY" "$rec/headers.txt"
+    run grep -c -- "$token" "$rec/headers.txt"
+    [ "$output" = "0" ]
+
+    # ... under the policy the client could not opt out of
+    allow="$(jq -r '[.allow[].slug] | join(",")' "$REPO_ROOT/config/provider-policy.json")"
+    run jq -r '.provider.only | join(",")' "$rec/body.json"
+    [ "$output" = "$allow" ]
+    run jq -e '.provider.allow_fallbacks == false and .provider.data_collection == "deny"' "$rec/body.json"
+    [ "$status" -eq 0 ]
+    run jq -e '.provider | has("order") | not' "$rec/body.json"
+    [ "$status" -eq 0 ]
+    run jq -r '[.provider.only[] | select(. == "z-ai")] | length' "$rec/body.json"
+    [ "$output" = "0" ]
+    run jq -r '.model' "$rec/body.json"
+    [ "$output" = "z-ai/glm-5.3" ]
+
+    # the answer came back through the guard to the caller
+    run jq -r '.id' "$TMP/resp.json"
+    [ "$output" = "cmpl-1" ]
+
+    # and the guard left an audit line for the request it forced
+    run bash -c "grep '^{' '$proj/.claude-dev/run/openrouter-guard.log' | jq -se 'any(.[]; .path == \"/api/v1/chat/completions\" and .providers_forced == true and .client_order_dropped == true and .status == 200)'"
+    [ "$status" -eq 0 ]
+    [ "$output" = "true" ]
+
+    stop_entrypoint
+    pkill -f -- "$TMP/upstream.py" 2>/dev/null || true
+}
