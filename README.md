@@ -139,6 +139,21 @@ the Claude config dir all land there. Host-owned paths inside the folder —
 `.beads/hooks` — are write-denied even to the app, because the host executes
 them.
 
+**Where Orca's own data goes.** `HOME` points into the folder, but Electron
+on macOS takes its `userData` from NSSearchPath rather than `$HOME`, and
+packaged Orca never calls `app.setPath('userData')` — so the app would write
+to the real `~/Library/Application Support/orca`, which layer 1 denies, and
+die on its `SingletonLock`. `orca-launch` therefore passes `--user-data-dir`,
+the one switch Electron honours natively, pointing at a short per-project
+root: `/private/tmp/co-<first 8 hex of sha1(project path)>`, a symlink to
+`<project>/.claude-dev/home`, re-pointed on every launch and refused (exit 2)
+if something that is not that symlink is in the way. Short because macOS
+caps a unix socket path at 104 bytes and Orca puts its socket inside that
+directory; the writes themselves still land in the folder, through the
+symlink. `CLAUDE_ORCA_SHORT_ROOT` overrides the root, and `orca-launch
+--print-command` prints the exports and the exact `sandbox-exec` line without
+launching anything.
+
 **Layer 2 (each shell, `srt`).** Writes: the project folder and the current
 worktree only; a linked worktree also gets the primary checkout's `.git`,
 `.beads` and `.claude-dev/{home,tmp,run}`. Reads: your real home is denied, so
