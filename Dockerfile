@@ -22,25 +22,24 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 # --- base tooling + the Electron runtime libraries Orca needs -----------
 #
-# libasound2t64 (not libasound2) on 24.04; xdg-utils and fonts-liberation
-# keep Chromium from complaining on startup. util-linux carries setpriv,
-# which the entrypoint uses to drop root.
+# Only what Orca's own package does NOT already depend on. The .deb below
+# pulls libgtk-3-0, libnss3, libnotify4, libxss1, libxtst6, libsecret-1-0,
+# libatspi2.0-0, libuuid1, xdg-utils, python3-gi, at-spi2-core, xdotool,
+# xclip and xvfb, so hand-listing them here only invites drift.
 #
-# xvfb is not optional: `orca-ide --serve` refuses to start with no usable
-# display server and spawns its OWN virtual one (Xvfb :99 -screen 0
-# 1280x1024x24 -nolisten tcp -terminate) when the binary is on PATH -- so
-# the image only has to supply it, never run it. Leaving it out is what
-# failed CI's first smoke stage ("On a bare server, install xvfb").
+# xvfb matters and arrives that way: `orca-ide --serve` refuses to start
+# with no usable display server, and spawns its OWN virtual one (Xvfb :99
+# -screen 0 1280x1024x24 -nolisten tcp -terminate) when the binary is
+# present -- the image supplies it, never runs it. An image without it is
+# what failed CI's first smoke stage ("On a bare server, install xvfb").
+#
+# util-linux carries setpriv, which the entrypoint uses to drop root;
+# libasound2t64 is 24.04's spelling of libasound2.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates curl wget gnupg git jq ripgrep zsh less \
         python3 python3-pip locales tini util-linux procps psmisc \
         build-essential unzip xz-utils sudo \
-        xvfb xauth \
-        libgtk-3-0t64 libnss3 libasound2t64 libxss1 libgbm1 libnotify4 \
-        libsecret-1-0 libatk-bridge2.0-0 libatk1.0-0t64 libdrm2 \
-        libxkbcommon0 libxcomposite1 libxdamage1 libxrandr2 libxfixes3 \
-        libpango-1.0-0 libcairo2 libcups2t64 libatspi2.0-0t64 \
-        xdg-utils fonts-liberation \
+        libasound2t64 libgbm1 xauth fonts-liberation \
     && locale-gen en_US.UTF-8 \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
@@ -123,30 +122,41 @@ RUN set -eu; \
     echo "${CLAUDE_CODE_VERSION}" > /opt/claude/VERSION; \
     claude --version
 
-# --- Orca Linux, pinned, extracted (no FUSE in a container) ------------
+# --- Orca Linux, pinned, from the release .deb -------------------------
 #
-# The two Linux AppImage assets are NOT named symmetrically: arm64 carries
-# its arch, amd64 is the bare `orca-linux.AppImage` (there is no
-# orca-linux-x64.AppImage -- an assumed one 404'd CI's first real build).
-# Asset names read off the release itself; both URLs return 200.
+# NOT the AppImage (claude-orca-qa2.6). An AppImage's runtime carries the
+# "AI\x02" magic in its ELF e_ident padding, which QEMU's binfmt pattern
+# does not match, so the self-extractor cannot run under emulation: the
+# linux/arm64 leg of the multi-arch build died on `./orca.AppImage: Exec
+# format error`. Installing the .deb goes through apt, the same path every
+# other layer here already takes under QEMU, and its Depends supply the
+# GTK/NSS/at-spi/xdotool/xclip/xvfb set so this file need not list them.
+#
+# Nothing below EXECUTES the Orca binary. Under emulation a 200 MB
+# Electron binary is slow to start and proves nothing about the target
+# machine; `test -x` is the only claim a build can honestly make. The
+# runtime check that Orca actually serves belongs to
+# scripts/container/smoke.sh, which CI runs on the native amd64 image.
 ARG ORCA_VERSION=1.4.197
 RUN set -eu; \
     arch="$(uname -m)"; \
     case "$arch" in \
-        x86_64|amd64) asset="orca-linux.AppImage" ;; \
-        arm64|aarch64) asset="orca-linux-arm64.AppImage" ;; \
+        x86_64|amd64) debarch=amd64 ;; \
+        arm64|aarch64) debarch=arm64 ;; \
         *) echo "unsupported arch: $arch" >&2; exit 1 ;; \
     esac; \
+    asset="orca-ide_${ORCA_VERSION}_${debarch}.deb"; \
     url="https://github.com/stablyai/orca/releases/download/v${ORCA_VERSION}/${asset}"; \
     tmp="$(mktemp -d)"; \
-    curl -fsSL -o "${tmp}/orca.AppImage" "$url"; \
-    chmod +x "${tmp}/orca.AppImage"; \
-    (cd "$tmp" && ./orca.AppImage --appimage-extract >/dev/null); \
-    mv "${tmp}/squashfs-root" /opt/orca; \
-    rm -rf "$tmp"; \
-    test -x /opt/orca/orca-ide; \
-    test -x /opt/orca/resources/bin/orca-ide; \
-    ln -sf /opt/orca/resources/bin/orca-ide /usr/local/bin/orca; \
+    curl -fsSL -o "${tmp}/orca.deb" "$url"; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends "${tmp}/orca.deb"; \
+    apt-get clean; \
+    rm -rf /var/lib/apt/lists/* "$tmp"; \
+    test -x /opt/Orca/orca-ide; \
+    test -x /opt/Orca/resources/bin/orca-ide; \
+    ln -s /opt/Orca /opt/orca; \
+    ln -sf /opt/Orca/resources/bin/orca-ide /usr/local/bin/orca; \
     echo "${ORCA_VERSION}" > /opt/orca/VERSION
 
 # --- the agent user ----------------------------------------------------

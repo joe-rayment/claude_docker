@@ -256,7 +256,9 @@ STUB
     run grep -c '1\.4\.197' "$DOCKERFILE"
     [ "$status" -eq 0 ]
     [ "$output" != "0" ]
-    run grep -q 'appimage-extract' "$DOCKERFILE"
+    # claude-orca-qa2.6 re-points this one assertion: the AppImage cannot
+    # be extracted under QEMU, so the image installs the release .deb.
+    run grep -qE 'orca-ide_\$\{ORCA_VERSION\}_\$\{[A-Za-z_][A-Za-z0-9_]*\}\.deb' "$DOCKERFILE"
     [ "$status" -eq 0 ]
 
     # ONE Claude Code pin in this repo: scripts/install-claude.sh's.
