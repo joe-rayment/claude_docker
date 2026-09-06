@@ -292,10 +292,10 @@ seed_git_identity() {
 # once per install. Both are ordinary config, so the entrypoint seeds them
 # before Orca starts (claude-orca-qa2.17). Keys read off the shipped Claude
 # Code binary: projects[<path>].hasTrustDialogAccepted and
-# hasCompletedOnboarding in ~/.claude.json, and, in ~/.claude/settings.json,
-# skipDangerousModePermissionPrompt -- what the dialog itself writes on
-# accept (the older .claude.json bypassPermissionsModeAccepted migrates
-# into it).
+# hasCompletedOnboarding in the home's .claude.json, and, in the config
+# dir's settings.json, skipDangerousModePermissionPrompt -- what the dialog
+# itself writes on accept (the older .claude.json
+# bypassPermissionsModeAccepted migrates into it).
 #
 # Absent keys only: a value the user or the agent already set always wins,
 # and a file that is not valid JSON is left untouched rather than replaced.
