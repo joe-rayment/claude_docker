@@ -103,6 +103,107 @@ teardown() {
     return 0
 }
 
+# --- startup v4 (claude-orca-qa2.9) --------------------------------------
+#
+# The container installs and seeds itself: the entrypoint runs setup.sh at
+# every start (before the privilege drop) and seeds the four things the Mac
+# launcher used to seed. Everything this slice adds happens BEFORE Orca is
+# started, so these cases point ORCA_BIN at nothing: the entrypoint does the
+# work, dies at "ORCA_BIN is not executable", and what it left on disk is
+# the evidence. That die is also the ordering proof.
+
+# A stub setup.sh. Records every invocation's argv (and the uid it ran as)
+# in $TMP/setup.argv, answers --check with a failure the FIRST time only --
+# so the first-start notice prints once -- and prints a line on stdout that
+# the entrypoint's tee must land in run/setup.log.
+write_setup_stub() {
+    local path="$1"
+    mkdir -p "$(dirname "$path")"
+    cat > "$path" <<STUB
+#!/usr/bin/env bash
+printf 'argv:%s\n' "\$*" >> "$TMP/setup.argv"
+if [ "\${1:-}" = "--check" ]; then
+    if [ -e "$TMP/setup.checked" ]; then exit 0; fi
+    : > "$TMP/setup.checked"
+    exit 1
+fi
+printf 'uid:%s\n' "\$(id -u)" >> "$TMP/setup.argv"
+echo "stub setup: installing everything"
+exit \${CLAUDE_ORCA_STUB_SETUP_STATUS:-0}
+STUB
+    chmod +x "$path"
+}
+
+@test "entrypoint runs setup.sh before dropping privileges and logs it to run/setup.log" {
+    [ -x "$ENTRYPOINT" ]
+
+    local proj="$TMP/project" before after
+    make_project "$proj"
+    : > "$TMP/setup.argv"
+    write_setup_stub "$TMP/setup.sh"
+
+    run env HOME="$proj/.claude-dev/home" PROJECT_DIR="$proj" \
+        ORCA_BIN="$TMP/bin/no-such-orca" CLAUDE_ORCA_SETUP="$TMP/setup.sh" \
+        CLAUDE_ORCA_SKIP_BEADS=1 CLAUDE_ORCA_ENTRYPOINT_NO_PRIVDROP=1 \
+        bash "$ENTRYPOINT"
+
+    # It got as far as starting Orca, which is after the setup step.
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"ORCA_BIN is not executable"* ]]
+
+    # First start: --check said the toolchain is not there, so the user
+    # gets told why the VM is going to sit there for minutes.
+    [[ "$output" == *"First start: installing the toolchain"* ]]
+
+    # --check first, then the real run with no arguments.
+    grep -qxF 'argv:--check' "$TMP/setup.argv"
+    grep -qxF 'argv:' "$TMP/setup.argv"
+
+    # tee'd, so the install output is both on the console and in the file
+    # every failure message points at.
+    [ -f "$proj/.claude-dev/run/setup.log" ]
+    grep -qF 'stub setup: installing everything' "$proj/.claude-dev/run/setup.log"
+    [[ "$output" == *"stub setup: installing everything"* ]]
+
+    # Second start: --check passes now, so no notice -- but setup still runs.
+    run env HOME="$proj/.claude-dev/home" PROJECT_DIR="$proj" \
+        ORCA_BIN="$TMP/bin/no-such-orca" CLAUDE_ORCA_SETUP="$TMP/setup.sh" \
+        CLAUDE_ORCA_SKIP_BEADS=1 CLAUDE_ORCA_ENTRYPOINT_NO_PRIVDROP=1 \
+        bash "$ENTRYPOINT"
+    [[ "$output" != *"First start:"* ]]
+
+    # The skip knob keeps it out of the way entirely.
+    before="$(wc -l < "$TMP/setup.argv" | tr -d '[:space:]')"
+    run env HOME="$proj/.claude-dev/home" PROJECT_DIR="$proj" \
+        ORCA_BIN="$TMP/bin/no-such-orca" CLAUDE_ORCA_SETUP="$TMP/setup.sh" \
+        CLAUDE_ORCA_SKIP_SETUP=1 \
+        CLAUDE_ORCA_SKIP_BEADS=1 CLAUDE_ORCA_ENTRYPOINT_NO_PRIVDROP=1 \
+        bash "$ENTRYPOINT"
+    after="$(wc -l < "$TMP/setup.argv" | tr -d '[:space:]')"
+    [ "$before" = "$after" ]
+    [[ "$output" == *"skipping setup"* ]]
+
+    # An absent setup script is a logged skip, not a crash (base image
+    # without the template mounted yet).
+    run env HOME="$proj/.claude-dev/home" PROJECT_DIR="$proj" \
+        ORCA_BIN="$TMP/bin/no-such-orca" CLAUDE_ORCA_SETUP="$TMP/no-setup.sh" \
+        CLAUDE_ORCA_SKIP_BEADS=1 CLAUDE_ORCA_ENTRYPOINT_NO_PRIVDROP=1 \
+        bash "$ENTRYPOINT"
+    [[ "$output" == *"skipping setup"* ]]
+    [[ "$output" == *"$TMP/no-setup.sh"* ]]
+
+    # A failing setup is fatal, and says where to look.
+    run env HOME="$proj/.claude-dev/home" PROJECT_DIR="$proj" \
+        ORCA_BIN="$TMP/bin/no-such-orca" CLAUDE_ORCA_SETUP="$TMP/setup.sh" \
+        CLAUDE_ORCA_STUB_SETUP_STATUS=1 \
+        CLAUDE_ORCA_SKIP_BEADS=1 CLAUDE_ORCA_ENTRYPOINT_NO_PRIVDROP=1 \
+        bash "$ENTRYPOINT"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"setup.sh failed"* ]]
+    [[ "$output" == *"$proj/.claude-dev/run/setup.log"* ]]
+    [[ "$output" != *"ORCA_BIN is not executable"* ]]
+}
+
 @test "entrypoint starts Orca serve headless from ORCA_BIN, writes run/orca-web-url.txt with the pairing URL and run/port, and the URL serves Orca Web" {
     # Not a skip: the contract is that this is checked against the real
     # Orca Linux binary, so a missing extraction fails loudly.
@@ -284,5 +385,157 @@ STUB
     run grep -q 'packages: write' "$IMAGE_WORKFLOW"
     [ "$status" -eq 0 ]
     run grep -q 'smoke.sh' "$IMAGE_WORKFLOW"
+    [ "$status" -eq 0 ]
+}
+
+@test "entrypoint seeds .gitignore, attachments/ and the home gitconfig from CLAUDE_ORCA_GIT_NAME and CLAUDE_ORCA_GIT_EMAIL" {
+    [ -x "$ENTRYPOINT" ]
+
+    local proj="$TMP/project" home pattern
+    make_project "$proj"
+    home="$proj/.claude-dev/home"
+
+    # Twice, because the seed has to be idempotent: a folder is registered
+    # again on every start.
+    local i
+    for i in 1 2; do
+        run env HOME="$home" PROJECT_DIR="$proj" \
+            ORCA_BIN="$TMP/bin/no-such-orca" CLAUDE_ORCA_SKIP_SETUP=1 \
+            CLAUDE_ORCA_SKIP_BEADS=1 CLAUDE_ORCA_ENTRYPOINT_NO_PRIVDROP=1 \
+            CLAUDE_ORCA_GIT_NAME="Ada Lovelace" \
+            CLAUDE_ORCA_GIT_EMAIL="ada@example.com" \
+            bash "$ENTRYPOINT"
+        [ "$status" -ne 0 ]
+        [[ "$output" == *"ORCA_BIN is not executable"* ]]
+    done
+
+    # The same entries and marker seed_gitignore writes on the Mac, each
+    # exactly once.
+    [ -f "$proj/.gitignore" ]
+    run grep -c '^# claude_orca$' "$proj/.gitignore"
+    [ "$output" = "1" ]
+    for pattern in '.claude-dev/' '.claude-dev-snapshots/' '/claude-dev' \
+                   'Orca.app/' '.mcp.json' 'attachments/' '.claude/logs/'; do
+        run grep -c -xF "$pattern" "$proj/.gitignore"
+        [ "$output" = "1" ]
+    done
+
+    # Where take-screenshot drops images.
+    [ -d "$proj/attachments" ]
+
+    # A fresh .claude-dev/home has no git identity at all, so every commit
+    # inside the VM would fail. The Mac passes its own as env.
+    [ -f "$home/.gitconfig" ]
+    run cat "$home/.gitconfig"
+    [[ "$output" == *"name = Ada Lovelace"* ]]
+    [[ "$output" == *"email = ada@example.com"* ]]
+
+    # Never over an existing one: whatever the agent set up in there wins.
+    run env HOME="$home" PROJECT_DIR="$proj" \
+        ORCA_BIN="$TMP/bin/no-such-orca" CLAUDE_ORCA_SKIP_SETUP=1 \
+        CLAUDE_ORCA_SKIP_BEADS=1 CLAUDE_ORCA_ENTRYPOINT_NO_PRIVDROP=1 \
+        CLAUDE_ORCA_GIT_NAME="Someone Else" \
+        CLAUDE_ORCA_GIT_EMAIL="else@example.com" \
+        bash "$ENTRYPOINT"
+    run cat "$home/.gitconfig"
+    [[ "$output" == *"Ada Lovelace"* ]]
+    [[ "$output" != *"Someone Else"* ]]
+
+    # Nothing to copy: no env, no file (and no empty [user] stanza).
+    local proj2="$TMP/project2" home2
+    make_project "$proj2"
+    home2="$proj2/.claude-dev/home"
+    run env HOME="$home2" PROJECT_DIR="$proj2" \
+        ORCA_BIN="$TMP/bin/no-such-orca" CLAUDE_ORCA_SKIP_SETUP=1 \
+        CLAUDE_ORCA_SKIP_BEADS=1 CLAUDE_ORCA_ENTRYPOINT_NO_PRIVDROP=1 \
+        bash "$ENTRYPOINT"
+    [ ! -f "$home2/.gitconfig" ]
+    [ -d "$proj2/attachments" ]
+}
+
+@test "entrypoint restores the newest beads snapshot before bd init when the project has no beads" {
+    [ -x "$ENTRYPOINT" ]
+
+    local proj="$TMP/project" snaps
+    make_project "$proj"
+    snaps="$proj/.claude-dev-snapshots"
+    mkdir -p "$snaps/20200101-000000" "$snaps/20240101-000000"
+    echo '{"id":"old"}' > "$snaps/20200101-000000/issues.jsonl"
+    echo '{"id":"newest"}' > "$snaps/20240101-000000/issues.jsonl"
+    echo '{"prefix":"newest"}' > "$snaps/20240101-000000/metadata.json"
+    [ ! -e "$proj/.beads" ]
+
+    run env HOME="$proj/.claude-dev/home" PROJECT_DIR="$proj" \
+        ORCA_BIN="$TMP/bin/no-such-orca" CLAUDE_ORCA_SKIP_SETUP=1 \
+        CLAUDE_ORCA_SKIP_BEADS=1 CLAUDE_ORCA_ENTRYPOINT_NO_PRIVDROP=1 \
+        bash "$ENTRYPOINT"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"ORCA_BIN is not executable"* ]]
+
+    # The newest snapshot, not the first one listed.
+    [ -f "$proj/.beads/issues.jsonl" ]
+    run cat "$proj/.beads/issues.jsonl"
+    [ "$output" = '{"id":"newest"}' ]
+    run cat "$proj/.beads/metadata.json"
+    [ "$output" = '{"prefix":"newest"}' ]
+
+    # A project that already carries beads keeps them: an older snapshot
+    # must never overwrite live data.
+    echo '{"id":"live"}' > "$proj/.beads/issues.jsonl"
+    run env HOME="$proj/.claude-dev/home" PROJECT_DIR="$proj" \
+        ORCA_BIN="$TMP/bin/no-such-orca" CLAUDE_ORCA_SKIP_SETUP=1 \
+        CLAUDE_ORCA_SKIP_BEADS=1 CLAUDE_ORCA_ENTRYPOINT_NO_PRIVDROP=1 \
+        bash "$ENTRYPOINT"
+    run cat "$proj/.beads/issues.jsonl"
+    [ "$output" = '{"id":"live"}' ]
+
+    # No snapshots at all is a silent no-op, not a failure.
+    local proj2="$TMP/project2"
+    make_project "$proj2"
+    run env HOME="$proj2/.claude-dev/home" PROJECT_DIR="$proj2" \
+        ORCA_BIN="$TMP/bin/no-such-orca" CLAUDE_ORCA_SKIP_SETUP=1 \
+        CLAUDE_ORCA_SKIP_BEADS=1 CLAUDE_ORCA_ENTRYPOINT_NO_PRIVDROP=1 \
+        bash "$ENTRYPOINT"
+    [[ "$output" == *"ORCA_BIN is not executable"* ]]
+    [ ! -e "$proj2/.beads" ]
+}
+
+@test "entrypoint resolves the template from /opt/claude-orca or the mounted .claude-dev/template" {
+    [ -x "$ENTRYPOINT" ]
+
+    local proj="$TMP/project" expect_root
+    make_project "$proj"
+
+    # The prebuilt image carries the template at /opt/claude-orca; a base
+    # image has only the folder's own mounted clone. Whichever this box is,
+    # the entrypoint must name the one that is there.
+    if [ -d /opt/claude-orca ]; then
+        expect_root="/opt/claude-orca"
+    else
+        expect_root="$proj/.claude-dev/template"
+    fi
+
+    run env HOME="$proj/.claude-dev/home" PROJECT_DIR="$proj" \
+        ORCA_BIN="$TMP/bin/no-such-orca" CLAUDE_ORCA_SKIP_SETUP=1 \
+        CLAUDE_ORCA_SKIP_BEADS=1 CLAUDE_ORCA_ENTRYPOINT_NO_PRIVDROP=1 \
+        bash "$ENTRYPOINT"
+    [[ "$output" == *"template root: $expect_root"* ]]
+    [[ "$output" == *"setup: $expect_root/scripts/container/setup.sh"* ]]
+
+    # ...and that default is the script that actually runs.
+    if [ ! -d /opt/claude-orca ]; then
+        : > "$TMP/setup.argv"
+        write_setup_stub "$proj/.claude-dev/template/scripts/container/setup.sh"
+        run env HOME="$proj/.claude-dev/home" PROJECT_DIR="$proj" \
+            ORCA_BIN="$TMP/bin/no-such-orca" \
+            CLAUDE_ORCA_SKIP_BEADS=1 CLAUDE_ORCA_ENTRYPOINT_NO_PRIVDROP=1 \
+            bash "$ENTRYPOINT"
+        grep -qxF 'argv:' "$TMP/setup.argv"
+        grep -qF 'stub setup: installing everything' \
+            "$proj/.claude-dev/run/setup.log"
+    fi
+
+    # The image branch, which this box cannot exercise, is pinned here.
+    run grep -qF '[ -d /opt/claude-orca ]' "$ENTRYPOINT"
     [ "$status" -eq 0 ]
 }
