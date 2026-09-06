@@ -278,6 +278,8 @@ make_v2_project() {
 @test "orca-launch exports HOME, TMPDIR, CLAUDE_ORCA_ROOT and ORCA_USER_DATA_PATH inside the folder and execs stubbed sandbox-exec with -f <profile> and the app binary" {
     make_v2_project "$PROJECT_DIR"
     p="$(abspath "$PROJECT_DIR")"
+    # claude-orca-0h7: Orca's user data dir now hangs off a short per-project root (--user-data-dir), pinned inside the test tmpdir here so the real /tmp is never touched.
+    export CLAUDE_ORCA_SHORT_ROOT="$BATS_TEST_TMPDIR/co-fixture"
 
     # Invoked exactly the way the launcher bundle invokes it: through the
     # project's own .claude-dev/bin symlink, no --project, no env override.
@@ -292,7 +294,7 @@ make_v2_project() {
     grep -qxF "HOME=$p/.claude-dev/home" "$STUB_ENV"
     grep -qxF "TMPDIR=$p/.claude-dev/tmp" "$STUB_ENV"
     grep -qxF "CLAUDE_ORCA_ROOT=$p" "$STUB_ENV"
-    grep -qxF "ORCA_USER_DATA_PATH=$p/.claude-dev/home/Library/Application Support/orca" "$STUB_ENV"
+    grep -qxF "ORCA_USER_DATA_PATH=$CLAUDE_ORCA_SHORT_ROOT/Library/Application Support/orca" "$STUB_ENV"
     [ -d "$p/.claude-dev/home" ]
     [ -d "$p/.claude-dev/tmp" ]
 
@@ -309,6 +311,8 @@ make_v2_project() {
     p="$(abspath "$PROJECT_DIR")"
     cli_log="$p/.claude-dev/state/orca-cli-stub.log"
     launch_log="$p/.claude-dev/state/orca-launch.log"
+    # claude-orca-0h7: the same short per-project root, pinned inside the test tmpdir.
+    export CLAUDE_ORCA_SHORT_ROOT="$BATS_TEST_TMPDIR/co-fixture"
 
     # The app never comes up: no metadata, so no CLI call -- ever.
     STUB_ORCA_METADATA=0 CLAUDE_ORCA_METADATA_TIMEOUT=1 \
