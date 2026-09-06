@@ -98,7 +98,13 @@ setup() {
 
 teardown() {
     stop_entrypoint
-    pkill -x orca-ide 2>/dev/null || true
+    # Orca's daemon is detached and outlives the entrypoint's process group,
+    # so it needs its own kill -- scoped to THIS test's user-data dir
+    # ($HOME/.config/orca under the per-test $TMP), which every process of
+    # that runtime carries on its command line (--user-data-dir=, the
+    # daemon's --socket/--token paths). Never `pkill -x orca-ide`: other
+    # sessions on this box run their own Orca runtimes and must survive.
+    [ -n "${TMP:-}" ] && pkill -f -- "$TMP/home/.config/orca" 2>/dev/null
     [ -n "${TMP:-}" ] && rm -rf "$TMP"
     return 0
 }
