@@ -2,14 +2,14 @@
 #
 # claude-dev -- the claude_orca launcher. bootstrap.sh symlinks this file
 # to <project>/.claude-dev/bin/claude-dev: one launcher per folder, no
-# central install, no central Orca (V1, claude-orca-qt9.1; see
-# .claude/plans/orca-port.md S9).
+# central install (V1, claude-orca-qt9.1).
 #
-# v3 (claude-orca-qa2.2): the commands below the "v3" banner near the
-# bottom are the live ones -- they drive one Apple `container` VM per
-# folder (see .claude/plans/container-v3.md). Everything above it is the
-# v2 Seatbelt launcher, kept only until the S3 deletion slice removes it;
-# nothing on the v3 path calls any of it.
+# v3 (claude-orca-qa2.2 / qa2.3): one Apple `container` Linux VM per folder
+# (.claude/plans/container-v3.md). The Mac side owns exactly four things --
+# the folder's config (claude-orca.json), the port, the image and the
+# container -- and runs no agent itself, so there is no profile to generate,
+# nothing to install into the folder beyond the template clone, and no block
+# in anyone's shell rc. Everything else happens inside the VM.
 #
 # Usage:
 #   claude-dev                    Open this folder's Orca in a browser
@@ -21,12 +21,11 @@
 #   claude-dev --teardown         Snapshot beads, remove this folder's install
 #   claude-dev --help             Show this help
 #
-# Trust boundary v2 (see .claude/plans/orca-port.md S9.2): everything this
-# launcher installs lives inside the folder, so the executables it writes
-# there -- .claude-dev/{bin,template,app,srt,claude} and the ./claude-dev
-# stub -- are host-owned and write-denied to the sandbox by both profiles.
-# It still never execs or sources project data: sandbox.json is read as
-# validated data, by gen-settings.sh alone.
+# Trust boundary v3: the VM is the boundary. The container sees the project
+# folder (bind-mounted at its own absolute path) and the folder's own
+# .claude-dev/home as /home/agent, and nothing else under /Users. The
+# folder's config is read as validated data -- jq only, never sourced, never
+# executed.
 
 set -euo pipefail
 
@@ -83,46 +82,21 @@ seed_gitignore() {
     done
 }
 
-# S2 (claude-orca-3sk.14): a marker-delimited block in the user's real rc
-# files carrying our shellrc.zsh/.bash -- see .claude/plans/orca-port.md
-# S3.2. Idempotent by construction: every install first strips any existing
-# block, then appends a fresh one, so re-running (or bootstrapping a second
-# project on the same machine) never duplicates it and always reflects the
-# current template.
+# v3 (claude-orca-qa2.3): v2 put a marker-delimited block in the user's rc
+# files so a login shell re-exec'd itself into a sandbox. v3 runs no agent
+# on the Mac, so it installs no block -- but a folder upgraded from v2 may
+# still carry one, and --teardown strips it. The markers and the remover
+# are all that is left of it.
 RC_MARKER_START="# >>> claude_orca >>>"
 RC_MARKER_END="# <<< claude_orca <<<"
 
-# V1 (claude-orca-qt9.1): the block is GENERIC -- it names no install path
-# at all. scripts/sandbox/shellrc.zsh|bash walks up from $PWD looking for
-# .claude-dev/bin/claude-orca-shell and execs it, so one block covers every
-# bootstrapped folder on the machine and is an ordinary no-op everywhere
-# else. Inlined rather than sourced from a path, because in v2 there is no
-# central path to source from; register and --update rewrite the block, so
-# a template update still reaches it.
-rc_block_for() {
-    # $1 = the shellrc file in this template whose body becomes the block.
-    # Its leading comment header is dropped on the way in -- the rationale
-    # belongs in the template, not in three of the user's rc files.
-    printf '%s\n' "$RC_MARKER_START"
-    printf '%s\n' "# Added by claude-dev rc-install -- do not edit by hand between the"
-    printf '%s\n' "# markers; re-run 'claude-dev rc-uninstall' to remove."
-    printf '%s\n' "# Body: scripts/sandbox/$1 in the claude_orca template."
-    awk '
-        started { print; next }
-        /^[[:space:]]*$/ { next }
-        /^[[:space:]]*#/ { next }
-        { started = 1; print }
-    ' "$TEMPLATE_ROOT/scripts/sandbox/$1"
-    printf '%s\n' "$RC_MARKER_END"
-}
-
 # Strips any existing marker-delimited block from $1, leaving everything
-# else untouched -- including the single blank-line separator
-# rc_install_one puts immediately before the block, which is dropped here
-# too so install-then-uninstall restores the original file byte-for-byte
-# instead of leaving a trailing blank line behind. A no-op if the file
-# doesn't exist or has no block. (One line of lookahead: a line is only
-# printed once we know it isn't the blank line immediately before START.)
+# else untouched -- including the single blank-line separator that used to
+# sit immediately before the block, which is dropped here too so a removal
+# restores the original file byte-for-byte instead of leaving a trailing
+# blank line behind. A no-op if the file doesn't exist or has no block.
+# (One line of lookahead: a line is only printed once we know it isn't the
+# blank line immediately before START.)
 rc_remove_block() {
     local file="$1"
     [ -f "$file" ] || return 0
@@ -149,104 +123,12 @@ rc_remove_block() {
     mv "$tmp" "$file"
 }
 
-# A no-sudo reclaim of an rc file that exists but is not writable -- an
-# installer that ran under sudo and left it root-owned is the usual cause.
-# Deleting a file needs write permission on its DIRECTORY, not on the file
-# itself, so while $HOME is ours the file can be rebuilt in place with
-# byte-identical contents and our own ownership, and registration carries
-# on without asking anyone for sudo. Returns 1 silently whenever that
-# cannot apply -- nothing to reclaim, an unreadable file, or a directory we
-# cannot write -- leaving rc_install_one's fail-closed message to take over.
-rc_reclaim() {
-    local file="$1" dir tmp
-    [ -e "$file" ] || return 1
-    [ ! -w "$file" ] || return 1
-    [ -r "$file" ] || return 1
-
-    dir="$(dirname "$file")"
-    [ -w "$dir" ] || return 1
-
-    tmp="$(mktemp "$dir/.claude-orca-reclaim.XXXXXX")" || return 1
-    if ! cat "$file" > "$tmp" 2>/dev/null; then
-        rm -f "$tmp"
-        return 1
-    fi
-    if ! rm -f "$file" 2>/dev/null; then
-        rm -f "$tmp"
-        return 1
-    fi
-    mv "$tmp" "$file"
-    chmod 644 "$file"
-
-    echo "==> Reclaimed $file: it was not writable (likely left root-owned by an installer); rebuilt with identical contents, now owned by $(id -un)" >&2
-}
-
-rc_install_one() {
-    local file="$1" shellrc_name="$2"
-    rc_reclaim "$file" || true
-
-    # Fail closed with a usable message, for the cases even rc_reclaim
-    # above cannot rescue -- a file we cannot read, or a $HOME we cannot
-    # write. An unusable rc file must stop registration either way: a login
-    # shell of that flavour would run unconfined without its hook, and
-    # 'touch: Permission denied' told the user nothing about which file or
-    # how to fix it.
-    #
-    # touch alone is not the test: its owner may set a file's timestamps
-    # whatever the mode bits say, so `touch` sails through a mode-000 file
-    # of our own that the read and the rewrite below would both fail on.
-    # After a successful touch the file certainly exists, so -r/-w decide.
-    if ! touch "$file" 2>/dev/null || [ ! -r "$file" ] || [ ! -w "$file" ]; then
-        {
-            echo "Error: cannot write $file -- the shell hook cannot be installed there."
-            echo "  Check who owns it:   ls -l $file"
-            echo "  Reclaim it:          sudo chown $(id -un) $file && chmod u+w $file"
-            echo "  Then re-run the bootstrap command (it is idempotent)."
-        } >&2
-        return 1
-    fi
-    rc_remove_block "$file"
-
-    # $(...) strips ALL trailing newlines, however many -- including any
-    # blank line left dangling right before where the removed block used
-    # to be -- so re-adding exactly one blank-line separator here keeps
-    # repeated installs byte-identical instead of growing a blank line
-    # per run.
-    local content
-    content="$(cat "$file")"
-    {
-        if [ -n "$content" ]; then
-            printf '%s\n\n' "$content"
-        fi
-        rc_block_for "$shellrc_name"
-    } > "$file"
-}
-
-cmd_rc_install() {
-    # .zprofile as well as .zshrc: zsh does not read ~/.zshrc for a
-    # non-interactive login shell (`zsh -l -c '...'`), only ~/.zprofile --
-    # see shellrc.zsh and .claude/plans/orca-port.md S3.2. bash already
-    # reads ~/.bash_profile for any login shell, interactive or not, so it
-    # needs no second file.
-    rc_install_one "$HOME/.zprofile" "shellrc.zsh"
-    rc_install_one "$HOME/.zshrc" "shellrc.zsh"
-    rc_install_one "$HOME/.bash_profile" "shellrc.bash"
-    echo "Installed claude_orca shell hook in ~/.zprofile, ~/.zshrc and ~/.bash_profile"
-}
-
-cmd_rc_uninstall() {
-    rc_remove_block "$HOME/.zprofile"
-    rc_remove_block "$HOME/.zshrc"
-    rc_remove_block "$HOME/.bash_profile"
-    echo "Removed claude_orca shell hook from ~/.zprofile, ~/.zshrc and ~/.bash_profile"
-}
-
-# S5 (claude-orca-3sk.17): the sandbox runs with GIT_CONFIG_GLOBAL pointed
-# at <project>/.claude-dev/home/.gitconfig, so a fresh sandbox has no git
-# identity at all and every commit fails. Copy exactly user.name and
-# user.email from the host's global config -- nothing else, and never over
-# an existing file: no credential helper, no signing key, no host-only
-# paths follow the identity in.
+# S5 (claude-orca-3sk.17): the container's HOME is the folder's own
+# .claude-dev/home, so a fresh one has no git identity at all and every
+# commit inside the VM fails. Copy exactly user.name and user.email from
+# the Mac's global config -- nothing else, and never over an existing file:
+# no credential helper, no signing key, no host-only paths follow the
+# identity in.
 seed_git_identity() {
     local dir="$1" gc="$1/.claude-dev/home/.gitconfig" name email
     if [ -f "$gc" ]; then
@@ -284,562 +166,15 @@ STUB
     chmod +x "$stub"
 }
 
-# V3 (claude-orca-qt9.3): the Seatbelt profile for layer 1, into the
-# host-owned state dir. gen-orca-profile.sh is a pure function that fails
-# closed on anything malformed in sandbox.json, so a bad knob leaves NO
-# profile behind (never a half-written one) and the doctor says so.
-write_orca_profile() {
-    local dir="$1" state="$1/.claude-dev/state"
-    local gen="$SCRIPT_DIR/sandbox/gen-orca-profile.sh"
-    [ -x "$gen" ] || return 1
-    mkdir -p "$state"
-    if "$gen" --project "$dir" --real-home "${CLAUDE_ORCA_REAL_HOME:-$HOME}" \
-            --app "$dir/.claude-dev/app/Orca.app" \
-            --sandbox-json "$dir/.claude-dev/sandbox.json" > "$state/orca.sb.tmp" 2>/dev/null; then
-        mv "$state/orca.sb.tmp" "$state/orca.sb"
-        return 0
-    fi
-    rm -f "$state/orca.sb.tmp"
-    return 1
-}
-
-# V3: the one screen a first-time user needs -- printed at the end of a
-# registration that PASSED its self-test, and by `claude-dev
-# --how-to-run` whenever they want it again. Every line is either
-# something to do or something they will see, in the order it happens.
-print_run_it_block() {
-    local dir="$1"
-    cat <<RUNIT
-
-How to run it:
-  1. Double-click $dir/Orca.app (first time: right-click → Open).
-     Or, from a terminal: ./claude-dev open
-  2. Orca opens with this folder; pick Claude Code.
-  3. The terminal says: [claude-orca] sandboxed: writes limited to $dir
-  4. The first 'claude' run prints a login URL -- open it on this Mac and
-     paste the code back.
-  Check it worked: ./claude-dev --doctor
-RUNIT
-}
-
-# V6 (claude-orca-riu.5): where the OpenRouter key lives, and the one
-# function that writes it. Both belong to the launcher rather than to
-# setup-menu.sh beside it, because state/ is host-owned and write-denied to
-# BOTH sandbox layers: the set of things that may write there is small,
-# named and host-executed (tests/wrapper-writes.bats gates it), and the
-# walk-through's step 4 is the launcher acting on a paste, not a new writer.
-#
-# $2 is a secret: it is never echoed, never logged, and the file is created
-# under umask 077 so it is never briefly world-readable. Returns 1 without
-# writing when state/ is not writable -- which is exactly what happens if
-# `claude-dev setup` is run from a shell the hook has already sandboxed.
-openrouter_key_file() {
-    printf '%s\n' "$1/.claude-dev/state/openrouter.key"
-}
-
-write_openrouter_key() {
-    local dir="$1" value="$2" key
-    key="$(openrouter_key_file "$dir")"
-    mkdir -p "$dir/.claude-dev/state" 2>/dev/null || true
-    ( umask 077; printf '%s\n' "$value" > "$key" ) 2>/dev/null || return 1
-    chmod 600 "$key" 2>/dev/null || true
-}
-
-# The guided walk-through. Sourced rather than
-# exec'd so its closing menu can call cmd_open/cmd_doctor directly, and so
-# it sees derive_project_name for the beads prefix. The file lives in the
-# template beside this one -- host-owned and write-denied to both sandbox
-# layers, like everything else this launcher runs.
-cmd_setup() {
-    local menu="$SCRIPT_DIR/setup-menu.sh"
-    if [ ! -f "$menu" ]; then
-        echo "Error: no setup-menu.sh beside this launcher ($menu)" >&2
-        return 1
-    fi
-    # shellcheck source=setup-menu.sh
-    . "$menu"
-    setup_menu_main "$PROJECT_SELF"
-}
-
-# V7 (claude-orca-2qo): registration asks nothing. The bootstrap
-# one-liner is the whole install, so the last thing a user sees is what
-# they can do next -- never a question standing between them and a
-# working folder. The walk-through is an EXTRA now, and this line says
-# what is in it so nobody has to run it to find out.
-register_optional_extras() {
-    echo "Optional extras: claude-dev setup (OpenRouter key for cheap workers, gh sign-in inside the sandbox, Orca worktree setting)"
-}
-
-# V7 (claude-orca-2qo): the folder's task tracker, seeded by registration
-# rather than left to the walk-through -- an agent that starts working
-# here immediately needs `bd` to work immediately. Best-effort by
-# construction: no bd on PATH, an existing .beads, or a failing init are
-# all non-fatal, because none of them makes the sandbox any less safe.
-# CLAUDE_ORCA_SKIP_BEADS=1 opts out (the test suite sets it globally --
-# hundreds of make_project registrations must never touch a real DB).
-register_beads_init() {
-    local dir="$1" name="$2"
-    [ "${CLAUDE_ORCA_SKIP_BEADS:-0}" = "1" ] && return 0
-    command -v bd >/dev/null 2>&1 || return 0
-    [ -e "$dir/.beads" ] && return 0
-
-    if ( cd "$dir" && bd init --prefix "$name" ) >/dev/null 2>&1; then
-        echo "Beads: initialized (prefix: $name)"
-    else
-        echo "Warning: bd init failed -- run 'bd init --prefix $name' in $dir"
-    fi
-    return 0
-}
-
-# V7 (claude-orca-2qo): "run one command, start working" ends with Orca
-# actually open. Only where that can mean anything: a Mac, with a human
-# watching the terminal that ran the one-liner. CLAUDE_ORCA_OPEN forces
-# either answer -- 1 for CI and for tests, 0 for a scripted install that
-# wants the folder prepared and nothing launched.
-register_maybe_open() {
-    local dir="$1"
-    case "${CLAUDE_ORCA_OPEN:-}" in
-        0) return 0 ;;
-        1) ;;
-        *)
-            [ "$(uname -s)" = "Darwin" ] || return 0
-            [ -t 1 ] || return 0
-            ;;
-    esac
-    echo "Opening Orca now (first launch: macOS may ask you to confirm)."
-    cmd_open "$dir" || true
-    return 0
-}
-
-# Everything a passing registration does after the sandbox is proven:
-# the one screen a first-time user needs, the pointer at the extras, and
-# the launch itself. One function so the two success paths (self-test
-# passed, self-test skipped) cannot drift apart.
-register_handoff() {
-    local dir="$1"
-    print_run_it_block "$dir"
-    register_optional_extras
-    register_maybe_open "$dir"
-}
-
-# V7 (claude-orca-2qo): which self-test failures are allowed to stop the
-# hand-off. These are the CONFINEMENT probes -- each one answers "does
-# the sandbox hold?", and a FAIL means handing off would hand off
-# something unconfined. Every other probe answers "is this working
-# right now?" (network reachability, the srt pin, Orca's socket): a FAIL
-# there is a nuisance, not a hole, and refusing on it strands a folder
-# that is perfectly safe to use.
-REGISTER_CONFINEMENT_PROBES="write-outside-denied read-real-home-denied keychain-denied sibling-worktree-denied tmp-outside-denied network-blocked-domain host-files-write-denied orca-profile-active git-hooks-audit srt-launch"
-
-# Reads the results of a self-test that exited non-zero and decides
-# whether the hand-off may still happen: returns 1 (refuse) if any FAILed
-# probe is a confinement probe, or if the results cannot be read at all;
-# otherwise prints one warning per FAILed probe and returns 0. Warnings
-# are printed only on the proceed path -- a refusal must not also invite
-# the user past it.
-register_selftest_triage() {
-    local results="$1" fails="" name detail
-    [ -f "$results" ] || return 1
-    command -v jq >/dev/null 2>&1 || return 1
-
-    fails="$(jq -r '[.probes[]? | select(.status == "FAIL") | .name] | join(" ")' \
-        "$results" 2>/dev/null)"
-    # A non-zero exit with nothing marked FAIL is unexplained: refuse.
-    [ -n "$fails" ] || return 1
-
-    for name in $fails; do
-        case " $REGISTER_CONFINEMENT_PROBES " in
-            *" $name "*) return 1 ;;
-        esac
-    done
-
-    for name in $fails; do
-        detail="$(jq -r --arg n "$name" \
-            '[.probes[]? | select(.name == $n) | .detail][0] // ""' \
-            "$results" 2>/dev/null)"
-        echo "Warning: self-test probe $name failed ($detail) -- not a confinement failure; see claude-dev --doctor"
-    done
-    return 0
-}
-
-cmd_register() {
-    local dir="${1:-$PROJECT_SELF}"
-    [ -d "$dir" ] || { echo "Error: directory does not exist: $dir" >&2; exit 1; }
-    dir="$(cd "$dir" && pwd -P)"
-    local project_name
-    project_name="$(derive_project_name "$dir")"
-
-    # V2c (claude-orca-qt9.7): run/ is the one directory under
-    # .claude-dev the sandbox itself writes (tier.json, selftest.json,
-    # srt-debug captures); state/ stays host-written and write-denied.
-    mkdir -p "$dir/.claude-dev/home" "$dir/.claude-dev/tmp" \
-             "$dir/.claude-dev/state" "$dir/.claude-dev/run"
-
-    # Defaults only if absent -- never reset a project's own edits. An
-    # existing file is the user's choice even when it has no orca key at
-    # all: gen-settings.sh reads a missing key as false, and that stays the
-    # answer for every file this branch does not create.
-    #
-    # V6 (claude-orca-riu.3): orca.cli is seeded TRUE for a new folder --
-    # native Orca orchestration ('orca orchestration worker-start',
-    # 'orca status') is part of this setup rather than an afterthought.
-    # What that grants is real and written down in ORCA_INTEGRATION.md: the
-    # sandboxed agent can reach the host Orca app's unix socket and drive
-    # it. Opt out with one key: {"orca":{"cli":false}}.
-    #
-    # V6 (claude-orca-riu.4): openrouter.ai rides along for the same reason
-    # -- OpenRouter is the assumed worker provider, and delegate.sh's egress
-    # preflight reads exactly this list. An allowlist entry grants nothing
-    # by itself: without .claude-dev/state/openrouter.key there is no key,
-    # no credential mask and nothing to send. Drop the entry to opt out.
-    if [ ! -f "$dir/.claude-dev/sandbox.json" ]; then
-        cat > "$dir/.claude-dev/sandbox.json" <<'JSON'
-{"version":1,"network":{"extraAllowedDomains":["openrouter.ai"]},"filesystem":{"extraAllowWrite":[]},"orca":{"cli":true}}
-JSON
-    fi
-
-    seed_gitignore "$dir"
-    write_project_stub "$dir"
-    mkdir -p "$dir/attachments"
-
-    # S12 (claude-orca-3sk.23): resume a torn-down project -- pull the most
-    # recent beads snapshot back in when this project has none of its own.
-    restore_beads_snapshot "$dir" "$project_name"
-
-    # V7 (claude-orca-2qo): and if there was nothing to restore, start a
-    # fresh tracker rather than leaving `bd` broken until someone runs
-    # the walk-through. Runs after the restore so a recovered project
-    # keeps its own history.
-    register_beads_init "$dir" "$project_name"
-
-    seed_git_identity "$dir"
-
-    # Populate .claude-dev/home/.claude from this template's config/ (S7,
-    # claude-orca-3sk.7) before anything -- including the self-test below --
-    # runs against this project. Checksum-gated, so a re-register is cheap.
-    "$SCRIPT_DIR/config-sync.sh" --project "$dir" --host "$HOST_DIR"
-
-    # V2 (claude-orca-qt9.2): the double-clickable launcher bundle in the
-    # project root -- rebuilt every register, gitignored, host-owned.
-    "$SCRIPT_DIR/sandbox/make-launcher-app.sh" --project "$dir" >/dev/null
-
-    # V3 (claude-orca-qt9.3): and the profile that bundle will be started
-    # under. orca-launch regenerates it on every launch -- this is the
-    # same generator run once, host-side, so a folder that has just been
-    # registered can SAY whether layer 1 is ready (claude-dev --doctor)
-    # instead of only finding out at the first double-click.
-    if ! write_orca_profile "$dir"; then
-        echo "Warning: could not generate the Orca sandbox profile -- 'claude-dev --doctor' will show it as missing" >&2
-    fi
-
-    # Idempotent and cheap -- covers `claude-dev register` run standalone
-    # against an already-bootstrapped host (e.g. a second project), not
-    # just the bootstrap.sh call chain.
-    cmd_rc_install >/dev/null
-
-    echo "Project '$project_name' registered at $dir"
-    # S6 (claude-orca-3sk.18): one-time Orca setting -- worktrees created
-    # outside the project folder are outside the sandbox's write scope.
-    echo "Orca: Settings → Repository → worktree base path: $dir/.orca-worktrees (keeps worktrees inside the sandboxed folder)"
-
-    # V6 (claude-orca-riu.3): the seeded default is a granted capability, so
-    # registration says it out loud rather than leaving it for --doctor.
-    # Read from the file, never assumed: a re-register over an existing
-    # sandbox.json prints whatever that file actually says.
-    local reg_cli="false"
-    if [ -f "$dir/.claude-dev/sandbox.json" ] && command -v jq >/dev/null 2>&1; then
-        reg_cli="$(jq -r '.orca.cli // false' "$dir/.claude-dev/sandbox.json" 2>/dev/null || true)"
-    fi
-    if [ "$reg_cli" = "true" ]; then
-        echo "Orca orchestration: ON (sandbox.json orca.cli=true) -- agents here can drive this Mac's Orca app; opt out with {\"orca\":{\"cli\":false}}"
-    fi
-
-    # S3 (claude-orca-3sk.15): prove the sandbox from the inside before
-    # ever handing off to Orca -- see .claude/plans/orca-port.md S3.
-    if [ "${CLAUDE_ORCA_SKIP_SELFTEST:-0}" = "1" ]; then
-        echo "Skipping sandbox self-test (CLAUDE_ORCA_SKIP_SELFTEST=1) -- 'claude-dev --doctor' will show it as not run"
-        register_handoff "$dir"
-        return 0
-    fi
-
-    local selftest_bin="$SCRIPT_DIR/sandbox/claude-orca-shell"
-    if [ -x "$selftest_bin" ] && "$selftest_bin" --selftest --root "$dir" --cwd "$dir"; then
-        register_handoff "$dir"
-        return 0
-    fi
-
-    local results="$dir/.claude-dev/run/selftest.json"
-    # V7 (claude-orca-2qo): a failure that leaves confinement intact is a
-    # warning, not a wall -- see register_selftest_triage.
-    if register_selftest_triage "$results"; then
-        register_handoff "$dir"
-        return 0
-    fi
-
-    if [ -f "$results" ]; then
-        doctor_print_probes "$results"
-    fi
-    echo "Refusing to hand off to Orca until the sandbox self-test passes (claude-dev --doctor)" >&2
-    # V6 (claude-orca-riu.2): a refusal with no next step is a dead end.
-    echo "  Next: fix the [FAIL] probes above, then re-run: claude-dev --doctor" >&2
-    echo "  Per-probe detail: $results" >&2
-    return 2
-}
-
-# Prints one row per probe from a selftest.json results file: status,
-# name, detail (see scripts/sandbox/selftest.sh for the schema). Shared
-# by cmd_doctor and cmd_register's failure path. $2, when given, is a
-# space-separated allowlist of probe names -- the Orca section below
-# reprints just its own four, indented under their own heading.
-doctor_print_probes() {
-    local results="$1" only="${2:-}" entry name status detail indent="  "
-    [ -n "$only" ] && indent="    "
-    while IFS= read -r entry; do
-        [ -z "$entry" ] && continue
-        name="$(jq -r '.name' <<<"$entry" 2>/dev/null)"
-        if [ -n "$only" ]; then
-            case " $only " in
-                *" $name "*) ;;
-                *) continue ;;
-            esac
-        fi
-        status="$(jq -r '.status' <<<"$entry" 2>/dev/null)"
-        detail="$(jq -r '.detail' <<<"$entry" 2>/dev/null)"
-        printf '%s[%-4s] %-28s %s\n' "$indent" "$status" "$name" "$detail"
-    done < <(jq -c '.probes[]?' "$results" 2>/dev/null)
-}
-
-# The four layer-1 probes selftest.sh appends after the thirteen srt ones
-# (V3, claude-orca-qt9.3) -- the only ones that can see the Seatbelt
-# profile Orca itself runs under.
-ORCA_LAYER_PROBES="orca-profile-active home-redirected orca-data-in-folder host-files-write-denied"
-
-file_sha256() {
-    if command -v sha256sum >/dev/null 2>&1; then
-        sha256sum "$1" | awk '{print $1}'
-    elif command -v shasum >/dev/null 2>&1; then
-        shasum -a 256 "$1" | awk '{print $1}'
-    fi
-}
-
-file_mtime() {
-    stat -c '%Y' "$1" 2>/dev/null || stat -f '%m' "$1" 2>/dev/null || true
-}
-
-# V3: what layer 1 looks like in THIS folder -- the app that will start,
-# the profile it will start under, the bundle that starts it, and the
-# last word from inside it. Returns 1 (the caller makes that exit 2) when
-# the bundle or the profile is missing: a folder with either one gone can
-# only be opened unconfined, which is the single thing this template
-# exists to prevent. A missing app is reported but not fatal -- there is
-# nothing to confine yet, and the bootstrap says the same.
-doctor_orca_section() {
-    local root="$1" rc=0 version="" sha="" mtime="" now age
-    local app="$root/.claude-dev/app/Orca.app"
-    local profile="$root/.claude-dev/state/orca.sb"
-    local bundle="$root/Orca.app/Contents/MacOS/Orca"
-    local results="$root/.claude-dev/run/selftest.json"
-
-    echo ""
-    echo "Orca layer ($root):"
-
-    version="$("$SCRIPT_DIR/install-orca.sh" --print-version "$root/.claude-dev" 2>/dev/null || true)"
-    if [ -n "$version" ]; then
-        echo "  app: $version -- $app"
-    else
-        echo "  app: MISSING -- $app (CLAUDE_ORCA_SKIP_ORCA_DMG, or re-run the bootstrap)"
-    fi
-
-    if [ -f "$profile" ]; then
-        sha="$(file_sha256 "$profile")"
-        mtime="$(file_mtime "$profile")"
-        now="$(date +%s)"
-        age=$((now - ${mtime:-0}))
-        printf '  profile: sha256 %s, age %dh %dm -- %s\n' \
-            "${sha:-unknown}" "$((age / 3600))" "$(((age % 3600) / 60))" "$profile"
-    else
-        echo "  profile: MISSING -- $profile (run 'claude-dev register')"
-        rc=1
-    fi
-
-    if [ -x "$bundle" ]; then
-        echo "  launcher: present -- $bundle"
-    else
-        echo "  launcher: MISSING -- $bundle (run 'claude-dev register')"
-        rc=1
-    fi
-
-    if [ -f "$results" ] && command -v jq >/dev/null 2>&1; then
-        echo "  orca-layer probes (from the last self-test):"
-        doctor_print_probes "$results" "$ORCA_LAYER_PROBES"
-    else
-        echo "  orca-layer probes: no self-test results yet ($results)"
-    fi
-
-    return "$rc"
-}
-
-cmd_doctor() {
-    local tool
-    for tool in git gh brew node jq rg bats bd; do
-        if command -v "$tool" >/dev/null 2>&1; then
-            printf '  [ok]      %s\n' "$tool"
-        else
-            printf '  [missing] %s\n' "$tool"
-        fi
-    done
-
-    if [ -f "$HOST_DIR/srt/node_modules/@anthropic-ai/sandbox-runtime/package.json" ]; then
-        printf '  [ok]      srt\n'
-    else
-        printf '  [missing] srt\n'
-    fi
-
-    # V1 (claude-orca-qt9.1): the in-folder pieces. Each row names what is
-    # actually in THIS folder -- a central claude or a /Applications/Orca
-    # is deliberately not consulted, because neither is what runs here.
-    local claude_version="" orca_version=""
-    claude_version="$("$SCRIPT_DIR/install-claude.sh" --print-version 2>/dev/null || true)"
-    if [ -n "$claude_version" ] && [ -x "$HOST_DIR/bin/claude" ]; then
-        printf '  [ok]      claude (in-folder) %s\n' "$claude_version"
-    else
-        printf '  [missing] claude (in-folder) -- CLAUDE_ORCA_SKIP_CLAUDE, or re-run the bootstrap\n'
-    fi
-
-    orca_version="$("$SCRIPT_DIR/install-orca.sh" --print-version 2>/dev/null || true)"
-    if [ -n "$orca_version" ]; then
-        printf '  [ok]      orca app %s\n' "$orca_version"
-    else
-        printf '  [missing] orca app -- CLAUDE_ORCA_SKIP_ORCA_DMG, or re-run the bootstrap\n'
-    fi
-
-    # The Seatbelt profile the Orca app is launched under lands in V2; the
-    # row exists now so a folder bootstrapped today says plainly that the
-    # app it holds is not confined yet.
-    if [ -f "$HOST_DIR/state/orca.sb" ]; then
-        printf '  [ok]      orca profile %s\n' "$HOST_DIR/state/orca.sb"
-    else
-        printf '  [missing] orca profile (%s -- generated when the Orca sandbox layer lands)\n' \
-            "$HOST_DIR/state/orca.sb"
-    fi
-
-    local leftover=""
-    leftover="$("$SCRIPT_DIR/v1-leftovers.sh" --check 2>/dev/null || true)"
-    if [ -n "$leftover" ]; then
-        printf '  [warn]    %s\n' "$leftover"
-    fi
-
-    # S3: outside a registered project there is nothing more to check --
-    # tool table only, exit 0 (see .claude/plans/orca-port.md S3). V1: this
-    # launcher's OWN folder wins over $PWD -- it can only be about that one.
-    local root=""
-    if [ -f "$PROJECT_SELF/.claude-dev/sandbox.json" ]; then
-        root="$PROJECT_SELF"
-    else
-        local root_bin="$SCRIPT_DIR/sandbox/claude-orca-root"
-        if [ -x "$root_bin" ]; then
-            root="$("$root_bin" 2>/dev/null)" || root=""
-        fi
-    fi
-    [ -n "$root" ] || return 0
-
-    # S9 (claude-orca-3sk.20): the socket the Orca CLI mode opens is a
-    # remote control for an UNSANDBOXED app. Whenever it is on, say so and
-    # name what is still reachable -- a mode whose residual surface is only
-    # written down in a plan is not a stated tradeoff in any useful sense.
-    # V6 (claude-orca-riu.3) makes it the seeded default for new folders,
-    # which makes this paragraph the place most users meet it, so it also
-    # names the one key that turns it back off. Printed for the CWD project
-    # only, and never a failure by itself: the exit code below is still the
-    # self-test's verdict.
-    local orca_cli="false"
-    if [ -f "$root/.claude-dev/sandbox.json" ] && command -v jq >/dev/null 2>&1; then
-        orca_cli="$(jq -r '.orca.cli // false' "$root/.claude-dev/sandbox.json" 2>/dev/null || true)"
-    fi
-    if [ "$orca_cli" = "true" ]; then
-        cat <<WARN
-
-Orca CLI mode is ON for $root (.claude-dev/sandbox.json: orca.cli).
-  The sandbox can reach Orca's control socket, and that socket drives an
-  app that is NOT sandboxed:
-    - 'orca terminal create --command ...' runs outside this sandbox unless
-      the shell it opens lands in one of this project's worktrees
-    - 'orca goto' / 'orca exec' drive an unsandboxed browser
-    - automations and artifacts run outside the sandbox too
-  Harden in Orca's settings while this is on:
-    - Floating Workspace: off
-    - public artifact links: off
-    - no per-repo setup hooks in orca.yaml
-  Turn it off: set {"orca":{"cli":false}} in $root/.claude-dev/sandbox.json
-WARN
-    fi
-
-    # V2b (claude-orca-qt9.8): which credential store this folder uses.
-    # Strictly additive -- a row for the CWD project, never an exit code.
-    # The generator is what fails closed on a malformed value; anything
-    # that is not exactly true reads as denied here, so this row can
-    # never claim sharing that the profile does not actually grant.
-    local keychain="false"
-    if [ -f "$root/.claude-dev/sandbox.json" ] && command -v jq >/dev/null 2>&1; then
-        keychain="$(jq -r '.orca.keychain // false' "$root/.claude-dev/sandbox.json" 2>/dev/null || true)"
-    fi
-    if [ "$keychain" = "true" ]; then
-        echo "  keychain: shared with macOS (orca.keychain=true)"
-    else
-        echo "  keychain: denied (folder-local credentials)"
-    fi
-
-    # V3 (claude-orca-qt9.3): layer 1, before layer 2's verdict -- it is
-    # printed even when the self-test never ran, because a folder with no
-    # profile and no bundle is the more basic problem of the two.
-    local orca_rc=0
-    doctor_orca_section "$root" || orca_rc=2
-
-    echo ""
-    echo "Sandbox self-test ($root):"
-    local results="$root/.claude-dev/run/selftest.json"
-
-    if [ ! -f "$results" ]; then
-        echo "  not run -- run 'claude-dev register' or 'claude-orca-shell --selftest --root $root'"
-        return 2
-    fi
-
-    local mtime now age_secs
-    mtime="$(stat -c '%Y' "$results" 2>/dev/null || stat -f '%m' "$results" 2>/dev/null || echo 0)"
-    now="$(date +%s)"
-    age_secs=$((now - mtime))
-    echo "  age: $((age_secs / 3600))h $(((age_secs % 3600) / 60))m"
-
-    doctor_print_probes "$results"
-
-    local fail_count launch_fail rc="$orca_rc"
-    fail_count="$(jq -r '.summary.fail // 0' "$results" 2>/dev/null || echo 1)"
-    launch_fail="$(jq -r '[.probes[]? | select(.name == "srt-launch")] | length' "$results" 2>/dev/null || echo 1)"
-
-    if [ "$age_secs" -gt 86400 ]; then
-        echo "  STALE: results are older than 24h"
-        rc=2
-    fi
-    if [ "$launch_fail" != "0" ]; then
-        echo "  srt failed to launch during the self-test -- see the detail above"
-        rc=2
-    fi
-    if [ "$fail_count" != "0" ]; then
-        rc=2
-    fi
-    return "$rc"
-}
-
-# --- S12 (claude-orca-3sk.23): update / teardown / uninstall -------------
+# --- S12 (claude-orca-3sk.23): update / teardown -------------------------
 #
 # The template must be updatable and removable without losing beads (see
-# .claude/plans/orca-port.md S3.1 and knowledge-base/TEARDOWN_RECOVERY.md).
-# Beads state is the one thing in a project that is expensive to lose and
-# that lives nowhere else, so teardown snapshots it out of .claude-dev --
-# which it then deletes whole -- into <project>/.claude-dev-snapshots/,
-# and a later registration pulls it back. V1 (claude-orca-qt9.1): that
-# sibling directory replaces v1's central state/<project>/, because
-# in v2 there is nothing outside the folder left to put it in.
+# knowledge-base/TEARDOWN_RECOVERY.md). Beads state is the one thing in a
+# project that is expensive to lose and that lives nowhere else, so
+# teardown snapshots it out of .claude-dev -- which it then deletes whole --
+# into <project>/.claude-dev-snapshots/, and a later registration pulls it
+# back. That sibling directory is inside the folder because in v2 and v3
+# alike there is nothing outside the folder left to put it in.
 
 # The exact lines seed_gitignore writes -- kept next to each other so the
 # unseed below can only ever remove what register put there.
@@ -903,7 +238,7 @@ snapshot_beads() {
     printf '%s\n' "$snap"
 }
 
-# The other half of the round trip, called from cmd_register: automatic and
+# The other half of the round trip, called from register: automatic and
 # unprompted ONLY when the project side has no issues.jsonl of its own --
 # that case is unambiguous (nothing here to lose). A project that already
 # carries beads data keeps it; we never overwrite it with a possibly older
@@ -927,185 +262,11 @@ restore_beads_snapshot() {
     echo "Restored beads snapshot $latest from $state_root/$latest (Dolt DB rebuilds from the JSONL)"
 }
 
-cmd_update() {
-    local dir="${1:-$PROJECT_SELF}" tmpl before after
-    tmpl="$HOST_DIR/template"
-    if [ ! -d "$tmpl/.git" ]; then
-        echo "Error: no template clone at $tmpl -- re-run the bootstrap one-liner." >&2
-        return 1
-    fi
-
-    echo "==> Updating the template at $tmpl"
-    before="$(git -C "$tmpl" rev-parse HEAD 2>/dev/null || echo unknown)"
-    git -C "$tmpl" pull --ff-only
-    after="$(git -C "$tmpl" rev-parse HEAD)"
-    if [ "$before" = "$after" ]; then
-        echo "  template: already up to date (${after:0:7})"
-    else
-        echo "  template: ${before:0:7} -> ${after:0:7}"
-        git -C "$tmpl" log --oneline "$before..$after" 2>/dev/null | sed 's/^/    /' || true
-    fi
-
-    # After the pull, so moved pins in the new template take effect.
-    echo "==> Installing sandbox-runtime at the template's pinned version"
-    "$SCRIPT_DIR/install-srt.sh" "$HOST_DIR"
-    echo "==> Installing Claude Code at the template's pinned version"
-    "$SCRIPT_DIR/install-claude.sh" "$HOST_DIR"
-    echo "==> Installing Orca at the template's pinned version"
-    "$SCRIPT_DIR/install-orca.sh" "$HOST_DIR"
-
-    # V5 (claude-orca-qt9.5): the folder's launcher surface, relinked from
-    # the PULLED template's own list. An entry point added upstream
-    # (orca-launch, in V2) has to reach folders that only ever run
-    # --update, or `./claude-dev open` and the double-click bundle stay
-    # broken here until someone re-runs the bootstrap one-liner.
-    echo "==> Relinking $HOST_DIR/bin"
-    "$SCRIPT_DIR/link-bin.sh" "$HOST_DIR"
-
-    # The rc block carries the template's shellrc verbatim, so a pulled fix
-    # to it only reaches the user's shells if the block is rewritten here.
-    cmd_rc_install >/dev/null
-
-    dir="$(cd "$dir" && pwd -P)"
-    if [ ! -d "$dir/.claude-dev" ]; then
-        echo "  $dir is not a registered project -- skipped config sync and self-test"
-        echo "Update complete."
-        return 0
-    fi
-
-    echo "==> Syncing config into $dir"
-    "$SCRIPT_DIR/config-sync.sh" --project "$dir" --host "$HOST_DIR"
-
-    echo "==> Re-running the sandbox self-test"
-    local selftest_bin="$SCRIPT_DIR/sandbox/claude-orca-shell"
-    if [ -x "$selftest_bin" ] && "$selftest_bin" --selftest --root "$dir" --cwd "$dir"; then
-        echo "Update complete."
-        return 0
-    fi
-    echo "Sandbox self-test failed after the update -- run 'claude-dev --doctor'" >&2
-    return 2
-}
-
-cmd_teardown() {
-    local purge=0 dir="$PROJECT_SELF"
-    while [ $# -gt 0 ]; do
-        case "$1" in
-            --purge-beads) purge=1 ;;
-            -*) echo "Unknown option: $1" >&2; return 1 ;;
-            *)  dir="$1" ;;
-        esac
-        shift
-    done
-    [ -d "$dir" ] || { echo "Error: directory does not exist: $dir" >&2; return 1; }
-    dir="$(cd "$dir" && pwd -P)"
-
-    local name snap
-    name="$(derive_project_name "$dir")"
-    snap="$(snapshot_beads "$dir" "$name")"
-    if [ -n "$snap" ]; then
-        echo "Beads snapshot saved to $snap"
-    fi
-
-    # The whole per-folder install goes: template, srt, Claude Code,
-    # Orca.app, bin/ and the root stub that execs into it. Re-running the
-    # bootstrap one-liner is what brings the folder back.
-    rm -rf "$dir/.claude-dev"
-    rm -f "$dir/claude-dev"
-    # V2 (claude-orca-qt9.2): the generated launcher bundle would now point
-    # at a .claude-dev that is gone. Only ever OUR bundle -- identified by
-    # the bundle id make-launcher-app.sh writes -- never a real Orca.app a
-    # user happens to keep in the folder.
-    if grep -qF "dev.onorca.sandboxed." "$dir/Orca.app/Contents/Info.plist" 2>/dev/null; then
-        rm -rf "$dir/Orca.app"
-    fi
-    gitignore_unseed "$dir"
-
-    if [ "$purge" = "1" ]; then
-        rm -rf "$dir/.beads"
-        echo "Removed $dir/.beads (--purge-beads)"
-    fi
-
-    echo "Teardown complete for '$name' at $dir"
-    if [ -n "$snap" ]; then
-        echo "Re-register this directory later to restore the snapshot."
-    fi
-}
-
-cmd_uninstall() {
-    # Safety: this launcher can only uninstall the folder it lives in, and
-    # only if that folder really is a per-folder install -- rm -rf is not
-    # the place to guess. (A repo checkout run in place fails here, as it
-    # should: there is nothing installed to remove.)
-    local resolved
-    resolved="$(cd "$HOST_DIR" && pwd -P)"
-    case "$resolved" in
-        */.claude-dev) ;;
-        *) echo "Error: refusing to uninstall -- $resolved is not a <project>/.claude-dev install." >&2
-           return 2 ;;
-    esac
-
-    echo "Removing $resolved"
-
-    # V5 (claude-orca-qt9.5): "uninstall" has to mean it. A machine
-    # bootstrapped before v2 also carries the central install, and leaving
-    # it behind leaves a stale `claude-dev` on PATH that would register
-    # projects the old way. Printed first, then removed -- so the one
-    # thing this command deletes outside this folder is named on the way
-    # past, never silently. (--remove-v1 stays, for the folder-less case.)
-    #
-    # Before the teardown below, not after: the teardown deletes the
-    # template clone this very script and v1-leftovers.sh are running
-    # from, so anything that needs a helper has to happen while it is
-    # still on disk.
-    local v1_path
-    v1_path="$("$SCRIPT_DIR/v1-leftovers.sh" --path 2>/dev/null || true)"
-    if [ -n "$v1_path" ]; then
-        echo "Also removing the pre-v2 central install at $v1_path"
-        "$SCRIPT_DIR/v1-leftovers.sh" --remove >/dev/null
-    fi
-
-    cmd_teardown "$PROJECT_SELF"
-    cmd_rc_uninstall
-    echo "claude_orca uninstalled. Open a new shell to drop the hook from this session."
-}
-
-cmd_remove_v1() {
-    "$SCRIPT_DIR/v1-leftovers.sh" --remove
-}
-
-# V3 (claude-orca-qt9.3): `./claude-dev open` -- the same launch the
-# Orca.app bundle performs, from a terminal. It has to be backgrounded:
-# orca-launch REPLACES itself with sandbox-exec running a GUI app, so it
-# only returns when the user quits Orca. Its stdio goes to the launch log
-# rather than the terminal for the same reason (and so the shell that
-# started it is free immediately). The log lives in the host-owned state
-# dir, which is correct: this launcher is the host side.
-cmd_open() {
-    local dir="${1:-$PROJECT_SELF}" launch log
-    # V7 (claude-orca-2qo): $1 lets cmd_register open the folder it just
-    # registered, which is not always this launcher's own folder -- so the
-    # launch binary is resolved from that folder first.
-    launch="$dir/.claude-dev/bin/orca-launch"
-    [ -x "$launch" ] || launch="$HOST_DIR/bin/orca-launch"
-    [ -x "$launch" ] || launch="$SCRIPT_DIR/sandbox/orca-launch"
-    if [ ! -x "$launch" ]; then
-        echo "Error: no orca-launch in this folder ($HOST_DIR/bin/orca-launch) -- run 'claude-dev register'" >&2
-        return 1
-    fi
-    log="$dir/.claude-dev/state/orca-launch.log"
-    mkdir -p "$dir/.claude-dev/state"
-    nohup "$launch" --project "$dir" >> "$log" 2>&1 </dev/null &
-    echo "Opening Orca for $dir in the background."
-    echo "  log: $log"
-}
-
-# ===== v3: the Apple container launcher (claude-orca-qa2.2) ==============
+# ===== the Apple container launcher (claude-orca-qa2.2) ==================
 #
-# See .claude/plans/container-v3.md S5. The Mac side owns exactly four
-# things now: the folder's config (claude-orca.json), the port, the image,
-# and the container. Everything an agent runs is inside the VM, so none of
-# the Seatbelt machinery above is on this path -- no profile, no srt, no
-# self-test, no shell-rc hook.
+# See .claude/plans/container-v3.md S5. Everything an agent runs is inside
+# the VM, so the Mac side is only ever starting one, publishing its port,
+# and opening the URL it printed.
 
 IMAGE_REPO="${CLAUDE_ORCA_IMAGE_REPO:-ghcr.io/joe-rayment/claude_orca}"
 
@@ -1659,7 +820,6 @@ case "${1:-}" in
     stop)          shift; cmd_stop_v3 "${1:-$PROJECT_SELF}" || exit $?; exit 0 ;;
     shell)         shift; cmd_shell_v3 "${1:-$PROJECT_SELF}" || exit $?; exit 0 ;;
     logs)          shift; cmd_logs_v3 "${1:-$PROJECT_SELF}" || exit $?; exit 0 ;;
-    setup)         cmd_setup || exit $?; exit 0 ;;
     --how-to-run)  print_run_it_block_v3 "$PROJECT_SELF"; exit 0 ;;
     --doctor)      cmd_doctor_v3 || exit $?; exit 0 ;;
     --update)      shift; cmd_update_v3 "${1:-$PROJECT_SELF}" || exit $?; exit 0 ;;

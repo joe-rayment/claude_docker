@@ -1,17 +1,15 @@
 #!/usr/bin/env bash
 #
-# take-screenshot -- Claude's eyes on a web UI, inside the Seatbelt sandbox
-# (S10, claude-orca-3sk.21; see .claude/plans/orca-port.md S3.6).
+# take-screenshot -- Claude's eyes on a web UI (S10, claude-orca-3sk.21).
 #
-# ONE mode: `url`. The old container template's `display` and `term` modes
-# are gone -- a Seatbelt sandbox on macOS has no X display server and no
-# terminal multiplexer -- and are rejected with a usage message rather than
-# silently doing nothing.
+# ONE mode: `url`. The `display` and `term` modes of the old Docker template
+# are gone -- nothing here drives an X display or a terminal multiplexer --
+# and are rejected with a usage message rather than silently doing nothing.
 #
 # Mechanism: `node -e <script>` requiring the `playwright` package, NOT
 # `npx playwright screenshot`. The CLI's `screenshot` subcommand has no way to
 # pass browser launch arguments, and `--no-sandbox` is mandatory here:
-# chromium's own sandbox cannot nest inside Seatbelt's. `npx --no-install`
+# chromium's own sandbox cannot nest inside the container's. `npx --no-install`
 # would also re-resolve the package on every run. So the package is resolved
 # once, by directory, and driven directly.
 #
@@ -27,12 +25,11 @@
 #
 # Network: fetching chromium needs cdn.playwright.dev and
 # playwright.download.prss.microsoft.com (playwright-core's
-# PLAYWRIGHT_CDN_MIRRORS) on the sandbox allowlist. Both are in
-# gen-settings.sh's DEFAULT_DOMAINS, so nothing per-project is needed --
+# PLAYWRIGHT_CDN_MIRRORS) reachable. Inside the container VM they are --
 # just run `npx playwright install chromium` once.
 #
 # FALLBACK (documented, not hypothetical): headless chromium may refuse to
-# start under a nested Seatbelt profile on macOS. If it does, do not spend the
+# start in a constrained environment. If it does, do not spend the
 # session fighting it -- either use Orca's own browser (`orca goto <url>` plus
 # an artifact screenshot) when S9 orchestration mode is enabled, or ask the
 # user for a screenshot and read it from attachments/. A screenshot the user
@@ -59,10 +56,9 @@ Options:
   --name <name>   Output basename (default: <url-host>-<UTC timestamp>)
   --full-page     Capture the full scrollable page, not just the viewport
 
-The 'term' and 'display' modes of the old container template are removed: a
-Seatbelt sandbox has no X display server and no termshot. Capture terminal
-output by reading it, and ask the user to drop any other screenshot into
-attachments/.
+The 'term' and 'display' modes of the old Docker template are removed: there
+is no X display server and no termshot here. Capture terminal output by
+reading it, and ask the user to drop any other screenshot into attachments/.
 EOF
 }
 

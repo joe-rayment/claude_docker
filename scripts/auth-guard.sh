@@ -12,9 +12,8 @@
 # CLAUDE_DEV_ALLOW_API_BILLING=1 downgrades every hit to a WARNING and
 # lets the caller continue (exit 0). No hits -> silent exit 0.
 #
-# Run by scripts/sandbox/claude-orca-shell before it execs srt (the port's
-# equivalent of claude_docker's entrypoint wiring), and callable directly
-# as bin/auth-guard.
+# Run by the container entrypoint before any agent starts, and callable
+# directly as bin/auth-guard.
 #
 # Fails OPEN per var-source, never crashes the caller: a missing jq skips
 # the settings-file checks (process-env checks need no jq and always run);

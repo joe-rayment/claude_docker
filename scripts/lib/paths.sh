@@ -9,17 +9,15 @@
 # Functions (each prints its result on stdout; non-zero/no-output = failed):
 #   claude_config_dir  -- ${CLAUDE_CONFIG_DIR:-$HOME/.claude}. Always
 #                          succeeds (falls back to $HOME even if unset/empty).
-#   claude_orca_root    -- $CLAUDE_ORCA_ROOT if set, else the claude-orca-root
-#                          binary's detection from $PWD. Exit 1, no output,
-#                          if neither resolves (not inside a bootstrapped
+#   claude_orca_root    -- $CLAUDE_ORCA_ROOT if set, else the bootstrapped
+#                          project containing $PWD. Exit 1, no output, if
+#                          neither resolves (not inside a bootstrapped
 #                          project and no override given).
-#   run_dir             -- "$(claude_orca_root)/.claude-dev/run" -- the
-#                          one directory under .claude-dev that the
-#                          SANDBOX writes (tier.json, selftest.json, the
-#                          srt-debug captures). state/ next to it is
-#                          host-written and write-denied in both layers,
-#                          so anything an in-sandbox writer produces
-#                          belongs here (V2c, plans/orca-port.md S9.2).
+#   run_dir             -- "$(claude_orca_root)/.claude-dev/run" -- what the
+#                          agent side writes (tier.json, the config-sync
+#                          hash). state/ next to it is written by the Mac
+#                          and read as authority, so anything produced
+#                          inside the container belongs here.
 #                          Exit 1, no output, if claude_orca_root fails.
 #   tier_state_file     -- "$(run_dir)/tier.json". Exit 1, no output, if
 #                          run_dir fails.
@@ -29,8 +27,8 @@
 #                          script sourced this file or from where.
 #   host_dir            -- $CLAUDE_ORCA_HOST if set, else template_dir's
 #                          parent (<project>/.claude-dev when template_dir
-#                          is <project>/.claude-dev/template -- the v2
-#                          per-folder layout; see plans/orca-port.md S9.2).
+#                          is <project>/.claude-dev/template -- the
+#                          per-folder layout).
 #   project_dir         -- $CLAUDE_ORCA_ROOT if set, else host_dir's parent
 #                          (the project folder itself). Exit 1, no output,
 #                          if neither resolves.
@@ -39,13 +37,42 @@ claude_config_dir() {
     printf '%s\n' "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 }
 
+# v3 (claude-orca-qa2.3): the detection the deleted claude-orca-root binary
+# did, inlined -- there is no host-side wrapper left to carry it. A folder
+# is "bootstrapped" when it has .claude-dev/claude-orca.json. From inside a
+# linked worktree the primary checkout is the git common dir's parent;
+# outside git, walk up. Read-only: nothing here writes, execs or sources
+# anything under the project it inspects.
+_paths_sh_primary() {
+    local dir="$1" common
+    common="$(cd "$dir" && git rev-parse --git-common-dir 2>/dev/null)" || common=""
+    if [ -n "$common" ]; then
+        case "$common" in
+            /*) ;;
+            *)  common="$dir/$common" ;;
+        esac
+        (cd "$common/.." && pwd -P) && return 0
+        return 1
+    fi
+    while :; do
+        if [ -f "$dir/.claude-dev/claude-orca.json" ]; then
+            printf '%s\n' "$dir"
+            return 0
+        fi
+        [ "$dir" = "/" ] && return 1
+        dir="$(cd "$dir/.." && pwd -P)" || return 1
+    done
+}
+
 claude_orca_root() {
     if [ -n "${CLAUDE_ORCA_ROOT:-}" ]; then
         printf '%s\n' "$CLAUDE_ORCA_ROOT"
         return 0
     fi
-    command -v claude-orca-root >/dev/null 2>&1 || return 1
-    claude-orca-root
+    local primary
+    primary="$(_paths_sh_primary "$PWD")" || return 1
+    [ -f "$primary/.claude-dev/claude-orca.json" ] || return 1
+    printf '%s\n' "$primary"
 }
 
 run_dir() {

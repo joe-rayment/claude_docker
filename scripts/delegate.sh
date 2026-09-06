@@ -25,7 +25,7 @@
 #          worktree/, config/, home/, and an ephemeral git worktree +
 #          branch delegate/<job>. The primary is discovered from git, so
 #          a job dispatched from a linked worktree still lands in the one
-#          place the sandbox grants write access to.
+#          place the container mounts read-write.
 #       5. Composes the prompt: for --bead, from `bd show <id>` (title,
 #          description, acceptance CHECK) plus standing instructions; for
 #          --prompt/--prompt-file, verbatim.
@@ -56,13 +56,12 @@
 #       delegated USD summed from cost-mirror's lifetime.json ledger
 #       (honors $COST_MIRROR_STATE_DIR). Always exits 0.
 #
-# Egress: a route's provider host must be reachable through the sandbox's
-# own domain allowlist -- gen-settings.sh's DEFAULT_DOMAINS plus this
-# project's .claude-dev/sandbox.json network.extraAllowedDomains. The
-# preflight checks exactly that and names the host and the file to add it
-# to. A present provider key implies its host is allowlisted, because the
-# shell wrapper passes --<provider>-key-present to gen-settings.sh, which
-# both masks the key and opens its inject host.
+# Egress (v3, claude-orca-qa2.3): the VM is the boundary, and it has no
+# per-domain allowlist to consult -- so the preflight no longer checks one.
+# What is left is what it can actually observe: the runner on PATH, a
+# loopback runtime answering, and the provider key being set. If an egress
+# allowlist ever lands inside the VM (plan S8 keeps it in view), its check
+# belongs here, reading the VM's own rules rather than a Mac-side file.
 #
 # $DELEGATE_ROUTES overrides the routes config path; $DELEGATE_REPO
 # overrides the repo the worktree/bd commands operate on (both exist so
@@ -95,7 +94,7 @@ die() { err "$*"; exit 1; }
 
 # The primary checkout: the directory holding the common .git dir, so a
 # job dispatched from a linked worktree still lands under the primary --
-# the one tree the sandbox grants write access to.
+# the one tree the container mounts read-write.
 resolve_repo_dir() {
     local gcd
     gcd="$(git rev-parse --git-common-dir 2>/dev/null)" || return 1
@@ -143,8 +142,8 @@ route_field() {
 }
 
 # provider -> the env var carrying its API key, and the host its API lives
-# on. Kept in one place: gen-settings.sh's credentials masks name the same
-# pairs, and the preflight below refuses any provider missing from here.
+# on. Kept in one place, and the preflight below refuses any provider
+# missing from here.
 provider_key_var() {
     case "$1" in
         openrouter) echo "OPENROUTER_API_KEY" ;;
@@ -166,43 +165,6 @@ provider_host() {
 # A locally served runtime needs no allowlist entry at all: it never
 # leaves the loopback interface.
 OLLAMA_BASE_URL="http://127.0.0.1:11434"
-
-# ── egress preflight: the sandbox's own domain allowlist ─────────────────
-
-# Every domain this project's sandbox is allowed to reach: the shipped
-# defaults (read from gen-settings.sh, which owns that list) plus the
-# project's own extraAllowedDomains. Read-only, and never a dependency on
-# any packet filter -- inside the sandbox there is none to inspect.
-sandbox_allowlist() {
-    local gen="$SCRIPT_DIR/sandbox/gen-settings.sh"
-    if [ -f "$gen" ]; then
-        sed -n '/^DEFAULT_DOMAINS=(/,/^)/p' "$gen" \
-            | sed -e '1d' -e '$d' -e 's/[[:space:]]//g' -e 's/"//g' \
-            | grep -v '^$' || true
-    fi
-    local sandbox_json="$REPO_DIR/.claude-dev/sandbox.json"
-    if [ -f "$sandbox_json" ]; then
-        jq -r '.network.extraAllowedDomains[]? // empty' "$sandbox_json" 2>/dev/null || true
-    fi
-}
-
-# host_allowed <host> -- exact match, or a single leading "*." wildcard,
-# the only two shapes the settings schema accepts.
-host_allowed() {
-    local host="$1" domain
-    while IFS= read -r domain; do
-        [ -z "$domain" ] && continue
-        [ "$domain" = "$host" ] && return 0
-        case "$domain" in
-            '*.'*)
-                case "$host" in
-                    *"${domain#\*}") return 0 ;;
-                esac
-                ;;
-        esac
-    done < <(sandbox_allowlist)
-    return 1
-}
 
 # route_status <route> -- prints "<live|degraded>\t<reason>". Shared by
 # `check` (all routes) and `run`'s preflight (one route, hard-fails on
@@ -240,13 +202,6 @@ route_status() {
     fi
     key_value="${!key_var:-}"
 
-    # A present key means the shell wrapper passed --<provider>-key-present
-    # to gen-settings.sh, which opened that inject host; only when there is
-    # no key does the shipped allowlist decide.
-    if [ -z "$key_value" ] && ! host_allowed "$host"; then
-        printf 'degraded\t%s is not in the sandbox allowlist -- add it to .claude-dev/sandbox.json network.extraAllowedDomains\n' "$host"
-        return 0
-    fi
     if [ -z "$key_value" ]; then
         printf 'degraded\t%s not set\n' "$key_var"
         return 0
