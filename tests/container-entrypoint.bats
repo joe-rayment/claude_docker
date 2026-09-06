@@ -19,6 +19,10 @@ REPO_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)"
 ENTRYPOINT="$REPO_ROOT/scripts/container/entrypoint.sh"
 SMOKE="$REPO_ROOT/scripts/container/smoke.sh"
 DOCKERFILE="$REPO_ROOT/Dockerfile"
+# The install logic the Dockerfile used to carry inline. It lives here so
+# it can be run for real (scripts/container/verify-rootfs.sh), and the
+# version pins moved with it.
+SETUP="$REPO_ROOT/scripts/container/setup.sh"
 IMAGE_WORKFLOW="$REPO_ROOT/.github/workflows/image.yml"
 
 # The extracted AppImage (squashfs-root/orca-ide). Overridable so the same
@@ -246,19 +250,20 @@ STUB
     [ ! -f "$proj2/.claude-dev/run/orca-web-url.txt" ]
 }
 
-@test "Dockerfile, smoke.sh and image.yml exist, the Dockerfile pins Orca 1.4.197 and the Claude Code version from install-claude.sh, and image.yml pushes to ghcr.io/joe-rayment/claude_orca" {
+@test "Dockerfile, setup.sh, smoke.sh and image.yml exist, setup.sh pins Orca 1.4.197 and the Claude Code version from install-claude.sh, and image.yml pushes to ghcr.io/joe-rayment/claude_orca" {
     [ -f "$DOCKERFILE" ]
+    [ -x "$SETUP" ]
     [ -x "$SMOKE" ]
     [ -f "$IMAGE_WORKFLOW" ]
     [ -x "$ENTRYPOINT" ]
 
-    # The Orca release the image extracts, pinned -- never 'latest'.
-    run grep -c '1\.4\.197' "$DOCKERFILE"
+    # The Orca release the image installs, pinned -- never 'latest'.
+    run grep -c '1\.4\.197' "$SETUP"
     [ "$status" -eq 0 ]
     [ "$output" != "0" ]
-    # claude-orca-qa2.6 re-points this one assertion: the AppImage cannot
+    # claude-orca-qa2.6 re-pointed this one assertion: the AppImage cannot
     # be extracted under QEMU, so the image installs the release .deb.
-    run grep -qE 'orca-ide_\$\{ORCA_VERSION\}_\$\{[A-Za-z_][A-Za-z0-9_]*\}\.deb' "$DOCKERFILE"
+    run grep -qE 'orca-ide_\$\{ORCA_VERSION\}_\$\{[A-Za-z_][A-Za-z0-9_]*\}\.deb' "$SETUP"
     [ "$status" -eq 0 ]
 
     # ONE Claude Code pin in this repo: scripts/install-claude.sh's.
@@ -266,7 +271,7 @@ STUB
     pin="$(sed -n 's/^CLAUDE_CODE_VERSION="\([^"]*\)".*/\1/p' \
         "$REPO_ROOT/scripts/install-claude.sh" | head -1)"
     [ -n "$pin" ]
-    run grep -qF "$pin" "$DOCKERFILE"
+    run grep -qF "$pin" "$SETUP"
     [ "$status" -eq 0 ]
 
     # The image runs the entrypoint under tini.

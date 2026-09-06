@@ -226,8 +226,11 @@ Deeper documentation lives in [knowledge-base/](knowledge-base/README.md).
 root of this template, so a folder that only ever runs `./claude-dev
 --update` moves to a new image with the pull.
 
-- `Dockerfile` — Ubuntu 24.04 with pinned Orca Linux, Claude Code, beads,
-  bats and Node 22. This template lands at `/opt/claude-orca`.
+- `Dockerfile` — Ubuntu 24.04. It only copies and calls
+  `scripts/container/setup.sh`, which carries every pin (Orca Linux,
+  Claude Code, beads, bats, Node 22) and is run for real inside a 24.04
+  chroot by `scripts/container/verify-rootfs.sh`. This template lands at
+  `/opt/claude-orca`.
 - `scripts/container/entrypoint.sh` — runs as PID 1 under tini: drops to
   the `agent` user, config-syncs, starts `orca-ide --serve`, and writes the
   browser URL to `<project>/.claude-dev/run/orca-web-url.txt` (mode 600 —
