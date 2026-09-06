@@ -1,4 +1,4 @@
-## Orca CLI mode (opt-in, currently ON)
+## Orca CLI mode (on by default for new folders)
 
 `.claude-dev/sandbox.json` has `{"orca": {"cli": true}}`, so this project's
 sandbox can reach the Orca control socket and the `orca-cli` /
