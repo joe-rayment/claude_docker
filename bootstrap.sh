@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 #
 # claude_orca bootstrap -- run once per project folder (idempotent).
-# Everything it installs lands under <project>/.claude-dev: the template
-# clone, sandbox-runtime, Claude Code, Orca.app, and the bin/ symlinks the
-# sandbox PATH leads with. There is no central install and no central Orca
-# -- the only Orca for this project is the sandboxed one in the folder
-# (V1, claude-orca-qt9.1; see .claude/plans/orca-port.md S9).
+#
+# v3 (claude-orca-qa2.2; see .claude/plans/container-v3.md S5): the Mac
+# installs almost nothing. Everything an agent runs lives inside one Linux
+# VM per project, started from the pinned image by Apple's `container`, so
+# all this script leaves on the Mac is <project>/.claude-dev/{template,
+# bin,home,run,state} -- no Homebrew bundle, no sandbox-runtime, no Orca
+# DMG, and no shell-rc hook.
 #
 #   cd /path/to/your/project
 #   gh api repos/joe-rayment/claude_orca/contents/bootstrap.sh \
@@ -14,15 +16,8 @@
 # Or bootstrap a different directory:
 #   ... | bash -s -- /path/to/project
 #
-# CI/Linux escape hatches: CLAUDE_ORCA_SKIP_BREW, CLAUDE_ORCA_SKIP_CLAUDE,
-# CLAUDE_ORCA_SKIP_ORCA_DMG, CLAUDE_ORCA_SKIP_SELFTEST -- each skips only
-# its own step, and claude-dev --doctor reports what was skipped.
-#
-# Every dependency and precondition is checked in the preflight below,
-# BEFORE the first mkdir/clone/install -- so a missing tool or an
-# unwritable rc file costs nothing and leaves nothing behind. What can be
-# fixed safely is fixed here (brew install gh, the Xcode CLT dialog);
-# anything that needs you prints the exact command to paste and exits 1.
+# Every precondition is checked in the preflight below, BEFORE the first
+# mkdir/clone -- so a missing tool costs nothing and leaves nothing behind.
 # This script is piped into bash, so stdin is the script itself: it never
 # prompts, it only instructs.
 
@@ -30,8 +25,6 @@ set -Eeuo pipefail
 
 CURRENT_STEP=""
 
-# Every install step announces itself through step(), so the ERR trap can
-# name the one that died instead of leaving a bare non-zero exit.
 step() {
     CURRENT_STEP="$*"
     echo "==> $*"
@@ -68,39 +61,58 @@ if ! have git; then
     exit 1
 fi
 
-# CLAUDE_ORCA_SKIP_BREW=1 (Linux/CI hosts with no Homebrew) skips this
-# requirement too, not just the `brew bundle` call below -- otherwise the
-# skip flag was useless: bootstrap.sh died here before ever reaching it.
-if [ "${CLAUDE_ORCA_SKIP_BREW:-0}" != "1" ] && ! have brew; then
+# Apple's `container` runs one lightweight Linux VM per container and needs
+# macOS 26 on Apple silicon. There is no fallback: Docker Desktop is not
+# what this template drives, and an Intel Mac cannot run it at all.
+if [ "$UNAME_S" != "Darwin" ]; then
     {
-        echo "Error: brew (Homebrew) is required but was not found on PATH."
-        if [ "$UNAME_S" = "Darwin" ]; then
-            echo "  Install it (it will ask for your password):"
-            echo '    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
-        else
-            echo "  This host is not macOS. Install Homebrew, or set CLAUDE_ORCA_SKIP_BREW=1"
-            echo "  to skip every brew step."
-        fi
+        echo "Error: claude_orca needs macOS 26 or newer on Apple silicon -- this host reports $UNAME_S."
+        echo "  Everything an agent runs lives in a Linux VM started by Apple's 'container'"
+        echo "  CLI, which exists only on macOS."
+    } >&2
+    exit 1
+fi
+
+UNAME_M="$(uname -m)"
+if [ "$UNAME_M" != "arm64" ] && [ "$UNAME_M" != "aarch64" ]; then
+    {
+        echo "Error: claude_orca needs Apple silicon -- this Mac reports $UNAME_M."
+        echo "  Apple's 'container' CLI does not support Intel Macs."
+    } >&2
+    exit 1
+fi
+
+MACOS_VERSION="$(sw_vers -productVersion 2>/dev/null || echo 0)"
+MACOS_MAJOR="${MACOS_VERSION%%.*}"
+case "$MACOS_MAJOR" in
+    ''|*[!0-9]*) MACOS_MAJOR=0 ;;
+esac
+if [ "$MACOS_MAJOR" -lt 26 ]; then
+    {
+        echo "Error: claude_orca needs macOS 26 or newer -- this Mac reports $MACOS_VERSION."
+        echo "  Apple's 'container' CLI requires macOS 26."
+    } >&2
+    exit 1
+fi
+
+# A .pkg install needs an admin password, so it is instructed, never run.
+if ! have container; then
+    {
+        echo "Error: Apple's 'container' CLI is required but was not found on PATH."
+        echo "  Download the signed installer (container-*-installer-signed.pkg) from:"
+        echo "    https://github.com/apple/container/releases"
+        echo "  Then install it (it will ask for your password):"
+        echo "    sudo installer -pkg ~/Downloads/container-installer-signed.pkg -target /"
         echo "  $RERUN_NOTE"
     } >&2
     exit 1
 fi
 
-# gh is the one dependency bootstrap can safely install for you: Homebrew
-# is already present by this point on any host that has it.
-if ! have gh && have brew; then
-    step "Installing the GitHub CLI (brew install gh)"
-    brew install gh || true
-fi
-
 if ! have gh; then
     {
         echo "Error: gh is required but was not found on PATH."
-        if [ "$UNAME_S" = "Darwin" ]; then
-            echo "  Install it:  brew install gh"
-        else
-            echo "  Install it from https://github.com/cli/cli#installation"
-        fi
+        echo "  Install it:  brew install gh"
+        echo "  Or from https://github.com/cli/cli#installation"
         echo "  $RERUN_NOTE"
     } >&2
     exit 1
@@ -110,72 +122,6 @@ if ! gh auth status >/dev/null 2>&1; then
     {
         echo "Error: gh is not authenticated -- run 'gh auth login' first."
         echo "  Authenticate:  gh auth login --web"
-        echo "  $RERUN_NOTE"
-    } >&2
-    exit 1
-fi
-
-# A no-sudo reclaim of an rc file that exists but is not writable -- see
-# rc_reclaim in scripts/launcher.sh, which this deliberately duplicates:
-# the template that carries that copy has not been cloned yet at preflight
-# time. Deleting a file needs write permission on its DIRECTORY, not on the
-# file, so a root-owned-but-readable rc file can be rebuilt in place with
-# identical contents and our own ownership. Returns 1 silently when that
-# cannot apply, and the instructions below take over.
-rc_reclaim() {
-    local file="$1" dir tmp
-    [ -e "$file" ] || return 1
-    [ ! -w "$file" ] || return 1
-    [ -r "$file" ] || return 1
-
-    dir="$(dirname "$file")"
-    [ -w "$dir" ] || return 1
-
-    tmp="$(mktemp "$dir/.claude-orca-reclaim.XXXXXX")" || return 1
-    if ! cat "$file" > "$tmp" 2>/dev/null; then
-        rm -f "$tmp"
-        return 1
-    fi
-    if ! rm -f "$file" 2>/dev/null; then
-        rm -f "$tmp"
-        return 1
-    fi
-    mv "$tmp" "$file"
-    chmod 644 "$file"
-
-    echo "==> Reclaimed $file: it was not writable (likely left root-owned by an installer); rebuilt with identical contents, now owned by $(id -un)" >&2
-}
-
-# Registration appends one marker-delimited block to each of these (see
-# rc_install_one in scripts/launcher.sh); a root-owned or read-only rc file
-# would fail there, after the clone and every install. Catch it here, while
-# there is still nothing on disk to clean up -- reclaiming what can be
-# reclaimed, and refusing only for what genuinely needs you. An absent file
-# is fine only if $HOME itself can be written.
-rc_unwritable=""
-if [ -n "${HOME:-}" ]; then
-    for rc in "$HOME/.zprofile" "$HOME/.zshrc" "$HOME/.bash_profile"; do
-        if [ -e "$rc" ]; then
-            if [ ! -w "$rc" ]; then
-                rc_reclaim "$rc" || rc_unwritable="$rc_unwritable$rc
-"
-            fi
-        elif [ ! -w "$HOME" ]; then
-            rc_unwritable="$rc_unwritable$rc
-"
-        fi
-    done
-fi
-
-if [ -n "$rc_unwritable" ]; then
-    {
-        echo "Error: the claude_orca shell hook cannot be installed -- these files are not writable:"
-        printf '%s' "$rc_unwritable" | while IFS= read -r rc; do
-            [ -n "$rc" ] || continue
-            echo "  $rc"
-            echo "    Check who owns it:   ls -l $rc"
-            echo "    Reclaim it:          sudo chown $(id -un) $rc && chmod u+w $rc"
-        done
         echo "  $RERUN_NOTE"
     } >&2
     exit 1
@@ -196,6 +142,26 @@ if [ ! -w "$PROJECT" ]; then
     exit 1
 fi
 
+# The container service (one per Mac, not per project). Idempotent: a
+# second call reports that it is already running, which is not an error.
+step "Starting the container service (container system start)"
+if ! service_out="$(container system start 2>&1)"; then
+    case "$service_out" in
+        *"already running"*|*"already started"*) ;;
+        *)
+            {
+                printf '%s\n' "$service_out"
+                echo "Error: 'container system start' failed."
+                echo "  Check it by hand:  container system status"
+                echo "  $RERUN_NOTE"
+            } >&2
+            exit 1
+            ;;
+    esac
+fi
+
+# --- install ---------------------------------------------------------------
+
 HOST="$PROJECT/.claude-dev"
 TEMPLATE_URL="${CLAUDE_ORCA_TEMPLATE_URL:-https://github.com/joe-rayment/claude_orca.git}"
 
@@ -209,28 +175,10 @@ else
     git clone --quiet "$TEMPLATE_URL" "$HOST/template"
 fi
 
-if [ "${CLAUDE_ORCA_SKIP_BREW:-0}" != "1" ]; then
-    step "brew bundle (git, gh, jq, ripgrep, node, bats-core, beads)"
-    brew bundle --file "$HOST/template/Brewfile"
-fi
-
-step "Installing sandbox-runtime (srt)"
-"$HOST/template/scripts/install-srt.sh" "$HOST"
-
-step "Installing Claude Code"
-"$HOST/template/scripts/install-claude.sh" "$HOST"
-
-step "Installing Orca"
-"$HOST/template/scripts/install-orca.sh" "$HOST"
-
-step "Verifying tools"
-"$HOST/template/scripts/install-tools.sh"
-
 # The wrappers, as relative symlinks into the template clone: a `--update`
 # pull picks up fixes with no re-bootstrap, and the whole folder stays
-# movable. V5 (claude-orca-qt9.5): the list lives in link-bin.sh, which
-# `claude-dev --update` re-runs from the pulled template -- so an entry
-# point added upstream reaches existing folders too.
+# movable. The list lives in link-bin.sh, which `claude-dev --update`
+# re-runs from the pulled template.
 "$HOST/template/scripts/link-bin.sh" "$HOST"
 
 exec "$HOST/bin/claude-dev" register "$PROJECT"

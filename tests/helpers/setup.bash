@@ -49,6 +49,11 @@ setup_file() {
     # under $TEMPLATE_SRC and, later, under <project>/.claude-dev/template.
     [ -d "$REPO_ROOT/config" ] && cp -R "$REPO_ROOT/config" "$TEMPLATE_SRC/config"
     [ -d "$REPO_ROOT/bin" ] && cp -R "$REPO_ROOT/bin" "$TEMPLATE_SRC/bin"
+    # v3 (claude-orca-qa2.2): the image pin the launcher reads out of the
+    # folder's own template clone, and the Dockerfile its build fallback
+    # points `container build -f` at.
+    [ -f "$REPO_ROOT/IMAGE_TAG" ] && cp "$REPO_ROOT/IMAGE_TAG" "$TEMPLATE_SRC/IMAGE_TAG"
+    [ -f "$REPO_ROOT/Dockerfile" ] && cp "$REPO_ROOT/Dockerfile" "$TEMPLATE_SRC/Dockerfile"
 
     git -C "$TEMPLATE_SRC" add -A >/dev/null 2>&1
     git -C "$TEMPLATE_SRC" \
@@ -171,11 +176,162 @@ if [ "$1" = "auth" ] && [ "$2" = "token" ]; then
     printf '%s\n' "${STUB_GH_TOKEN:-gho_stubfaketoken0123456789abcdef}"
     exit 0
 fi
+# v3 (claude-orca-qa2.2): `container registry login ghcr.io` needs a
+# username, and the launcher reads it from `gh api user --jq .login`.
+if [ "$1" = "api" ] && [ "$2" = "user" ]; then
+    [ "${STUB_GH_UNAUTH:-}" = "1" ] && exit 1
+    printf '%s\n' "${STUB_GH_LOGIN:-joe-rayment}"
+    exit 0
+fi
 if [ "$1" = "api" ]; then
     echo ""
     exit 0
 fi
 exit 0
+STUB
+    chmod +x "$1"
+}
+
+# --- v3 stubs (claude-orca-qa2.2) ----------------------------------------
+#
+# The Mac half of v3 drives Apple's `container` CLI, `open`, `sw_vers` and
+# `uname`; none of them exists (or means anything) on this Linux box, so
+# each is faked here. `container` is the substantial one: it logs every
+# invocation's argv as one line to $CONTAINER_STUB_LOG and keeps its whole
+# world -- service up, image present, per-container state -- as marker
+# files under $CONTAINER_STUB_STATE, so a test can put the folder into any
+# state ("stopped", no image) by touching one file.
+
+write_stub_container() {
+    cat > "$1" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${CONTAINER_STUB_LOG:-/dev/null}"
+state="${CONTAINER_STUB_STATE:-${TMPDIR:-/tmp}/container-stub}"
+mkdir -p "$state/containers"
+
+case "$1 ${2:-}" in
+    "system start")
+        if [ -f "$state/service" ]; then
+            echo "container system is already running"
+        else
+            : > "$state/service"
+        fi
+        exit 0 ;;
+    "system status")
+        [ "${CLAUDE_ORCA_TEST_SERVICE_DOWN:-0}" = "1" ] && exit 1
+        echo "apiserver is running"
+        exit 0 ;;
+    "system stop")
+        rm -f "$state/service"; exit 0 ;;
+    "image pull")
+        [ "${CLAUDE_ORCA_TEST_PULL_FAIL:-0}" = "1" ] && { echo "pull failed" >&2; exit 1; }
+        printf '%s\n' "$3" > "$state/image"; exit 0 ;;
+    "image ls"|"image list"|"image inspect")
+        [ -f "$state/image" ] || exit 1
+        echo "NAME                                  TAG"
+        printf '%-38s%s\n' "$(sed 's/:[^:]*$//' "$state/image")" "$(sed 's/^.*://' "$state/image")"
+        exit 0 ;;
+    "registry login")
+        # The password must arrive on stdin -- never in argv.
+        cat > "$state/registry-password"
+        printf '%s\n' "$*" > "$state/registry-argv"
+        exit 0 ;;
+esac
+
+cmd="$1"; shift
+case "$cmd" in
+    build)
+        tag=""; prev=""
+        for a in "$@"; do
+            [ "$prev" = "-t" ] && tag="$a"
+            prev="$a"
+        done
+        printf '%s\n' "${tag:-local}" > "$state/image"
+        exit 0 ;;
+    run)
+        name=""; port=""; proj=""; prev=""
+        for a in "$@"; do
+            case "$prev" in
+                --name) name="$a" ;;
+                -e|--env)
+                    case "$a" in
+                        ORCA_PORT=*)   port="${a#ORCA_PORT=}" ;;
+                        PROJECT_DIR=*) proj="${a#PROJECT_DIR=}" ;;
+                    esac ;;
+            esac
+            prev="$a"
+        done
+        [ -n "$name" ] || { echo "container: run needs --name" >&2; exit 1; }
+        echo running > "$state/containers/$name"
+        # Stands in for the entrypoint (scripts/container/entrypoint.sh):
+        # Orca comes up and publishes its pairing URL and bound port.
+        if [ -n "$proj" ]; then
+            mkdir -p "$proj/.claude-dev/run"
+            printf 'http://127.0.0.1:%s/web-index.html#pairing=stub\n' "$port" \
+                > "$proj/.claude-dev/run/orca-web-url.txt"
+            printf '%s\n' "$port" > "$proj/.claude-dev/run/port"
+        fi
+        echo "$name"
+        exit 0 ;;
+    start)
+        [ -f "$state/containers/$1" ] || exit 1
+        echo running > "$state/containers/$1"; exit 0 ;;
+    stop)
+        [ -f "$state/containers/$1" ] || exit 1
+        echo stopped > "$state/containers/$1"; exit 0 ;;
+    rm|delete)
+        rm -f "$state/containers/$1"; exit 0 ;;
+    ls|list|ps)
+        [ "${CLAUDE_ORCA_TEST_SERVICE_DOWN:-0}" = "1" ] && exit 1
+        printf '%-38s%s\n' "NAME" "STATE"
+        for f in "$state"/containers/*; do
+            [ -e "$f" ] || continue
+            printf '%-38s%s\n' "$(basename "$f")" "$(cat "$f")"
+        done
+        exit 0 ;;
+    exec|logs)
+        exit 0 ;;
+esac
+exit 0
+STUB
+    chmod +x "$1"
+}
+
+# Records the URL macOS was asked to hand to the default browser.
+write_stub_open() {
+    cat > "$1" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$1" >> "${OPEN_STUB_LOG:-/dev/null}"
+exit "${STUB_OPEN_EXIT:-0}"
+STUB
+    chmod +x "$1"
+}
+
+write_stub_sw_vers() {
+    cat > "$1" <<'STUB'
+#!/usr/bin/env bash
+case "$1" in
+    -productVersion) printf '%s\n' "${CLAUDE_ORCA_TEST_MACOS:-26.0}" ;;
+    -productName)    printf 'macOS\n' ;;
+    *)               printf 'ProductName:\tmacOS\nProductVersion:\t%s\n' "${CLAUDE_ORCA_TEST_MACOS:-26.0}" ;;
+esac
+exit 0
+STUB
+    chmod +x "$1"
+}
+
+# Same shape as the darwin_bin stub in tests/register-flow.bats: answer
+# only what a test has explicitly pinned ($STUB_UNAME_S / $STUB_UNAME_M),
+# and defer everything else to the real uname -- so this stub sitting on
+# PATH for every suite changes nothing until a test asks it to.
+write_stub_uname() {
+    cat > "$1" <<'STUB'
+#!/usr/bin/env bash
+case "$1" in
+    -s) [ -n "${STUB_UNAME_S:-}" ] && { printf '%s\n' "$STUB_UNAME_S"; exit 0; } ;;
+    -m) [ -n "${STUB_UNAME_M:-}" ] && { printf '%s\n' "$STUB_UNAME_M"; exit 0; } ;;
+esac
+PATH="${ORIGINAL_PATH:-/usr/bin:/bin}" exec uname "$@"
 STUB
     chmod +x "$1"
 }
@@ -504,6 +660,22 @@ setup() {
     write_stub_node "$STUB_BIN/node"
     write_stub_curl "$STUB_BIN/curl"
     write_stub_hdiutil "$STUB_BIN/hdiutil"
+
+    # v3 (claude-orca-qa2.2): the Mac tooling the v3 bootstrap and launcher
+    # drive. `container`, `open` and `sw_vers` do not exist on this box at
+    # all, and the `uname` stub is a pass-through until a test pins it, so
+    # putting all four on PATH for every suite is inert.
+    export CONTAINER_STUB_LOG="$BATS_TEST_TMPDIR/container.log"
+    : > "$CONTAINER_STUB_LOG"
+    export CONTAINER_STUB_STATE="$BATS_TEST_TMPDIR/container-state"
+    mkdir -p "$CONTAINER_STUB_STATE/containers"
+    export OPEN_STUB_LOG="$BATS_TEST_TMPDIR/open.log"
+    : > "$OPEN_STUB_LOG"
+    write_stub_container "$STUB_BIN/container"
+    write_stub_open "$STUB_BIN/open"
+    write_stub_sw_vers "$STUB_BIN/sw_vers"
+    write_stub_uname "$STUB_BIN/uname"
+
     export PATH="$STUB_BIN:$PATH"
 
     # V7 (claude-orca-2qo): `claude-dev register` now runs `bd init`
@@ -561,6 +733,21 @@ setup() {
 # real bootstrap.sh with brew/npm/gh/node/curl/hdiutil stubbed -- then
 # drops in a working srt stub, since the stubbed `npm install` only
 # fabricates a package.json, not an executable.
+# v3 (claude-orca-qa2.2): the same fixture for the container world -- a git
+# project put through the real bootstrap.sh with the Mac tooling stubbed.
+# uname is pinned to Apple silicon for the bootstrap call only (a test that
+# exports STUB_UNAME_S/STUB_UNAME_M itself wins), and stdout is left alone
+# so `run make_project_v3 <dir>` can assert on what the install printed.
+make_project_v3() {
+    local dir="$1"
+    mkdir -p "$dir"
+    git -C "$dir" init --quiet -b main >/dev/null 2>&1
+    git -C "$dir" -c user.email=test@example.com -c user.name=test \
+        commit --quiet --allow-empty -m init >/dev/null 2>&1
+    STUB_UNAME_S="${STUB_UNAME_S:-Darwin}" STUB_UNAME_M="${STUB_UNAME_M:-arm64}" \
+        bash "$REPO_ROOT/bootstrap.sh" "$dir"
+}
+
 make_project() {
     local dir="$1"
     mkdir -p "$dir"
@@ -575,7 +762,8 @@ make_project() {
     # fabricates a package.json, never an executable at .bin/srt.)
     write_stub_srt "$dir/.claude-dev/srt/node_modules/.bin/srt"
 
-    bash "$REPO_ROOT/bootstrap.sh" "$dir" >/dev/null
+    STUB_UNAME_S="${STUB_UNAME_S:-Darwin}" STUB_UNAME_M="${STUB_UNAME_M:-arm64}" \
+        bash "$REPO_ROOT/bootstrap.sh" "$dir" >/dev/null
 }
 
 # Adds a linked worktree as a sibling of $1 (Orca's default layout:
@@ -673,6 +861,7 @@ tree_checksum() {
     {
         find "$1" -not -path '*/.git*' \
             -not -name 'selftest.json' -not -name 'srt-debug-*.log' \
+            -not -name 'container.log' \
             -type f -exec sha256sum {} + 2>/dev/null
         find "$1" -not -path '*/.git*' -type l 2>/dev/null | while IFS= read -r link; do
             printf 'SYMLINK %s -> %s\n' "$link" "$(readlink "$link")"

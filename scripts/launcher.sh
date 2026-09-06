@@ -5,16 +5,20 @@
 # central install, no central Orca (V1, claude-orca-qt9.1; see
 # .claude/plans/orca-port.md S9).
 #
+# v3 (claude-orca-qa2.2): the commands below the "v3" banner near the
+# bottom are the live ones -- they drive one Apple `container` VM per
+# folder (see .claude/plans/container-v3.md). Everything above it is the
+# v2 Seatbelt launcher, kept only until the S3 deletion slice removes it;
+# nothing on the v3 path calls any of it.
+#
 # Usage:
+#   claude-dev                    Open this folder's Orca in a browser
 #   claude-dev [register] [dir]   Register a project (default: current dir)
-#   claude-dev setup              Guided walk-through: identity, keys, beads, Orca
-#   claude-dev open               Open this folder's Orca, sandboxed
-#   claude-dev --how-to-run       Print how to start this folder's Orca
-#   claude-dev --doctor           Show presence of required tools
-#   claude-dev --update           Pull the template, re-pin the tools, re-sync, re-test
+#   claude-dev stop|shell|logs    Stop it / a shell inside it / its output
+#   claude-dev --how-to-run       Print the URL and the two commands
+#   claude-dev --doctor           CLI, service, image, container, port, web url
+#   claude-dev --update           Pull the template and the image, recreate
 #   claude-dev --teardown         Snapshot beads, remove this folder's install
-#   claude-dev --uninstall        Teardown, plus the shell hook
-#   claude-dev --remove-v1        Remove the pre-v2 central install (see v1-leftovers.sh)
 #   claude-dev --help             Show this help
 #
 # Trust boundary v2 (see .claude/plans/orca-port.md S9.2): everything this
@@ -1095,42 +1099,572 @@ cmd_open() {
     echo "  log: $log"
 }
 
+# ===== v3: the Apple container launcher (claude-orca-qa2.2) ==============
+#
+# See .claude/plans/container-v3.md S5. The Mac side owns exactly four
+# things now: the folder's config (claude-orca.json), the port, the image,
+# and the container. Everything an agent runs is inside the VM, so none of
+# the Seatbelt machinery above is on this path -- no profile, no srt, no
+# self-test, no shell-rc hook.
+
+IMAGE_REPO="${CLAUDE_ORCA_IMAGE_REPO:-ghcr.io/joe-rayment/claude_orca}"
+
+# The pinned tag lives in one file at the template root, so a folder that
+# only ever runs `claude-dev --update` moves to the new image with the pull.
+image_tag() {
+    local f tag=""
+    for f in "$TEMPLATE_ROOT/IMAGE_TAG" "$HOST_DIR/template/IMAGE_TAG"; do
+        if [ -f "$f" ]; then
+            tag="$(tr -d '[:space:]' < "$f")"
+            break
+        fi
+    done
+    if [ -z "$tag" ]; then tag="latest"; fi
+    printf '%s\n' "$tag"
+}
+
+image_ref()      { printf '%s:%s\n' "$IMAGE_REPO" "$(image_tag)"; }
+image_registry() { printf '%s\n' "${IMAGE_REPO%%/*}"; }
+container_name() { printf 'claude-orca-%s\n' "$(derive_project_name "$1")"; }
+
+# Every `container` invocation goes through ctr(), so there is exactly one
+# place that knows how to reach the runtime and one record of what was
+# asked of it. GH_TOKEN rides into the VM as an env var, so the copy kept
+# on disk has the value struck out; nothing else ever puts a secret in
+# argv (the registry password goes in on stdin).
+CTR_LOG=""
+
+ctr_init() {
+    mkdir -p "$1/.claude-dev/run" 2>/dev/null || true
+    CTR_LOG="$1/.claude-dev/run/container.log"
+}
+
+ctr_log_line() {
+    local out="" a
+    for a in "$@"; do
+        case "$a" in
+            GH_TOKEN=*) a="GH_TOKEN=***" ;;
+        esac
+        out="$out $a"
+    done
+    printf 'container%s\n' "$out"
+}
+
+ctr() {
+    if [ -n "${CTR_LOG:-}" ]; then
+        ctr_log_line "$@" >> "$CTR_LOG" 2>/dev/null || true
+    fi
+    command container "$@"
+}
+
+orca_json() { printf '%s\n' "$1/.claude-dev/claude-orca.json"; }
+
+# One scalar out of claude-orca.json, empty when absent, null or unreadable.
+json_get() {
+    local json v=""
+    json="$(orca_json "$1")"
+    if [ -f "$json" ] && command -v jq >/dev/null 2>&1; then
+        v="$(jq -r "$2 // empty" "$json" 2>/dev/null || true)"
+    fi
+    if [ "$v" = "null" ]; then v=""; fi
+    printf '%s\n' "$v"
+}
+
+# A free port is one nothing answers on: bash's own /dev/tcp connect,
+# which needs no lsof/nc and no listener of our own.
+port_is_free() {
+    if ( exec 3<>"/dev/tcp/127.0.0.1/$1" ) 2>/dev/null; then
+        return 1
+    fi
+    return 0
+}
+
+# Chosen once, at register, and reused forever after: the same number has
+# to be free on both sides, because the pairing code the browser gets
+# advertises ws://127.0.0.1:<port>.
+choose_port() {
+    local dir="$1" port tries=0
+    port="$(json_get "$dir" '.port')"
+    case "$port" in
+        ''|*[!0-9]*) port="" ;;
+    esac
+    if [ -n "$port" ]; then
+        printf '%s\n' "$port"
+        return 0
+    fi
+    port="${CLAUDE_ORCA_PORT_BASE:-6768}"
+    while [ "$tries" -lt 200 ]; do
+        if port_is_free "$port"; then
+            break
+        fi
+        port=$((port + 1))
+        tries=$((tries + 1))
+    done
+    printf '%s\n' "$port"
+}
+
+persist_port() {
+    local dir="$1" port="$2" json tmp
+    json="$(orca_json "$dir")"
+    mkdir -p "$dir/.claude-dev/run"
+    printf '%s\n' "$port" > "$dir/.claude-dev/run/port"
+    if [ -f "$json" ] && command -v jq >/dev/null 2>&1; then
+        tmp="$json.tmp"
+        if jq --argjson p "$port" '.port = $p' "$json" > "$tmp" 2>/dev/null; then
+            mv "$tmp" "$json"
+        else
+            rm -f "$tmp"
+        fi
+    fi
+}
+
+# The container's state word ("running", "stopped", ...) or empty when
+# there is no container by that name -- read from `container ls --all`,
+# header-driven so a column order change cannot silently invert it.
+container_state() {
+    local name="$1" out=""
+    out="$(ctr ls --all 2>/dev/null)" || out=""
+    [ -n "$out" ] || return 0
+    printf '%s\n' "$out" | awk -v want="$name" '
+        NR == 1 {
+            for (i = 1; i <= NF; i++) {
+                if ($i == "NAME" || $i == "ID") namec = i
+                if ($i == "STATE" || $i == "STATUS") statec = i
+            }
+            if (!namec) namec = 1
+            if (!statec) statec = NF
+            next
+        }
+        $namec == want { print tolower($statec); exit }
+    '
+}
+
+# The entrypoint writes <project>/.claude-dev/run/orca-web-url.txt (0600 --
+# the fragment carries a pairing code) once Orca is serving. That file is
+# the handshake between the two halves: everything before it is the Mac
+# starting a VM, everything after is a browser talking to Orca.
+wait_for_web_url() {
+    local dir="$1" file timeout waited=0 url=""
+    file="$dir/.claude-dev/run/orca-web-url.txt"
+    timeout="${CLAUDE_ORCA_WEBURL_TIMEOUT:-120}"
+    while [ "$waited" -lt "$timeout" ]; do
+        if [ -s "$file" ]; then
+            url="$(head -1 "$file")"
+            if [ -n "$url" ]; then
+                printf '%s\n' "$url"
+                return 0
+            fi
+        fi
+        if [ "$waited" = "0" ]; then
+            echo "Waiting for Orca to come up inside the container..." >&2
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+    return 1
+}
+
+open_url() {
+    local url="$1"
+    if [ "${CLAUDE_ORCA_OPEN:-1}" = "0" ]; then
+        return 0
+    fi
+    open "$url" || echo "Could not run 'open' -- paste this into a browser: $url" >&2
+}
+
+# The whole hand-off, in three lines: where Orca is, how to get back to
+# it, and how to get a terminal inside the VM.
+print_run_it_block_v3() {
+    local dir="$1" url="${2:-}" file
+    file="$dir/.claude-dev/run/orca-web-url.txt"
+    if [ -z "$url" ] && [ -f "$file" ]; then
+        url="$(head -1 "$file")"
+    fi
+    cat <<RUNIT
+
+How to run it:
+  Orca (open in a browser):  $url
+  Reopen it later:           ./claude-dev
+  A terminal inside it:      ./claude-dev shell
+RUNIT
+}
+
+# `container run -d`. The project is mounted at its own absolute path, so
+# every path Orca stores and every path an agent prints means the same
+# thing on both sides; the folder-local home becomes /home/agent, so
+# credentials and Orca state live and die with the folder.
+container_create() {
+    local dir="$1" name="$2" port="$3" ref token cpus memory mount
+    ref="$(image_ref)"
+    token="$(gh auth token 2>/dev/null || true)"
+    mkdir -p "$dir/.claude-dev/run" "$dir/.claude-dev/home"
+    # Never open a stale pairing URL from a previous container.
+    rm -f "$dir/.claude-dev/run/orca-web-url.txt"
+
+    set -- run -d --name "$name" \
+        --volume "$dir:$dir" \
+        --volume "$dir/.claude-dev/home:/home/agent" \
+        -p "127.0.0.1:$port:$port" \
+        -e "PROJECT_DIR=$dir" \
+        -e "ORCA_PORT=$port" \
+        -e "HOST_UID=$(id -u)" \
+        -e "GH_TOKEN=$token"
+
+    cpus="$(json_get "$dir" '.cpus')"
+    if [ -n "$cpus" ]; then
+        set -- "$@" --cpus "$cpus"
+    fi
+    memory="$(json_get "$dir" '.memory')"
+    if [ -n "$memory" ]; then
+        set -- "$@" --memory "$memory"
+    fi
+    # Extra mounts are read-only, always: they are outside the project, so
+    # the VM boundary is the only thing keeping them safe.
+    while IFS= read -r mount; do
+        if [ -n "$mount" ]; then
+            set -- "$@" --volume "$mount:ro"
+        fi
+    done <<EXTRA
+$(json_get "$dir" '.extraMounts[]?')
+EXTRA
+
+    set -- "$@" "$ref"
+    echo "==> Starting the container $name ($ref)"
+    ctr "$@" >/dev/null
+}
+
+cmd_open_v3() {
+    local dir="${1:-$PROJECT_SELF}" name port state url
+    [ -d "$dir" ] || { echo "Error: directory does not exist: $dir" >&2; return 1; }
+    dir="$(cd "$dir" && pwd -P)"
+    if [ ! -f "$(orca_json "$dir")" ]; then
+        echo "Error: $dir is not registered -- run './claude-dev register'" >&2
+        return 1
+    fi
+    ctr_init "$dir"
+
+    name="$(container_name "$dir")"
+    port="$(choose_port "$dir")"
+    persist_port "$dir" "$port"
+
+    state="$(container_state "$name")"
+    case "$state" in
+        running)
+            echo "Container $name is already running."
+            ;;
+        "")
+            container_create "$dir" "$name" "$port"
+            ;;
+        *)
+            echo "==> Starting $name (was $state)"
+            ctr start "$name" >/dev/null
+            ;;
+    esac
+
+    if ! url="$(wait_for_web_url "$dir")"; then
+        {
+            echo "Error: Orca did not publish a web URL within ${CLAUDE_ORCA_WEBURL_TIMEOUT:-120}s."
+            echo "  Look at what it printed:  ./claude-dev logs"
+            echo "  Serve log:                $dir/.claude-dev/run/orca-serve.log"
+        } >&2
+        return 1
+    fi
+
+    open_url "$url"
+    print_run_it_block_v3 "$dir" "$url"
+}
+
+cmd_register_v3() {
+    local dir="${1:-$PROJECT_SELF}" name port token user registry ref tmpl
+    [ -d "$dir" ] || { echo "Error: directory does not exist: $dir" >&2; return 1; }
+    dir="$(cd "$dir" && pwd -P)"
+    name="$(derive_project_name "$dir")"
+
+    mkdir -p "$dir/.claude-dev/home" "$dir/.claude-dev/run" "$dir/.claude-dev/state"
+    ctr_init "$dir"
+
+    # Defaults only if absent -- never reset a folder's own edits. cpus and
+    # memory null mean "whatever `container` defaults to"; extraMounts are
+    # host paths mounted read-only beside the project.
+    if [ ! -f "$(orca_json "$dir")" ]; then
+        cat > "$(orca_json "$dir")" <<'JSON'
+{"version":3,"port":null,"cpus":null,"memory":null,"extraMounts":[]}
+JSON
+    fi
+
+    seed_gitignore "$dir"
+    write_project_stub "$dir"
+    restore_beads_snapshot "$dir" "$name"
+    seed_git_identity "$dir"
+
+    port="$(choose_port "$dir")"
+    persist_port "$dir" "$port"
+    echo "Project '$name' registered at $dir (port $port)"
+
+    # The image is on GHCR, which needs a login even for a public package
+    # when pulled by tag from a private-by-default account. The token goes
+    # in on stdin: never in argv, never in the container log.
+    registry="$(image_registry)"
+    token="$(gh auth token 2>/dev/null || true)"
+    user="$(gh api user --jq .login 2>/dev/null || true)"
+    if [ -n "$token" ]; then
+        if printf '%s' "$token" \
+                | ctr registry login "$registry" --username "${user:-token}" --password-stdin \
+                  >/dev/null 2>&1; then
+            echo "Signed in to $registry as ${user:-the gh token}"
+        else
+            echo "Warning: 'container registry login $registry' failed -- the pull may fail too" >&2
+        fi
+    fi
+
+    ref="$(image_ref)"
+    tmpl="$dir/.claude-dev/template"
+    if [ ! -d "$tmpl" ]; then tmpl="$TEMPLATE_ROOT"; fi
+    echo "==> Pulling $ref"
+    if ! ctr image pull "$ref" >/dev/null 2>&1; then
+        echo "Pull failed -- building the image from $tmpl/Dockerfile instead (this takes a few minutes)"
+        if [ ! -f "$tmpl/Dockerfile" ]; then
+            echo "Error: no Dockerfile at $tmpl/Dockerfile -- re-run the bootstrap one-liner." >&2
+            return 1
+        fi
+        ctr build -t "$ref" -f "$tmpl/Dockerfile" "$tmpl"
+    fi
+
+    cmd_open_v3 "$dir"
+}
+
+cmd_stop_v3() {
+    local dir="${1:-$PROJECT_SELF}" name
+    dir="$(cd "$dir" && pwd -P)"
+    ctr_init "$dir"
+    name="$(container_name "$dir")"
+    ctr stop "$name" >/dev/null
+    echo "Stopped $name. './claude-dev' starts it again."
+}
+
+# A login shell in the VM, in the project directory -- the one place a
+# person runs `claude`, `bd` or `git` by hand in this design.
+cmd_shell_v3() {
+    local dir="${1:-$PROJECT_SELF}" name state
+    dir="$(cd "$dir" && pwd -P)"
+    ctr_init "$dir"
+    name="$(container_name "$dir")"
+    state="$(container_state "$name")"
+    if [ -z "$state" ]; then
+        echo "Error: no container $name -- run './claude-dev' first." >&2
+        return 1
+    fi
+    if [ "$state" != "running" ]; then
+        echo "==> Starting $name (was $state)"
+        ctr start "$name" >/dev/null
+    fi
+    ctr exec -it --workdir "$dir" "$name" zsh -l
+}
+
+cmd_logs_v3() {
+    local dir="${1:-$PROJECT_SELF}" name
+    dir="$(cd "$dir" && pwd -P)"
+    ctr_init "$dir"
+    name="$(container_name "$dir")"
+    ctr logs -f "$name"
+}
+
+doctor_row() {
+    printf '  [%-7s] %-17s %s\n' "$1" "$2" "$3"
+}
+
+# Six rows, one per thing that has to be true for this folder to open:
+# the CLI, the service, the image, the container, the port and the URL the
+# entrypoint published. Exits 2 on any finding, so it is usable in a script.
+cmd_doctor_v3() {
+    local dir="$PROJECT_SELF" rc=0 ref name state port url_file
+    ref="$(image_ref)"
+
+    if command -v container >/dev/null 2>&1; then
+        doctor_row ok "container CLI" "$(command -v container)"
+    else
+        doctor_row missing "container CLI" "install it from https://github.com/apple/container/releases"
+        rc=2
+    fi
+
+    if [ -d "$dir/.claude-dev" ]; then
+        ctr_init "$dir"
+    fi
+
+    if ctr system status >/dev/null 2>&1; then
+        doctor_row ok "container service" "running"
+    else
+        doctor_row missing "container service" "start it: container system start"
+        rc=2
+    fi
+
+    if ctr image inspect "$ref" >/dev/null 2>&1; then
+        doctor_row ok "image" "$ref"
+    else
+        doctor_row missing "image" "$ref (pull it: ./claude-dev --update)"
+        rc=2
+    fi
+
+    if [ ! -f "$(orca_json "$dir")" ]; then
+        doctor_row missing "project" "$dir is not registered (run the bootstrap one-liner)"
+        return 2
+    fi
+
+    name="$(container_name "$dir")"
+    state="$(container_state "$name")"
+    if [ -z "$state" ]; then
+        doctor_row missing "container" "$name does not exist (run ./claude-dev)"
+        rc=2
+    elif [ "$state" = "running" ]; then
+        doctor_row ok "container" "$name (running)"
+    else
+        doctor_row warn "container" "$name ($state) -- ./claude-dev starts it"
+    fi
+
+    port=""
+    if [ -f "$dir/.claude-dev/run/port" ]; then
+        port="$(head -1 "$dir/.claude-dev/run/port")"
+    fi
+    if [ -n "$port" ]; then
+        doctor_row ok "port" "$port (published on 127.0.0.1)"
+    else
+        doctor_row missing "port" "no $dir/.claude-dev/run/port -- run './claude-dev register'"
+        rc=2
+    fi
+
+    # The URL itself is a credential (the fragment carries the pairing
+    # code), so the doctor names the file, never its contents.
+    url_file="$dir/.claude-dev/run/orca-web-url.txt"
+    if [ -s "$url_file" ]; then
+        doctor_row ok "web url" "published -- $url_file"
+    else
+        doctor_row missing "web url" "not published yet -- $url_file"
+        rc=2
+    fi
+
+    return "$rc"
+}
+
+cmd_update_v3() {
+    local dir="${1:-$PROJECT_SELF}" tmpl before after ref name state
+    tmpl="$HOST_DIR/template"
+    if [ ! -d "$tmpl/.git" ]; then
+        echo "Error: no template clone at $tmpl -- re-run the bootstrap one-liner." >&2
+        return 1
+    fi
+    dir="$(cd "$dir" && pwd -P)"
+    ctr_init "$dir"
+
+    echo "==> Updating the template at $tmpl"
+    before="$(git -C "$tmpl" rev-parse HEAD 2>/dev/null || echo unknown)"
+    git -C "$tmpl" pull --ff-only
+    after="$(git -C "$tmpl" rev-parse HEAD)"
+    if [ "$before" = "$after" ]; then
+        echo "  template: already up to date (${after:0:7})"
+    else
+        echo "  template: ${before:0:7} -> ${after:0:7}"
+    fi
+
+    echo "==> Relinking $HOST_DIR/bin"
+    "$SCRIPT_DIR/link-bin.sh" "$HOST_DIR"
+
+    ref="$(image_ref)"
+    echo "==> Pulling $ref"
+    if ! ctr image pull "$ref" >/dev/null 2>&1; then
+        echo "Warning: could not pull $ref -- keeping the image this folder already has" >&2
+    fi
+
+    # Recreate rather than restart: a new image only takes effect in a new
+    # container, and everything that matters is in the mounted folder.
+    name="$(container_name "$dir")"
+    state="$(container_state "$name")"
+    if [ -n "$state" ]; then
+        echo "==> Recreating $name"
+        ctr stop "$name" >/dev/null 2>&1 || true
+        ctr rm "$name" >/dev/null 2>&1 || true
+    fi
+    cmd_open_v3 "$dir"
+}
+
+cmd_teardown_v3() {
+    local purge=0 dir="$PROJECT_SELF" name project snap rc_file
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --purge-beads) purge=1 ;;
+            -*) echo "Unknown option: $1" >&2; return 1 ;;
+            *)  dir="$1" ;;
+        esac
+        shift
+    done
+    [ -d "$dir" ] || { echo "Error: directory does not exist: $dir" >&2; return 1; }
+    dir="$(cd "$dir" && pwd -P)"
+    ctr_init "$dir"
+
+    project="$(derive_project_name "$dir")"
+    name="$(container_name "$dir")"
+    ctr stop "$name" >/dev/null 2>&1 || true
+    ctr rm "$name" >/dev/null 2>&1 || true
+
+    snap="$(snapshot_beads "$dir" "$project")"
+    if [ -n "$snap" ]; then
+        echo "Beads snapshot saved to $snap"
+    fi
+
+    rm -rf "$dir/.claude-dev"
+    rm -f "$dir/claude-dev"
+    gitignore_unseed "$dir"
+
+    # A folder upgraded from v2 may still carry the shell hook, and v3
+    # never wants one: nothing on the Mac runs an agent any more.
+    for rc_file in "$HOME/.zprofile" "$HOME/.zshrc" "$HOME/.bash_profile"; do
+        rc_remove_block "$rc_file"
+    done
+
+    if [ "$purge" = "1" ]; then
+        rm -rf "$dir/.beads"
+        echo "Removed $dir/.beads (--purge-beads)"
+    fi
+
+    echo "Teardown complete for '$project' at $dir (container $name removed)"
+    if [ -n "$snap" ]; then
+        echo "Re-register this directory later to restore the snapshot."
+    fi
+}
+
 cmd_help() {
     cat <<'HELP'
 claude-dev -- claude_orca project launcher (one per folder)
 
 Usage:
+  claude-dev                    Open this folder's Orca (starts or creates
+                                the container as needed)
   claude-dev [register] [dir]   Register a project (default: this folder)
-  claude-dev setup              Guided walk-through: git identity, gh auth,
-                                OpenRouter key, beads, Orca settings
-  claude-dev open               Open this folder's Orca, sandboxed
-  claude-dev --how-to-run       Print how to start this folder's Orca
-  claude-dev --doctor           Show presence of required tools
-  claude-dev --update           Pull the template and re-pin srt, Claude Code, Orca
+  claude-dev open               Same as no arguments
+  claude-dev stop               Stop this folder's container
+  claude-dev shell              A login shell inside the container
+  claude-dev logs               Follow the container's output
+  claude-dev --how-to-run       Print the URL and the two commands
+  claude-dev --doctor           CLI, service, image, container, port, web url
+  claude-dev --update           Pull the template and the image, recreate
   claude-dev --teardown [--purge-beads]
                                 Snapshot beads, then remove this folder's install
-  claude-dev --uninstall        Teardown, plus the shell hook
-  claude-dev --remove-v1        Remove the pre-v2 central install
-  claude-dev rc-install         Install the shell hook in ~/.zprofile, ~/.zshrc, ~/.bash_profile
-  claude-dev rc-uninstall       Remove the shell hook
   claude-dev --help             Show this help
 HELP
 }
 
 case "${1:-}" in
-    register)      shift; cmd_register "${1:-$PROJECT_SELF}" ;;
+    register)      shift; cmd_register_v3 "${1:-$PROJECT_SELF}" || exit $?; exit 0 ;;
+    open)          shift; cmd_open_v3 "${1:-$PROJECT_SELF}" || exit $?; exit 0 ;;
+    stop)          shift; cmd_stop_v3 "${1:-$PROJECT_SELF}" || exit $?; exit 0 ;;
+    shell)         shift; cmd_shell_v3 "${1:-$PROJECT_SELF}" || exit $?; exit 0 ;;
+    logs)          shift; cmd_logs_v3 "${1:-$PROJECT_SELF}" || exit $?; exit 0 ;;
     setup)         cmd_setup || exit $?; exit 0 ;;
-    open)          shift; cmd_open "${1:-$PROJECT_SELF}" || exit $?; exit 0 ;;
-    --how-to-run)  print_run_it_block "$PROJECT_SELF"; exit 0 ;;
-    --doctor)      cmd_doctor || exit $?; exit 0 ;;
-    --update)      shift; cmd_update "${1:-$PROJECT_SELF}" || exit $?; exit 0 ;;
-    --teardown)    shift; cmd_teardown "$@" || exit $?; exit 0 ;;
-    --uninstall)   shift; cmd_uninstall || exit $?; exit 0 ;;
-    --remove-v1)   cmd_remove_v1; exit 0 ;;
-    rc-install)    cmd_rc_install; exit 0 ;;
-    rc-uninstall)  cmd_rc_uninstall; exit 0 ;;
+    --how-to-run)  print_run_it_block_v3 "$PROJECT_SELF"; exit 0 ;;
+    --doctor)      cmd_doctor_v3 || exit $?; exit 0 ;;
+    --update)      shift; cmd_update_v3 "${1:-$PROJECT_SELF}" || exit $?; exit 0 ;;
+    --teardown)    shift; cmd_teardown_v3 "$@" || exit $?; exit 0 ;;
     --help|-h)     cmd_help ;;
-    "")            cmd_register "$PROJECT_SELF" ;;
+    "")            cmd_open_v3 "$PROJECT_SELF" || exit $?; exit 0 ;;
     *)
         echo "Unknown option: $1" >&2
         cmd_help

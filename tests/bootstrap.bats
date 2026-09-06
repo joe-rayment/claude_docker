@@ -1,16 +1,28 @@
 #!/usr/bin/env bats
 #
 # S1 acceptance contract (claude-orca-3sk.1), rebased onto the v2
-# per-folder layout by V1 (claude-orca-qt9.1): $ORCA_HOST is now
-# <project>/.claude-dev, not a central install. Exercises bootstrap.sh +
-# scripts/launcher.sh against a local git fixture (built from the working
-# tree by helpers/setup.bash) with brew/npm/gh/node/curl/hdiutil stubbed on
-# PATH -- no network and no real macOS tooling required. The layout itself
-# is pinned by tests/layout.bats.
+# per-folder layout by V1 (claude-orca-qt9.1) and re-pointed at the v3
+# container install by claude-orca-qa2.2: bootstrap.sh no longer runs brew
+# bundle, installs sandbox-runtime or Claude Code, mounts an Orca DMG or
+# writes a shell-rc hook, and registration seeds claude-orca.json rather
+# than sandbox.json -- so every assertion that named one of those now
+# names its v3 replacement. Exercises bootstrap.sh + scripts/launcher.sh
+# against a local git fixture (built from the working tree by
+# helpers/setup.bash) with container/open/sw_vers/uname/gh stubbed on
+# PATH -- no Mac and no network required. The layout itself is pinned by
+# tests/layout.bats.
 
 load helpers/setup
 
+# Every case runs as if on an Apple-silicon Mac; the stub answers only
+# what a test pins, so this is the one line that makes the preflight pass.
+mac_env() {
+    export STUB_UNAME_S=Darwin
+    export STUB_UNAME_M=arm64
+}
+
 @test "bootstrap refuses without gh auth" {
+    mac_env
     export STUB_GH_UNAUTH=1
     run bash "$REPO_ROOT/bootstrap.sh" "$PROJECT_DIR"
     [ "$status" -eq 1 ]
@@ -18,48 +30,37 @@ load helpers/setup
     [ ! -d "$ORCA_HOST" ]
 }
 
-# V6: bootstrap.sh preflights every precondition BEFORE the first
-# mkdir/clone/install, so a fixable problem costs nothing and leaves
-# nothing behind. Registration's rc-install (rc_install_one in
-# scripts/launcher.sh) is the last thing that runs, and a root-owned or
-# read-only rc file used to fail there -- after the clone and every
-# install.
-#
-# Read-only is not the same as unrecoverable: deleting a file needs write
-# permission on its directory, never on the file, so a readable one is
-# rebuilt in place with no sudo (rc_reclaim, duplicated in bootstrap.sh
-# because the template carrying the launcher's copy is not cloned yet).
-@test "preflight reclaims an unwritable-but-readable rc file and carries on" {
-    if [ "$(id -u)" -eq 0 ]; then
-        skip "root can write anything, so -w never reports the problem"
-    fi
+# v3 (claude-orca-qa2.2): Apple's `container` is macOS 26 + Apple silicon
+# only, and there is no fallback runtime -- so an unsupported Mac is
+# refused in the preflight, before the first mkdir.
+@test "preflight refuses an unsupported Mac before cloning anything" {
+    mac_env
 
-    printf '%s\n' 'export EDITOR=vi' > "$HOME/.bash_profile"
-    chmod 444 "$HOME/.bash_profile"
-
+    export STUB_UNAME_M=x86_64
     run bash "$REPO_ROOT/bootstrap.sh" "$PROJECT_DIR"
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"Reclaimed"* ]]
-    [[ "$output" == *".bash_profile"* ]]
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"Apple silicon"* ]]
+    [ ! -e "$ORCA_HOST" ]
+    export STUB_UNAME_M=arm64
 
-    [ -w "$HOME/.bash_profile" ]
-    grep -qxF 'export EDITOR=vi' "$HOME/.bash_profile"
-    [ "$(grep -c '# >>> claude_orca >>>' "$HOME/.bash_profile")" -eq 1 ]
-    [ -d "$ORCA_HOST/template" ]
+    export CLAUDE_ORCA_TEST_MACOS=15.7
+    run bash "$REPO_ROOT/bootstrap.sh" "$PROJECT_DIR"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"macOS 26"* ]]
+    [[ "$output" == *"15.7"* ]]
+    [ ! -e "$ORCA_HOST" ]
 }
 
-@test "preflight refuses an unreadable rc file before cloning anything" {
-    if [ "$(id -u)" -eq 0 ]; then
-        skip "root can read and write anything, so the refusal never fires"
-    fi
-
-    : > "$HOME/.bash_profile"
-    chmod 000 "$HOME/.bash_profile"
+# The one dependency a bootstrap cannot install for you: the .pkg needs an
+# admin password, so it is instructed and the run stops there.
+@test "preflight refuses a missing container CLI before cloning anything" {
+    mac_env
+    mv "$STUB_BIN/container" "$BATS_TEST_TMPDIR/container-stub"
 
     run bash "$REPO_ROOT/bootstrap.sh" "$PROJECT_DIR"
     [ "$status" -ne 0 ]
-    [[ "$output" == *".bash_profile"* ]]
-    [[ "$output" == *"chown"* ]]
+    [[ "$output" == *"github.com/apple/container/releases"* ]]
+    [[ "$output" == *"installer"* ]]
     [[ "$output" == *"re-run this same command"* ]]
 
     [ ! -e "$ORCA_HOST/template" ]
@@ -69,28 +70,21 @@ load helpers/setup
 # Past the preflight, a step that dies mid-install says which one, so the
 # fix-and-re-run loop has somewhere to start.
 @test "a failing step is named by the error trap" {
-    cat > "$STUB_BIN/brew" <<'STUB'
-#!/usr/bin/env bash
-echo "brew $*" >> "$STUB_LOG"
-[ "$1" = "bundle" ] && exit 1
-exit 0
-STUB
-    chmod +x "$STUB_BIN/brew"
+    mac_env
+    export CLAUDE_ORCA_TEMPLATE_URL="$BATS_TEST_TMPDIR/no-such-template.git"
 
     run bash "$REPO_ROOT/bootstrap.sh" "$PROJECT_DIR"
     [ "$status" -ne 0 ]
-    [[ "$output" == *"Bootstrap failed during: brew bundle"* ]]
+    [[ "$output" == *"Bootstrap failed during: Installing the claude_orca template"* ]]
     [[ "$output" == *"idempotent and picks up where it left off"* ]]
 }
 
-# gh is the one missing dependency bootstrap fixes for you rather than
-# printing instructions for. $ORIGINAL_PATH is shadowed into a directory of
-# symlinks minus gh, because this container ships a real /usr/bin/gh that
-# removing the stub would otherwise expose.
-@test "missing gh with brew present auto-installs gh" {
-    export STUB_BIN
-    export STUB_GH_SRC="$BATS_TEST_TMPDIR/gh-src"
-    write_stub_gh "$STUB_GH_SRC"
+# v3 installs nothing on the Mac, so gh is instructed rather than brewed in
+# ($ORIGINAL_PATH is shadowed into a directory of symlinks minus gh,
+# because this container ships a real /usr/bin/gh that removing the stub
+# would otherwise expose).
+@test "missing gh is instructed, never installed" {
+    mac_env
     rm -f "$STUB_BIN/gh"
 
     local shadow="$BATS_TEST_TMPDIR/shadow" d oifs
@@ -107,31 +101,15 @@ STUB
     export PATH="$STUB_BIN:$shadow"
     ! command -v gh >/dev/null 2>&1
 
-    cat > "$STUB_BIN/brew" <<'STUB'
-#!/usr/bin/env bash
-echo "brew $*" >> "$STUB_LOG"
-if [ "$1" = "install" ] && [ "$2" = "gh" ]; then
-    cp "$STUB_GH_SRC" "$STUB_BIN/gh"
-    chmod +x "$STUB_BIN/gh"
-    exit 0
-fi
-if [ "$1" = "list" ] && [ "$2" = "--cask" ] && [ "$3" = "orca" ]; then
-    [ "${STUB_ORCA_INSTALLED:-}" = "1" ] && exit 0
-    exit 1
-fi
-exit 0
-STUB
-    chmod +x "$STUB_BIN/brew"
-
     run bash "$REPO_ROOT/bootstrap.sh" "$PROJECT_DIR"
-    [ "$status" -eq 0 ]
-    [[ "$output" != *"gh is required"* ]]
-    grep -qF "brew install gh" "$STUB_LOG"
-    [ -x "$STUB_BIN/gh" ]
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"gh is required"* ]]
+    ! grep -q "^brew " "$STUB_LOG"
+    [ ! -d "$ORCA_HOST" ]
 }
 
-@test "bootstrap installs everything under <project>/.claude-dev (bin, template clone, srt pinned to 0.0.75 via stubbed npm)" {
-    run bash "$REPO_ROOT/bootstrap.sh" "$PROJECT_DIR"
+@test "bootstrap installs the template clone and bin under <project>/.claude-dev, and nothing else" {
+    run make_project_v3 "$PROJECT_DIR"
     [ "$status" -eq 0 ]
 
     [ -L "$ORCA_HOST/bin/claude-dev" ]
@@ -140,138 +118,94 @@ STUB
 
     [ -d "$ORCA_HOST/template/.git" ]
     [ -f "$ORCA_HOST/template/bootstrap.sh" ]
+    [ -f "$ORCA_HOST/template/IMAGE_TAG" ]
 
-    run cat "$ORCA_HOST/srt/node_modules/@anthropic-ai/sandbox-runtime/package.json"
-    [ "$status" -eq 0 ]
-    [[ "$output" == *'"version":"0.0.75"'* ]]
-
-    grep -q -- "--prefix $ORCA_HOST/srt install" "$STUB_LOG"
-    grep -q "sandbox-runtime@0.0.75" "$STUB_LOG"
+    # The v2 installs are gone: no sandbox-runtime, no in-folder Claude
+    # Code, no Orca.app from a DMG -- all three live in the image now.
+    [ ! -e "$ORCA_HOST/srt" ]
+    [ ! -e "$ORCA_HOST/claude" ]
+    [ ! -e "$ORCA_HOST/app" ]
+    [ ! -e "$PROJECT_DIR/Orca.app" ]
+    ! grep -q "sandbox-runtime" "$STUB_LOG"
 }
 
-@test "brew bundle invoked with the Brewfile via stubbed brew" {
-    run bash "$REPO_ROOT/bootstrap.sh" "$PROJECT_DIR"
+@test "the container service is started and brew is never called" {
+    run make_project_v3 "$PROJECT_DIR"
     [ "$status" -eq 0 ]
-    grep -qF "brew bundle --file $ORCA_HOST/template/Brewfile" "$STUB_LOG"
+
+    grep -qx "system start" "$CONTAINER_STUB_LOG"
+    ! grep -q "^brew " "$STUB_LOG"
+    ! grep -q "hdiutil" "$STUB_LOG"
 }
 
-@test "registration creates .claude-dev/{home,tmp,state} and sandbox.json defaults" {
-    run bash "$REPO_ROOT/bootstrap.sh" "$PROJECT_DIR"
+@test "registration creates .claude-dev/{home,run,state} and claude-orca.json defaults" {
+    run make_project_v3 "$PROJECT_DIR"
     [ "$status" -eq 0 ]
 
     [ -d "$PROJECT_DIR/.claude-dev/home" ]
-    [ -d "$PROJECT_DIR/.claude-dev/tmp" ]
+    [ -d "$PROJECT_DIR/.claude-dev/run" ]
     [ -d "$PROJECT_DIR/.claude-dev/state" ]
-    [ -f "$PROJECT_DIR/.claude-dev/sandbox.json" ]
+    [ -f "$PROJECT_DIR/.claude-dev/claude-orca.json" ]
+    [ ! -e "$PROJECT_DIR/.claude-dev/sandbox.json" ]
 
-    # orca.cli was seeded false through V5; V6 (claude-orca-riu.3) makes it
-    # true for new folders -- pinned in its own case below. V6
-    # (claude-orca-riu.4) seeds the OpenRouter egress domain alongside it,
-    # pinned in its own case too.
-    run jq -e '.version == 1
-        and .network.extraAllowedDomains == ["openrouter.ai"]
-        and .filesystem.extraAllowWrite == []
-        and .orca.cli == true' "$PROJECT_DIR/.claude-dev/sandbox.json"
+    run jq -e '.version == 3
+        and (.port | type) == "number"
+        and .cpus == null
+        and .memory == null
+        and .extraMounts == []' "$PROJECT_DIR/.claude-dev/claude-orca.json"
     [ "$status" -eq 0 ]
 }
 
-# V6 (claude-orca-riu.3): native Orca orchestration is the default for a
-# NEWLY registered folder -- the user coordinates multi-provider agents
-# through the host Orca app, so the socket allowance is seeded ON rather
-# than discovered later. gen-settings.sh still fails closed on a file with
-# no orca key (tests/orca-cli-mode.bats): this is the seed, not the parser.
-@test "register seeds sandbox.json with orca.cli true by default" {
-    run bash "$REPO_ROOT/bootstrap.sh" "$PROJECT_DIR"
+# The port is chosen once and reused forever: the same number has to be
+# free on both sides, because the pairing code the browser is handed
+# advertises ws://127.0.0.1:<port>.
+@test "register chooses a port once and records it in run/port and claude-orca.json" {
+    run make_project_v3 "$PROJECT_DIR"
     [ "$status" -eq 0 ]
 
-    run jq -e '.version == 1
-        and .network.extraAllowedDomains == ["openrouter.ai"]
-        and .filesystem.extraAllowWrite == []
-        and .orca.cli == true' "$PROJECT_DIR/.claude-dev/sandbox.json"
-    [ "$status" -eq 0 ]
-
-    # With the mode on, the orca-socket probe reports N/A when the app is
-    # simply not running (claude-orca-riu.2). That must never brick a first
-    # registration: N/A is tallied apart from FAIL, and only FAIL refuses.
-    fake="$BATS_TEST_TMPDIR/fake-socket-na.txt"
-    sed 's/^orca-socket-unreachable=0$/orca-socket-unreachable=2/' \
-        "$CLAUDE_ORCA_SELFTEST_FAKE" > "$fake"
-    grep -qx 'orca-socket-unreachable=2' "$fake"
-    export CLAUDE_ORCA_SELFTEST_FAKE="$fake"
+    port="$(jq -r '.port' "$PROJECT_DIR/.claude-dev/claude-orca.json")"
+    [[ "$port" =~ ^[0-9]+$ ]]
+    [ "$port" -ge 6768 ]
+    [ "$(cat "$PROJECT_DIR/.claude-dev/run/port")" = "$port" ]
 
     run bash -c "cd '$PROJECT_DIR' && '$ORCA_HOST/bin/claude-dev' register"
     [ "$status" -eq 0 ]
-    [[ "$output" != *"Refusing to hand off"* ]]
+    [ "$(jq -r '.port' "$PROJECT_DIR/.claude-dev/claude-orca.json")" = "$port" ]
+}
 
-    run jq -e '.summary.fail == 0 and .summary.na >= 1
-        and ([.probes[] | select(.name == "orca-socket-unreachable") | .status]
-             == ["N/A"])' "$PROJECT_DIR/.claude-dev/run/selftest.json"
+@test "register never overwrites an existing claude-orca.json" {
+    run make_project_v3 "$PROJECT_DIR"
+    [ "$status" -eq 0 ]
+
+    config="$PROJECT_DIR/.claude-dev/claude-orca.json"
+    printf '%s\n' '{"version":3,"port":6999,"cpus":4,"memory":"8g","extraMounts":["/opt/data"]}' > "$config"
+
+    run bash -c "cd '$PROJECT_DIR' && '$ORCA_HOST/bin/claude-dev' register"
+    [ "$status" -eq 0 ]
+
+    run jq -e '.port == 6999 and .cpus == 4 and .memory == "8g"
+        and .extraMounts == ["/opt/data"]' "$config"
     [ "$status" -eq 0 ]
 }
 
-# V6 (claude-orca-riu.4): OpenRouter is the assumed worker provider, so a
-# NEW folder's sandbox.json carries its egress domain from the start --
-# harmless without a key (an allowlist entry opens nothing by itself) and
-# it keeps delegate.sh's preflight, which reads exactly this list, truthful
-# for the shipped openrouter routes. The credential mask is separate and
-# key-gated (tests/sandbox-config.bats).
-@test "register seeds openrouter.ai into extraAllowedDomains for new folders" {
-    run bash "$REPO_ROOT/bootstrap.sh" "$PROJECT_DIR"
+# "Run one command, start working" ends with a browser open on Orca, so
+# the last thing the install prints is the URL and the two commands that
+# get the user back to it.
+@test "registration ends with the URL, the reopen command and the shell command" {
+    run make_project_v3 "$PROJECT_DIR"
     [ "$status" -eq 0 ]
 
-    run jq -e '.network.extraAllowedDomains == ["openrouter.ai"]' \
-        "$PROJECT_DIR/.claude-dev/sandbox.json"
-    [ "$status" -eq 0 ]
-
-    # Seed only: an existing file is the user's, domain or no domain, so a
-    # re-register over one without it leaves it byte for byte (the docs
-    # carry the one-line add instead).
-    sandbox_json="$PROJECT_DIR/.claude-dev/sandbox.json"
-    printf '%s\n' '{"version":1,"network":{"extraAllowedDomains":["example.com"]},"filesystem":{"extraAllowWrite":[]},"orca":{"cli":false}}' > "$sandbox_json"
-    before="$(cat "$sandbox_json")"
-
-    run bash -c "cd '$PROJECT_DIR' && '$ORCA_HOST/bin/claude-dev' register"
-    [ "$status" -eq 0 ]
-    [ "$(cat "$sandbox_json")" = "$before" ]
-    run jq -e '.network.extraAllowedDomains == ["example.com"]' "$sandbox_json"
-    [ "$status" -eq 0 ]
-}
-
-# The other half of the same decision: an existing sandbox.json is the
-# user's file. Register seeds defaults only when there is no file at all,
-# so neither an explicit opt-out nor a hand-written file with no orca key
-# is ever rewritten into the new default.
-@test "register never overwrites an existing sandbox.json orca.cli choice" {
-    run bash "$REPO_ROOT/bootstrap.sh" "$PROJECT_DIR"
-    [ "$status" -eq 0 ]
-    sandbox_json="$PROJECT_DIR/.claude-dev/sandbox.json"
-
-    # No orca key at all: left byte for byte, and gen-settings.sh's
-    # fail-closed default (absent == false) still governs it.
-    printf '%s\n' '{"version":1,"network":{"extraAllowedDomains":["example.com"]},"filesystem":{"extraAllowWrite":[]}}' > "$sandbox_json"
-    before="$(cat "$sandbox_json")"
-
-    run bash -c "cd '$PROJECT_DIR' && '$ORCA_HOST/bin/claude-dev' register"
-    [ "$status" -eq 0 ]
-    [ "$(cat "$sandbox_json")" = "$before" ]
-    run jq -e '.orca == null' "$sandbox_json"
-    [ "$status" -eq 0 ]
-
-    # An explicit opt-out survives a re-register too.
-    printf '%s\n' '{"version":1,"network":{"extraAllowedDomains":[]},"filesystem":{"extraAllowWrite":[]},"orca":{"cli":false}}' > "$sandbox_json"
-    before="$(cat "$sandbox_json")"
-
-    run bash -c "cd '$PROJECT_DIR' && '$ORCA_HOST/bin/claude-dev' register"
-    [ "$status" -eq 0 ]
-    [ "$(cat "$sandbox_json")" = "$before" ]
-    run jq -e '.orca.cli == false' "$sandbox_json"
-    [ "$status" -eq 0 ]
+    url="$(cat "$PROJECT_DIR/.claude-dev/run/orca-web-url.txt")"
+    [[ "$output" == *"$url"* ]]
+    [[ "$output" == *"./claude-dev"* ]]
+    [[ "$output" == *"./claude-dev shell"* ]]
+    [ "$(tail -1 "$OPEN_STUB_LOG")" = "$url" ]
 }
 
 @test "gitignore seeded idempotently with .claude-dev/, /claude-dev, Orca.app/, .mcp.json, attachments/, .claude/logs/" {
     echo "node_modules/" > "$PROJECT_DIR/.gitignore"
 
-    run bash "$REPO_ROOT/bootstrap.sh" "$PROJECT_DIR"
+    run make_project_v3 "$PROJECT_DIR"
     [ "$status" -eq 0 ]
 
     grep -qxF "node_modules/" "$PROJECT_DIR/.gitignore"
@@ -286,7 +220,7 @@ STUB
     local before after
     before="$(wc -l < "$PROJECT_DIR/.gitignore")"
 
-    run bash "$REPO_ROOT/bootstrap.sh" "$PROJECT_DIR"
+    run make_project_v3 "$PROJECT_DIR"
     [ "$status" -eq 0 ]
 
     after="$(wc -l < "$PROJECT_DIR/.gitignore")"
@@ -295,98 +229,82 @@ STUB
     [ "$(grep -cxF '.claude-dev/' "$PROJECT_DIR/.gitignore")" -eq 1 ]
 }
 
-# V1 (claude-orca-qt9.1) inverts S1's rule: the v2 project root DOES get
-# one executable, the ./claude-dev stub that execs the in-folder launcher
-# (trust boundary v2 -- both Seatbelt profiles write-deny it). It is still
-# the ONLY one outside .claude-dev/.
+# V1 (claude-orca-qt9.1) inverts S1's rule: the project root DOES get one
+# executable, the ./claude-dev stub that execs the in-folder launcher. It
+# is still the ONLY one outside .claude-dev/ -- and in v3 there is no
+# generated Orca.app beside it any more.
 @test "the only executable outside .claude-dev is the ./claude-dev stub" {
-    run bash "$REPO_ROOT/bootstrap.sh" "$PROJECT_DIR"
+    run make_project_v3 "$PROJECT_DIR"
     [ "$status" -eq 0 ]
 
     [ -x "$PROJECT_DIR/claude-dev" ]
     [ -x "$ORCA_HOST/bin/claude-dev" ]
 
-    # config-sync (S7, claude-orca-3sk.7) intentionally makes the synced
-    # statusline.sh executable inside .claude-dev/, which is excluded here;
-    # so is Orca.app/Contents/MacOS/Orca, the generated launcher bundle's
-    # entry point (V2, claude-orca-qt9.2). Both are host-owned: write-denied
-    # inside both sandboxes (scripts/sandbox/host-owned-paths.sh).
+    # git's own sample hooks are executable and are not ours.
     run find "$PROJECT_DIR" -type f -perm -u+x \
         -not -path "$PROJECT_DIR/.claude-dev/*" \
-        -not -path "$PROJECT_DIR/Orca.app/*"
+        -not -path "$PROJECT_DIR/.git/*"
     [ "$status" -eq 0 ]
     [ "$output" = "$PROJECT_DIR/claude-dev" ]
 }
 
-@test "register populates .claude-dev/home/.claude from the template config" {
-    run bash "$REPO_ROOT/bootstrap.sh" "$PROJECT_DIR"
+# v3 (claude-orca-qa2.2): the Claude config dir is synced INSIDE the VM by
+# scripts/container/entrypoint.sh, into the same folder-local home the Mac
+# mounts -- so registration seeds the git identity and leaves .claude to
+# the container.
+@test "register seeds the home gitconfig and leaves .claude to the entrypoint" {
+    git config --global user.name "Test User"
+    git config --global user.email "test@example.com"
+
+    run make_project_v3 "$PROJECT_DIR"
     [ "$status" -eq 0 ]
 
-    dest="$PROJECT_DIR/.claude-dev/home/.claude"
-    [ -f "$dest/settings.json" ]
-    run jq -e . "$dest/settings.json"
-    [ "$status" -eq 0 ]
-    [ -f "$dest/CLAUDE.md" ]
-    [ -x "$dest/statusline.sh" ]
-    [ -f "$PROJECT_DIR/.claude-dev/run/config-hash" ]
+    gc="$PROJECT_DIR/.claude-dev/home/.gitconfig"
+    [ -f "$gc" ]
+    grep -q "Test User" "$gc"
+    grep -q "test@example.com" "$gc"
 
-    # __HOST__ is always rewritten to a real, absolute host path -- never
-    # left as a literal placeholder for Claude Code to choke on.
-    run cat "$dest/settings.json"
-    [[ "$output" != *"__HOST__"* ]]
+    [ ! -e "$PROJECT_DIR/.claude-dev/home/.claude/settings.json" ]
 }
 
 @test "second run is a no-op" {
-    run bash "$REPO_ROOT/bootstrap.sh" "$PROJECT_DIR"
+    run make_project_v3 "$PROJECT_DIR"
     [ "$status" -eq 0 ]
 
     local project_sum1 project_sum2
     project_sum1="$(tree_checksum "$PROJECT_DIR")"
 
-    run bash "$REPO_ROOT/bootstrap.sh" "$PROJECT_DIR"
+    run make_project_v3 "$PROJECT_DIR"
     [ "$status" -eq 0 ]
 
     project_sum2="$(tree_checksum "$PROJECT_DIR")"
 
-    # One checksum now covers both sides: the host install lives inside
-    # the project folder.
+    # One checksum covers both sides: the host install lives inside the
+    # project folder.
     [ "$project_sum1" = "$project_sum2" ]
 }
 
-@test "CLAUDE_ORCA_SKIP_BREW=1 succeeds with brew entirely absent from PATH" {
-    rm -f "$STUB_BIN/brew"
-    export CLAUDE_ORCA_SKIP_BREW=1
-    run bash "$REPO_ROOT/bootstrap.sh" "$PROJECT_DIR"
+@test "bootstrap succeeds with brew, npm and hdiutil absent from PATH" {
+    rm -f "$STUB_BIN/brew" "$STUB_BIN/npm" "$STUB_BIN/hdiutil"
+
+    run make_project_v3 "$PROJECT_DIR"
     [ "$status" -eq 0 ]
-    ! grep -q '^brew ' "$STUB_LOG"
+    [ -d "$ORCA_HOST/template/.git" ]
+    [ -s "$PROJECT_DIR/.claude-dev/run/orca-web-url.txt" ]
 }
 
-# S3 addition (claude-orca-3sk.15): registration now runs the sandbox
-# self-test as its last step and refuses to hand off to Orca on failure
-# -- see tests/selftest.bats for the self-test's own contract.
-@test "registration exits 2 and omits the Orca hand-off line when the sandbox self-test fails" {
-    cat > "$CLAUDE_ORCA_SELFTEST_FAKE" <<'FAKE'
-write-outside-denied=1
-read-real-home-denied=0
-keychain-denied=0
-project-writable=0
-worktree-writable=0
-sibling-worktree-denied=0
-tmp-outside-denied=0
-network-blocked-domain=0
-network-allowed-domain=0
-orca-socket-unreachable=0
-sandbox-exec-present=0
-srt-version-pinned=0
-git-hooks-audit=0
-FAKE
-
-    run bash "$REPO_ROOT/bootstrap.sh" "$PROJECT_DIR"
-    [ "$status" -eq 2 ]
-    [[ "$output" == *"Refusing to hand off to Orca"* ]]
-    [[ "$output" != *"Next: open this folder in Orca"* ]]
-    [[ "$output" == *"write-outside-denied"* ]]
-
-    run jq -e '.summary.fail == 1' "$PROJECT_DIR/.claude-dev/run/selftest.json"
+# v3 (claude-orca-qa2.2): the sandbox self-test and the shell-rc hook both
+# belonged to Seatbelt. The VM boundary replaces them, so registration
+# must run neither -- nothing on the Mac confines anything any more.
+@test "registration runs no sandbox self-test and installs no shell hook" {
+    run make_project_v3 "$PROJECT_DIR"
     [ "$status" -eq 0 ]
+
+    [[ "$output" != *"self-test"* ]]
+    [[ "$output" != *"Refusing to hand off"* ]]
+    [ ! -e "$PROJECT_DIR/.claude-dev/run/selftest.json" ]
+    [ ! -e "$PROJECT_DIR/.claude-dev/state/orca.sb" ]
+    [ ! -e "$HOME/.zprofile" ]
+    [ ! -e "$HOME/.zshrc" ]
+    [ ! -e "$HOME/.bash_profile" ]
 }
