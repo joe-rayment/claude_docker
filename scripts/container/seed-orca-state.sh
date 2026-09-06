@@ -18,7 +18,12 @@
 #                              seeded record by path instead of adding a
 #                              second one.
 #   settings.theme             dark by default (claude-orca.json `theme`
-#                              rides in as CLAUDE_ORCA_THEME).
+#                              rides in as CLAUDE_ORCA_THEME). This steers
+#                              only the Electron DESKTOP client; it does
+#                              nothing for Orca Web, which keeps its theme
+#                              in browser localStorage and is seeded from
+#                              web-index.html inside app.asar instead
+#                              (claude-orca-qa2.18).
 #   settings.agentDefaultEnv   CLAUDE_ORCA_ROOT=<project>, so an agent Orca
 #                              launches can find the folder root. This map
 #                              is keyed BY AGENT ID first
@@ -32,6 +37,15 @@
 #                              (.claude-dev/home is mounted /home/agent);
 #                              opencode reads its OpenRouter provider from
 #                              there rather than from argv.
+#                              OPENROUTER_API_KEY / OPENROUTER_BASE_URL on
+#                              the `opencode` and `codex` ids are the in-VM
+#                              guard's token and loopback URL, passed in by
+#                              the entrypoint (claude-orca-qa2.21). The real
+#                              OpenRouter key never appears here: the guard
+#                              holds it alone and forces the provider
+#                              allowlist, which is what keeps the user's
+#                              data out of China-hosted providers. Absent
+#                              entirely when the folder has no key.
 #   settings.agentDefaultArgs  how Orca launches each agent id
 #                              (claude-orca-qa2.11): `claude
 #                              --dangerously-skip-permissions` and
@@ -65,12 +79,16 @@ warn() { printf '[seed-orca] %s\n' "$*" >&2; }
 USER_DATA_DIR=""
 PROJECT_DIR=""
 THEME=""
+OR_TOKEN=""
+OR_BASE_URL=""
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --user-data-dir) USER_DATA_DIR="${2:-}"; shift 2 ;;
         --project)       PROJECT_DIR="${2:-}"; shift 2 ;;
         --theme)         THEME="${2:-}"; shift 2 ;;
+        --openrouter-token)    OR_TOKEN="${2:-}"; shift 2 ;;
+        --openrouter-base-url) OR_BASE_URL="${2:-}"; shift 2 ;;
         *) warn "unknown argument: $1"; exit 2 ;;
     esac
 done
@@ -131,6 +149,38 @@ e_worktree="$(json_escape "$worktree_base")"
 e_display="$(json_escape "$display_name")"
 e_repo_id="$(json_escape "$repo_id")"
 
+# The guard's credentials, on the two agent ids that talk to OpenRouter.
+# Both or neither: half of a base URL is worse than none.
+if [ -n "$OR_TOKEN" ] && [ -n "$OR_BASE_URL" ]; then
+    e_or_token="$(json_escape "$OR_TOKEN")"
+    e_or_base="$(json_escape "$OR_BASE_URL")"
+    agent_env="$(cat <<ENV
+      "claude": {
+        "CLAUDE_ORCA_ROOT": "$e_project"
+      },
+      "opencode": {
+        "OPENCODE_CONFIG": "/home/agent/.config/opencode/opencode.json",
+        "OPENROUTER_API_KEY": "$e_or_token",
+        "OPENROUTER_BASE_URL": "$e_or_base"
+      },
+      "codex": {
+        "OPENROUTER_API_KEY": "$e_or_token",
+        "OPENROUTER_BASE_URL": "$e_or_base"
+      }
+ENV
+)"
+else
+    agent_env="$(cat <<ENV
+      "claude": {
+        "CLAUDE_ORCA_ROOT": "$e_project"
+      },
+      "opencode": {
+        "OPENCODE_CONFIG": "/home/agent/.config/opencode/opencode.json"
+      }
+ENV
+)"
+fi
+
 mkdir -p "$(dirname "$DATA_FILE")" || { warn "cannot create $(dirname "$DATA_FILE")"; exit 1; }
 
 tmp="$DATA_FILE.claude-orca.tmp"
@@ -151,12 +201,7 @@ cat > "$tmp" <<JSON
   "settings": {
     "theme": "$THEME",
     "agentDefaultEnv": {
-      "claude": {
-        "CLAUDE_ORCA_ROOT": "$e_project"
-      },
-      "opencode": {
-        "OPENCODE_CONFIG": "/home/agent/.config/opencode/opencode.json"
-      }
+$agent_env
     },
     "agentDefaultArgs": {
       "claude": "--dangerously-skip-permissions",
@@ -179,5 +224,8 @@ if command -v jq >/dev/null 2>&1 && ! jq -e . "$tmp" >/dev/null 2>&1; then
 fi
 
 mv "$tmp" "$DATA_FILE" || { warn "cannot install $DATA_FILE"; rm -f "$tmp"; exit 1; }
-log "seeded $DATA_FILE (theme $THEME, worktree base $worktree_base)"
+or_note="no OpenRouter guard env"
+[ -n "$OR_TOKEN" ] && [ -n "$OR_BASE_URL" ] \
+    && or_note="OpenRouter guard env on opencode+codex -> $OR_BASE_URL"
+log "seeded $DATA_FILE (theme $THEME, worktree base $worktree_base, $or_note)"
 exit 0

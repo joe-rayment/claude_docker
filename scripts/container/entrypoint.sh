@@ -6,7 +6,8 @@
 # and publishes the pairing URL the Mac side opens in a browser.
 #
 # Sequence: resolve the project -> re-map and drop to `agent` -> sync this
-# template's config/ into the agent's Claude config dir -> seed Orca's own
+# template's config/ into the agent's Claude config dir -> start the
+# OpenRouter guard, which takes sole custody of the real key -> seed Orca's own
 # state (worktree base path, theme, agent env) and `bd init` the project
 # folder, both once -> start `--serve`
 # with its output in <project>/.claude-dev/run/orca-serve.log -> wait for
@@ -38,6 +39,14 @@
 #   CLAUDE_ORCA_SETUP         the install script (default:
 #                 <template root>/scripts/container/setup.sh).
 #   CLAUDE_ORCA_SKIP_SETUP=1  do not run it.
+#   OPENROUTER_API_KEY        the REAL OpenRouter key, if the folder has
+#                 one. It goes to the in-VM guard and nowhere else: Orca
+#                 (and so every terminal) gets the guard's token in this
+#                 variable instead, plus OPENROUTER_BASE_URL.
+#   CLAUDE_ORCA_GUARD_PORT    loopback port for the guard (4141).
+#   CLAUDE_ORCA_GUARD_SCRIPT  the guard (default: the one next to this
+#                 script).
+#   CLAUDE_ORCA_GUARD_TIMEOUT seconds to wait for it to listen (30).
 #   CLAUDE_ORCA_WEBURL_TIMEOUT        seconds to wait for serve (120).
 #   CLAUDE_ORCA_ENTRYPOINT_NO_PRIVDROP=1   skip usermod/setpriv (tests,
 #                 and any run that is already unprivileged).
@@ -365,6 +374,112 @@ if [ "$PRIVDROP" = "1" ]; then
     chown -R "$AGENT_UID:$AGENT_GID" "$PROJECT_DIR/.beads" 2>/dev/null
 fi
 
+# --- the OpenRouter guard (claude-orca-qa2.21) --------------------------
+#
+# The user's rule is that their data never routes to China, and the only
+# thing that can enforce it is a chokepoint no client can edit: the guard
+# (scripts/container/openrouter-guard.py + config/provider-policy.json,
+# claude-orca-qa2.20) holds the real OPENROUTER_API_KEY alone and forces
+# provider.only/allow_fallbacks=false/data_collection=deny onto every
+# completion request. It therefore starts HERE, before Orca and before the
+# state seed that publishes its token, and what Orca -- and so every
+# terminal Orca spawns -- inherits is the token and the guard's loopback
+# base URL, never the key.
+#
+# Fail closed on the KEY, not on the boot: a guard that will not start
+# leaves the VM without OpenRouter rather than with an unpoliced key in
+# every terminal.
+
+GUARD_PORT="${CLAUDE_ORCA_GUARD_PORT:-4141}"
+GUARD_SCRIPT="${CLAUDE_ORCA_GUARD_SCRIPT:-$SCRIPT_DIR/openrouter-guard.py}"
+GUARD_TIMEOUT="${CLAUDE_ORCA_GUARD_TIMEOUT:-30}"
+GUARD_LOG="$RUN_DIR/openrouter-guard.log"
+GUARD_PID_FILE="$RUN_DIR/openrouter-guard.pid"
+GUARD_TOKEN_FILE="$RUN_DIR/openrouter-guard.token"
+GUARD_BASE_URL="http://127.0.0.1:$GUARD_PORT/api/v1"
+GUARD_PID=""
+GUARD_TOKEN=""
+
+guard_port_open() {
+    python3 -c "import socket,sys
+s = socket.socket()
+s.settimeout(0.3)
+sys.exit(0 if s.connect_ex(('127.0.0.1', $GUARD_PORT)) == 0 else 1)" \
+        >/dev/null 2>&1
+}
+
+# Stable across restarts: the token is seeded into Orca's per-agent env,
+# which is written once, so a fresh random token on every start would leave
+# that seed pointing at a credential the guard no longer accepts.
+guard_token() {
+    if [ -s "$GUARD_TOKEN_FILE" ]; then
+        head -1 "$GUARD_TOKEN_FILE" | tr -d '\r\n'
+        return 0
+    fi
+    od -An -tx1 -N24 /dev/urandom 2>/dev/null | tr -d ' \n'
+}
+
+start_openrouter_guard() {
+    if [ ! -f "$GUARD_SCRIPT" ]; then
+        warn "no OpenRouter guard script at $GUARD_SCRIPT"
+        return 1
+    fi
+    if ! command -v python3 >/dev/null 2>&1; then
+        warn "python3 not found; cannot run the OpenRouter guard"
+        return 1
+    fi
+    rm -f "$GUARD_PID_FILE"
+    : > "$GUARD_LOG"
+    [ "$PRIVDROP" = "1" ] && chown "$AGENT_UID:$AGENT_GID" "$GUARD_LOG" 2>/dev/null
+
+    # agent_exec, not run_as_agent: the exec chain keeps $! the guard's own
+    # pid rather than a wrapper subshell's. The real key is handed over
+    # here and nowhere else.
+    agent_exec env \
+        OPENROUTER_API_KEY="$OPENROUTER_REAL_KEY" \
+        OPENROUTER_GUARD_TOKEN="$GUARD_TOKEN" \
+        CLAUDE_ORCA_RUN_DIR="$RUN_DIR" \
+        python3 "$GUARD_SCRIPT" --port "$GUARD_PORT" --run-dir "$RUN_DIR" \
+        >>"$GUARD_LOG" 2>&1 &
+    GUARD_PID=$!
+
+    guard_waited=0
+    while [ "$guard_waited" -lt "$GUARD_TIMEOUT" ]; do
+        if guard_port_open; then
+            printf '%s\n' "$GUARD_PID" > "$GUARD_PID_FILE"
+            if [ "$PRIVDROP" = "1" ]; then
+                chown "$AGENT_UID:$AGENT_GID" "$GUARD_PID_FILE" \
+                    "$GUARD_TOKEN_FILE" 2>/dev/null
+            fi
+            return 0
+        fi
+        kill -0 "$GUARD_PID" 2>/dev/null || break
+        sleep 1
+        guard_waited=$((guard_waited + 1))
+    done
+    kill -TERM "$GUARD_PID" 2>/dev/null
+    GUARD_PID=""
+    return 1
+}
+
+OPENROUTER_REAL_KEY="${OPENROUTER_API_KEY:-}"
+if [ -n "$OPENROUTER_REAL_KEY" ]; then
+    GUARD_TOKEN="$(guard_token)"
+    # From this line on the real key exists only in the guard's own
+    # environment: nothing downstream inherits it.
+    unset OPENROUTER_API_KEY
+    unset OPENROUTER_BASE_URL
+    if [ -n "$GUARD_TOKEN" ] && start_openrouter_guard; then
+        export OPENROUTER_API_KEY="$GUARD_TOKEN"
+        export OPENROUTER_BASE_URL="$GUARD_BASE_URL"
+        log "OpenRouter guard listening on $GUARD_BASE_URL (pid $GUARD_PID, log: $GUARD_LOG); agents get its token, never the key"
+    else
+        warn "the OpenRouter guard did not start -- the real OPENROUTER_API_KEY is NOT being passed to Orca (see $GUARD_LOG). Agents have no OpenRouter access this run; that is deliberate, because an unpoliced key in a terminal is exactly what the guard exists to prevent."
+    fi
+else
+    log "no OPENROUTER_API_KEY; not starting the OpenRouter guard"
+fi
+
 # --- seed Orca's own state, once (claude-orca-qa2.5) --------------------
 #
 # Before serve starts, so Orca reads it rather than racing it: the
@@ -375,7 +490,9 @@ fi
 if run_as_agent bash "$SCRIPT_DIR/seed-orca-state.sh" \
         --user-data-dir "$USER_DATA_DIR" \
         --project "$PROJECT_DIR" \
-        --theme "${CLAUDE_ORCA_THEME:-}"; then
+        --theme "${CLAUDE_ORCA_THEME:-}" \
+        --openrouter-token "${OPENROUTER_API_KEY:-}" \
+        --openrouter-base-url "${OPENROUTER_BASE_URL:-}"; then
     :
 else
     warn "seeding Orca state failed (continuing)"
@@ -427,6 +544,7 @@ SERVE_PID=$!
 
 stop_serve() {
     kill -TERM "$SERVE_PID" 2>/dev/null
+    [ -n "${GUARD_PID:-}" ] && kill -TERM "$GUARD_PID" 2>/dev/null
 }
 trap 'stop_serve; exit 143' TERM INT
 
