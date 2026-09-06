@@ -394,6 +394,9 @@ JSON
         doctor_print_probes "$results"
     fi
     echo "Refusing to hand off to Orca until the sandbox self-test passes (claude-dev --doctor)" >&2
+    # V6 (claude-orca-riu.2): a refusal with no next step is a dead end.
+    echo "  Next: fix the [FAIL] probes above, then re-run: claude-dev --doctor" >&2
+    echo "  Per-probe detail: $results" >&2
     return 2
 }
 

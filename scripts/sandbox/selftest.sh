@@ -71,7 +71,7 @@ probe_description() {
         tmp-outside-denied)      echo "touch under the real /tmp (/private/tmp on Darwin) fails" ;;
         network-blocked-domain)  echo "curl https://example.com fails" ;;
         network-allowed-domain)  echo "curl https://api.anthropic.com/ returns any HTTP status" ;;
-        orca-socket-unreachable) echo "orca status --json fails unless sandbox.json orca.cli is true" ;;
+        orca-socket-unreachable) echo "the Orca runtime is unreachable unless sandbox.json orca.cli is true" ;;
         sandbox-exec-present)    echo "sandbox-exec is on PATH (Darwin only; reports bwrap elsewhere)" ;;
         srt-version-pinned)      echo "installed srt package.json version equals the SRT_VERSION pin" ;;
         git-hooks-audit)         echo "git hooks reference only paths covered by the generated denyWrite list" ;;
@@ -261,28 +261,63 @@ probe_network_allowed_domain() {
     return 1
 }
 
+# Echoes "true"/"false" and returns 0 when $1 (the output of `orca status
+# --json`) carries a runtime-reachability boolean; returns 1, echoing
+# nothing, when it does not. The printed shape is NOT a pinned contract --
+# v1.4.197 nests it as .runtime.reachable -- so this searches every object
+# for a `reachable` key rather than trusting one path.
+orca_status_reachable() {
+    local value
+    command -v jq >/dev/null 2>&1 || return 1
+    value="$(printf '%s' "$1" | jq -r '
+        [.. | objects | select(has("reachable")) | .reachable]
+        | first
+        | if type == "boolean" then tostring else empty end' 2>/dev/null)"
+    case "$value" in
+        true|false) printf '%s\n' "$value"; return 0 ;;
+    esac
+    return 1
+}
+
+# What this actually enforces is that the Orca runtime is NOT reachable
+# from in here unless sandbox.json opted in -- not that the `orca` binary
+# fails. The real CLI (v1.4.197) always exits 0 under --json and reports
+# reachability in the JSON, so exit status alone says nothing: only plain
+# `orca status` encodes it, and that is the fallback below.
 probe_orca_socket_unreachable() {
     if ! command -v orca >/dev/null 2>&1; then
         echo "orca not on PATH -- not applicable"
         return 2
     fi
-    local root="${CLAUDE_ORCA_ROOT:-}" cli_enabled="false"
+    local root="${CLAUDE_ORCA_ROOT:-}" cli_enabled="false" reachable source
     if [ -n "$root" ] && [ -f "$root/.claude-dev/sandbox.json" ] && command -v jq >/dev/null 2>&1; then
         cli_enabled="$(jq -r '.orca.cli // false' "$root/.claude-dev/sandbox.json" 2>/dev/null)"
     fi
-    if orca status --json >/dev/null 2>&1; then
-        if [ "$cli_enabled" = "true" ]; then
-            echo "orca status --json succeeded (orca.cli=true, expected)"
+
+    if reachable="$(orca_status_reachable "$(orca status --json 2>/dev/null)")"; then
+        source="per 'orca status --json'"
+    else
+        if orca status >/dev/null 2>&1; then
+            reachable="true"
+        else
+            reachable="false"
+        fi
+        source="per the plain 'orca status' exit code (status JSON carried no reachability)"
+    fi
+
+    if [ "$cli_enabled" = "true" ]; then
+        if [ "$reachable" = "true" ]; then
+            echo "Orca runtime reachable $source (orca.cli=true, expected)"
             return 0
         fi
-        echo "orca status --json unexpectedly succeeded (orca.cli=false)"
+        echo "Orca runtime unreachable $source, but orca.cli=true -- launch this folder's Orca.app, then re-run: claude-dev --doctor"
+        return 2
+    fi
+    if [ "$reachable" = "true" ]; then
+        echo "SANDBOX LEAK: Orca runtime reachable $source although orca.cli=false -- the unix-socket deny is not in effect"
         return 1
     fi
-    if [ "$cli_enabled" = "true" ]; then
-        echo "orca status --json failed although orca.cli=true"
-        return 1
-    fi
-    echo "orca status --json unreachable, as expected (orca.cli=false)"
+    echo "Orca runtime unreachable $source, as expected (orca.cli=false)"
     return 0
 }
 
