@@ -277,15 +277,28 @@ ctr() {
 # versions, while the header does not. Header name matched
 # case-insensitively (lowercased under HTTP/2), value comma-separated.
 # Never prompts and never runs `gh auth refresh` -- that is interactive.
+#
+# Three outcomes, not two: the header exists only for classic OAuth tokens.
+# A fine-grained PAT (github_pat_...) or a GitHub App token never sends it,
+# so for those the scopes are UNKNOWN, not empty -- and a user on such a
+# token (the real Mac run of 2026-09-06) was being sent down the runtime
+# install path on every folder for a pull that would have worked.
+#   0  the header is present and lists the scope
+#   1  the header is present and does not list it (the qa2.8 finding: a
+#      classic token that GHCR will refuse)
+#   2  no X-Oauth-Scopes header at all: unknown, worth one pull attempt
 gh_has_scope() {
-    local want="$1" scopes=""
+    local want="$1" header="" scopes=""
     command -v gh >/dev/null 2>&1 || return 1
-    scopes="$(gh api -i user 2>/dev/null \
+    header="$(gh api -i user 2>/dev/null \
         | tr -d '\r' \
         | tr '[:upper:]' '[:lower:]' \
-        | sed -n 's/^x-oauth-scopes:[[:space:]]*//p' \
-        | head -1 \
-        | tr -d '[:space:]')" || scopes=""
+        | sed -n 's/^x-oauth-scopes:/&/p' \
+        | head -1)" || header=""
+    [ -n "$header" ] || return 2
+    scopes="$(printf '%s\n' "$header" \
+        | sed 's/^x-oauth-scopes:[[:space:]]*//' \
+        | tr -d '[:space:]')"
     case ",$scopes," in
         *",$want,"*) return 0 ;;
     esac
@@ -350,11 +363,15 @@ try_pull() {
 # every other time. Both outcomes are a working folder, so this never
 # fails -- there is nothing left for it to fail at.
 acquire_image() {
-    local dir="$1" ref="$2"
-    # qa2.8: a token without read:packages can only ever be denied the
-    # manifest, so skip the login and the pull entirely rather than make
-    # the user watch both fail.
-    if gh_has_scope read:packages; then
+    local dir="$1" ref="$2" scope_rc=0
+    # qa2.8: a classic token whose header lacks read:packages can only ever
+    # be denied the manifest, so skip the login and the pull entirely rather
+    # than make the user watch both fail. A token with no scopes header at
+    # all (fine-grained PAT, App token) gets the one attempt: a refused pull
+    # is handled below and costs a round trip, while skipping it costs a
+    # 30-minute in-VM install every time.
+    gh_has_scope read:packages || scope_rc=$?
+    if [ "$scope_rc" -eq 0 ] || [ "$scope_rc" -eq 2 ]; then
         registry_login
         echo "==> Pulling $ref"
         if try_pull "$ref"; then
@@ -531,8 +548,18 @@ weburl_timeout() {
     fi
 }
 
+# Returns 0 with the URL on stdout, 1 on timeout, and -- when a container
+# name is given -- 2 the moment that container is no longer running: a
+# dead container writes no URL, so waiting out the timeout on it (a real
+# Mac run on 2026-09-06 sat 1800 s on a VM setup.sh had already killed)
+# is a wait for nothing. A just-created container may not be listed yet,
+# so an empty state only counts as dead once a running state has been
+# seen -- or, for a container that is never listed at all (removed, or
+# gone before the first poll), once 20 s have passed with no running state
+# ever observed: `container run -d` has long returned by then.
+# Any other non-empty state (stopped, exited) counts at once.
 wait_for_web_url() {
-    local dir="$1" file setup_log timeout waited=0 url="" runtime="" last="" line=""
+    local dir="$1" name="${2:-}" file setup_log timeout waited=0 url="" runtime="" last="" line="" state="" seen_running="" unlisted=0
     file="$dir/.claude-dev/run/orca-web-url.txt"
     setup_log="$dir/.claude-dev/run/setup.log"
     timeout="$(weburl_timeout "$dir")"
@@ -544,6 +571,18 @@ wait_for_web_url() {
                 printf '%s\n' "$url"
                 return 0
             fi
+        fi
+        if [ -n "$name" ]; then
+            state="$(container_state "$name")"
+            case "$state" in
+                running) seen_running=1; unlisted=0 ;;
+                "")
+                    if [ -n "$seen_running" ]; then return 2; fi
+                    unlisted=$((unlisted + 1))
+                    if [ "$unlisted" -ge 20 ]; then return 2; fi
+                    ;;
+                *)       return 2 ;;
+            esac
         fi
         if [ "$waited" = "0" ]; then
             echo "Waiting for Orca to come up inside the container..." >&2
@@ -592,8 +631,20 @@ RUNIT
 # every path Orca stores and every path an agent prints means the same
 # thing on both sides; the folder-local home becomes /home/agent, so
 # credentials and Orca state live and die with the folder.
+container_dns() {
+    local dns=""
+    if [ -n "${CLAUDE_ORCA_DNS+x}" ]; then
+        dns="$CLAUDE_ORCA_DNS"
+    else
+        dns="$(json_get "$1" '.dns')"
+        [ -n "$dns" ] || dns="1.1.1.1"
+    fi
+    if [ "$dns" = "auto" ]; then dns=""; fi
+    printf '%s\n' "$dns"
+}
+
 container_create() {
-    local dir="$1" name="$2" port="$3" ref src token cpus memory mount theme orkey
+    local dir="$1" name="$2" port="$3" ref src token cpus memory mount theme orkey dns
     # startup v4: a folder with no reachable prebuilt image runs the public
     # base image with the mounted template's entrypoint as its command --
     # the template clone sits inside the project, which is mounted at its
@@ -636,6 +687,17 @@ container_create() {
         set -- "$@" -e "OPENROUTER_API_KEY=$orkey"
     fi
 
+    # The VM's resolver. A real Mac run on 2026-09-06 booted a VM whose
+    # own resolv.conf answered nothing, so the toolchain install died on
+    # "Temporary failure resolving". Apple's CLI takes --dns <ip>:
+    # CLAUDE_ORCA_DNS wins, then claude-orca.json's `dns`, then 1.1.1.1;
+    # "auto" (or CLAUDE_ORCA_DNS set empty) passes no flag and leaves the
+    # runtime's own choice alone.
+    dns="$(container_dns "$dir")"
+    if [ -n "$dns" ]; then
+        set -- "$@" --dns "$dns"
+    fi
+
     cpus="$(json_get "$dir" '.cpus')"
     if [ -n "$cpus" ]; then
         set -- "$@" --cpus "$cpus"
@@ -669,7 +731,7 @@ EXTRA
 }
 
 cmd_open_v3() {
-    local dir="${1:-$PROJECT_SELF}" name port state url
+    local dir="${1:-$PROJECT_SELF}" name port state url rc=0
     [ -d "$dir" ] || { echo "Error: directory does not exist: $dir" >&2; return 1; }
     dir="$(cd "$dir" && pwd -P)"
     if [ ! -f "$(orca_json "$dir")" ]; then
@@ -699,15 +761,32 @@ cmd_open_v3() {
             ;;
     esac
 
-    if ! url="$(wait_for_web_url "$dir")"; then
+    url="$(wait_for_web_url "$dir" "$name")" || rc=$?
+    if [ "$rc" -ne 0 ]; then
         {
-            echo "Error: Orca did not publish a web URL within $(weburl_timeout "$dir")s."
+            if [ "$rc" -eq 2 ]; then
+                echo "Error: the container $name exited during startup before Orca published a web URL."
+            else
+                echo "Error: Orca did not publish a web URL within $(weburl_timeout "$dir")s."
+            fi
             echo "  Look at what it printed:  ./claude-dev logs"
             if [ "$(image_source "$dir")" = "runtime" ]; then
                 echo "  Toolchain install log:    $dir/.claude-dev/run/setup.log"
             fi
             echo "  Serve log:                $dir/.claude-dev/run/orca-serve.log"
-            echo "  The VM keeps running: ./claude-dev attaches once it is up."
+            if [ "$rc" -eq 2 ]; then
+                echo "  The VM is not running; ./claude-dev starts it again, and ./claude-dev logs shows why it stopped."
+            else
+                echo "  The VM keeps running: ./claude-dev attaches once it is up."
+            fi
+            # What setup.sh said last is usually the whole diagnosis
+            # ("Unable to locate package ..." on a VM with no DNS), so show
+            # it rather than only pointing at the file.
+            if [ "$(image_source "$dir")" = "runtime" ] && [ -s "$dir/.claude-dev/run/setup.log" ]; then
+                echo ""
+                echo "Last lines of the toolchain install:"
+                tail -15 "$dir/.claude-dev/run/setup.log" | sed 's/^/  /'
+            fi
         } >&2
         return 1
     fi

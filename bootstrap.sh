@@ -175,7 +175,10 @@ fi
 if ! gh auth status >/dev/null 2>&1; then
     if ( : </dev/tty ) 2>/dev/null; then
         step "Signing in to GitHub (gh auth login)"
-        gh auth login --web --git-protocol https </dev/tty || true
+        # read:packages: the prebuilt image is a private GHCR package, and a
+        # token without that scope is denied its manifest -- which sends
+        # the folder down the slow runtime-install path instead.
+        gh auth login --web --git-protocol https --scopes read:packages </dev/tty || true
     fi
 fi
 
@@ -186,6 +189,45 @@ if ! gh auth status >/dev/null 2>&1; then
         echo "  $RERUN_NOTE"
     } >&2
     exit 1
+fi
+
+# The token's OAuth scopes, read the way scripts/launcher.sh's gh_has_scope
+# reads them: the X-Oauth-Scopes header of an authenticated API call,
+# lowercased, comma-matched. `gh auth status` prints them too, but its
+# wording moves between gh versions and the header does not. Same three
+# outcomes as the launcher's: 0 the header lists the scope, 1 the header is
+# present and does not, 2 no header at all -- a fine-grained PAT or App
+# token, whose scopes are unknown rather than missing and which `gh auth
+# refresh` cannot change anyway.
+gh_token_has_scope() {
+    local header="" scopes=""
+    header="$(gh api -i user 2>/dev/null \
+        | tr -d '\r' \
+        | tr '[:upper:]' '[:lower:]' \
+        | sed -n 's/^x-oauth-scopes:/&/p' \
+        | head -1)" || header=""
+    [ -n "$header" ] || return 2
+    scopes="$(printf '%s\n' "$header" \
+        | sed 's/^x-oauth-scopes:[[:space:]]*//' \
+        | tr -d '[:space:]')"
+    case ",$scopes," in
+        *",$1,"*) return 0 ;;
+    esac
+    return 1
+}
+
+# An existing classic login usually predates this template and carries
+# gh's stock scopes only. Ask for read:packages now, while there is a
+# terminal to answer in; when the refresh fails or there is no terminal,
+# the folder still works -- it just installs its toolchain inside the VM
+# instead. Only when the header SAYS the scope is missing: a token with no
+# header is left alone, and the launcher simply attempts the pull.
+SCOPE_RC=0
+gh_token_has_scope read:packages || SCOPE_RC=$?
+if [ "$SCOPE_RC" -eq 1 ] && ( : </dev/tty ) 2>/dev/null; then
+    step "Adding the read:packages scope to the GitHub token (gh auth refresh)"
+    echo "    With it the folder pulls the prebuilt image instead of installing the toolchain inside the VM for several minutes."
+    gh auth refresh -h github.com -s read:packages </dev/tty || true
 fi
 
 # Apple ships `container` as a signed .pkg on its releases page; gh (now

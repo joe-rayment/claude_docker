@@ -39,6 +39,13 @@
 #   CLAUDE_ORCA_SETUP         the install script (default:
 #                 <template root>/scripts/container/setup.sh).
 #   CLAUDE_ORCA_SKIP_SETUP=1  do not run it.
+#   CLAUDE_ORCA_DNS_FALLBACK  resolver to prepend to resolv.conf when the
+#                 VM cannot resolve names (default 1.1.1.1); an empty
+#                 string disables the repair.
+#   CLAUDE_ORCA_RESOLV_CONF   the file that repair edits (default
+#                 /etc/resolv.conf; tests point it elsewhere).
+#   CLAUDE_ORCA_DNS_PROBE_HOST  the name whose resolution decides whether
+#                 DNS works (default ports.ubuntu.com).
 #   OPENROUTER_API_KEY        the REAL OpenRouter key, if the folder has
 #                 one. It goes to the in-VM guard and nowhere else: Orca
 #                 (and so every terminal) gets the guard's token in this
@@ -115,6 +122,64 @@ else
     TEMPLATE_ROOT="$PROJECT_DIR/.claude-dev/template"
 fi
 log "template root: $TEMPLATE_ROOT"
+
+# --- make sure the VM can resolve names --------------------------------
+#
+# A real Mac run on 2026-09-06 booted the base image into a VM whose
+# resolv.conf pointed at nothing that answered: apt printed "Temporary
+# failure resolving 'ports.ubuntu.com'" for every line and setup.sh died on
+# a package name instead. Nothing here needs DNS more than that install
+# does, so the check runs first, and a VM that cannot resolve gets a public
+# resolver prepended. Never fatal: the worst case is the install failing
+# the way it would have anyway, now with a warning that says why.
+
+DNS_FALLBACK="${CLAUDE_ORCA_DNS_FALLBACK-1.1.1.1}"
+RESOLV_CONF="${CLAUDE_ORCA_RESOLV_CONF:-/etc/resolv.conf}"
+DNS_PROBE_HOST="${CLAUDE_ORCA_DNS_PROBE_HOST:-ports.ubuntu.com}"
+
+dns_resolves() {
+    getent hosts "$1" >/dev/null 2>&1
+}
+
+ensure_dns() {
+    if dns_resolves "$DNS_PROBE_HOST"; then
+        return 0
+    fi
+    if [ -z "$DNS_FALLBACK" ]; then
+        warn "cannot resolve $DNS_PROBE_HOST and CLAUDE_ORCA_DNS_FALLBACK is empty; not touching $RESOLV_CONF"
+        return 1
+    fi
+    if [ "$(id -u)" != "0" ]; then
+        warn "cannot resolve $DNS_PROBE_HOST, and only root may repair $RESOLV_CONF; leaving it alone"
+        return 1
+    fi
+    if grep -qx "nameserver $DNS_FALLBACK" "$RESOLV_CONF" 2>/dev/null; then
+        warn "cannot resolve $DNS_PROBE_HOST even with nameserver $DNS_FALLBACK in $RESOLV_CONF; the toolchain install is going to fail"
+        return 1
+    fi
+    log "cannot resolve $DNS_PROBE_HOST; prepending nameserver $DNS_FALLBACK to $RESOLV_CONF"
+    # Written in place with cat, never mv: the runtime bind-mounts
+    # resolv.conf, and a rename over a mount point fails with EBUSY.
+    resolv_tmp="$RESOLV_CONF.claude-orca.tmp"
+    {
+        printf 'nameserver %s\n' "$DNS_FALLBACK"
+        cat "$RESOLV_CONF" 2>/dev/null
+    } > "$resolv_tmp" || { rm -f "$resolv_tmp"; warn "could not write $resolv_tmp"; return 1; }
+    if ! cat "$resolv_tmp" > "$RESOLV_CONF"; then
+        rm -f "$resolv_tmp"
+        warn "could not write $RESOLV_CONF; the toolchain install is going to fail"
+        return 1
+    fi
+    rm -f "$resolv_tmp"
+    if dns_resolves "$DNS_PROBE_HOST"; then
+        log "DNS repaired: $DNS_PROBE_HOST resolves via $DNS_FALLBACK"
+        return 0
+    fi
+    warn "still cannot resolve $DNS_PROBE_HOST after adding nameserver $DNS_FALLBACK; the toolchain install is going to fail"
+    return 1
+}
+
+ensure_dns || true
 
 # --- install the toolchain (startup v4, claude-orca-qa2.9) --------------
 #

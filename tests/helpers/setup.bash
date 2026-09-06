@@ -223,6 +223,12 @@ if [ "$1" = "auth" ] && [ "$2" = "login" ]; then
     echo "gh $*" >> "$STUB_LOG"
     exit 0
 fi
+# ...and asks an existing login for the read:packages scope the image pull
+# needs. Recorded only; the scopes `api -i user` answers with do not change.
+if [ "$1" = "auth" ] && [ "$2" = "refresh" ]; then
+    echo "gh $*" >> "$STUB_LOG"
+    exit 0
+fi
 # The bootstrap's container install: Apple's signed .pkg off the releases
 # page. STUB_GH_NO_ASSET=1 stands in for "the release carries no such
 # asset" -- nothing is written to --dir.
@@ -259,7 +265,9 @@ if [ "$1" = "api" ] && [ "$2" = "-i" ] && [ "${3:-}" = "user" ]; then
     [ "${STUB_GH_UNAUTH:-}" = "1" ] && exit 1
     scopes="${CLAUDE_ORCA_TEST_GH_SCOPES:-repo, read:org, workflow, read:packages}"
     printf 'HTTP/2.0 200 OK\r\n'
-    printf 'X-Oauth-Scopes: %s\r\n' "$scopes"
+    # STUB_GH_NO_SCOPE_HEADER=1: a fine-grained PAT or GitHub App token,
+    # which never sends X-Oauth-Scopes at all (the header is classic-only).
+    [ "${STUB_GH_NO_SCOPE_HEADER:-}" = "1" ] || printf 'X-Oauth-Scopes: %s\r\n' "$scopes"
     printf 'X-Accepted-Oauth-Scopes: \r\n'
     printf '\r\n'
     printf '{"login":"%s"}\n' "${STUB_GH_LOGIN:-joe-rayment}"

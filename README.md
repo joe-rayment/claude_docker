@@ -148,6 +148,7 @@ every update:
   "cpus": 4,
   "memory": "8g",
   "theme": "dark",
+  "dns": "1.1.1.1",
   "extraMounts": ["/Users/you/reference-repo:/Users/you/reference-repo"]
 }
 ```
@@ -163,6 +164,12 @@ every update:
   still there on the Mac. That seed happens **once**: after Orca has run,
   whatever you change in its settings pane is what sticks, and this key stops
   mattering.
+- **`dns`** — the resolver the VM is started with, `1.1.1.1` by default. Set
+  it to `auto` to pass no `--dns` flag at all and leave `container`'s own
+  choice alone. It exists because a VM that boots with a resolver answering
+  nothing fails the toolchain install on `Temporary failure resolving
+  'ports.ubuntu.com'`. `CLAUDE_ORCA_DNS` overrides it for one run, and an
+  empty value there means no flag either.
 - **`extraMounts`** — `host:guest` pairs mounted **read-only**, always. They
   are outside the project, so the VM boundary is the only thing keeping them
   safe.

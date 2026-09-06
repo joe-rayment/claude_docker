@@ -85,6 +85,21 @@ apt_cleanup() {
     rm -rf /var/lib/apt/lists/*
 }
 
+# `apt-get update` on a VM with no working DNS exits 0 after printing
+# "Temporary failure resolving" for every source, and the failure then
+# surfaces one step later as "Unable to locate package <first package>" --
+# a real Mac run on 2026-09-06 read that as a packaging bug. So the update
+# is checked here, output and exit status both, and dies naming the real
+# cause and the fix.
+apt_update_or_die() {
+    local out="" rc=0
+    out="$(apt-get update 2>&1)" || rc=$?
+    [ -n "$out" ] && printf '%s\n' "$out"
+    if [ "$rc" -ne 0 ] || printf '%s\n' "$out" | grep -q 'Temporary failure resolving'; then
+        die "the VM has no working DNS: apt cannot reach the Ubuntu archive (apt-get update exit $rc). Set \"dns\" in <project>/.claude-dev/claude-orca.json (e.g. \"1.1.1.1\") and restart the folder with ./claude-dev"
+    fi
+}
+
 node_major() {
     command -v node >/dev/null 2>&1 || return 1
     node --version 2>/dev/null | sed -n 's/^v\([0-9][0-9]*\)\..*/\1/p'
@@ -145,7 +160,7 @@ phase_base() {
         say "base: packages and en_US.UTF-8 already present"
     else
         say "base: installing apt packages and generating en_US.UTF-8"
-        apt-get update
+        apt_update_or_die
         # shellcheck disable=SC2086
         apt-get install -y --no-install-recommends $BASE_PACKAGES
         locale-gen en_US.UTF-8
@@ -187,7 +202,7 @@ phase_gh() {
     chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg
     echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
         > /etc/apt/sources.list.d/github-cli.list
-    apt-get update
+    apt_update_or_die
     apt-get install -y --no-install-recommends gh
     apt_cleanup
     gh --version
@@ -361,7 +376,7 @@ phase_orca() {
     url="https://github.com/stablyai/orca/releases/download/v${ORCA_VERSION}/${asset}"
     tmp="$(mktemp -d)"
     curl -fsSL -o "${tmp}/orca.deb" "$url"
-    apt-get update
+    apt_update_or_die
     apt-get install -y --no-install-recommends "${tmp}/orca.deb"
     apt_cleanup
     rm -rf "$tmp"
