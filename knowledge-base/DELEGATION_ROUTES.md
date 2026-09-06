@@ -84,7 +84,10 @@ printf '%s\n' 'sk-or-...' > .claude-dev/state/openrouter.key
 chmod 600 .claude-dev/state/openrouter.key
 ```
 
-The user writes that file; **no command in this repo ever writes a key**.
+**Your key is written only from your own paste** — by hand, as above, or via
+the `claude-dev setup` prompt on this Mac, which reads it without echoing it,
+writes the file mode 600 and prints a masked tail only. Nothing else in this
+repo writes a key, and nothing writes one on your behalf.
 `state/` is host-owned and write-denied to both sandbox layers, so nothing
 inside the sandbox can read or rewrite it. `claude-orca-shell` reads it on
 the host at launch — the same place and the same way it reads `gh auth

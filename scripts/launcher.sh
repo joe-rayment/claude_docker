@@ -7,6 +7,7 @@
 #
 # Usage:
 #   claude-dev [register] [dir]   Register a project (default: current dir)
+#   claude-dev setup              Guided walk-through: login, keys, beads, Orca
 #   claude-dev open               Open this folder's Orca, sandboxed
 #   claude-dev --how-to-run       Print how to start this folder's Orca
 #   claude-dev --doctor           Show presence of required tools
@@ -317,6 +318,70 @@ How to run it:
 RUNIT
 }
 
+# V6 (claude-orca-riu.5): where the OpenRouter key lives, and the one
+# function that writes it. Both belong to the launcher rather than to
+# setup-menu.sh beside it, because state/ is host-owned and write-denied to
+# BOTH sandbox layers: the set of things that may write there is small,
+# named and host-executed (tests/wrapper-writes.bats gates it), and the
+# walk-through's step 4 is the launcher acting on a paste, not a new writer.
+#
+# $2 is a secret: it is never echoed, never logged, and the file is created
+# under umask 077 so it is never briefly world-readable. Returns 1 without
+# writing when state/ is not writable -- which is exactly what happens if
+# `claude-dev setup` is run from a shell the hook has already sandboxed.
+openrouter_key_file() {
+    printf '%s\n' "$1/.claude-dev/state/openrouter.key"
+}
+
+write_openrouter_key() {
+    local dir="$1" value="$2" key
+    key="$(openrouter_key_file "$dir")"
+    mkdir -p "$dir/.claude-dev/state" 2>/dev/null || true
+    ( umask 077; printf '%s\n' "$value" > "$key" ) 2>/dev/null || return 1
+    chmod 600 "$key" 2>/dev/null || true
+}
+
+# The guided walk-through. Sourced rather than
+# exec'd so its closing menu can call cmd_open/cmd_doctor directly, and so
+# it sees derive_project_name for the beads prefix. The file lives in the
+# template beside this one -- host-owned and write-denied to both sandbox
+# layers, like everything else this launcher runs.
+cmd_setup() {
+    local menu="$SCRIPT_DIR/setup-menu.sh"
+    if [ ! -f "$menu" ]; then
+        echo "Error: no setup-menu.sh beside this launcher ($menu)" >&2
+        return 1
+    fi
+    # shellcheck source=setup-menu.sh
+    . "$menu"
+    setup_menu_main "$PROJECT_SELF"
+}
+
+# Registration itself stays non-interactive: it prints the pointer and
+# nothing else unless a real terminal is on the other end of stdout AND the
+# user has not asked to be left alone (CLAUDE_ORCA_SKIP_SETUP). The
+# bootstrap one-liner is piped into bash, so stdin is never the test --
+# stdout being a terminal, and /dev/tty being openable, is.
+register_setup_offer() {
+    local dir="$1" reply=""
+    if [ -n "${CLAUDE_ORCA_SKIP_SETUP:-}" ] || [ ! -t 1 ] || \
+       ! (exec 3</dev/tty) 2>/dev/null; then
+        echo "Run 'claude-dev setup' for a guided walk-through"
+        return 0
+    fi
+
+    printf 'Walk through setup now? [Y/n] '
+    IFS= read -r reply </dev/tty || reply="n"
+    case "$reply" in
+        n|N|no|No|NO)
+            echo "Run 'claude-dev setup' for a guided walk-through"
+            ;;
+        *)
+            cmd_setup
+            ;;
+    esac
+}
+
 cmd_register() {
     local dir="${1:-$PROJECT_SELF}"
     [ -d "$dir" ] || { echo "Error: directory does not exist: $dir" >&2; exit 1; }
@@ -408,12 +473,14 @@ JSON
     if [ "${CLAUDE_ORCA_SKIP_SELFTEST:-0}" = "1" ]; then
         echo "Skipping sandbox self-test (CLAUDE_ORCA_SKIP_SELFTEST=1) -- 'claude-dev --doctor' will show it as not run"
         print_run_it_block "$dir"
+        register_setup_offer "$dir"
         return 0
     fi
 
     local selftest_bin="$SCRIPT_DIR/sandbox/claude-orca-shell"
     if [ -x "$selftest_bin" ] && "$selftest_bin" --selftest --root "$dir" --cwd "$dir"; then
         print_run_it_block "$dir"
+        register_setup_offer "$dir"
         return 0
     fi
 
@@ -943,6 +1010,8 @@ claude-dev -- claude_orca project launcher (one per folder)
 
 Usage:
   claude-dev [register] [dir]   Register a project (default: this folder)
+  claude-dev setup              Guided walk-through: Claude login, git identity,
+                                gh auth, OpenRouter key, beads, Orca settings
   claude-dev open               Open this folder's Orca, sandboxed
   claude-dev --how-to-run       Print how to start this folder's Orca
   claude-dev --doctor           Show presence of required tools
@@ -959,6 +1028,7 @@ HELP
 
 case "${1:-}" in
     register)      shift; cmd_register "${1:-$PROJECT_SELF}" ;;
+    setup)         cmd_setup || exit $?; exit 0 ;;
     open)          cmd_open || exit $?; exit 0 ;;
     --how-to-run)  print_run_it_block "$PROJECT_SELF"; exit 0 ;;
     --doctor)      cmd_doctor || exit $?; exit 0 ;;

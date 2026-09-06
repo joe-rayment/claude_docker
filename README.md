@@ -45,6 +45,20 @@ same one-liner from inside it.
 Registration ends by running the sandbox self-test and **refuses to hand off
 to Orca unless it passes** — see [Self-test](#self-test).
 
+Then, in a terminal in that folder:
+
+```bash
+./claude-dev setup
+```
+
+A guided walk-through of the six things only you can do: signing Claude Code
+in, the git identity commits from this folder carry, `gh auth login`, your
+OpenRouter key, `bd init`, and the one Orca setting worth changing. Every
+step is skippable — Enter or `n` skips one, `a` skips the rest — and it ends
+with a menu that opens Orca, or runs `claude-dev --doctor`. Registration
+offers it when it finishes in a terminal; `CLAUDE_ORCA_SKIP_SETUP=1` turns
+that offer off.
+
 Upgrading from a pre-v2 install? `claude-dev --doctor` flags the old central
 `~/.claude-orca`; `claude-dev --uninstall` and `claude-dev --remove-v1` both
 remove it, naming the path first.
@@ -89,6 +103,7 @@ first `claude` run prints a login URL to open on this Mac.
 | Command | What it does |
 |---|---|
 | `./claude-dev open` | Start this folder's Orca, sandboxed |
+| `claude-dev setup` | Guided walk-through: Claude login, git identity, `gh`, OpenRouter key, beads, Orca settings |
 | `claude-dev --how-to-run` | Print the launch instructions again |
 | `claude-dev --doctor` | Tool presence plus the 17 sandbox probes, with reasons |
 | `claude-dev --update` | Pull the template, re-pin `srt`/Claude Code/Orca, re-sync, re-test |
@@ -246,7 +261,9 @@ printf '%s\n' 'sk-or-...' > .claude-dev/state/openrouter.key
 chmod 600 .claude-dev/state/openrouter.key
 ```
 
-You create that file yourself; no command here ever writes your key. The
+Your key is written only from your own paste — by hand, as above, or through
+the `claude-dev setup` prompt on this Mac, which reads it without echoing it
+and shows you a masked tail. The
 shell wrapper reads it on the host at launch (where the sandbox cannot see
 it), exports `OPENROUTER_API_KEY` into the session, and has `srt` mask it —
 the agent sees a sentinel and the proxy injects the real value only on the
