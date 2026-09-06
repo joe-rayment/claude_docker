@@ -238,8 +238,11 @@ drive() {
     printf '%s' "$n"
 }
 
-# wait_exit <pid> <secs> -- orca-run's exit code; a run that will not end
-# is killed so the suite fails on the code instead of hanging.
+# wait_exit <pid> <secs> -- orca-run's exit code in WAIT_RC; a run that
+# will not end is killed so the suite fails on the code instead of
+# hanging. It must run in the test shell itself, never inside $(...):
+# `wait` only knows the shell's own children, and in a command-substitution
+# subshell it answers -1 for the test's background orca-run.
 wait_exit() {
     local deadline rc=0
     deadline=$(( $(date +%s) + $2 ))
@@ -251,7 +254,7 @@ wait_exit() {
         sleep 1
     fi
     wait "$1" || rc=$?
-    printf '%s' "$rc"
+    WAIT_RC="$rc"
 }
 
 # --- the waves -----------------------------------------------------------
@@ -273,7 +276,7 @@ wait_exit() {
     # shellcheck disable=SC2086
     n="$(drive "$pid" 3 300 $seen)"
     [ "$n" -eq 3 ]
-    rc="$(wait_exit "$pid" 180)"
+    wait_exit "$pid" 180; rc="$WAIT_RC"
     [ "$rc" -eq 0 ]
 
     # Wave 1 is exactly the two beads bd calls ready; C was blocked.
@@ -327,7 +330,7 @@ wait_exit() {
     # shellcheck disable=SC2086
     n="$(drive "$pid" 2 300 $seen)"
     [ "$n" -eq 2 ]
-    rc="$(wait_exit "$pid" 240)"
+    wait_exit "$pid" 240; rc="$WAIT_RC"
     [ "$rc" -eq 0 ]
 
     [ "$(wave_beads 1)" = "$(sorted "$b1" "$b2")" ]
@@ -370,7 +373,7 @@ wait_exit() {
     # shellcheck disable=SC2086
     n="$(drive "$pid" 2 300 $seen)"
     [ "$n" -eq 2 ]
-    rc="$(wait_exit "$pid" 180)"
+    wait_exit "$pid" 180; rc="$WAIT_RC"
     [ "$rc" -eq 0 ]
     [ "$(count_events worker_done)" -eq 2 ]
 
@@ -418,7 +421,7 @@ CLASS: behavior"
     # shellcheck disable=SC2086
     n="$(drive "$pid" 3 300 $seen)"
     [ "$n" -eq 3 ]
-    rc="$(wait_exit "$pid" 180)"
+    wait_exit "$pid" 180; rc="$WAIT_RC"
     [ "$rc" -eq 0 ]
     [ "$(count_events dispatch)" -eq 3 ]
 
