@@ -128,6 +128,37 @@ runs at once":
   in separate Orca worktrees; slices that share files run sequentially in
   one worktree; recon fans out freely.
 
+## Default stack and data residency (user, 2026-09-06)
+
+Default: Fable orchestrates, the most capable GLM executes (today
+`z-ai/glm-5.3` on OpenRouter through OpenCode). Hard rule: **the user's
+data never routes to China.** GLM is served on OpenRouter by China-based
+hosts (Z.AI, Baidu, Alibaba, SiliconFlow, StreamLake) as well as US/EU
+ones, so the model choice alone decides nothing; the *provider* does.
+
+Enforcement is a chokepoint inside the VM, not a client setting:
+
+- `config/provider-policy.json` — a default-deny allowlist of OpenRouter
+  provider slugs, each with its hosting country; China-based and
+  unverifiable hosts are named and denied; `data_collection: deny`,
+  `allow_fallbacks: false`.
+- `scripts/container/openrouter-guard.py` — a local proxy on
+  127.0.0.1:4141 that alone holds the real OpenRouter key. Every
+  completion request from any client (OpenCode, Codex, delegate.sh) is
+  rewritten with `provider.only = allowlist`, fallbacks off, data
+  collection denied, then forwarded; a client-supplied order outside the
+  allowlist is dropped and logged. Agent terminals receive only a guard
+  token and the guard's base URL, so no process in the VM can reach
+  OpenRouter with the real key except through the policy.
+- Tier default: with an OpenRouter key present the derived worker is
+  `orca + opencode + openrouter/z-ai/glm-5.3`; without one, the Claude
+  rung as before. `/tier worker claude:<x>` still overrides.
+- Belt and braces, the user's own action on openrouter.ai: account
+  settings → ignored providers and "deny data collection".
+
+Slices: **O7** policy + guard + tier default + client configs;
+**O7b** entrypoint/seed wiring (after O5 and O6, which own those files).
+
 ## Slices (deep lane; one bead + contract each)
 
 - **O1 container** — setup.sh opencode phase; opencode config + sync;
