@@ -356,7 +356,10 @@ case "$cmd" in
         echo running > "$state/containers/$name"
         # Stands in for the entrypoint (scripts/container/entrypoint.sh):
         # Orca comes up and publishes its pairing URL and bound port.
-        if [ -n "$proj" ]; then
+        # CLAUDE_ORCA_TEST_NO_URL: the container starts but never publishes
+        # a URL -- what a first start looks like while setup.sh is still
+        # installing the toolchain.
+        if [ -n "$proj" ] && [ -z "${CLAUDE_ORCA_TEST_NO_URL:-}" ]; then
             mkdir -p "$proj/.claude-dev/run"
             printf 'http://127.0.0.1:%s/web-index.html#pairing=stub\n' "$port" \
                 > "$proj/.claude-dev/run/orca-web-url.txt"

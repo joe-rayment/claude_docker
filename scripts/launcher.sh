@@ -514,10 +514,29 @@ container_state() {
 # the fragment carries a pairing code) once Orca is serving. That file is
 # the handshake between the two halves: everything before it is the Mac
 # starting a VM, everything after is a browser talking to Orca.
+# How long to wait for that handshake. A pulled image already carries the
+# toolchain, so Orca serves in seconds; the runtime path installs it on
+# first start -- minutes of apt and npm before serve is even spawned.
+# Waiting 120 s there kills a folder that is working fine (a real Mac run
+# on 2026-09-06 died at 2m12s mid-install); smoke.sh has always drawn the
+# same distinction.
+weburl_timeout() {
+    local dir="$1"
+    if [ -n "${CLAUDE_ORCA_WEBURL_TIMEOUT:-}" ]; then
+        printf '%s\n' "$CLAUDE_ORCA_WEBURL_TIMEOUT"
+    elif [ "$(image_source "$dir")" = "runtime" ]; then
+        printf '%s\n' "${CLAUDE_ORCA_WEBURL_TIMEOUT_RUNTIME:-1800}"
+    else
+        printf '%s\n' "120"
+    fi
+}
+
 wait_for_web_url() {
-    local dir="$1" file timeout waited=0 url=""
+    local dir="$1" file setup_log timeout waited=0 url="" runtime="" last="" line=""
     file="$dir/.claude-dev/run/orca-web-url.txt"
-    timeout="${CLAUDE_ORCA_WEBURL_TIMEOUT:-120}"
+    setup_log="$dir/.claude-dev/run/setup.log"
+    timeout="$(weburl_timeout "$dir")"
+    if [ "$(image_source "$dir")" = "runtime" ]; then runtime=1; fi
     while [ "$waited" -lt "$timeout" ]; do
         if [ -s "$file" ]; then
             url="$(head -1 "$file")"
@@ -528,6 +547,15 @@ wait_for_web_url() {
         fi
         if [ "$waited" = "0" ]; then
             echo "Waiting for Orca to come up inside the container..." >&2
+        fi
+        # On the runtime path the silence is the whole problem: setup.sh is
+        # working, so show its last line every 15 s rather than nothing.
+        if [ -n "$runtime" ] && [ "$((waited % 15))" = "0" ] && [ -s "$setup_log" ]; then
+            line="$(tail -1 "$setup_log" 2>/dev/null)"
+            if [ -n "$line" ] && [ "$line" != "$last" ]; then
+                echo "  installing toolchain: $line" >&2
+                last="$line"
+            fi
         fi
         sleep 1
         waited=$((waited + 1))
@@ -673,9 +701,13 @@ cmd_open_v3() {
 
     if ! url="$(wait_for_web_url "$dir")"; then
         {
-            echo "Error: Orca did not publish a web URL within ${CLAUDE_ORCA_WEBURL_TIMEOUT:-120}s."
+            echo "Error: Orca did not publish a web URL within $(weburl_timeout "$dir")s."
             echo "  Look at what it printed:  ./claude-dev logs"
+            if [ "$(image_source "$dir")" = "runtime" ]; then
+                echo "  Toolchain install log:    $dir/.claude-dev/run/setup.log"
+            fi
             echo "  Serve log:                $dir/.claude-dev/run/orca-serve.log"
+            echo "  The VM keeps running: ./claude-dev attaches once it is up."
         } >&2
         return 1
     fi

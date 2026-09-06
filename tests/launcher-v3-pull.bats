@@ -127,3 +127,91 @@ BASE_IMAGE="docker.io/library/ubuntu:24.04"
     [[ "$output" == *"'container run' failed"* ]]
     [[ "$output" != *"Waiting for Orca"* ]]
 }
+
+# A real Mac run on 2026-09-06 died here: no prebuilt image, so the folder
+# took the runtime path, the launcher said "several minutes", then gave up
+# after 120 s while setup.sh was still installing. The launcher's dispatch
+# block runs on source, so lift the functions out of the real file rather
+# than sourcing it or duplicating them here.
+lift_launcher_fns() {
+    local f="$1/.claude-dev/template/scripts/launcher.sh"
+    sed -n '/^image_source()/,/^}/p;/^weburl_timeout()/,/^}/p;/^wait_for_web_url()/,/^}/p' "$f"
+}
+
+@test "the launcher waits 1800s for the web URL on the runtime-install path and 120s on the pulled path" {
+    mkdir -p "$PROJECT_DIR"
+    primary="$(abspath "$PROJECT_DIR")"
+    run make_project_v3 "$primary"
+    [ "$status" -eq 0 ]
+    mkdir -p "$primary/.claude-dev/run"
+
+    fns="$(lift_launcher_fns "$primary")"
+    [ -n "$fns" ]
+
+    printf 'runtime\n' > "$primary/.claude-dev/run/image-source"
+    run bash -c "unset CLAUDE_ORCA_WEBURL_TIMEOUT; $fns
+weburl_timeout '$primary'"
+    [ "$status" -eq 0 ]
+    [ "$output" = "1800" ]
+
+    printf 'pulled\n' > "$primary/.claude-dev/run/image-source"
+    run bash -c "unset CLAUDE_ORCA_WEBURL_TIMEOUT; $fns
+weburl_timeout '$primary'"
+    [ "$status" -eq 0 ]
+    [ "$output" = "120" ]
+}
+
+@test "CLAUDE_ORCA_WEBURL_TIMEOUT overrides both paths" {
+    mkdir -p "$PROJECT_DIR"
+    primary="$(abspath "$PROJECT_DIR")"
+    run make_project_v3 "$primary"
+    [ "$status" -eq 0 ]
+    mkdir -p "$primary/.claude-dev/run"
+    fns="$(lift_launcher_fns "$primary")"
+
+    for src in runtime pulled; do
+        printf '%s\n' "$src" > "$primary/.claude-dev/run/image-source"
+        run bash -c "export CLAUDE_ORCA_WEBURL_TIMEOUT=7; $fns
+weburl_timeout '$primary'"
+        [ "$status" -eq 0 ]
+        [ "$output" = "7" ]
+    done
+}
+
+@test "the runtime-path wait prints setup.log progress and the failure message names setup.log" {
+    mkdir -p "$PROJECT_DIR"
+    primary="$(abspath "$PROJECT_DIR")"
+    run make_project_v3 "$primary"
+    [ "$status" -eq 0 ]
+
+    fns="$(lift_launcher_fns "$primary")"
+
+    # The wait itself must surface setup.log rather than sitting silent.
+    # Its own scratch folder: the stub container keeps rewriting the URL
+    # file in the live project, which would end the wait immediately.
+    quiet="$BATS_TEST_TMPDIR/quiet"
+    mkdir -p "$quiet/.claude-dev/run"
+    printf 'runtime\n' > "$quiet/.claude-dev/run/image-source"
+    printf '[setup] node: installing 22.x\n' > "$quiet/.claude-dev/run/setup.log"
+    run bash -c "export CLAUDE_ORCA_WEBURL_TIMEOUT=2; $fns
+wait_for_web_url '$quiet' 2>&1 >/dev/null"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"installing toolchain: [setup] node: installing 22.x"* ]]
+
+    mkdir -p "$primary/.claude-dev/run"
+    printf 'runtime\n' > "$primary/.claude-dev/run/image-source"
+    printf '[setup] node: installing 22.x\n' > "$primary/.claude-dev/run/setup.log"
+
+    # And the failure the user actually sees names the install log.
+    name="claude-orca-$(basename "$primary")"
+    rm -f "$CONTAINER_STUB_STATE/containers/$name"
+    : > "$CONTAINER_STUB_LOG"
+    rm -f "$primary/.claude-dev/run/orca-web-url.txt"
+    export CLAUDE_ORCA_WEBURL_TIMEOUT=2
+    export CLAUDE_ORCA_TEST_NO_URL=1
+    run bash -c "cd '$primary' && ./claude-dev"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"did not publish a web URL within 2s"* ]]
+    [[ "$output" == *"Toolchain install log:"* ]]
+    [[ "$output" == *"setup.log"* ]]
+}
