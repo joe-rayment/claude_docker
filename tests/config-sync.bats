@@ -134,6 +134,52 @@ JSON
     diff "$ORCA_HOST/template/config/claude-user-memory.md" "$dest/CLAUDE.md"
 }
 
+# claude-orca-qa2.11: an OpenRouter worker inside the VM is an `opencode`
+# terminal, and opencode reads its provider config from a file
+# (OPENCODE_CONFIG, pointed at this path by seed-orca-state.sh). That file
+# is template-owned like the rest of the agent home, so it is config-sync's
+# to write -- under the same checksum gate, from config/opencode/.
+@test "the home opencode config carries the OpenRouter provider and is synced from config/opencode" {
+    make_project "$PROJECT_DIR"
+    primary="$(abspath "$PROJECT_DIR")"
+    src="$ORCA_HOST/template/config/opencode/opencode.json"
+    dest="$primary/.claude-dev/home/.config/opencode/opencode.json"
+
+    # The source: real JSON, the OpenRouter provider, and the key read from
+    # the env the VM already carries (claude-orca-qa2.7) -- never a literal
+    # key. No `model`: the model is per worker, chosen on argv.
+    [ -f "$src" ]
+    run jq -e . "$src"
+    [ "$status" -eq 0 ]
+    [ "$(jq -r '."$schema"' "$src")" = "https://opencode.ai/config.json" ]
+    [ "$(jq -r '.provider.openrouter.options.apiKey' "$src")" = "{env:OPENROUTER_API_KEY}" ]
+    run jq -e 'has("model")' "$src"
+    [ "$status" -ne 0 ]
+    run grep -qE 'sk-[A-Za-z0-9]|or-v1-' "$src"
+    [ "$status" -ne 0 ]
+
+    rm -f "$PROJECT_DIR/.claude-dev/run/config-hash"
+    run CONFIG_SYNC --project "$primary" --host "$ORCA_HOST"
+    [ "$status" -eq 0 ]
+    [ -f "$dest" ]
+    diff "$src" "$dest"
+
+    # Gated like everything else: an unchanged template rewrites nothing...
+    echo '// canary' >> "$dest"
+    run CONFIG_SYNC --project "$primary" --host "$ORCA_HOST"
+    [ "$status" -eq 0 ]
+    run grep -qF canary "$dest"
+    [ "$status" -eq 0 ]
+
+    # ...and a changed one is picked up, canary and all.
+    jq '.provider.openrouter.options.baseURL = "https://example.invalid/api"' \
+        "$src" > "$BATS_TEST_TMPDIR/opencode.json"
+    mv "$BATS_TEST_TMPDIR/opencode.json" "$src"
+    run CONFIG_SYNC --project "$primary" --host "$ORCA_HOST"
+    [ "$status" -eq 0 ]
+    diff "$src" "$dest"
+}
+
 @test "grep gate: no script under scripts/ references ~/.claude literally" {
     # lib/paths.sh is the ONE designated exception -- every other script
     # goes through claude_config_dir() instead (see its own header).

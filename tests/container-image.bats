@@ -31,6 +31,11 @@ orca_phase() {
     sed -n '/^phase_orca()/,/^}/p' "$SETUP"
 }
 
+# The opencode phase alone, scoped the same way.
+opencode_phase() {
+    sed -n '/^phase_opencode()/,/^}/p' "$SETUP"
+}
+
 # The arch mapping both the .deb name and every other asset go through.
 arch_helper() {
     sed -n '/^deb_arch()/,/^}/p' "$SETUP"
@@ -167,6 +172,49 @@ setup_steps() {
     smoke="$(cat "$SMOKE")"
     [[ "$smoke" == *".claude-dev/template"* ]]
     [[ "$smoke" == *"--phase base"* ]]
+}
+
+# claude-orca-qa2.11: an OpenRouter worker inside the VM is an `opencode`
+# terminal Orca supervises (.claude/plans/orca-orchestration.md, Container
+# side), so opencode belongs to the image, pinned like every other phase.
+# Unlike orca, this box HAS opencode -- so --check's row is a real reading
+# here, not a static grep.
+@test "setup.sh installs a pinned opencode and --check reports it" {
+    [ -f "$SETUP" ]
+
+    # One pin, a version, overridable by env like every other phase's.
+    local pin phase
+    pin="$(sed -n 's/^OPENCODE_VERSION="\${OPENCODE_VERSION:-\([^}]*\)}".*/\1/p' \
+        "$SETUP" | head -1)"
+    [ -n "$pin" ]
+    printf '%s' "$pin" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'
+
+    # A phase of its own, after claude and before orca, in PHASES and so in
+    # --list and the default all-phases run.
+    phase="$(opencode_phase)"
+    [ -n "$phase" ]
+    run grep -qE '^PHASES="[^"]*claude opencode[^"]*"$' "$SETUP"
+    [ "$status" -eq 0 ]
+    run bash "$SETUP" --list
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"opencode"* ]]
+
+    # run_phase dispatches it -- a real phase that needs root, not an
+    # unknown name.
+    run bash "$SETUP" --phase opencode
+    [ "$status" -ne 0 ]
+    [[ "$output" != *"unknown phase"* ]]
+    [[ "$output" == *"must run as root"* ]]
+
+    # Installed from npm at the pin, and skipped when the box already has
+    # that exact version (the same stamp-then-return shape as bats/bd/dolt).
+    printf '%s\n' "$phase" | grep -qE 'npm install -g[^;]*opencode-ai@\$\{OPENCODE_VERSION\}'
+    printf '%s\n' "$phase" | grep -qE 'installed_opencode'
+    printf '%s\n' "$phase" | grep -qE 'already present'
+
+    # And --check reads the version off THIS box, where opencode is real.
+    run bash "$SETUP" --check
+    [[ "$output" == *"ok    opencode ${pin}"* ]]
 }
 
 @test "setup.sh's Claude Code pin is install-claude.sh's, character for character" {
