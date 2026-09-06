@@ -1,15 +1,18 @@
 #!/usr/bin/env bats
 #
 # V4 acceptance contract (claude-orca-qt9.4) -- FROZEN from RED-AT onward.
-# With HOME redirected into the folder (.claude/plans/orca-port.md S9.1),
-# Orca writes its managed hook entries and its statusline straight into
-# <project>/.claude-dev/home/.claude/settings.json -- the very file
+# With HOME pointed at the folder's own .claude-dev/home -- which is what
+# the container does, mounting it as /home/agent -- Orca writes its managed
+# hook entries and its statusline straight into
+# <project>/.claude-dev/home/.claude/settings.json, the very file
 # config-sync regenerates from the template. So config-sync must PRESERVE
 # Orca's entries and an existing Orca statusLine chain instead of wiping
-# them; orca-hooks-merge, whose whole job was carrying them across the
-# real-home/sandbox-home boundary, becomes a no-op once source and target
-# are the same file; and the transcript symlink that worked around that
-# same split is retired.
+# them, and orca-hooks-merge, whose whole job was carrying them across a
+# real-home/agent-home boundary, becomes a no-op once source and target are
+# the same file.
+#
+# claude-orca-qa2.3: the retired-transcriptSymlink case that closed this
+# file went with the v2 shell wrapper that read the key.
 
 load helpers/setup
 
@@ -204,36 +207,4 @@ JSON
     [ "$status" -eq 0 ]
     [ "$(total_managed "$settings")" -eq 12 ]
     [[ "$(jq -r '.statusLine.command' "$settings")" == *"claude-statusline.sh"* ]]
-}
-
-@test "orca.transcriptSymlink is accepted, warns once and creates nothing" {
-    make_project "$PROJECT_DIR"
-    primary="$(abspath "$PROJECT_DIR")"
-    real_home="$(abspath "$(make_real_home)")"
-    slug="$(printf '%s' "$primary" | tr '/.' '-')"
-    link="$real_home/.claude/projects/$slug"
-    sandbox_json="$primary/.claude-dev/sandbox.json"
-
-    export CLAUDE_ORCA_REAL_HOME="$real_home"
-    export STUB_SRT_NOEXEC=1
-
-    # Absent (the default sandbox.json): not a word about it.
-    run "$CLAUDE_ORCA_HOME/bin/claude-orca-shell" --root "$primary" --cwd "$primary" -- zsh
-    [ "$status" -eq 0 ]
-    [[ "$output" != *"transcriptSymlink"* ]]
-
-    jq '.orca.transcriptSymlink = true' "$sandbox_json" > "$BATS_TEST_TMPDIR/sandbox.json"
-    mv "$BATS_TEST_TMPDIR/sandbox.json" "$sandbox_json"
-
-    run "$CLAUDE_ORCA_HOME/bin/claude-orca-shell" --root "$primary" --cwd "$primary" -- zsh
-    unset STUB_SRT_NOEXEC CLAUDE_ORCA_REAL_HOME
-    # Accepted: a retired key never fails a launch.
-    [ "$status" -eq 0 ]
-    # Warned, once, and said it is retired.
-    [ "$(printf '%s\n' "$output" | grep -c 'orca\.transcriptSymlink')" -eq 1 ]
-    [[ "$output" == *"retired"* ]]
-    # And created nothing, on either side of the old boundary.
-    [ ! -e "$link" ]
-    [ ! -e "$real_home/.claude/projects" ]
-    [ ! -e "$primary/.claude-dev/home/.claude/projects" ]
 }

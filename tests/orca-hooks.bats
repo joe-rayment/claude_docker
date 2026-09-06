@@ -1,18 +1,18 @@
 #!/usr/bin/env bats
 #
 # S6 acceptance contract (claude-orca-3sk.18) -- FROZEN from RED-AT onward.
-# Orca writes its managed hook entries into the REAL ~/.claude/settings.json;
-# the sandboxed Claude runs with its own CLAUDE_CONFIG_DIR and never reads
-# that file, so the wrapper (host side, every launch) merges Orca's managed
-# entries -- identified by the ~/.orca/agent-hooks/claude-hook.sh command --
-# into <config dir>/settings.json, chains Orca's statusline before ours and
-# leaves ORCA_* env alone. See .claude/plans/orca-port.md S3.5.
+# Orca writes its managed hook entries -- identified by the
+# ~/.orca/agent-hooks/claude-hook.sh command -- into the settings.json of
+# the HOME it runs under. orca-hooks-merge carries those entries into
+# <config dir>/settings.json and chains Orca's statusline before ours.
 #
-# V4 (claude-orca-qt9.4) narrowed this: once HOME is redirected into the
-# folder the two files are one, so the merge no-ops and config-sync does the
-# preserving -- covered in tests/orca-data.bats, which also owns what
-# replaced the retired transcript symlink. The cases below are the
-# still-live split-home path.
+# V4 (claude-orca-qt9.4) narrowed this: when the two files are one (Orca
+# running under the same HOME, which is what happens inside the container)
+# the merge no-ops and config-sync does the preserving -- covered in
+# tests/orca-data.bats. The cases below are the still-live split-home path.
+#
+# claude-orca-qa2.3: the wrapper-env case that lived here went with the v2
+# shell wrapper; nothing on the Mac launches an agent any more.
 #
 # tests/fixtures/orca/claude-settings-with-orca.json is a faithful copy of
 # what Orca's own installer writes: the 12 CLAUDE_EVENTS of
@@ -192,23 +192,4 @@ STUB
     before_orca="${output%%ORCA-USAGE*}"
     before_mine="${output%%MINE*}"
     [ "${#before_orca}" -lt "${#before_mine}" ]
-}
-
-@test "ORCA_* variables pass through the wrapper env untouched" {
-    make_project "$PROJECT_DIR"
-    real_home="$(abspath "$(make_real_home)")"
-    primary="$(abspath "$PROJECT_DIR")"
-
-    export CLAUDE_ORCA_REAL_HOME="$real_home"
-    export STUB_SRT_NOEXEC=1
-    export ORCA_AGENT_HOOK_PORT=54321
-    export ORCA_SESSION_ID="sess-abc"
-    export ORCA_TERMINAL_ID="term-xyz"
-    run "$ORCA_HOST/bin/claude-orca-shell" --root "$primary" --cwd "$primary" -- zsh
-    unset STUB_SRT_NOEXEC CLAUDE_ORCA_REAL_HOME ORCA_AGENT_HOOK_PORT ORCA_SESSION_ID ORCA_TERMINAL_ID
-    [ "$status" -eq 0 ]
-
-    grep -qxF 'ORCA_AGENT_HOOK_PORT=54321' "$STUB_ENV"
-    grep -qxF 'ORCA_SESSION_ID=sess-abc' "$STUB_ENV"
-    grep -qxF 'ORCA_TERMINAL_ID=term-xyz' "$STUB_ENV"
 }

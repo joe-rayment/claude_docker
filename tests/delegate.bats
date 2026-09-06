@@ -18,11 +18,11 @@ bats_require_minimum_version 1.5.0
 #     hardcoded /workspace, so the same script serves the primary and every
 #     linked worktree.
 #   - job dirs live under <primary>/.claude-dev/delegate/<job>, inside the
-#     sandbox's own writable scope, not a top-level .delegate/.
-#   - egress preflight reads the sandbox allowlist (gen-settings.sh's
-#     DEFAULT_DOMAINS + .claude-dev/sandbox.json's extraAllowedDomains, plus
-#     the provider host implied by a present key) instead of inspecting
-#     firewall rules -- there is no firewall inside this sandbox to read.
+#     tree the container mounts read-write, not a top-level .delegate/.
+#   - the preflight checks what it can observe -- runner on PATH, a loopback
+#     runtime answering, the provider key set. v3 (claude-orca-qa2.3) dropped
+#     the domain-allowlist check with the Seatbelt design that owned the
+#     allowlist: the container VM has no per-domain rules to read.
 #   - three runners (opencode/codex/gemini), selected by route.runner.
 #
 # No real network and no real runner call anywhere below: stub opencode,
@@ -36,7 +36,6 @@ load helpers/setup
 SCRIPT="$REPO_ROOT/scripts/delegate.sh"
 SHIPPED_ROUTES="$REPO_ROOT/config/delegate-routes.json"
 GITIGNORE="$REPO_ROOT/.gitignore"
-GEN_SETTINGS="$REPO_ROOT/scripts/sandbox/gen-settings.sh"
 
 # Overrides the helper's template-snapshot fixture: nothing here needs it.
 setup_file() {
@@ -97,9 +96,11 @@ EOF
     unset OPENROUTER_API_KEY OPENAI_API_KEY GEMINI_API_KEY
 }
 
-# make_repo <dir> [extra-allowed-domain ...] -- scratch git repo with one
-# commit (so `worktree add ... HEAD` has something to branch from) and a
-# .claude-dev/sandbox.json carrying the given extra allowed domains.
+# make_repo <dir> [ignored ...] -- scratch git repo with one commit (so
+# `worktree add ... HEAD` has something to branch from) and the .claude-dev
+# root the job dirs land under. Trailing arguments are the provider hosts
+# callers used to allowlist; harmless now, kept so each case still reads as
+# "this route's host is the one in play".
 make_repo() {
     local dir="$1"; shift
     mkdir -p "$dir"
@@ -111,11 +112,6 @@ make_repo() {
     git -C "$dir" add README.md .gitignore
     git -C "$dir" commit -qm init
     mkdir -p "$dir/.claude-dev"
-    local domains
-    domains=$(printf '%s\n' "$@" | jq -R . | jq -s -c 'map(select(. != ""))')
-    jq -n --argjson d "$domains" \
-        '{network: {extraAllowedDomains: $d}, filesystem: {extraAllowWrite: []}}' \
-        > "$dir/.claude-dev/sandbox.json"
 }
 
 # make_bead <dir> <title> -- creates a bead through the bd stub, prints its id.
@@ -182,27 +178,7 @@ route_line() {
     [[ "$(route_line local)" == *degraded*"ollama unreachable"* ]]
 }
 
-@test "egress preflight fails with a clear message when the provider host is not in the allowlist" {
-    repo="$BATS_TEST_TMPDIR/repo"
-    make_repo "$repo"
-
-    run env DELEGATE_REPO="$repo" bash "$SCRIPT" check
-    [ "$status" -eq 0 ]
-    line="$(route_line glm)"
-    [[ "$line" == *degraded* ]]
-    [[ "$line" == *openrouter.ai* ]]
-    [[ "$line" == *"not in the sandbox allowlist"* ]]
-    [[ "$line" == *extraAllowedDomains* ]]
-
-    run env DELEGATE_REPO="$repo" bash "$SCRIPT" run --route glm --prompt "hello"
-    [ "$status" -ne 0 ]
-    [[ "$output" == *openrouter.ai* ]]
-    [[ "$output" == *"not in the sandbox allowlist"* ]]
-    [[ "$output" == *extraAllowedDomains* ]]
-    [ -z "$(job_dirs "$repo")" ]
-}
-
-@test "check: allowlisted hosts and present keys -> every route live" {
+@test "check: runner present and keys present -> every route live" {
     repo="$BATS_TEST_TMPDIR/repo"
     make_repo "$repo" openrouter.ai api.openai.com generativelanguage.googleapis.com
     fake_curl "$STUB_BIN" ok
@@ -499,41 +475,8 @@ ROUTES_EOF
     [ "$status" -ne 0 ]
 }
 
-@test "provider keys are emitted as srt credentials masks with the provider's injectHosts and never appear in the job env file" {
-    # (a) the settings side: gen-settings.sh turns each present provider key
-    #     into an srt credentials mask alongside the existing GH_TOKEN entry.
-    primary="$BATS_TEST_TMPDIR/gs-primary"
-    host="$BATS_TEST_TMPDIR/gs-host"
-    real_home="$BATS_TEST_TMPDIR/gs-real-home"
-    mkdir -p "$primary" "$host" "$real_home"
-    sbx="$BATS_TEST_TMPDIR/gs-sandbox.json"
-    echo '{}' > "$sbx"
-
-    run bash "$GEN_SETTINGS" --primary "$primary" --worktree "$primary" \
-        --real-home "$real_home" --host "$host" --sandbox-json "$sbx" \
-        --gh-token-present --openrouter-key-present --openai-key-present \
-        --gemini-key-present
-    [ "$status" -eq 0 ]
-    settings="$BATS_TEST_TMPDIR/settings.json"
-    printf '%s\n' "$output" > "$settings"
-
-    [ "$(jq -r '.credentials.envVars | length' "$settings")" = "4" ]
-    [ "$(jq -r '[.credentials.envVars[].name] | join(",")' "$settings")" \
-        = "GH_TOKEN,OPENROUTER_API_KEY,OPENAI_API_KEY,GEMINI_API_KEY" ]
-    [ "$(jq -r '[.credentials.envVars[].mode] | unique | join(",")' "$settings")" = "mask" ]
-    for pair in "OPENROUTER_API_KEY openrouter.ai" \
-                "OPENAI_API_KEY api.openai.com" \
-                "GEMINI_API_KEY generativelanguage.googleapis.com"; do
-        set -- $pair
-        [ "$(jq -r --arg n "$1" \
-            '.credentials.envVars[] | select(.name == $n) | .injectHosts | join(",")' \
-            "$settings")" = "$2" ]
-    done
-    # srt rejects an injectHost that allowedDomains cannot reach
-    [ "$(jq -r '[.credentials.envVars[].injectHosts[]] - [.network.allowedDomains[]] | length' "$settings")" = "0" ]
-    [ "$(jq -r '.network.tlsTerminate | type' "$settings")" = "object" ]
-
-    # (b) the job side: the key value never lands in the env file the job writes.
+@test "a provider key value never appears in the job env file" {
+    # The key value never lands in the env file the job writes.
     repo="$BATS_TEST_TMPDIR/repo"
     make_repo "$repo" openrouter.ai
     secret="sk-or-v1-supersecretkeymaterial"

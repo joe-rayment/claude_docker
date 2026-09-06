@@ -8,6 +8,10 @@
 #
 # Grep-style, like the old template's tests/docs-worktree.bats: these are
 # claims about text that must be there (or must not), not about behaviour.
+#
+# claude-orca-qa2.3 re-points the v2 assertions below onto v3 (the container
+# VM), leaving each case's question intact -- this file is FROZEN under the
+# closed riu.6, and this bead only changes the answers it looks for.
 
 REPO_ROOT="${BATS_TEST_DIRNAME:-.}"
 REPO_ROOT="$(cd "$REPO_ROOT/.." && pwd)"
@@ -29,14 +33,14 @@ project_sections() {
     sed -n '/<!-- BEGIN PROJECT SECTIONS -->/,/<!-- END PROJECT SECTIONS -->/p' "$1"
 }
 
-@test "README contains the gh api bootstrap one-liner for joe-rayment/claude_orca and documents claude-dev --doctor, --update, --teardown, --uninstall" {
+@test "README contains the gh api bootstrap one-liner for joe-rayment/claude_orca and documents claude-dev --doctor, --update, --teardown" {
     [ -f "$README_MD" ]
     run grep -F -- "gh api repos/joe-rayment/claude_orca/contents/bootstrap.sh" "$README_MD"
     [ "$status" -eq 0 ]
     run grep -F -- 'Accept: application/vnd.github.raw' "$README_MD"
     [ "$status" -eq 0 ]
     for flag in "claude-dev --doctor" "claude-dev --update" \
-                "claude-dev --teardown" "claude-dev --uninstall"; do
+                "claude-dev --teardown"; do
         run grep -F -- "$flag" "$README_MD"
         [ "$status" -eq 0 ]
     done
@@ -90,38 +94,37 @@ project_sections() {
     done
 }
 
-# --- V5 (claude-orca-qt9.5): the v2 documentation ------------------------
+# --- V5 (claude-orca-qt9.5), re-pointed to v3 by claude-orca-qa2.3 -------
 
-@test "README documents the double-click launch, both sandbox layers and their exceptions, and no doc mentions ~/.claude-orca as a current location" {
-    # How you actually start it in v2: the bundle in the project root.
-    grep -qi -- "double-click" "$README_MD"
-    grep -qF -- "Orca.app" "$README_MD"
-    grep -qF -- "./claude-dev open" "$README_MD"
+@test "README documents how it starts, the VM boundary and the folder's own config, and no doc mentions ~/.claude-orca as a current location" {
+    # How you actually start it: one command, then a browser tab.
+    grep -qF -- "gh api repos/joe-rayment/claude_orca/contents/bootstrap.sh" "$README_MD"
+    grep -qi -- "browser" "$README_MD"
+    grep -qF -- "./claude-dev shell" "$README_MD"
 
-    # Both layers, named, each with the mechanism that enforces it.
-    grep -qF -- "Layer 1" "$README_MD"
-    grep -qF -- "Layer 2" "$README_MD"
-    grep -qF -- "sandbox-exec" "$README_MD"
-    grep -qF -- "srt" "$README_MD"
+    # The boundary, named, with the runtime that enforces it.
+    grep -qF -- "container system start" "$README_MD"
+    grep -qi -- "virtual machine" "$README_MD"
+    grep -qF -- "/home/agent" "$README_MD"
 
-    # ... and the exceptions each layer keeps or cuts.
-    grep -qi -- "clipboard" "$README_MD"
-    grep -qi -- "keychain" "$README_MD"
-    grep -qi -- "apple events" "$README_MD"
+    # ... and what crosses it: the project, the folder home, read-only extras.
+    grep -qF -- ".claude-dev/home" "$README_MD"
+    grep -qi -- "read-only" "$README_MD"
+    grep -qF -- "127.0.0.1" "$README_MD"
 
-    # The sandbox.json knobs that narrow or widen them.
+    # The claude-orca.json knobs that size it and widen it.
     local knob
-    for knob in "orca.profileExceptions" "orca.keychain" "orca.cli"; do
+    for knob in "claude-orca.json" "extraMounts" "cpus" "memory" "port"; do
         grep -qF -- "$knob" "$README_MD"
     done
 
-    # Nothing retired is still advertised, and the probe count is current.
-    ! grep -qF -- "transcriptSymlink" "$README_MD"
-    ! grep -qiE -- "thirteen probes|13 probes|13 sandbox probes" "$README_MD"
-    ! grep -qF -- "state/config-hash" "$README_MD"
+    # Nothing from v2 is still advertised.
+    ! grep -qF -- "Orca.app" "$README_MD"
+    ! grep -qF -- "sandbox.json" "$README_MD"
+    ! grep -qiE -- "seatbelt|sandbox-exec" "$README_MD"
 
-    # ~/.claude-orca may appear ONLY as the v1 leftover that --uninstall
-    # and --remove-v1 remove -- never as a place anything lives now.
+    # ~/.claude-orca may appear ONLY as the v1 leftover -- never as a place
+    # anything lives now.
     local files=("$README_MD" "$CLAUDE_MD" "$AGENTS_MD") f line hits=""
     while IFS= read -r f; do
         files+=("$f")
@@ -164,19 +167,19 @@ first_line_of() {
     printf '%s' "$head" | grep -qiE 'on by default|by default'
 }
 
-@test "the quickstart runs bootstrap, then the guided claude-dev setup, then Orca -- all before the reference sections" {
+@test "the quickstart runs bootstrap, then signing in inside Orca -- all before the reference sections" {
     grep -qE '^## Quickstart' "$README_MD"
-    local boot setup open ref
+    local boot signin ref
     boot="$(first_line_of "$README_MD" 'gh api repos/joe-rayment/claude_orca/contents/bootstrap.sh')"
-    setup="$(first_line_of "$README_MD" './claude-dev setup')"
-    open="$(first_line_of "$README_MD" 'Orca.app')"
-    ref="$(grep -n -E '^## What is sandboxed' "$README_MD" | head -1 | cut -d: -f1)"
-    [ -n "$boot" ] && [ -n "$setup" ] && [ -n "$open" ] && [ -n "$ref" ]
-    [ "$boot" -lt "$setup" ] || { printf 'bootstrap (%s) not before setup (%s)\n' "$boot" "$setup"; return 1; }
-    [ "$setup" -lt "$ref" ] || { printf 'setup (%s) not before reference sections (%s)\n' "$setup" "$ref"; return 1; }
-    [ "$open" -lt "$ref" ] || { printf 'Orca launch (%s) not before reference sections (%s)\n' "$open" "$ref"; return 1; }
-    # The guided walk-through is named as the path to follow, not an extra.
-    grep -qiE 'guided walk-through' "$README_MD"
+    signin="$(first_line_of "$README_MD" 'Sign in to Claude')"
+    ref="$(grep -n -E '^## What is isolated' "$README_MD" | head -1 | cut -d: -f1)"
+    [ -n "$boot" ] && [ -n "$signin" ] && [ -n "$ref" ]
+    [ "$boot" -lt "$signin" ] || { printf 'bootstrap (%s) not before sign-in (%s)\n' "$boot" "$signin"; return 1; }
+    [ "$signin" -lt "$ref" ] || { printf 'sign-in (%s) not before reference sections (%s)\n' "$signin" "$ref"; return 1; }
+    # v3 (claude-orca-qa2.3): there is no walk-through left to name -- the
+    # one command IS the whole install.
+    ! grep -qiE 'guided walk-through' "$README_MD"
+    ! grep -qF -- './claude-dev setup' "$README_MD"
 }
 
 @test "exactly one page explains cheap workers without losing quality, with a real worked example, and the README points at it" {
@@ -205,9 +208,7 @@ first_line_of() {
 
 @test "nothing still calls the Orca CLI mode opt-in, in docs or in the code comments that describe it" {
     local files=("$README_MD" "$CLAUDE_MD" "$AGENTS_MD" \
-                 "$REPO_ROOT/config/orca-cli-addendum.md" \
-                 "$REPO_ROOT/scripts/sandbox/gen-settings.sh" \
-                 "$REPO_ROOT/scripts/sandbox/claude-orca-shell") f hits=""
+                 "$REPO_ROOT/config/orca-cli-addendum.md") f hits=""
     while IFS= read -r f; do
         files+=("$f")
     done < <(find "$KB_DIR" -type f -name '*.md' | sort)
