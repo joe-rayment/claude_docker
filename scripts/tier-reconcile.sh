@@ -116,26 +116,49 @@ set -f; set -- $trio; set +f
 [ $# -eq 3 ] || exit 0
 want_top=$1 want_w=$2 want_c=$3
 
-cur_top=""; cur_w=""; cur_c=""
-if [ -f "$STATE_FILE" ]; then
-    cur_top=$(jq -r '.top // empty' "$STATE_FILE" 2>/dev/null)
-    cur_w=$(jq -r '.worker // empty' "$STATE_FILE" 2>/dev/null)
-    cur_c=$(jq -r '.recon // empty' "$STATE_FILE" 2>/dev/null)
-fi
-[ "$cur_top" = "$want_top" ] && [ "$cur_w" = "$want_w" ] && [ "$cur_c" = "$want_c" ] && exit 0
-
 base_json='{}'
 if [ -f "$STATE_FILE" ]; then
     existing="$(cat "$STATE_FILE" 2>/dev/null)"
     printf '%s' "$existing" | jq -e . >/dev/null 2>&1 && base_json="$existing"
 fi
 
+# The whole v2 update as one filter (claude-orca-qa2.12). Per role: the
+# BACKEND and AGENT are preserved (they are a deliberate binding, not a
+# derivation), and the MODEL is re-derived only for an unpinned claude-agent
+# role -- an openrouter/codex/gemini worker, or one bound explicitly with
+# `/tier worker claude:opus`, keeps its model. A v1 file (no .roles) is
+# upgraded in place to the subagent defaults. The v1 .worker/.recon keys
+# stay as the mirror of each role's model, so every reader agrees.
+RFILTER='
+  def role($r; $want; $fallback):
+    ((.roles[$r]) // {}) as $e
+    | { backend: ($e.backend // "subagent"),
+        agent:   ($e.agent   // "claude"),
+        model:   (if ($e.agent // "claude") == "claude" and ($e.pinned // false) == false
+                  then $want else ($e.model // $fallback) end),
+        pinned:  ($e.pinned // false) };
+  .roles = { worker:  role("worker";  $w;       (.worker // $w)),
+             recon:   role("recon";   $c;       (.recon  // $c)),
+             checker: role("checker"; "inherit"; "inherit") }
+  | .top = $t
+  | .worker = .roles.worker.model
+  | .recon  = .roles.recon.model
+  | .pinned = (.pinned // false)
+  | .overdrive = (.overdrive // false)
+'
+
+# Idempotence: compare the WHOLE desired object (minus the timestamp) with
+# what is on disk, so a run that would change nothing writes nothing.
+desired=$(printf '%s' "$base_json" | jq -S --arg t "$want_top" --arg w "$want_w" --arg c "$want_c" \
+              "$RFILTER | del(.updated)" 2>/dev/null) || exit 0
+current=$(printf '%s' "$base_json" | jq -S 'del(.updated)' 2>/dev/null) || exit 0
+[ "$desired" = "$current" ] && exit 0
+
 mkdir -p "$(dirname "$STATE_FILE")" 2>/dev/null
 tmp=$(mktemp "$STATE_FILE.XXXXXX") || exit 0
 if printf '%s' "$base_json" | jq --arg t "$want_top" --arg w "$want_w" --arg c "$want_c" \
       --arg u "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-      '.top = $t | .worker = $w | .recon = $c | .updated = $u
-       | .pinned = (.pinned // false) | .overdrive = (.overdrive // false)' \
+      "$RFILTER | .updated = \$u" \
       > "$tmp" 2>/dev/null && jq -e . "$tmp" >/dev/null 2>&1; then
     mv "$tmp" "$STATE_FILE"
 else

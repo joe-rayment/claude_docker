@@ -16,6 +16,20 @@
 #   tier-set <top>                     # worker/recon auto-derived (capped)
 #   tier-set <top> <worker> [<recon>]  # explicit pin
 #   tier-set overdrive                 # lift the worker cap on the bound top
+#   tier-set <role> <spec>             # rebind ONE role's backend+agent+model
+#
+# v2 (claude-orca-qa2.12): <role> is worker|recon|checker and <spec> is one of
+#   openrouter:<vendor/model>   -> backend orca,     agent opencode
+#   claude:[<alias|id>]         -> backend orca,     agent claude
+#   codex:<id> | gemini:<id>    -> backend orca,     agent codex|gemini
+#   orca | subagent             -> that backend,     agent claude, derived model
+#   <alias|id> | inherit        -> backend subagent, agent claude
+# A spec that names a model pins THAT role (tier-reconcile stops re-deriving
+# its model); the derived forms leave it tracking the ladder. On a plain
+# `tier-set <top>` all three roles are rebound to the defaults: worker =
+# orca+claude when the Orca runtime answers `status --json` (2s probe), else
+# subagent; recon = subagent; checker = subagent+inherit. See
+# scripts/lib/tier-roles.sh for the on-disk shape and the v1 read rule.
 #
 # Ladder and derivation: scripts/tier-derive.sh (ported unchanged from the
 # old template) is the single source of truth; this script never repeats it.
@@ -51,6 +65,8 @@ _resolve_script_path() {
 SCRIPT_DIR="$(cd "$(dirname "$(_resolve_script_path)")" && pwd)"
 # shellcheck source=lib/paths.sh
 . "$SCRIPT_DIR/lib/paths.sh"
+# shellcheck source=lib/tier-roles.sh
+. "$SCRIPT_DIR/lib/tier-roles.sh"
 
 DERIVE="${TIER_DERIVE:-}"
 if [ -z "$DERIVE" ]; then
@@ -88,16 +104,55 @@ state_field() {  # state_field <field> -- '' if the file/field is absent
     jq -r ".$1 // empty" "$STATE_FILE" 2>/dev/null
 }
 
+# A model REFERENCE may also carry '/' (openrouter/qwen/qwen3-coder).
+valid_model_ref() {
+    case "$1" in
+        ''|*[!a-zA-Z0-9._/\[\]-]*) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
 # write_state <top> <worker> <recon> <pinned:true|false> <overdrive:true|false>
+# Writes the file whole -- v1 keys plus the v2 .roles block at its defaults
+# (worker on the orca backend when the runtime answers, else subagent), so a
+# plain `/tier <top>` resets every role, exactly as it resets pin/overdrive.
 write_state() {
     [ -n "$STATE_FILE" ] || { echo "tier-set: cannot determine the project's tier state file (not inside a bootstrapped project; set CLAUDE_ORCA_ROOT or TIER_STATE_FILE) -- nothing bound" >&2; return 1; }
     mkdir -p "$(dirname "$STATE_FILE")" 2>/dev/null
-    local tmp
+    local tmp wb
+    wb=subagent
+    tier_orca_reachable && wb=orca
     tmp=$(mktemp "$STATE_FILE.XXXXXX") || return 1
     if jq -n --arg t "$1" --arg w "$2" --arg c "$3" --argjson p "$4" --argjson o "$5" \
-          --arg u "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-          '{top: $t, worker: $w, recon: $c, pinned: $p, overdrive: $o, updated: $u}' \
+          --arg wb "$wb" --arg u "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+          '{top: $t, worker: $w, recon: $c,
+            roles: {worker:  {backend: $wb,       agent: "claude", model: $w},
+                    recon:   {backend: "subagent", agent: "claude", model: $c},
+                    checker: {backend: "subagent", agent: "claude", model: "inherit"}},
+            pinned: $p, overdrive: $o, updated: $u}' \
           > "$tmp" 2>/dev/null && jq -e . "$tmp" >/dev/null 2>&1; then
+        mv "$tmp" "$STATE_FILE"
+    else
+        rm -f "$tmp"
+        echo "tier-set: failed to write $STATE_FILE" >&2
+        return 1
+    fi
+}
+
+# write_role <role> <backend> <agent> <model> <pinned:true|false>
+# Patches ONE role into an existing tier.json, mirroring the model back into
+# the v1 .worker/.recon key so every reader (including a v1-era one) agrees.
+write_role() {
+    [ -n "$STATE_FILE" ] && [ -f "$STATE_FILE" ] || { echo "tier-set: no tier bound yet -- run /tier <top> (e.g. /tier opus) before rebinding a role; nothing bound" >&2; return 1; }
+    local tmp base
+    base="$(cat "$STATE_FILE" 2>/dev/null)"
+    printf '%s' "$base" | jq -e . >/dev/null 2>&1 || { echo "tier-set: $STATE_FILE is not valid JSON -- run /tier <top> to rebind it; nothing bound" >&2; return 1; }
+    tmp=$(mktemp "$STATE_FILE.XXXXXX") || return 1
+    if printf '%s' "$base" | jq --arg r "$1" --arg b "$2" --arg a "$3" --arg m "$4" --argjson p "$5" \
+          --arg u "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+          '.roles = ((.roles // {}) | .[$r] = {backend: $b, agent: $a, model: $m, pinned: $p})
+           | (if $r == "worker" then .worker = $m elif $r == "recon" then .recon = $m else . end)
+           | .updated = $u' > "$tmp" 2>/dev/null && jq -e . "$tmp" >/dev/null 2>&1; then
         mv "$tmp" "$STATE_FILE"
     else
         rm -f "$tmp"
@@ -138,6 +193,8 @@ show_state() {
         echo "orchestrator (top)   = $top"
         echo "worker / executor    = $worker"
         echo "recon / scout        = $recon"
+        echo "backends             = worker=$(tier_role_label "$(tier_role_field "$STATE_FILE" worker backend)" "$(tier_role_field "$STATE_FILE" worker agent)" "$worker") recon=$(tier_role_label "$(tier_role_field "$STATE_FILE" recon backend)" "$(tier_role_field "$STATE_FILE" recon agent)" "$recon") checker=$(tier_role_label "$(tier_role_field "$STATE_FILE" checker backend)" "$(tier_role_field "$STATE_FILE" checker agent)" "$(tier_role_field "$STATE_FILE" checker model)")"
+        echo "rebind one role: /tier worker openrouter:<vendor/model> | claude:<alias> | subagent  (same for recon/checker)"
         [ "$pinned" = "true" ] && echo "explicit pin: ON — worker/recon were set manually (tier-set <top> <worker> [<recon>]); a plain /tier <top> clears it."
         [ "$overdrive" = "true" ] && echo "overdrive: ON — the worker cap is LIFTED (executor runs the top model); a plain /tier <top> clears it."
     fi
@@ -171,6 +228,79 @@ if [ $# -eq 1 ] && [ "$1" = "overdrive" ]; then
     echo "→ the lifted worker binding applies to NEW subagent spawns immediately (tier-gate reads tier.json at spawn time)."
     exit 0
 fi
+
+# --- one role: tier-set <worker|recon|checker> <spec> -----------------------
+
+# derived_role_model <role> -- the ladder's model for that role, from the
+# bound top (overdrive-aware). checker never derives: it inherits.
+derived_role_model() {
+    local r="$1" top trio
+    [ "$r" = "checker" ] && { echo inherit; return 0; }
+    top="$(state_field top)"
+    if [ -z "$top" ]; then
+        echo "tier-set: no top bound yet -- run /tier <top> first; nothing bound" >&2
+        return 1
+    fi
+    if [ "$(state_field overdrive)" = "true" ]; then
+        trio=$("$DERIVE" --overdrive "$top" 2>/dev/null) || trio=""
+    else
+        trio=$("$DERIVE" "$top" 2>/dev/null) || trio=""
+    fi
+    if [ -z "$trio" ]; then
+        echo "tier-set: top '$top' is off-ladder -- no model to derive for '$r'; name one explicitly (e.g. /tier $r claude:sonnet); nothing bound" >&2
+        return 1
+    fi
+    set -f; set -- $trio; set +f
+    case "$r" in
+        worker) echo "$2" ;;
+        recon)  echo "$3" ;;
+    esac
+}
+
+case "${1:-}" in
+    worker|recon|checker)
+        role=$1
+        if [ $# -lt 2 ]; then
+            echo "tier-set: '$role' needs a backend/model spec -- e.g. /tier $role openrouter:qwen/qwen3-coder | claude:sonnet | subagent; nothing bound" >&2
+            exit 1
+        fi
+        spec=$2
+        [ $# -gt 2 ] && echo "tier: extra args ignored (dropped: ${*:3})" >&2
+        B=subagent; A=claude; M=""; PIN=false
+        case "$spec" in
+            openrouter:*)
+                rest="${spec#openrouter:}"
+                [ -n "$rest" ] || { echo "tier-set: 'openrouter:' needs a <vendor/model>, e.g. openrouter:qwen/qwen3-coder -- nothing bound" >&2; exit 1; }
+                B=orca; A=opencode; M="openrouter/$rest"; PIN=true ;;
+            claude:*)
+                rest="${spec#claude:}"
+                B=orca; A=claude
+                if [ -n "$rest" ]; then M="$(alias_id "$rest")"; PIN=true
+                else M="$(derived_role_model "$role")" || exit 1; fi ;;
+            codex:*|gemini:*)
+                A="${spec%%:*}"; rest="${spec#*:}"
+                [ -n "$rest" ] || { echo "tier-set: '$A:' needs a model id -- nothing bound" >&2; exit 1; }
+                B=orca; M="$rest"; PIN=true ;;
+            orca)
+                B=orca; A=claude; M="$(derived_role_model "$role")" || exit 1 ;;
+            subagent)
+                B=subagent; A=claude; M="$(derived_role_model "$role")" || exit 1 ;;
+            inherit)
+                B=subagent; A=claude; M=inherit; PIN=true ;;
+            *)
+                B=subagent; A=claude; M="$(alias_id "$spec")"; PIN=true ;;
+        esac
+        valid_model_ref "$M" || { echo "tier-set: unknown or unsafe model reference for '$role': '$spec' -- nothing bound" >&2; exit 1; }
+        write_role "$role" "$B" "$A" "$M" "$PIN" || exit 1
+        echo "tier role bound  $role = $(tier_role_label "$B" "$A" "$M")"
+        if [ "$B" = "orca" ]; then
+            echo "→ $role slices now go through  orca-dispatch  (a supervised Orca worker terminal); the Agent tool stays available as the fallback."
+        else
+            echo "→ $role spawns use the Claude Code Agent tool; tier-gate injects $M at spawn time."
+        fi
+        exit 0
+        ;;
+esac
 
 # --- 1-arg (auto-derive) or 2/3-arg (explicit pin) --------------------------
 

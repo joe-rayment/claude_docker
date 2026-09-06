@@ -101,6 +101,48 @@ because nothing remaps it. The tier binding lives where only subagent
 definitions read it — the frontmatter — so the picker and the tiers can no
 longer interfere.
 
+### tier.json — the file the hooks actually read (v2, 2026-09-06)
+
+The frontmatter arrangement sketched above is the *historical* one. Since S4
+the binding lives in `.claude-dev/run/tier.json`, and since
+claude-orca-qa2.12 that file carries a **backend, agent and model per role**:
+
+```json
+{ "top": "claude-fable-5",
+  "worker": "openrouter/qwen/qwen3-coder",     // v1 mirror of roles.worker.model
+  "recon":  "claude-haiku-4-5-20251001",       // v1 mirror of roles.recon.model
+  "roles": {
+    "worker":  {"backend":"orca","agent":"opencode","model":"openrouter/qwen/qwen3-coder","pinned":true},
+    "recon":   {"backend":"subagent","agent":"claude","model":"claude-haiku-4-5-20251001","pinned":false},
+    "checker": {"backend":"subagent","agent":"claude","model":"inherit","pinned":false} },
+  "pinned": false, "overdrive": false, "updated": "2026-09-06T00:00:00Z" }
+```
+
+- **backend** — `orca` (a supervised Orca worker terminal, started by
+  `orca-dispatch`) or `subagent` (the in-process Agent tool).
+  **agent** — `claude` · `opencode` (OpenRouter models) · `codex` · `gemini`.
+- **A v1 file reads as v2** with `backend: subagent`, `agent: claude` and the
+  model taken from the v1 `.worker`/`.recon` key (checker: `inherit`). The
+  reader is `tier_role`/`tier_role_field` in `scripts/lib/tier-roles.sh`;
+  no script parses the file's shape by hand.
+- **Grammar:** `/tier worker openrouter:<vendor/model>` → orca + opencode;
+  `/tier worker claude:<alias>` → orca + claude; `/tier worker subagent` →
+  subagent on the derived model; the same specs work for `recon` and
+  `checker`. A spec that names a model sets that role's own `pinned`, which
+  stops `tier-reconcile` re-deriving its model; backend and agent are always
+  preserved by the reconciler. A 1-arg `/tier <top>` rebinds all three roles
+  to the defaults — worker `orca`+`claude` when `orca-ide status --json`
+  reports `.runtime.reachable` within 2s (probed once per bind, never
+  cached), else `subagent`; recon `subagent`; checker `subagent`+`inherit`.
+- **tier-prime** prints a second line, `[tier] backends: worker=… recon=…
+  checker=…`, each formatted `backend[:agent]:model` (the agent segment
+  appears only when it is not `claude`). The model line above it is
+  unchanged.
+- **tier-gate** is unchanged for a `subagent` role: a generic/executor spawn
+  with no `model` still gets the worker tier injected as a family alias. For
+  an `orca` role it does **not** inject and does **not** block — it adds one
+  line saying the backend is orca and that `orca-dispatch` is preferred.
+
 **Purge policy (both tier-set and tier-reconcile).** The six
 `ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL(_NAME)` vars and
 `CLAUDE_CODE_SUBAGENT_MODEL` are standing footguns — the first six corrupt

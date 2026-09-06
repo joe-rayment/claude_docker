@@ -49,6 +49,8 @@ _resolve_script_path() {
 SCRIPT_DIR="$(cd "$(dirname "$(_resolve_script_path)")" && pwd)"
 # shellcheck source=lib/paths.sh
 . "$SCRIPT_DIR/lib/paths.sh"
+# shellcheck source=lib/tier-roles.sh
+. "$SCRIPT_DIR/lib/tier-roles.sh"
 
 IN=$(cat 2>/dev/null) || exit 0
 [ -n "$IN" ] || exit 0
@@ -92,10 +94,22 @@ STATE_FILE="${TIER_GATE_STATE_FILE:-}"
 
 TARGET_ID=""
 if [ -n "$STATE_FILE" ] && [ -f "$STATE_FILE" ]; then
-    case "$SLOT" in
-        worker) TARGET_ID=$(jq -r '.worker // empty' "$STATE_FILE" 2>/dev/null) ;;
-        recon)  TARGET_ID=$(jq -r '.recon // empty' "$STATE_FILE" 2>/dev/null) ;;
-    esac
+    # v2 (claude-orca-qa2.12): the role's BACKEND decides what happens here.
+    # A v1 tier.json reads as backend "subagent" (lib/tier-roles.sh), so the
+    # injection path below is byte-for-byte what it always was.
+    BACKEND=$(tier_role_field "$STATE_FILE" "$SLOT" backend)
+    if [ "$BACKEND" = "orca" ]; then
+        # Orca-backed role: the spawn is ALLOWED (no decision, no rewrite) --
+        # this hook never blocks -- but the orchestrator is told that this
+        # role has a supervised Orca worker waiting for it.
+        RM=$(tier_role_field "$STATE_FILE" "$SLOT" model)
+        RA=$(tier_role_field "$STATE_FILE" "$SLOT" agent)
+        jq -cn --arg slot "$SLOT" --arg m "$RM" --arg a "$RA" \
+           '{systemMessage: ("tier-gate: " + $slot + " backend is orca (" + $a + " " + $m + ") — prefer orca-dispatch for this slice; the Agent-tool spawn was allowed and runs on the orchestrator'"'"'s own model.")}' \
+           2>/dev/null || exit 0
+        exit 0
+    fi
+    TARGET_ID=$(tier_role_field "$STATE_FILE" "$SLOT" model)
 fi
 
 if [ -z "$TARGET_ID" ]; then
