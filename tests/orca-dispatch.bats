@@ -63,7 +63,7 @@ s.close()')"
     setsid xvfb-run -a "$app" --no-sandbox --disable-gpu \
         --disable-software-rasterizer --disable-dev-shm-usage \
         --user-data-dir="$ud" --serve --port "$port" \
-        --project-root "$proj" >"$log" 2>&1 &
+        --project-root "$proj" >"$log" 2>&1 </dev/null &
     local pid=$!
 
     local i ready=0
@@ -106,6 +106,12 @@ teardown_file() {
     [ -n "${ORCA_SERVE_PID:-}" ] && kill -TERM -"$ORCA_SERVE_PID" 2>/dev/null
     sleep 1
     [ -n "${ORCA_SERVE_PID:-}" ] && kill -KILL -"$ORCA_SERVE_PID" 2>/dev/null
+    # Orca's daemon is spawned detached, outlives the serve's session group
+    # while worker terminals are alive, and holds whatever descriptors it
+    # inherited -- including bats' own stdin, which is why bats would never
+    # see EOF and never exit. The token path matches only this run's daemon.
+    [ -n "${ORCA_UD:-}" ] &&
+        pkill -f "daemon-v36.sock --token $ORCA_UD/daemon" 2>/dev/null
     return 0
 }
 
