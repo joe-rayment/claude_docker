@@ -740,7 +740,7 @@ STUB
     run jq -e . "$SHIPPED_ROUTES"
     [ "$status" -eq 0 ]
 
-    [ "$(jq -r '.routes | keys | join(",")' "$SHIPPED_ROUTES")" = "codex,gemini,glm,local" ]
+    [ "$(jq -r '.routes | keys | join(",")' "$SHIPPED_ROUTES")" = "codex,deepseek,gemini,glm,local,qwen-coder" ]
     [ "$(jq -r '.routes.glm.runner' "$SHIPPED_ROUTES")" = "opencode" ]
     [ "$(jq -r '.routes.glm.model' "$SHIPPED_ROUTES")" = "openrouter/z-ai/glm-5.2" ]
     [ "$(jq -r '.routes.glm.pin.order | join(",")' "$SHIPPED_ROUTES")" = "novita,parasail" ]
@@ -753,6 +753,40 @@ STUB
     [ "$(jq -r '.routes.gemini.runner' "$SHIPPED_ROUTES")" = "gemini" ]
     [ "$(jq -r '.routes.gemini.model | split("/") | .[0]' "$SHIPPED_ROUTES")" = "gemini" ]
     [ "$(jq -r '[.routes[].grade] | unique | join(",")' "$SHIPPED_ROUTES")" = "executor,scout" ]
+}
+
+# V6 (claude-orca-riu.4): OpenRouter is the assumed worker provider, so the
+# shipped routes carry two low-cost OpenRouter workers beyond glm. Route
+# ids are the user's to edit (openrouter.ai/models is the catalogue) --
+# what is pinned here is the shape delegate.sh needs: an openrouter/-prefixed
+# model, an executor grade so --bead dispatch is allowed, and a runner that
+# actually goes live under the same preflight every other route passes.
+@test "delegate routes include the openrouter defaults" {
+    [ "$(jq -r '.routes.deepseek.runner' "$SHIPPED_ROUTES")" = "opencode" ]
+    [ "$(jq -r '.routes.deepseek.model' "$SHIPPED_ROUTES")" = "openrouter/deepseek/deepseek-chat" ]
+    [ "$(jq -r '.routes.deepseek.grade' "$SHIPPED_ROUTES")" = "executor" ]
+    [ "$(jq -r '.routes["qwen-coder"].runner' "$SHIPPED_ROUTES")" = "opencode" ]
+    [ "$(jq -r '.routes["qwen-coder"].model' "$SHIPPED_ROUTES")" = "openrouter/qwen/qwen3-coder" ]
+    [ "$(jq -r '.routes["qwen-coder"].grade' "$SHIPPED_ROUTES")" = "executor" ]
+
+    # Both resolve to the OpenRouter provider mapping, so the shipped file
+    # itself drives `check`: allowlisted host + key present -> live.
+    repo="$BATS_TEST_TMPDIR/repo"
+    make_repo "$repo" openrouter.ai
+
+    run env DELEGATE_REPO="$repo" DELEGATE_ROUTES="$SHIPPED_ROUTES" \
+        OPENROUTER_API_KEY=sk-or-test-000 bash "$SCRIPT" check
+    [ "$status" -eq 0 ]
+    [[ "$(route_line deepseek)" == *live* ]]
+    [[ "$(route_line qwen-coder)" == *live* ]]
+
+    # ...and without a key the reason is the provider's own key var, which
+    # is what proves the openrouter/ prefix was read as the provider.
+    run env DELEGATE_REPO="$repo" DELEGATE_ROUTES="$SHIPPED_ROUTES" \
+        bash "$SCRIPT" check
+    [ "$status" -eq 0 ]
+    [[ "$(route_line deepseek)" == *degraded*"OPENROUTER_API_KEY not set"* ]]
+    [[ "$(route_line qwen-coder)" == *degraded*"OPENROUTER_API_KEY not set"* ]]
 }
 
 @test ".gitignore: the delegate job root is ignored" {

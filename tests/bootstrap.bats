@@ -165,9 +165,11 @@ STUB
     [ -f "$PROJECT_DIR/.claude-dev/sandbox.json" ]
 
     # orca.cli was seeded false through V5; V6 (claude-orca-riu.3) makes it
-    # true for new folders -- pinned in its own case below.
+    # true for new folders -- pinned in its own case below. V6
+    # (claude-orca-riu.4) seeds the OpenRouter egress domain alongside it,
+    # pinned in its own case too.
     run jq -e '.version == 1
-        and .network.extraAllowedDomains == []
+        and .network.extraAllowedDomains == ["openrouter.ai"]
         and .filesystem.extraAllowWrite == []
         and .orca.cli == true' "$PROJECT_DIR/.claude-dev/sandbox.json"
     [ "$status" -eq 0 ]
@@ -183,7 +185,7 @@ STUB
     [ "$status" -eq 0 ]
 
     run jq -e '.version == 1
-        and .network.extraAllowedDomains == []
+        and .network.extraAllowedDomains == ["openrouter.ai"]
         and .filesystem.extraAllowWrite == []
         and .orca.cli == true' "$PROJECT_DIR/.claude-dev/sandbox.json"
     [ "$status" -eq 0 ]
@@ -204,6 +206,34 @@ STUB
     run jq -e '.summary.fail == 0 and .summary.na >= 1
         and ([.probes[] | select(.name == "orca-socket-unreachable") | .status]
              == ["N/A"])' "$PROJECT_DIR/.claude-dev/run/selftest.json"
+    [ "$status" -eq 0 ]
+}
+
+# V6 (claude-orca-riu.4): OpenRouter is the assumed worker provider, so a
+# NEW folder's sandbox.json carries its egress domain from the start --
+# harmless without a key (an allowlist entry opens nothing by itself) and
+# it keeps delegate.sh's preflight, which reads exactly this list, truthful
+# for the shipped openrouter routes. The credential mask is separate and
+# key-gated (tests/sandbox-config.bats).
+@test "register seeds openrouter.ai into extraAllowedDomains for new folders" {
+    run bash "$REPO_ROOT/bootstrap.sh" "$PROJECT_DIR"
+    [ "$status" -eq 0 ]
+
+    run jq -e '.network.extraAllowedDomains == ["openrouter.ai"]' \
+        "$PROJECT_DIR/.claude-dev/sandbox.json"
+    [ "$status" -eq 0 ]
+
+    # Seed only: an existing file is the user's, domain or no domain, so a
+    # re-register over one without it leaves it byte for byte (the docs
+    # carry the one-line add instead).
+    sandbox_json="$PROJECT_DIR/.claude-dev/sandbox.json"
+    printf '%s\n' '{"version":1,"network":{"extraAllowedDomains":["example.com"]},"filesystem":{"extraAllowWrite":[]},"orca":{"cli":false}}' > "$sandbox_json"
+    before="$(cat "$sandbox_json")"
+
+    run bash -c "cd '$PROJECT_DIR' && '$ORCA_HOST/bin/claude-dev' register"
+    [ "$status" -eq 0 ]
+    [ "$(cat "$sandbox_json")" = "$before" ]
+    run jq -e '.network.extraAllowedDomains == ["example.com"]' "$sandbox_json"
     [ "$status" -eq 0 ]
 }
 

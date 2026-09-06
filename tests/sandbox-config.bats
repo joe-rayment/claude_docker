@@ -341,6 +341,89 @@ disable_orca_cli() {
     grep -A1 -Fx -- '-c' "$STUB_LOG" | grep -qxF 'exec zsh -l'
 }
 
+# V6 (claude-orca-riu.4): the OpenRouter key lives at
+# .claude-dev/state/openrouter.key -- host-owned, write-denied to both
+# layers, written by the user and by no command in this repo. The wrapper
+# reads it on the host (the only place it exists), hands it to srt through
+# the process environment, and tells gen-settings.sh to mask it. Appended
+# to this frozen S2 file rather than editing any case in it.
+@test "the wrapper exports OPENROUTER_API_KEY and flags the credential when the key file exists" {
+    make_project "$PROJECT_DIR"
+    real_home="$(make_real_home)"
+    primary="$(abspath "$PROJECT_DIR")"
+
+    # The file is the only source under test: whatever this machine's own
+    # environment carries must not decide the outcome.
+    unset OPENROUTER_API_KEY
+    key_file="$primary/.claude-dev/state/openrouter.key"
+    printf 'sk-or-test-000\n' > "$key_file"
+    chmod 600 "$key_file"
+
+    # Registration seeds the domain into sandbox.json; clear it here so the
+    # allowlist assertion below can only be satisfied by the credential
+    # flag reaching gen-settings.sh.
+    tmp_json="$BATS_TEST_TMPDIR/sandbox-no-domain.json"
+    jq '.network.extraAllowedDomains = []' "$primary/.claude-dev/sandbox.json" > "$tmp_json"
+    mv "$tmp_json" "$primary/.claude-dev/sandbox.json"
+
+    export CLAUDE_ORCA_REAL_HOME="$real_home"
+
+    settings="$BATS_TEST_TMPDIR/settings-openrouter.json"
+    "$ORCA_HOST/bin/claude-orca-shell" --print-settings \
+        --root "$primary" --cwd "$primary" > "$settings"
+
+    [ "$(jq -r '[.credentials.envVars[] | select(.name == "OPENROUTER_API_KEY")] | length' "$settings")" = "1" ]
+    [ "$(jq -r '.credentials.envVars[] | select(.name == "OPENROUTER_API_KEY") | .mode' "$settings")" = "mask" ]
+    [ "$(jq -r '.credentials.envVars[] | select(.name == "OPENROUTER_API_KEY") | .injectHosts | join(",")' "$settings")" = "openrouter.ai" ]
+    run jq -e '.network.allowedDomains | index("openrouter.ai") != null' "$settings"
+    [ "$status" -eq 0 ]
+
+    # The value itself reaches the srt process environment -- newline
+    # stripped, srt does the masking from there.
+    export STUB_SRT_NOEXEC=1
+    run "$ORCA_HOST/bin/claude-orca-shell" --root "$primary" --cwd "$primary" -- zsh
+    unset STUB_SRT_NOEXEC
+    [ "$status" -eq 0 ]
+    grep -qxF 'OPENROUTER_API_KEY=sk-or-test-000' "$STUB_ENV"
+
+    # ...and it is never echoed: --print-env omits it like GH_TOKEN, and
+    # the key file stays the only copy anywhere under the folder.
+    run "$ORCA_HOST/bin/claude-orca-shell" --print-env --root "$primary" --cwd "$primary"
+    unset CLAUDE_ORCA_REAL_HOME
+    [ "$status" -eq 0 ]
+    [[ "$output" != *OPENROUTER* ]]
+
+    run bash -c "grep -rlF 'sk-or-test-000' '$primary'"
+    [ "$output" = "$key_file" ]
+}
+
+@test "no key file means no openrouter export and no credential flag" {
+    make_project "$PROJECT_DIR"
+    real_home="$(make_real_home)"
+    primary="$(abspath "$PROJECT_DIR")"
+
+    unset OPENROUTER_API_KEY
+    [ ! -f "$primary/.claude-dev/state/openrouter.key" ]
+
+    export CLAUDE_ORCA_REAL_HOME="$real_home"
+
+    settings="$BATS_TEST_TMPDIR/settings-no-openrouter.json"
+    "$ORCA_HOST/bin/claude-orca-shell" --print-settings \
+        --root "$primary" --cwd "$primary" > "$settings"
+
+    # No mask, and nothing claiming to inject anything at openrouter.ai.
+    # (The seeded extraAllowedDomains entry is unaffected: an allowlist
+    # entry is egress scope, not a credential.)
+    [ "$(jq -r '[(.credentials.envVars // [])[] | select(.name == "OPENROUTER_API_KEY")] | length' "$settings")" = "0" ]
+    [ "$(jq -r '[(.credentials.envVars // [])[] | select(.injectHosts[]? == "openrouter.ai")] | length' "$settings")" = "0" ]
+
+    export STUB_SRT_NOEXEC=1
+    run "$ORCA_HOST/bin/claude-orca-shell" --root "$primary" --cwd "$primary" -- zsh
+    unset STUB_SRT_NOEXEC CLAUDE_ORCA_REAL_HOME
+    [ "$status" -eq 0 ]
+    ! grep -q '^OPENROUTER_API_KEY=' "$STUB_ENV"
+}
+
 @test "missing srt shadows claude/codex/gemini/opencode with refusing functions" {
     make_project "$PROJECT_DIR"
     primary="$(abspath "$PROJECT_DIR")"
