@@ -18,9 +18,9 @@
 #   claude|codex|gemini  worker-start --agent <a> --model <m>   (Orca launches
 #                        the TUI in a worktree and injects the spec)
 #   opencode             terminal create --command "opencode --model <m>"
-#                        -> terminal wait --for tui-idle -> worker-start
-#                        --terminal <handle> (Orca adopts, never launches it;
-#                        retried once while the TUI is not yet recognized)
+#                        -> terminal wait --for tui-idle
+#                        -> worker-start --terminal <handle>  (adoption: Orca
+#                        does not launch opencode itself)
 #   bash                 terminal create --command bash -> dispatch --to
 #                        (a context-only Dispatch: a bare shell has no agent
 #                        to inject into; this is what the integration test
@@ -189,14 +189,6 @@ new_terminal() {
     [ -n "$TERMINAL" ] || die "terminal create returned no handle" 4
 }
 
-# The TUI has to be painted before the runtime will call the terminal an
-# agent; a timeout here is not fatal, adoption is asked for either way.
-wait_tui_idle() {
-    orca_call terminal wait --terminal "$TERMINAL" --for tui-idle \
-        --timeout-ms 30000 --json >/dev/null 2>&1 ||
-        note "$COMMAND did not report tui-idle; adopting the terminal anyway"
-}
-
 case "$AGENT" in
     bash|shell)
         # A bare shell has no agent CLI to inject into, so this is a
@@ -214,35 +206,14 @@ case "$AGENT" in
         [ -n "$MODEL" ] || die "--agent opencode needs --model <provider/model>"
         COMMAND="opencode --model $MODEL"
         new_terminal "$COMMAND" "$BEAD $MODEL"
-        # Orca does not launch opencode: it ADOPTS the terminal we started,
-        # and it only adopts a terminal it recognizes as an agent. A TUI that
-        # has not painted yet answers agent_unconfigured, which is a race and
-        # not a verdict -- wait for tui-idle again and ask once more. This is
-        # the default executor path (opencode on OpenRouter), so a half-
-        # adopted worker has to be loud rather than a receipt that names a
-        # terminal no Dispatch is bound to.
-        attempt=1
-        while : ; do
-            wait_tui_idle
-            out="$(orca_call orchestration worker-start --task "$TASK_ID" \
-                --terminal "$TERMINAL" --worktree "$WORKTREE" --run "$RUN_ID" \
-                --timeout-ms "$TIMEOUT_MS" ${FROM_ARGS[@]+"${FROM_ARGS[@]}"} --json)" || true
-            DISPATCH_ID="$(orca_field "$out" '.result.dispatchId')"
-            [ -n "$DISPATCH_ID" ] && break
-            [ "$attempt" -ge 2 ] && break
-            [ "$(orca_field "$out" '.error.code')" = "agent_unconfigured" ] || break
-            note "the runtime does not recognize $TERMINAL as an agent yet; retrying the adoption"
-            attempt=$(( attempt + 1 ))
-        done
+        orca_call terminal wait --terminal "$TERMINAL" --for tui-idle \
+            --timeout-ms 30000 --json >/dev/null 2>&1 ||
+            note "opencode did not report tui-idle; adopting the terminal anyway"
+        out="$(orca_call orchestration worker-start --task "$TASK_ID" \
+            --terminal "$TERMINAL" --worktree "$WORKTREE" --run "$RUN_ID" \
+            --timeout-ms "$TIMEOUT_MS" ${FROM_ARGS[@]+"${FROM_ARGS[@]}"} --json)" || true
+        DISPATCH_ID="$(orca_field "$out" '.result.dispatchId')"
         STATE="$(orca_field "$out" '.result.state')"
-        # The receipt names the terminal the RUNTIME bound, not the one we
-        # created: worker-list, worker-read and orca-wait's release all key
-        # off the Dispatch's own handle.
-        ADOPTED="$(orca_field "$out" \
-            '[.result.effects[]? | select(.kind == "terminal")][0].id')"
-        if [ -n "$ADOPTED" ] && [ "$ADOPTED" != "$TERMINAL" ]; then
-            die "the runtime adopted $ADOPTED, not the opencode terminal $TERMINAL" 4
-        fi
         ;;
     claude|codex|gemini|cursor)
         out="$(orca_call orchestration worker-start --task "$TASK_ID" \
