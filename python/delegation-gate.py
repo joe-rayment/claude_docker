@@ -383,7 +383,9 @@ def emit_warn(streak):
     base = (
         f"[delegation-gate] {streak} consecutive inline tool calls in the main "
         "loop — batch remaining recon into a scout (Agent tool, "
-        "subagent_type=scout), or hand edits to an executor slice. Streak "
+        "subagent_type=scout), or hand edits to an executor slice: "
+        "`orca-dispatch <bead>` when Orca is reachable, Agent"
+        "(subagent_type=executor, model=<worker rung>) otherwise. Streak "
         "resets when you use the Agent tool."
     )
     text = base
@@ -497,9 +499,11 @@ def main():
         save_state(state_path, state)
         emit_deny(
             f"[delegation-gate {mode}] Implementation edits are the executor's "
-            "seat — spawn Agent(subagent_type=executor) with a slice spec "
-            "(objective, files in scope, output contract, boundaries). The "
-            "orchestrator reviews the diff instead of writing it."
+            "seat — dispatch the slice: `orca-dispatch <bead>` when Orca is "
+            "reachable, else Agent(subagent_type=executor, model=<worker "
+            "rung>). Either way give it a slice spec (objective, files in "
+            "scope, output contract, boundaries). The orchestrator reviews "
+            "the diff instead of writing it."
         )
         return
 

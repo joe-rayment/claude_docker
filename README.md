@@ -177,6 +177,19 @@ worker terminals are simply there — no socket to expose, no key to set.
 artifacts all work, and everything they spawn is inside the same VM and the
 same boundary. This is a first-class part of the setup, not an add-on.
 
+Because of that, a delegated slice is an Orca worker by default rather than an
+in-process sub-agent. `orca-dispatch <bead-id>` turns one bead into one
+supervised worker — Claude Code, or an OpenRouter model through OpenCode, in
+its own terminal and worktree — with the bead's acceptance contract and the
+same worker rules attached; `orca-wait` collects each `worker_done`, releases
+the worker and appends the outcome to the bead; `orca-reply` answers a worker
+that asked rather than guessed; `orca-workers` prints who is running what; and
+`orca-run --epic <id>` drives a whole epic in waves, one worktree per epic,
+dispatching every independent bead at once. When the runtime is not reachable
+the same slice runs as an in-process executor instead, so nothing depends on
+Orca being up. The playbook is
+[knowledge-base/TIERED_ORCHESTRATION.md](knowledge-base/TIERED_ORCHESTRATION.md).
+
 ## The workers: OpenRouter models on a route
 
 A bead names a route, Claude writes the brief and dispatches the slice

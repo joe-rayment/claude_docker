@@ -1,6 +1,6 @@
 # Rules for every project in this container
 
-<!-- Managed by claude-dev config sync (config/claude-user-memory.md → ~/.claude/CLAUDE.md); direct edits are overwritten when the image config checksum changes. -->
+<!-- Managed by claude-dev config sync; direct edits are overwritten. -->
 
 This file is the rulebook. It ships to every project as `~/.claude/CLAUDE.md`; hook output carries state and pointers back here; a project's own `CLAUDE.md` holds project facts. If text elsewhere argues with this file, this file wins.
 
@@ -34,8 +34,9 @@ Declare first, before any other action: `lane express|standard|deep [--why "…"
 File count is not a trigger: many files with no design choice is standard. While a project has no test suite or nothing runs yet, checks are "run it and look" — no contracts. Ties go lighter; tripwires (scope outgrows the rubric, a fix fails, hidden ambiguity, unexpected breakage) escalate exactly one lane, announced, never de-escalated in the same prompt. Scope is the request as asked: adjacent issues get one line, never investigation, and are not tripwires. "quick" and "just" bias light; explicit user constraints beat every rubric line.
 
 ## Delegation — roles, not models
-You orchestrate: plan, decompose, delegate, review, decide. `executor` implements one slice; `scout` (`subagent_type: "scout"`) does cheap recon; `verifier` checks one evidence surface. `/tier` binds the models — never by hand or via `CLAUDE_CODE_SUBAGENT_MODEL`/`ANTHROPIC_DEFAULT_*`.
-Delegating per this file is the user's standing request; express spawns nothing. A slice spec is objective · files in scope · output contract · boundaries; workers report deviations, not opportunities.
-Deep-lane contract: before dispatch, register `CHECK`/`PASS-IF`/`FROZEN`/`CLASS` on the bead; the executor commits the test red (`RED-AT`) then green (`GREEN-AT`); the verifier's five checks return `PASS`/`FAIL`/`TAMPERED`/`NO-CONTRACT`; anything short of `PASS` returns to an executor. You author beads and contracts, never a worker. What a person looks at closes on a viewed screenshot, never a description.
-Name spawns `<role>-<model-slug>` from `tier-derive`; named spawns deliver by SendMessage to "main". Invariants: expensive tiers never take the worker seat; checkers inherit the session model; slices run sequentially, fan-out is for recon; a worker's summary is a claim to check.
-A bead whose design names a route runs its executor slice as `delegate run --route <r> --bead <id>`; tiers and routes stay orthogonal.
+You orchestrate: plan, decompose, delegate, review, decide. `executor` implements one slice; `scout` (`subagent_type: "scout"`) recons; `verifier` checks one surface. `/tier` binds backends and models — never by hand or `CLAUDE_CODE_SUBAGENT_MODEL`/`ANTHROPIC_DEFAULT_*`.
+Executor slices go through `orca-dispatch <bead>` when Orca is reachable and the Agent tool otherwise (explicit `model`); checkers and recon stay in-process. `orca-wait` ingests `worker_done`; `orca-reply` answers.
+Delegating per this file is the user's standing request; express spawns nothing. A slice spec is objective · files · contract · boundaries; workers report deviations, not opportunities.
+Deep-lane contract: register `CHECK`/`PASS-IF`/`FROZEN`/`CLASS` first; the executor commits the test red (`RED-AT`) then green (`GREEN-AT`); the verifier returns `PASS`/`FAIL`/`TAMPERED`/`NO-CONTRACT`, anything less returns to an executor. You author beads and contracts. A screenshot, never a description, closes what a person looks at.
+Name spawns `<role>-<agent>-<model-slug>`; named spawns deliver by SendMessage to "main". Invariants: expensive tiers never take the worker seat; checkers inherit the session model; independent slices run in parallel in separate Orca worktrees, slices that share files run sequentially in one, recon fans out freely; a worker's summary is a claim to check.
+A route-named bead runs as `delegate run --route <r> --bead <id>`; routes and tiers are orthogonal.

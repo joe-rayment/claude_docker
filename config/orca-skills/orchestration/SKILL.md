@@ -32,6 +32,31 @@ for results, or coordinate a DAG — and for ordinary terminal control, shell co
 worktree management, and the built-in browser. Coordination requires real Orca runtime
 state; never substitute a non-Orca subagent tool.
 
+## In this template, drive the loop through `bin/`
+
+This image ships four thin wrappers over the same orchestration API, and they —
+not raw `orchestration` subcommands — are how an orchestrator here dispatches
+work. They keep one Run per coordinator session, compose the Task spec from the
+bead (title, description, acceptance contract, WORKER RULES), record task and
+dispatch ids back on the bead, and print one JSON receipt per call:
+
+- `orca-dispatch <bead-id> [--worker|--checker] [--backend orca|subagent]
+  [--agent claude|opencode|codex|gemini] [--model <id>] [--worktree …]` — hand
+  ONE bead to ONE worker. Exits 3 without dispatching when the runtime is
+  unreachable, printing the equivalent in-process Agent-tool spec instead.
+- `orca-wait [--timeout-ms N] [--keep]` — one rolling `check --wait`; appends
+  each `worker_done` to its bead, releases the settled worker, and hands
+  `question`/`escalation` back to you.
+- `orca-reply <msg_id> "<text>"` — answer a worker blocked in `ask`.
+- `orca-workers` — `worker-list` joined to `task-list --brief`, one table.
+- `orca-run --epic <id> [--epic …] [--max-parallel N]` — waves: every ready
+  bead of an epic dispatched at once, one worktree per epic, dependents
+  released as their dependencies report, `merge_ready` when an epic settles.
+
+`knowledge-base/TIERED_ORCHESTRATION.md` is the playbook behind them. Read the
+version-matched Orca guide below before reaching for any subcommand these
+wrappers don't already cover.
+
 ## Resolve the CLI for this session
 
 Choose the executable once and reuse it for every later command:
