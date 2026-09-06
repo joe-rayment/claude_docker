@@ -17,63 +17,61 @@ bats tests/docs.bats     # one file
 ```
 
 Tests are bats-core, and they run on Linux as well as macOS: the suite stubs
-`brew`, `gh`, `npm`, `curl`, `hdiutil` and `srt`, and exercises the scripts'
-logic rather than Seatbelt itself. The Seatbelt behaviour is checked on a
-real Mac by the 17-probe self-test (`claude-dev --doctor`), which
-registration runs and refuses to hand off without.
+the Mac tooling (`container`, `open`, `sw_vers`, `uname`, `gh`) and exercises
+the scripts' logic rather than Apple's container runtime itself. The
+in-container half is exercised natively — this box is the same Ubuntu arm64
+the image is built on — and the image itself is built, smoke-tested and
+published by `.github/workflows/image.yml`, because containers cannot run
+here.
 
 ## Architecture Overview
 
 One command (`gh api … bootstrap.sh | bash`), run from inside a project
-folder, installs everything **into that folder**: `<project>/.claude-dev/`
-carries the template clone, a pinned `@anthropic-ai/sandbox-runtime`
-(`srt`), a pinned Claude Code, `app/Orca.app` from the pinned release DMG,
-and `bin/`. There is no central install. `claude-dev register` seeds a new
-folder for the stack this template assumes — Claude Code as the master,
-low-cost OpenRouter models as delegate-route workers (`openrouter.ai` in
-`network.extraAllowedDomains`), and Orca's native coordination on
-(`orca.cli: true`) — and `claude-dev setup` is the guided walk-through of
-the human half.
+folder, gives that folder **its own Linux VM**. `<project>/.claude-dev/`
+carries the template clone, `bin/claude-dev`, the folder's `claude-orca.json`
+and the `home/` that becomes the agent's home directory. There is no central
+install and nothing on the Mac runs an agent.
 
-Two Seatbelt layers confine it. **Layer 1**: `Orca.app` in the project root
-is a generated launcher bundle that runs `.claude-dev/bin/orca-launch`,
-which regenerates `.claude-dev/state/orca.sb`, redirects `HOME` and `TMPDIR`
-into the folder, and `exec`s `sandbox-exec` on the folder's own Orca — so
-the app sees the project folder and nothing else under `/Users`. **Layer
-2**: one marker-delimited block in the user's shell rc walks up from `$PWD`
-to `.claude-dev/bin/claude-orca-shell` and re-execs any login shell into
-`srt` *before* any agent binary runs, scoping writes to the project and the
-current worktree, denying the real home, and allowlisting egress through
-`srt`'s proxy. `scripts/sandbox/host-owned-paths.sh` is the one list of
-host-executed paths inside the folder that both layers write-deny.
+The boundary is the VM's. `claude-dev` runs one Apple `container` per folder
+from `ghcr.io/joe-rayment/claude_orca` (pinned by the `IMAGE_TAG` file),
+mounting the project at its own absolute path and `.claude-dev/home` as
+`/home/agent`, publishing Orca's port on `127.0.0.1` only. Inside,
+`scripts/container/entrypoint.sh` runs as PID 1, drops to the `agent` user,
+config-syncs, and starts `orca-ide --serve`; it writes the browser URL to
+`run/orca-web-url.txt` (mode 600 — the fragment carries a pairing code),
+which is the handshake the Mac side waits on before calling `open`. Claude
+Code signs in on its own first run inside Orca. Registration seeds the stack
+this template assumes — Claude Code as the master, low-cost OpenRouter models
+as delegate-route workers, and Orca's native coordination, which needs no
+opt-in now that Orca runs in the VM.
 
-Inside, `HOME` is `<project>/.claude-dev/home`, whose `.claude` config dir
-is populated from this repo's `config/` by a checksum-gated sync that
-preserves Orca's own managed hook entries (status dots, sub-agent rows). The
-hook/guard suite (lane, tier, bd-guard, outbound-guard, auth-guard,
-contract-gate, cost-mirror…) runs from there. `/tier` state lives in
+`HOME` is `<project>/.claude-dev/home`, whose `.claude` config dir is
+populated from this repo's `config/` by a checksum-gated sync that preserves
+Orca's own managed hook entries (status dots, sub-agent rows). The hook/guard
+suite (lane, tier, bd-guard, outbound-guard, auth-guard, contract-gate,
+cost-mirror…) runs from there. `/tier` state lives in
 `.claude-dev/run/tier.json` and is injected into sub-agent spawns by a
-`PreToolUse` hook, because agent files are write-denied inside the sandbox.
+`PreToolUse` hook rather than written into agent frontmatter, because
+config-sync owns those files.
 
 ## Conventions & Patterns
 
-- **bash 3.2.** macOS ships 3.2.57 and the wrapper runs before anything newer
-  is on PATH. No associative arrays, no `mapfile`, no `${x^^}`, no `+=` onto
-  an empty array under `set -u`. `scripts/lint-bash32.sh` and a real 3.2
-  build in the suite enforce it.
+- **bash 3.2 on the Mac side.** macOS ships 3.2.57, so `bootstrap.sh` and
+  `scripts/launcher.sh` stay inside it: no associative arrays, no `mapfile`,
+  no `${x^^}`, no `+=` onto an empty array under `set -u`.
+  `scripts/lint-bash32.sh` and a real 3.2 build in the suite enforce it.
+  `scripts/container/*` runs only in the image and is not bound by this.
 - **Paths come from `scripts/lib/paths.sh`.** Never hard-code `~/.claude`,
   the host dir, or a project path; resolve through the helpers so the same
   script works from a repo checkout and from the
   `<project>/.claude-dev/template` clone a folder actually runs.
-- **`run/` holds results, `state/` holds authority.** Anything the host
-  feeds to `sandbox-exec` or `srt` lives in `.claude-dev/state` and is
-  write-denied to both layers; what the sandbox itself writes (tier state,
-  self-test results, debug captures, the config-sync hash) lives in
-  `.claude-dev/run`.
+- **`run/` holds results, `state/` holds authority.** What the agent side
+  writes (tier state, the config-sync hash, the web URL, the port) lives in
+  `.claude-dev/run`; anything the Mac side treats as authority lives in
+  `.claude-dev/state`.
 - **Frozen contracts.** A bead's `FROZEN` files are frozen from its `RED-AT`
   commit onward: the test is committed red first, the implementation second,
   and the test is never edited to make an implementation pass.
-- **Nothing unsandboxed executes anything agent-writable.** Config the
-  sandbox can write (`sandbox.json`, `settings.local.json`) is read as
-  validated data, never sourced or run by the host side.
+- **The Mac side executes nothing it did not ship.** `claude-orca.json` is
+  read as validated data through `jq`, never sourced and never run.
 <!-- END PROJECT SECTIONS -->

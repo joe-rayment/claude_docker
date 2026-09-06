@@ -1,57 +1,27 @@
 # Orca integration
 
-[Orca](https://onorca.dev) (v1.4.197, pinned in `scripts/install-orca.sh`)
-is the session manager: worktrees, agent status dots, nested sub-agent rows,
-session history. In v2 it is **not** a system application.
+[Orca](https://onorca.dev) (v1.4.197, pinned in the `Dockerfile`) is the
+session manager: worktrees, agent status dots, nested sub-agent rows, session
+history. In v3 it is a **Linux** Orca that runs inside the folder's VM and
+serves its UI to your browser. There is no Mac application involved.
 
-## The Orca in the folder
+## How it comes up
 
-`install-orca.sh` downloads the pinned release DMG for this architecture,
-records its checksum in `.claude-dev/state/orca.sha256` and copies the app
-to `.claude-dev/app/Orca.app`. No cask, no `/Applications` copy: a central
-Orca is exactly the unsandboxed app this design exists to avoid, so the only
-Orca for this project is the one in the folder.
+`scripts/container/entrypoint.sh`, PID 1 in the container, starts
 
-You never launch that copy directly. `claude-dev register` generates a tiny
-launcher bundle, `<project>/Orca.app`, whose executable is one line — run
-`.claude-dev/bin/orca-launch`. Double-clicking it (or `./claude-dev open`,
-which is the same path from a terminal) makes `orca-launch`:
+```
+orca-ide --serve --port <port> --project-root <project>
+```
 
-1. regenerate `.claude-dev/state/orca.sb` for this folder,
-2. point `HOME` and `TMPDIR` inside `.claude-dev`,
-3. `exec sandbox-exec -f state/orca.sb .claude-dev/app/Orca.app/…/Orca`.
+as the `agent` user. Orca prints `Orca server ready` and a **Web client URL**
+whose fragment carries a pairing offer; the entrypoint writes that URL to
+`<project>/.claude-dev/run/orca-web-url.txt` (mode 600 — it is a credential)
+and the port beside it. The Mac side waits for that file, then `open`s the
+URL. The browser auto-pairs and renders the full UI. Nothing is ever served
+with `--no-pairing`.
 
-It **replaces itself** with `sandbox-exec`, so the app inherits the terminal
-and the process tree stays flat. There is no "after" in that process, which
-is why the repo registration runs from a helper started just before the
-exec: it waits for Orca to write `orca-runtime.json` under the user data
-dir, then runs the CLI bundled inside the app **once**, as
-`orca repo add --path <project>`. Adding an already-added path is a no-op,
-and its exit status is logged to the launch log and discarded — repo
-registration must never fail a launch.
-
-Fail closed: no `sandbox-exec`, no profile, or no app bundle means no
-launch. There is no unsandboxed fallback.
-
-## What layer 1 costs Orca, and what it does not
-
-`HOME` points at `.claude-dev/home`, so everything Orca keeps — its user
-data directory, its dot-directory, the Claude config dir — lands in the
-folder and disappears with it. Nothing under `/Users` or `/Volumes` outside
-the folder is readable or writable.
-
-- **The clipboard still works.** `(allow default)` keeps the mediated GUI
-  services — WindowServer, the GPU and font services,
-  `com.apple.pasteboard.1`. An editor you cannot copy out of is not usable,
-  and a pasteboard connection is not file access.
-- **The Keychain is cut.** `com.apple.SecurityServer`,
-  `com.apple.securityd.xpc`, `com.apple.ctkd` and the keychain prompt agent
-  are denied by name for the whole process tree, so Orca uses its own
-  file-based auth storage and Claude Code inside falls back to
-  `.credentials.json` in the folder — a credential store that lives and dies
-  with the project. `com.apple.trustd` stays allowed: TLS certificate
-  evaluation is not the Keychain. Set `orca.keychain: true` in
-  `sandbox.json` if you want the real one back.
+If the tab never appears, `./claude-dev logs` follows the container and
+`.claude-dev/run/orca-serve.log` has Orca's own output.
 
 ## Managed hooks
 
@@ -64,18 +34,18 @@ Orca tracks agent state through **Claude hooks it manages itself** —
 Orca passes in the environment (`ORCA_PANE_KEY`, `ORCA_TAB_ID`,
 `ORCA_AGENT_LAUNCH_TOKEN`, `ORCA_WORKTREE_ID`, `ORCA_AGENT_HOOK_ENV`).
 
-With `HOME` redirected, Orca writes those entries **straight into the
-folder's own config dir** — `.claude-dev/home/.claude/settings.json`, the
-same file `config-sync` rewrites from the template. So the job is no longer
-to copy them in; it is to **not lose them**. Every sync reads the previous
-file first and re-attaches anything whose hook command mentions
-`/.orca/agent-hooks/` (Orca's own matcher keys on exactly that), alongside
-the template's hooks. `config-sync` never invents an Orca entry and never
-drops one.
+Orca and the agents share one `HOME` (`/home/agent`, which is
+`<project>/.claude-dev/home` on the Mac), so Orca writes those entries
+straight into the same `settings.json` that `config-sync` rewrites from the
+template. The job is therefore not to copy them in; it is to **not lose
+them**. Every sync reads the previous file first and re-attaches anything
+whose hook command mentions `/.orca/agent-hooks/` — Orca's own matcher keys
+on exactly that — alongside the template's hooks. `config-sync` never invents
+an Orca entry and never drops one.
 
-The POSTs reach `127.0.0.1` because layer 2 sets `allowLocalBinding: true`,
-and the `ORCA_*` variables pass through the sandbox untouched — without them
-the hook cannot tell Orca which pane it is.
+`scripts/orca-hooks-merge.sh` still ships for the case where Orca's home and
+the config dir are genuinely different directories; when they are the same
+file, as they are here, it detects that and does nothing.
 
 **Status dots and sub-agent rows come from those entries.** If the dots stop
 moving, look there first:
@@ -87,64 +57,33 @@ jq '.hooks' .claude-dev/home/.claude/settings.json
 ## Statusline
 
 Orca installs its own statusline script into the same settings file. The
-sync **chains** it: Orca's command first, ours (`config/statusline.sh`,
-which renders tier, lane and cost) second, with our half remembered in
+sync **chains** it: Orca's command first, ours (`config/statusline.sh`, which
+renders tier, lane and cost) second, with our half remembered in
 `.claude-dev/home/.claude/.orca-statusline-base` so a template change
 refreshes only our half and leaves Orca's verbatim.
 
 ## Session history and transcripts
 
 Orca discovers transcripts under `$CLAUDE_CONFIG_DIR/projects`, and its
-`CLAUDE_CONFIG_DIR` is the folder's own config dir, because its `HOME` is
-the folder's home. Transcripts are therefore already where it looks. The old
-`orca.transcriptSymlink` knob, which linked a directory in the real home at
-the sandboxed transcripts dir, is **retired**: still accepted so an older
-`sandbox.json` keeps launching, but it warns once and does nothing.
+`CLAUDE_CONFIG_DIR` is the same config dir the agents write to, because they
+share a home. Transcripts are already where it looks.
 
 ## Worktrees
 
 Orca's default worktree location is a **sibling of the repository**
-(`<repo>/../<repoName>-<name>`), or `<workspaceRoot>/<repoName>/<name>` when
-a Workspace root is configured. A sibling is *outside* the folder, and
-therefore outside both sandboxes — so `claude-dev register` prints the
-one-time setting to apply: **Settings → Repository → worktree base path** =
-`<project>/.orca-worktrees`. The scope rules handle either layout; a
-linked-worktree session gets that worktree plus the primary's `.git`,
-`.beads` and `.claude-dev/{home,tmp,run}`.
+(`<repo>/../<repoName>-<name>`). A sibling of the project is outside the one
+mount the VM has, so set **Settings → Repository → worktree base path** to
+`<project>/.orca-worktrees` and every worktree lands inside the folder, where
+both Orca and the agents can reach it.
 
-## Orchestration mode (on by default for new folders)
+## Orchestration
 
-`orca.cli: true` in `sandbox.json` exposes the Orca CLI's unix socket and
-token to layer 2, unlocking `orca orchestration worker-start --agent codex`,
-terminal creation, the embedded browser, automations and artifacts.
+Orca's CLI, its orchestration mode, its terminals, automations and artifacts
+are simply available: the CLI and the app are the same process tree inside
+the same VM, so there is no socket to expose and no flag to set.
+`orca orchestration worker-start --agent codex`, `orca status` and terminal
+creation all work out of the box.
 
-**`claude-dev register` seeds it `true`** when it creates a folder's
-`sandbox.json` (V6, `claude-orca-riu.3`): Orca coordinating multi-provider
-agents — `orca orchestration worker-start`, `orca status` — is a first-class
-part of this setup, so it works out of the box rather than after an edit.
-Seeding happens only when there is no `sandbox.json` at all. An existing
-file is the user's choice and is never modified, including a hand-written
-one with no `orca` key: `gen-settings.sh` keeps its fail-closed default and
-reads an absent key as `false`.
-
-**The tradeoff, stated rather than avoided.** The CLI is a remote control
-for the application that contains it, and that application is not
-sandboxed. With the mode on, the sandboxed agent can reach the host Orca
-app's socket and drive orchestration. A worker terminal it spawns re-enters
-the sandbox through the layer-2 shell hook when it opens in the project
-folder — which is what `--worktree current` is for — but a terminal opened
-anywhere else does not, and the embedded browser, automations and published
-artifacts never do. `claude-dev register` prints one line saying the mode is
-on and how to turn it off; `claude-dev --doctor` prints the full residual
-escape surface and the settings to harden: Floating Workspace off, public
-artifacts off, no per-repo setup hooks in `orca.yaml`.
-
-**Opt out with one key**: `{"orca": {"cli": false}}` in
-`.claude-dev/sandbox.json` — the file is write-denied inside both layers, so
-edit it from outside, and the next launch is narrower.
-
-The `orca-socket-unreachable` probe follows the flag, so the self-test always
-asserts the state you asked for: with the mode on, a reachable runtime is a
-PASS and an unreachable one is **N/A** ("launch this folder's Orca.app"),
-never a FAIL — a closed Orca app cannot brick a first registration, since
-registration only refuses on a FAIL.
+Everything they spawn stays inside the VM and inside the same boundary — the
+one exception worth knowing is Orca's embedded browser, which reaches the
+network like anything else in the VM does.

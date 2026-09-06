@@ -5,14 +5,14 @@ class of question; the rulebook (`config/claude-user-memory.md`, synced to
 the agent's `CLAUDE.md`) carries the short policy version and points here for
 the details. Start with [../README.md](../README.md) for setup and daily use.
 
-## The sandbox and the host
+## The VM and the Mac
 
 | Page | Read it when |
 |---|---|
-| [SANDBOX.md](SANDBOX.md) | You need the trust boundary, the write/read/network scope, what the 17 self-test probes assert, or how to audit the generated Seatbelt profile. Also: the bash 3.2 rule every script here obeys. |
-| [ORCA_INTEGRATION.md](ORCA_INTEGRATION.md) | Status dots or sub-agent rows stopped moving, the session-history panel is empty, worktrees land somewhere unexpected, or you are tuning the Orca CLI mode new folders get on by default. |
+| [SANDBOX.md](SANDBOX.md) | You need the trust boundary: what the container VM can see, what crosses it on purpose, and how `--doctor` checks it. Also: the bash 3.2 rule the Mac-side scripts obey. |
+| [ORCA_INTEGRATION.md](ORCA_INTEGRATION.md) | Orca never opened in the browser, status dots or sub-agent rows stopped moving, the session-history panel is empty, or worktrees land somewhere unexpected. |
 | [CONFIG_SYNC.md](CONFIG_SYNC.md) | A hook, agent, command or skill is missing or stale in a project; you want a local override that survives; you want to know where `/tier` state actually lives. |
-| [TEARDOWN_RECOVERY.md](TEARDOWN_RECOVERY.md) | Before `claude-dev --teardown` or `--uninstall`, and when restoring beads from a snapshot afterwards. |
+| [TEARDOWN_RECOVERY.md](TEARDOWN_RECOVERY.md) | Before `claude-dev --teardown`, and when restoring beads from a snapshot afterwards. |
 
 ## Orchestration
 

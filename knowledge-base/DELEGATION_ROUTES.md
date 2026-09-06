@@ -100,19 +100,12 @@ project, and `claude-orca-shell --print-env` omits it exactly like
 `GH_TOKEN`. No key file (and no exported key) means no export, no mask, and
 no OpenRouter surface for that folder.
 
-### The egress domain, and pre-existing folders
+### Egress
 
-`claude-dev register` seeds `network.extraAllowedDomains: ["openrouter.ai"]`
-when it *creates* a folder's `sandbox.json`, so the preflight below is
-truthful for the shipped routes out of the box. An allowlist entry grants
-nothing on its own — without a key there is nothing to send. An existing
-`sandbox.json` is never rewritten (same rule as `orca.cli`), so a folder
-registered before this change needs the one-line add:
-
-```json
-{"network": {"extraAllowedDomains": ["openrouter.ai"]}}
-```
-
+There is no per-domain allowlist to keep in step: the container VM reaches
+the network the way the Mac does, so a route with a key set can talk to its
+provider and `delegate check` says so. A key is the only thing that gates it
+— without one there is nothing to send.
 ## Cheap workers without losing quality
 
 The saving comes from moving *typing* to a cheap model, never from moving
@@ -205,14 +198,13 @@ receipt.json         schema above, secret-redacted after the run
   `XDG_CONFIG_HOME` (the job's own), `TERM=dumb`, and the route's provider
   key. No `ANTHROPIC_*` variable ever reaches the child — by construction,
   not by denylist.
-- **Masked provider keys**: the key is passed through `srt`'s credential
-  masking, so the child sees a sentinel and the proxy injects the real value
-  only for that provider's hosts. Key material is additionally literal-
-  replaced out of `runner.log` and `receipt.json` after the run.
-- **Egress preflight**: instead of the old iptables firewall, `delegate
-  check` verifies the route's provider host is in the sandbox allowlist. If
-  it is not, add it to `network.extraAllowedDomains` in
-  `.claude-dev/sandbox.json` — a route cannot open a hole by itself.
+- **Redacted keys**: key material is literal-replaced out of `<job>/env`,
+  `runner.log` and `receipt.json`, so a receipt can be read and shared
+  without leaking the value that produced it.
+- **Preflight**: `delegate check` verifies what it can observe — the runner
+  is on PATH, a loopback runtime answers, the provider key is set — and
+  `delegate run` refuses on anything but `live`. No silent fallback to
+  another route or model.
 - **Worktree isolation**: `git worktree add <job_dir>/worktree -b
   delegate/<job> HEAD`. The real repo's branch and worktree list are
   untouched.
