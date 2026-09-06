@@ -43,8 +43,11 @@ orca_runtime_dir() {
     primary="$(abspath "$PROJECT_DIR")"
     host="$(abspath "$ORCA_HOST")"
 
-    # `claude-dev register` seeds orca.cli false; the untouched file is the
-    # default this case pins.
+    # The OFF state is what this case pins. Through V5 that was also what
+    # `claude-dev register` seeded; since V6 (claude-orca-riu.3) register
+    # seeds true, so the mode is switched off here explicitly -- the seeded
+    # default has its own case below.
+    set_orca_cli "$PROJECT_DIR" false
     run jq -e '.orca.cli == false' "$PROJECT_DIR/.claude-dev/sandbox.json"
     [ "$status" -eq 0 ]
 
@@ -190,6 +193,10 @@ orca_runtime_dir() {
     primary="$(abspath "$PROJECT_DIR")"
     doctor="$ORCA_HOST/bin/claude-dev"
 
+    # V6 (claude-orca-riu.3): register seeds the mode ON, so the OFF half of
+    # this case switches it off first.
+    set_orca_cli "$PROJECT_DIR" false
+
     # OFF: not a word about it.
     run bash -c "cd '$primary' && '$doctor' --doctor"
     [ "$status" -eq 0 ]
@@ -238,6 +245,8 @@ orca_runtime_dir() {
     [ -f "$REPO_ROOT/config/orca-cli-addendum.md" ]
 
     # OFF: a launch installs neither skill and leaves CLAUDE.md alone.
+    # (V6, claude-orca-riu.3: register seeds it ON, so switch it off first.)
+    set_orca_cli "$PROJECT_DIR" false
     run WRAPPER --root "$primary" --cwd "$primary" -- zsh
     [ "$status" -eq 0 ]
     [ ! -e "$config_dir/skills/orca-cli" ]

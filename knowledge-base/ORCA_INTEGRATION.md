@@ -112,17 +112,39 @@ one-time setting to apply: **Settings → Repository → worktree base path** =
 linked-worktree session gets that worktree plus the primary's `.git`,
 `.beads` and `.claude-dev/{home,tmp,run}`.
 
-## Orchestration mode (opt-in, off by default)
+## Orchestration mode (on by default for new folders)
 
 `orca.cli: true` in `sandbox.json` exposes the Orca CLI's unix socket and
 token to layer 2, unlocking `orca orchestration worker-start --agent codex`,
 terminal creation, the embedded browser, automations and artifacts.
 
-It is off by default because **the CLI is a remote control for the
-application that contains it**. New terminals it opens in this project's
-worktrees are re-sandboxed by the shell hook, but the embedded browser,
-automations and published artifacts are not. When you turn it on,
-`claude-dev --doctor` prints the residual escape surface and the settings to
-harden: Floating Workspace off, public artifacts off. The
-`orca-socket-unreachable` probe flips its expectation to match the flag, so
-the self-test always asserts the state you asked for.
+**`claude-dev register` seeds it `true`** when it creates a folder's
+`sandbox.json` (V6, `claude-orca-riu.3`): Orca coordinating multi-provider
+agents — `orca orchestration worker-start`, `orca status` — is a first-class
+part of this setup, so it works out of the box rather than after an edit.
+Seeding happens only when there is no `sandbox.json` at all. An existing
+file is the user's choice and is never modified, including a hand-written
+one with no `orca` key: `gen-settings.sh` keeps its fail-closed default and
+reads an absent key as `false`.
+
+**The tradeoff, stated rather than avoided.** The CLI is a remote control
+for the application that contains it, and that application is not
+sandboxed. With the mode on, the sandboxed agent can reach the host Orca
+app's socket and drive orchestration. A worker terminal it spawns re-enters
+the sandbox through the layer-2 shell hook when it opens in the project
+folder — which is what `--worktree current` is for — but a terminal opened
+anywhere else does not, and the embedded browser, automations and published
+artifacts never do. `claude-dev register` prints one line saying the mode is
+on and how to turn it off; `claude-dev --doctor` prints the full residual
+escape surface and the settings to harden: Floating Workspace off, public
+artifacts off, no per-repo setup hooks in `orca.yaml`.
+
+**Opt out with one key**: `{"orca": {"cli": false}}` in
+`.claude-dev/sandbox.json` — the file is write-denied inside both layers, so
+edit it from outside, and the next launch is narrower.
+
+The `orca-socket-unreachable` probe follows the flag, so the self-test always
+asserts the state you asked for: with the mode on, a reachable runtime is a
+PASS and an unreachable one is **N/A** ("launch this folder's Orca.app"),
+never a FAIL — a closed Orca app cannot brick a first registration, since
+registration only refuses on a FAIL.

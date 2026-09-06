@@ -164,10 +164,12 @@ STUB
     [ -d "$PROJECT_DIR/.claude-dev/state" ]
     [ -f "$PROJECT_DIR/.claude-dev/sandbox.json" ]
 
+    # orca.cli was seeded false through V5; V6 (claude-orca-riu.3) makes it
+    # true for new folders -- pinned in its own case below.
     run jq -e '.version == 1
         and .network.extraAllowedDomains == []
         and .filesystem.extraAllowWrite == []
-        and .orca.cli == false' "$PROJECT_DIR/.claude-dev/sandbox.json"
+        and .orca.cli == true' "$PROJECT_DIR/.claude-dev/sandbox.json"
     [ "$status" -eq 0 ]
 }
 

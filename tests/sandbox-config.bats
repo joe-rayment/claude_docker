@@ -15,6 +15,16 @@ GEN_SETTINGS() {
     "$ORCA_HOST/template/scripts/sandbox/gen-settings.sh" "$@"
 }
 
+# V6 (claude-orca-riu.3): `claude-dev register` now seeds orca.cli true,
+# which widens allowRead and allowUnixSockets by the Orca runtime dir. The
+# S2 scope cases below pin the BASE scope, so they switch the mode off
+# first; the seeded default is pinned by tests/orca-cli-mode.bats.
+disable_orca_cli() {
+    local dir="$1" tmp="$BATS_TEST_TMPDIR/sandbox.json.tmp"
+    jq '.orca.cli = false' "$dir/.claude-dev/sandbox.json" > "$tmp"
+    mv "$tmp" "$dir/.claude-dev/sandbox.json"
+}
+
 @test "primary checkout scope: allowWrite is exactly project, .claude-dev/home, .claude-dev/tmp" {
     make_project "$PROJECT_DIR"
     real_home="$(make_real_home)"
@@ -73,6 +83,7 @@ GEN_SETTINGS() {
 
 @test "denyRead contains the real HOME and allowRead re-opens only project, worktree, ~/.claude-orca, ~/.local/bin, ~/.local/share/claude, ~/.orca/agent-hooks" {
     make_project "$PROJECT_DIR"
+    disable_orca_cli "$PROJECT_DIR"
     wt="$(make_worktree "$PROJECT_DIR" feature)"
     real_home="$(make_real_home)"
     host="$(abspath "$ORCA_HOST")"
@@ -140,6 +151,7 @@ GEN_SETTINGS() {
 
 @test "network: defaults plus sandbox.json extras, strictAllowlist/allowLocalBinding/allowPty/enableWeakerNetworkIsolation true, allowAppleEvents false, allowUnixSockets empty" {
     make_project "$PROJECT_DIR"
+    disable_orca_cli "$PROJECT_DIR"
     real_home="$(make_real_home)"
     primary="$(abspath "$PROJECT_DIR")"
 

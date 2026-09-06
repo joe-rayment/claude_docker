@@ -330,10 +330,20 @@ cmd_register() {
     mkdir -p "$dir/.claude-dev/home" "$dir/.claude-dev/tmp" \
              "$dir/.claude-dev/state" "$dir/.claude-dev/run"
 
-    # Defaults only if absent -- never reset a project's own edits.
+    # Defaults only if absent -- never reset a project's own edits. An
+    # existing file is the user's choice even when it has no orca key at
+    # all: gen-settings.sh reads a missing key as false, and that stays the
+    # answer for every file this branch does not create.
+    #
+    # V6 (claude-orca-riu.3): orca.cli is seeded TRUE for a new folder --
+    # native Orca orchestration ('orca orchestration worker-start',
+    # 'orca status') is part of this setup rather than an afterthought.
+    # What that grants is real and written down in ORCA_INTEGRATION.md: the
+    # sandboxed agent can reach the host Orca app's unix socket and drive
+    # it. Opt out with one key: {"orca":{"cli":false}}.
     if [ ! -f "$dir/.claude-dev/sandbox.json" ]; then
         cat > "$dir/.claude-dev/sandbox.json" <<'JSON'
-{"version":1,"network":{"extraAllowedDomains":[]},"filesystem":{"extraAllowWrite":[]},"orca":{"cli":false}}
+{"version":1,"network":{"extraAllowedDomains":[]},"filesystem":{"extraAllowWrite":[]},"orca":{"cli":true}}
 JSON
     fi
 
@@ -374,6 +384,18 @@ JSON
     # S6 (claude-orca-3sk.18): one-time Orca setting -- worktrees created
     # outside the project folder are outside the sandbox's write scope.
     echo "Orca: Settings → Repository → worktree base path: $dir/.orca-worktrees (keeps worktrees inside the sandboxed folder)"
+
+    # V6 (claude-orca-riu.3): the seeded default is a granted capability, so
+    # registration says it out loud rather than leaving it for --doctor.
+    # Read from the file, never assumed: a re-register over an existing
+    # sandbox.json prints whatever that file actually says.
+    local reg_cli="false"
+    if [ -f "$dir/.claude-dev/sandbox.json" ] && command -v jq >/dev/null 2>&1; then
+        reg_cli="$(jq -r '.orca.cli // false' "$dir/.claude-dev/sandbox.json" 2>/dev/null || true)"
+    fi
+    if [ "$reg_cli" = "true" ]; then
+        echo "Orca orchestration: ON (sandbox.json orca.cli=true) -- agents here can drive this Mac's Orca app; opt out with {\"orca\":{\"cli\":false}}"
+    fi
 
     # S3 (claude-orca-3sk.15): prove the sandbox from the inside before
     # ever handing off to Orca -- see .claude/plans/orca-port.md S3.
@@ -557,12 +579,15 @@ cmd_doctor() {
     fi
     [ -n "$root" ] || return 0
 
-    # S9 (claude-orca-3sk.20): the Orca CLI mode is opt-in because the
-    # socket it opens is a remote control for an UNSANDBOXED app. Whenever
-    # it is on, say so and name what is still reachable -- a mode whose
-    # residual surface is only written down in a plan is not opt-in in any
-    # useful sense. Printed for the CWD project only, and never a failure
-    # by itself: the exit code below is still the self-test's verdict.
+    # S9 (claude-orca-3sk.20): the socket the Orca CLI mode opens is a
+    # remote control for an UNSANDBOXED app. Whenever it is on, say so and
+    # name what is still reachable -- a mode whose residual surface is only
+    # written down in a plan is not a stated tradeoff in any useful sense.
+    # V6 (claude-orca-riu.3) makes it the seeded default for new folders,
+    # which makes this paragraph the place most users meet it, so it also
+    # names the one key that turns it back off. Printed for the CWD project
+    # only, and never a failure by itself: the exit code below is still the
+    # self-test's verdict.
     local orca_cli="false"
     if [ -f "$root/.claude-dev/sandbox.json" ] && command -v jq >/dev/null 2>&1; then
         orca_cli="$(jq -r '.orca.cli // false' "$root/.claude-dev/sandbox.json" 2>/dev/null || true)"
@@ -581,6 +606,7 @@ Orca CLI mode is ON for $root (.claude-dev/sandbox.json: orca.cli).
     - Floating Workspace: off
     - public artifact links: off
     - no per-repo setup hooks in orca.yaml
+  Turn it off: set {"orca":{"cli":false}} in $root/.claude-dev/sandbox.json
 WARN
     fi
 

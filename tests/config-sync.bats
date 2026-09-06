@@ -16,6 +16,14 @@ CONFIG_SYNC() {
     make_project "$PROJECT_DIR"
     primary="$(abspath "$PROJECT_DIR")"
 
+    # V6 (claude-orca-riu.3): register seeds orca.cli true, so the selftest
+    # launch inside make_project appends claude-orca-shell's orca-cli
+    # addendum to CLAUDE.md. This case is about the sync itself producing
+    # the config/ sources, so drop the checksum gate and make it really
+    # run -- a real sync rewrites CLAUDE.md from the template. (The
+    # addendum's own lifecycle is pinned by tests/orca-cli-mode.bats.)
+    rm -f "$PROJECT_DIR/.claude-dev/run/config-hash"
+
     run CONFIG_SYNC --project "$primary" --host "$ORCA_HOST"
     [ "$status" -eq 0 ]
 

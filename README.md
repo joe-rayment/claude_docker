@@ -151,7 +151,7 @@ fails the launch with a one-line reason rather than widening quietly.
   "network":    { "extraAllowedDomains": ["registry.example.com"] },
   "filesystem": { "extraAllowWrite": [".cache/build"] },
   "orca": {
-    "cli": false,
+    "cli": true,
     "keychain": false,
     "profileExceptions": { "allowRead": ["/opt/homebrew/share/fonts"] }
   }
@@ -162,7 +162,9 @@ fails the launch with a one-line reason rather than widening quietly.
   single leading label.
 - `filesystem.extraAllowWrite` — must resolve to an existing directory
   inside the folder.
-- `orca.cli` — opt in to the Orca CLI socket (see below).
+- `orca.cli` — the Orca CLI socket, and with it native orchestration.
+  **Seeded `true` for a newly registered folder**; set it to `false` to opt
+  out (see below).
 - `orca.keychain` — re-allow the Keychain services for layer 1.
 - `orca.profileExceptions` — extra absolute `allowRead`/`allowWrite` paths
   for layer 1 only; no traversals, and host-owned paths are re-denied after
@@ -193,16 +195,27 @@ data landed there, and that the host-owned files are write-denied.
 - Your git identity (name and email only) is seeded into the sandbox
   `.gitconfig` at bootstrap.
 
-## Orca CLI (opt-in)
+## Orca CLI (on by default for new folders)
 
 `orca.cli: true` exposes the Orca CLI's unix socket to the sandbox and
 unlocks native orchestration (`orca orchestration worker-start --agent
-codex`, terminals, automations, artifacts).
+codex`, terminals, automations, artifacts). `claude-dev register` **seeds it
+`true`** when it creates a folder's `sandbox.json`, because coordinating
+multi-provider agents through Orca is a first-class part of this setup, not
+an add-on. An existing `sandbox.json` is never rewritten — including one
+with no `orca` key, which `gen-settings.sh` still reads as `false`.
 
-**This is an escape surface.** Everything the CLI drives — new terminals,
-the embedded browser, automations, published artifacts — runs outside layer
-2. Leave it off unless you need it; when it is on, `claude-dev --doctor`
-prints the residual surface and the Orca settings to harden.
+**What that grants, plainly.** The sandboxed agent can reach the host Orca
+app's unix socket and drive it. Worker terminals it spawns re-enter the
+sandbox via the layer-2 shell hook when they open in the project folder
+(`--worktree current`); anything the CLI drives *outside* the folder does
+not — the embedded browser, automations and published artifacts all run
+outside layer 2. `claude-dev register` and `claude-dev --doctor` both say
+the mode is on and name that residual surface plus the Orca settings to
+harden.
+
+**Opt out with one key**: `{"orca": {"cli": false}}` in
+`.claude-dev/sandbox.json`.
 
 ## Multi-model delegation
 
