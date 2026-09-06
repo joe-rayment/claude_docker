@@ -41,6 +41,12 @@ PLAYWRIGHT_VERSION="1.61.1"
 VIEWPORT_WIDTH=1280
 VIEWPORT_HEIGHT=720
 NAV_TIMEOUT_MS=60000
+# How long to let the page paint after `load` fires (claude-orca-qa2.17).
+DEFAULT_WAIT_MS=5000
+# How long to poll for a non-empty <body> before giving up and shooting
+# whatever is there -- a blank page is still worth capturing, it just must
+# not be the default outcome.
+BODY_TIMEOUT_MS=15000
 
 # shellcheck source=scripts/lib/paths.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/lib/paths.sh"
@@ -48,13 +54,22 @@ NAV_TIMEOUT_MS=60000
 usage() {
     cat <<EOF
 Usage: take-screenshot url <URL> [--name <name>] [--full-page]
+                           [--wait-ms <ms>] [--wait-for <selector>]
 
   Captures <URL> with headless chromium (Playwright $PLAYWRIGHT_VERSION) and
   writes <project>/attachments/<name>.png, printing the path.
 
 Options:
-  --name <name>   Output basename (default: <url-host>-<UTC timestamp>)
-  --full-page     Capture the full scrollable page, not just the viewport
+  --name <name>       Output basename (default: <url-host>-<UTC timestamp>)
+  --full-page         Capture the full scrollable page, not just the viewport
+  --wait-ms <ms>      Settle time after load before the shot
+                      (default $DEFAULT_WAIT_MS; 0 disables it)
+  --wait-for <sel>    Also wait for this CSS selector to be visible
+
+  A single-page app (Orca Web among them) answers 'load' with an empty body
+  and paints afterwards, which is how a screenshot comes back blank. The
+  wait is therefore on by default: the page is polled for a non-empty body
+  first, then --wait-ms is spent settling.
 
 The 'term' and 'display' modes of the old Docker template are removed: there
 is no X display server and no termshot here. Capture terminal output by
@@ -128,11 +143,40 @@ const args = argv.slice(3);
 const width = parseInt(process.env.SHOT_WIDTH || "1280", 10);
 const height = parseInt(process.env.SHOT_HEIGHT || "720", 10);
 const timeout = parseInt(process.env.SHOT_TIMEOUT_MS || "60000", 10);
+const waitMs = parseInt(process.env.SHOT_WAIT_MS || "0", 10);
+const bodyTimeout = parseInt(process.env.SHOT_BODY_TIMEOUT_MS || "15000", 10);
+const waitFor = process.env.SHOT_WAIT_FOR || "";
 (async () => {
   const browser = await chromium.launch({ args });
   try {
     const page = await browser.newPage({ viewport: { width, height } });
     await page.goto(url, { waitUntil: "load", timeout });
+    // A single-page app answers `load` with an empty shell. Wait for it to
+    // put something in the body, then let it settle -- neither wait is
+    // fatal, because a blank shot beats no shot at all.
+    if (bodyTimeout > 0) {
+      try {
+        await page.waitForFunction(
+          () => !!document.body && document.body.innerText.trim().length > 0,
+          undefined,
+          { timeout: bodyTimeout },
+        );
+      } catch (e) {
+        console.error("take-screenshot: body still empty after " +
+          bodyTimeout + "ms; capturing anyway");
+      }
+    }
+    if (waitFor) {
+      try {
+        await page.waitForSelector(waitFor, { state: "visible", timeout });
+      } catch (e) {
+        console.error("take-screenshot: selector " + waitFor +
+          " never appeared; capturing anyway");
+      }
+    }
+    if (waitMs > 0) {
+      await page.waitForTimeout(waitMs);
+    }
     await page.screenshot({ path: out, fullPage: full });
   } finally {
     await browser.close();
@@ -145,12 +189,26 @@ const timeout = parseInt(process.env.SHOT_TIMEOUT_MS || "60000", 10);
 
 cmd_url() {
     local url="" name="" full_page=0
+    local wait_ms="$DEFAULT_WAIT_MS" wait_for=""
 
     while [ $# -gt 0 ]; do
         case "$1" in
             --name)
                 [ $# -ge 2 ] || die_usage "--name requires an argument"
                 name="$2"
+                shift 2
+                ;;
+            --wait-ms)
+                [ $# -ge 2 ] || die_usage "--wait-ms requires an argument"
+                case "$2" in
+                    ''|*[!0-9]*) die_usage "--wait-ms takes milliseconds" ;;
+                esac
+                wait_ms="$2"
+                shift 2
+                ;;
+            --wait-for)
+                [ $# -ge 2 ] || die_usage "--wait-for requires a selector"
+                wait_for="$2"
                 shift 2
                 ;;
             --full-page)
@@ -201,6 +259,9 @@ cmd_url() {
     SHOT_WIDTH="$VIEWPORT_WIDTH" \
     SHOT_HEIGHT="$VIEWPORT_HEIGHT" \
     SHOT_TIMEOUT_MS="$NAV_TIMEOUT_MS" \
+    SHOT_WAIT_MS="$wait_ms" \
+    SHOT_WAIT_FOR="$wait_for" \
+    SHOT_BODY_TIMEOUT_MS="$BODY_TIMEOUT_MS" \
         node -e "$NODE_SCRIPT" "$url" "$out" "$full_page" "--no-sandbox"
 
     printf '%s\n' "$out"

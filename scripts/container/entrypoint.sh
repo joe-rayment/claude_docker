@@ -286,16 +286,82 @@ seed_git_identity() {
     log "seeded git identity in $gc"
 }
 
+# A Claude Code worker started in a fresh .claude-dev/home stops dead at
+# two dialogs nobody is there to answer: the folder-trust prompt, then the
+# bypass-permissions disclaimer that --dangerously-skip-permissions raises
+# once per install. Both are ordinary config, so the entrypoint seeds them
+# before Orca starts (claude-orca-qa2.17). Keys read off the shipped Claude
+# Code binary: projects[<path>].hasTrustDialogAccepted and
+# hasCompletedOnboarding in ~/.claude.json, and, in ~/.claude/settings.json,
+# skipDangerousModePermissionPrompt -- what the dialog itself writes on
+# accept (the older .claude.json bypassPermissionsModeAccepted migrates
+# into it).
+#
+# Absent keys only: a value the user or the agent already set always wins,
+# and a file that is not valid JSON is left untouched rather than replaced.
+# This runs AFTER config-sync, which regenerates settings.json wholesale.
+seed_json_key_absent() {
+    seed_path="$1"
+    seed_filter="$2"
+    shift 2
+    [ -f "$seed_path" ] || printf '{}\n' > "$seed_path" 2>/dev/null || return 1
+    jq -e . "$seed_path" >/dev/null 2>&1 || {
+        warn "$seed_path is not valid JSON; leaving it alone"
+        return 1
+    }
+    seed_tmp="$seed_path.claude-orca.tmp"
+    if jq "$@" "$seed_filter" "$seed_path" > "$seed_tmp" 2>/dev/null \
+            && [ -s "$seed_tmp" ]; then
+        mv -f "$seed_tmp" "$seed_path" || { rm -f "$seed_tmp"; return 1; }
+        return 0
+    fi
+    rm -f "$seed_tmp"
+    return 1
+}
+
+seed_claude_first_run() {
+    if ! command -v jq >/dev/null 2>&1; then
+        warn "jq not found; skipping the Claude Code first-run seed"
+        return 0
+    fi
+
+    if seed_json_key_absent "$AGENT_HOME/.claude.json" '
+        (if has("hasCompletedOnboarding") then .
+         else . + {hasCompletedOnboarding: true} end)
+        | .projects = ((.projects // {}) as $pr
+            | $pr + {($p): (($pr[$p] // {})
+                | if has("hasTrustDialogAccepted") then .
+                  else . + {hasTrustDialogAccepted: true} end)})
+    ' --arg p "$PROJECT_DIR"; then
+        log "seeded Claude Code trust for $PROJECT_DIR in $AGENT_HOME/.claude.json"
+    else
+        warn "could not seed $AGENT_HOME/.claude.json (continuing)"
+    fi
+
+    mkdir -p "$AGENT_HOME/.claude" 2>/dev/null
+    if seed_json_key_absent "$AGENT_HOME/.claude/settings.json" '
+        if has("skipDangerousModePermissionPrompt") then .
+        else . + {skipDangerousModePermissionPrompt: true} end
+    '; then
+        log "seeded skipDangerousModePermissionPrompt in $AGENT_HOME/.claude/settings.json"
+    else
+        warn "could not seed $AGENT_HOME/.claude/settings.json (continuing)"
+    fi
+}
+
 seed_gitignore
 mkdir -p "$PROJECT_DIR/attachments"
 restore_beads_snapshot
 seed_git_identity
+seed_claude_first_run
 
 # Written as root when we are root: hand them to the agent, who is the one
 # that edits them from here on.
 if [ "$PRIVDROP" = "1" ]; then
     chown "$AGENT_UID:$AGENT_GID" "$PROJECT_DIR/.gitignore" \
-        "$PROJECT_DIR/attachments" "$AGENT_HOME/.gitconfig" 2>/dev/null
+        "$PROJECT_DIR/attachments" "$AGENT_HOME/.gitconfig" \
+        "$AGENT_HOME/.claude.json" "$AGENT_HOME/.claude" \
+        "$AGENT_HOME/.claude/settings.json" 2>/dev/null
     chown -R "$AGENT_UID:$AGENT_GID" "$PROJECT_DIR/.beads" 2>/dev/null
 fi
 
@@ -421,12 +487,18 @@ resolve_cli() {
 
 cli="$(resolve_cli)"
 if [ -n "$cli" ]; then
-    log "registering project with Orca: $cli repo add --path $PROJECT_DIR"
+    # The CLI finds the running server through its user-data dir, and it
+    # defaults to Orca's own rather than the one serve was started with.
+    # Without this the registration talks to a runtime that is not there
+    # and fails silently (claude-orca-qa2.17).
+    log "registering project with Orca: $cli repo add --path $PROJECT_DIR (ORCA_USER_DATA_PATH=$USER_DATA_DIR)"
     if command -v timeout >/dev/null 2>&1; then
-        run_as_agent timeout 60 "$cli" repo add --path "$PROJECT_DIR" --json \
+        run_as_agent env ORCA_USER_DATA_PATH="$USER_DATA_DIR" \
+            timeout 60 "$cli" repo add --path "$PROJECT_DIR" --json \
             >>"$SERVE_LOG" 2>&1 || warn "orca repo add failed (continuing)"
     else
-        run_as_agent "$cli" repo add --path "$PROJECT_DIR" --json \
+        run_as_agent env ORCA_USER_DATA_PATH="$USER_DATA_DIR" \
+            "$cli" repo add --path "$PROJECT_DIR" --json \
             >>"$SERVE_LOG" 2>&1 || warn "orca repo add failed (continuing)"
     fi
 else

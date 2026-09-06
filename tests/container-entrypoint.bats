@@ -453,6 +453,136 @@ STUB
     [ -d "$proj2/attachments" ]
 }
 
+# --- first-run friction (claude-orca-qa2.17) ------------------------------
+#
+# Both cases come off the 2026-09-06 live demo on this box: the Orca CLI
+# talked to the wrong runtime, and a Claude Code worker in a fresh
+# .claude-dev/home sat on the trust dialog forever.
+
+@test "entrypoint passes its own user-data dir to the Orca CLI for repo add" {
+    [ -x "$ENTRYPOINT" ]
+
+    local proj="$TMP/project" home="$TMP/home" port urlfile ud
+    make_project "$proj"
+    mkdir -p "$home" "$TMP/bin"
+    port="$(free_port)"
+    ud="$TMP/ud"
+
+    cat > "$TMP/bin/orca-ide" <<'STUB'
+#!/usr/bin/env bash
+port=""
+prev=""
+for arg in "$@"; do
+    [ "$prev" = "--port" ] && port="$arg"
+    prev="$arg"
+done
+echo "Web client URL: http://127.0.0.1:${port}/web-index.html#pairing=x"
+exec sleep 300
+STUB
+    chmod +x "$TMP/bin/orca-ide"
+
+    # The CLI stub records the environment variable that decides WHICH
+    # running Orca it talks to, not just its argv.
+    cat > "$TMP/bin/orca" <<STUB
+#!/usr/bin/env bash
+printf 'udp=%s argv=%s\n' "\${ORCA_USER_DATA_PATH:-unset}" "\$*" >> "$TMP/cli.log"
+exit 0
+STUB
+    chmod +x "$TMP/bin/orca"
+    : > "$TMP/cli.log"
+
+    export HOME="$home"
+    export PROJECT_DIR="$proj"
+    export ORCA_PORT="$port"
+    export ORCA_BIN="$TMP/bin/orca-ide"
+    export ORCA_CLI="$TMP/bin/orca"
+    export ORCA_USER_DATA_DIR="$ud"
+    export CLAUDE_ORCA_ENTRYPOINT_NO_PRIVDROP=1
+    export CLAUDE_ORCA_SKIP_SETUP=1
+    export CLAUDE_ORCA_SKIP_BEADS=1
+    export CLAUDE_ORCA_WEBURL_TIMEOUT=30
+
+    start_entrypoint_bg
+    urlfile="$proj/.claude-dev/run/orca-web-url.txt"
+    if ! wait_for_file "$urlfile" 30; then
+        cat "$TMP/entrypoint.out" >&2 || true
+        false
+    fi
+    local i
+    for i in $(seq 1 20); do
+        grep -q 'repo add' "$TMP/cli.log" && break
+        sleep 0.5
+    done
+    stop_entrypoint
+
+    run cat "$TMP/cli.log"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"udp=$ud"* ]]
+    [[ "$output" != *"udp=unset"* ]]
+    [[ "$output" == *"repo add --path $proj"* ]]
+}
+
+@test "entrypoint seeds the Claude Code trust and bypass-permissions keys without overwriting existing ones" {
+    [ -x "$ENTRYPOINT" ]
+    command -v jq >/dev/null 2>&1
+
+    local proj="$TMP/project" home cj sj
+    make_project "$proj"
+    home="$proj/.claude-dev/home"
+    cj="$home/.claude.json"
+    sj="$home/.claude/settings.json"
+
+    run env HOME="$home" PROJECT_DIR="$proj" \
+        ORCA_BIN="$TMP/bin/no-such-orca" CLAUDE_ORCA_SKIP_SETUP=1 \
+        CLAUDE_ORCA_SKIP_BEADS=1 CLAUDE_ORCA_ENTRYPOINT_NO_PRIVDROP=1 \
+        bash "$ENTRYPOINT"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"ORCA_BIN is not executable"* ]]
+
+    # The folder-trust dialog and the first-run wizard.
+    [ -f "$cj" ]
+    run jq -r --arg p "$proj" '.projects[$p].hasTrustDialogAccepted' "$cj"
+    [ "$output" = "true" ]
+    run jq -r '.hasCompletedOnboarding' "$cj"
+    [ "$output" = "true" ]
+
+    # The disclaimer --dangerously-skip-permissions raises once per install.
+    [ -f "$sj" ]
+    run jq -r '.skipDangerousModePermissionPrompt' "$sj"
+    [ "$output" = "true" ]
+
+    # A value already on disk always wins, and nothing else in the file is
+    # disturbed: these are the agent's own config files.
+    jq -n --arg p "$proj" '{
+        hasCompletedOnboarding: false,
+        oauthAccount: {emailAddress: "someone@example.com"},
+        projects: {($p): {hasTrustDialogAccepted: false, allowedTools: ["Bash"]}}
+    }' > "$cj"
+    jq -n '{skipDangerousModePermissionPrompt: false, model: "opus"}' > "$sj"
+
+    run env HOME="$home" PROJECT_DIR="$proj" \
+        ORCA_BIN="$TMP/bin/no-such-orca" CLAUDE_ORCA_SKIP_SETUP=1 \
+        CLAUDE_ORCA_SKIP_BEADS=1 CLAUDE_ORCA_ENTRYPOINT_NO_PRIVDROP=1 \
+        bash "$ENTRYPOINT"
+    run jq -r --arg p "$proj" '[.hasCompletedOnboarding,
+        .projects[$p].hasTrustDialogAccepted,
+        .projects[$p].allowedTools[0],
+        .oauthAccount.emailAddress] | join(",")' "$cj"
+    [ "$output" = "false,false,Bash,someone@example.com" ]
+    run jq -r '[.skipDangerousModePermissionPrompt, .model] | join(",")' "$sj"
+    [ "$output" = "false,opus" ]
+
+    # A config file that is not JSON is left exactly as it was found --
+    # never replaced, because that file is the agent's login.
+    printf 'not json at all\n' > "$cj"
+    run env HOME="$home" PROJECT_DIR="$proj" \
+        ORCA_BIN="$TMP/bin/no-such-orca" CLAUDE_ORCA_SKIP_SETUP=1 \
+        CLAUDE_ORCA_SKIP_BEADS=1 CLAUDE_ORCA_ENTRYPOINT_NO_PRIVDROP=1 \
+        bash "$ENTRYPOINT"
+    run cat "$cj"
+    [ "$output" = "not json at all" ]
+}
+
 @test "entrypoint restores the newest beads snapshot before bd init when the project has no beads" {
     [ -x "$ENTRYPOINT" ]
 
