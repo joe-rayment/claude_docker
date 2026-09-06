@@ -99,17 +99,40 @@ if [ -n "$STATE_FILE" ] && [ -f "$STATE_FILE" ]; then
     # injection path below is byte-for-byte what it always was.
     BACKEND=$(tier_role_field "$STATE_FILE" "$SLOT" backend)
     if [ "$BACKEND" = "orca" ]; then
-        # Orca-backed role: the spawn is ALLOWED (no decision, no rewrite) --
-        # this hook never blocks -- but the orchestrator is told that this
-        # role has a supervised Orca worker waiting for it.
+        # Orca-backed role: the spawn is ALLOWED (this hook never blocks) and
+        # the orchestrator is told a supervised Orca worker was waiting for
+        # it. It is still a WORKER spawn, though, so the invariant "expensive
+        # tiers never take the worker seat" holds here too: a claude-agent
+        # role injects its own model (or the derived rung, if that model
+        # cannot be ranked), so the fallback spawn never silently lands on
+        # the orchestrator's tier.
         RM=$(tier_role_field "$STATE_FILE" "$SLOT" model)
         RA=$(tier_role_field "$STATE_FILE" "$SLOT" agent)
-        jq -cn --arg slot "$SLOT" --arg m "$RM" --arg a "$RA" \
-           '{systemMessage: ("tier-gate: " + $slot + " backend is orca (" + $a + " " + $m + ") — prefer orca-dispatch for this slice; the Agent-tool spawn was allowed and runs on the orchestrator'"'"'s own model.")}' \
-           2>/dev/null || exit 0
-        exit 0
+        ORCA_NOTE=" ${SLOT} backend is orca (${RA} ${RM}) — prefer orca-dispatch for this slice."
+        if [ "$RA" = "claude" ]; then
+            TARGET_ID="$RM"
+            # An off-ladder/unrankable model (or the bare "inherit") is not
+            # injectable: fall back to the rung derived from the bound top.
+            if [ "$("$DERIVE" --rank "$TARGET_ID" 2>/dev/null || echo 0)" = "0" ]; then
+                TOP_ID=$(jq -r '.top // empty' "$STATE_FILE" 2>/dev/null)
+                TRIO=$("$DERIVE" "$TOP_ID" 2>/dev/null) || TRIO=""
+                case "$SLOT" in
+                    worker) TARGET_ID=$(printf '%s' "$TRIO" | awk '{print $2}') ;;
+                    recon)  TARGET_ID=$(printf '%s' "$TRIO" | awk '{print $3}') ;;
+                esac
+            fi
+        else
+            # A non-Claude agent (opencode/codex/gemini) has no model the
+            # Agent tool would accept, and its rung is not this hook's to
+            # guess: note only, no injection.
+            jq -cn --arg slot "$SLOT" --arg m "$RM" --arg a "$RA" \
+               '{systemMessage: ("tier-gate: " + $slot + " backend is orca (" + $a + " " + $m + ") — prefer orca-dispatch for this slice; the Agent-tool spawn was allowed and runs on the orchestrator'"'"'s own model.")}' \
+               2>/dev/null || exit 0
+            exit 0
+        fi
+    else
+        TARGET_ID=$(tier_role_field "$STATE_FILE" "$SLOT" model)
     fi
-    TARGET_ID=$(tier_role_field "$STATE_FILE" "$SLOT" model)
 fi
 
 if [ -z "$TARGET_ID" ]; then
@@ -139,8 +162,8 @@ case "$RANK" in
     *) exit 0 ;;   # unrankable target: fail open
 esac
 
-printf '%s' "$IN" | jq -c --arg m "$ALIAS" --arg id "$TARGET_ID" --arg slot "$SLOT" '{
-    systemMessage: ("tier-gate: " + $slot + " subagent spawn had no model — injected " + $slot + " tier \($m) (\($id)). An explicit model on the Agent call always wins."),
+printf '%s' "$IN" | jq -c --arg m "$ALIAS" --arg id "$TARGET_ID" --arg slot "$SLOT" --arg note "${ORCA_NOTE:-}" '{
+    systemMessage: ("tier-gate:" + $note + " " + $slot + " spawn had no model — injected " + $slot + " tier \($m) (\($id)). An explicit model on the Agent call always wins."),
     hookSpecificOutput: {
         hookEventName: "PreToolUse",
         updatedInput: (.tool_input + {model: $m})
