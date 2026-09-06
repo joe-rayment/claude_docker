@@ -1,5 +1,35 @@
 # Plan — claude_orca v3: Linux Orca inside an Apple container, the VM is the sandbox
 
+> **2026-09-06 — the runtime is Docker now, not Apple's `container`. This
+> document is kept as the historical record of the v3 design and is no longer
+> a description of the shipped system.** Everything below that says
+> `container run`, `container system start` or "Apple silicon + macOS 26"
+> should be read as `docker run`, `docker info` and "macOS or Linux".
+>
+> Why the switch, from what a real Mac run and this box actually showed:
+>
+> - **Apple's registry client cannot pull the image.** Against the private
+>   GHCR package it fails with `missing Bearer challenge in
+>   WWW-Authenticate header` — its own auth handshake, not a credential
+>   problem, and nothing on this side can fix it.
+> - **The VMs booted with a dead resolver.** `resolv.conf` inside the
+>   guest answered nothing, so the first-start toolchain install died on
+>   `Temporary failure resolving`. (`--dns` survives the switch as the fix.)
+> - **None of it could be exercised anywhere.** Apple's runtime runs on no
+>   CI machine and on no dev box here, so every claim about the runtime
+>   path was unverifiable by construction — which the user's standing rule
+>   makes a design flaw, not an inconvenience.
+>
+> Docker changes all three: GitHub's `ubuntu-latest` has a real daemon, so
+> `.github/workflows/image.yml` now builds the image, starts a real
+> container from it and drives the REAL `scripts/launcher.sh` against it.
+> And `CLAUDE_ORCA_RUNTIME=local` runs the same in-VM entrypoint as a host
+> process, so the launcher, the entrypoint and Orca can be exercised
+> together on a box with no capabilities at all (this one), which is what
+> `tests/e2e-local.bats` does. The single surface still unproven anywhere
+> a dev box can reach is `docker run` genuinely starting a container; that
+> lives in CI.
+
 Filed 2026-09-06. Supersedes the Seatbelt design in `orca-port.md` §9 (v2). The user's
 original plan, restated by them today: **use Apple's native containers and run the Linux
 version of Orca.** v2's "Seatbelt confirmed" line (§9.4) was not their decision.
