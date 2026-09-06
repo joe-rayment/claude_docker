@@ -56,6 +56,60 @@ overrides the repository `run`/`ps` operate against — it defaults to the
 primary checkout, resolved from `git rev-parse --git-common-dir`, never a
 hard-coded path.
 
+## The assumed stack: Claude Code master, OpenRouter workers
+
+The setup this repo installs assumes Claude Code orchestrates and cheap
+OpenRouter models do the bulk work, so OpenRouter is wired in by default
+rather than treated as an extra provider. Shipped routes:
+
+| Route | Model | Grade |
+|---|---|---|
+| `glm` | `openrouter/z-ai/glm-5.2` (provider-pinned: novita, parasail, no fallbacks) | executor |
+| `deepseek` | `openrouter/deepseek/deepseek-chat` | executor |
+| `qwen-coder` | `openrouter/qwen/qwen3-coder` | executor |
+| `local` | `ollama/qwen3-coder:30b` (loopback, no egress) | scout |
+| `codex` / `gemini` | first-party examples for those runners | executor |
+
+`config/delegate-routes.json` is **user-editable configuration, not a fixed
+list**: any id from [openrouter.ai/models](https://openrouter.ai/models)
+works as `"model": "openrouter/<id>"`, and the provider prefix is what
+`delegate.sh` maps to a key variable and an egress host.
+
+### Where the key goes
+
+`<project>/.claude-dev/state/openrouter.key` — one line, mode 600:
+
+```bash
+printf '%s\n' 'sk-or-...' > .claude-dev/state/openrouter.key
+chmod 600 .claude-dev/state/openrouter.key
+```
+
+The user writes that file; **no command in this repo ever writes a key**.
+`state/` is host-owned and write-denied to both sandbox layers, so nothing
+inside the sandbox can read or rewrite it. `claude-orca-shell` reads it on
+the host at launch — the same place and the same way it reads `gh auth
+token` — exports `OPENROUTER_API_KEY` into the session, and passes
+`--openrouter-key-present` to `gen-settings.sh`, which adds the mask
+(`credentials.envVars`) and the `openrouter.ai` inject host. An
+`OPENROUTER_API_KEY` already exported on the host wins; the file is the
+default, not an override. The value is never echoed, never written under the
+project, and `claude-orca-shell --print-env` omits it exactly like
+`GH_TOKEN`. No key file (and no exported key) means no export, no mask, and
+no OpenRouter surface for that folder.
+
+### The egress domain, and pre-existing folders
+
+`claude-dev register` seeds `network.extraAllowedDomains: ["openrouter.ai"]`
+when it *creates* a folder's `sandbox.json`, so the preflight below is
+truthful for the shipped routes out of the box. An allowlist entry grants
+nothing on its own — without a key there is nothing to send. An existing
+`sandbox.json` is never rewritten (same rule as `orca.cli`), so a folder
+registered before this change needs the one-line add:
+
+```json
+{"network": {"extraAllowedDomains": ["openrouter.ai"]}}
+```
+
 ## Receipt schema (`<job_dir>/receipt.json`)
 
 Written after every job, success or failure:
@@ -132,7 +186,7 @@ actual/at-top/saved columns.
 | Reason | Cause | Fix |
 |---|---|---|
 | `<runner> not found on PATH` | the runner CLI is not installed | install it; confirm `command -v <runner>` |
-| `<PROVIDER>_API_KEY not set` | no key in the environment for the route's provider | export it before launching the session (the wrapper masks it) |
+| `<PROVIDER>_API_KEY not set` | no key in the environment for the route's provider | for OpenRouter, write `.claude-dev/state/openrouter.key` and restart the shell; otherwise export it before launching the session (the wrapper masks it either way) |
 | `egress blocked (domain not allowlisted)` | the provider host is not in the sandbox allowlist | add it to `network.extraAllowedDomains` and restart the shell |
 | `ollama unreachable` | `curl -sf -m 2 http://127.0.0.1:11434/api/version` failed | start Ollama; local binding is already allowed by the profile |
 

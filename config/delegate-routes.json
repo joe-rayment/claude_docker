@@ -6,6 +6,16 @@
       "pin": { "order": ["novita", "parasail"], "allow_fallbacks": false },
       "grade": "executor"
     },
+    "deepseek": {
+      "runner": "opencode",
+      "model": "openrouter/deepseek/deepseek-chat",
+      "grade": "executor"
+    },
+    "qwen-coder": {
+      "runner": "opencode",
+      "model": "openrouter/qwen/qwen3-coder",
+      "grade": "executor"
+    },
     "local": {
       "runner": "opencode",
       "model": "ollama/qwen3-coder:30b",

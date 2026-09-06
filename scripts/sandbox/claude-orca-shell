@@ -229,7 +229,25 @@ fi
 # API host. A key that is not set simply yields no flag and no mask.
 # Unquoted on purpose, like $GH_TOKEN_FLAG: always set, and either empty
 # or whole flag words.
+#
+# V6 (claude-orca-riu.4): OpenRouter is the assumed worker provider, so its
+# key gets a fixed home instead of depending on the user's shell profile
+# exporting it: <root>/.claude-dev/state/openrouter.key, host-owned and
+# write-denied to both sandbox layers like the rest of state/. The user
+# writes that file themselves -- no command in this repo ever creates it --
+# and it is read HERE, on the host, exactly like `gh auth token` above. An
+# already-exported OPENROUTER_API_KEY wins, so the file is a default and
+# not an override. Read with a command substitution (which strips the
+# trailing newline) and never printed: --print-env omits it below.
 PROVIDER_KEY_FLAGS=""
+OPENROUTER_KEY_FILE="$PRIMARY/.claude-dev/state/openrouter.key"
+if [ -z "${OPENROUTER_API_KEY:-}" ] && [ -f "$OPENROUTER_KEY_FILE" ]; then
+    OPENROUTER_KEY_FROM_FILE="$(cat "$OPENROUTER_KEY_FILE" 2>/dev/null || true)"
+    if [ -n "$OPENROUTER_KEY_FROM_FILE" ]; then
+        export OPENROUTER_API_KEY="$OPENROUTER_KEY_FROM_FILE"
+    fi
+    unset OPENROUTER_KEY_FROM_FILE
+fi
 if [ -n "${OPENROUTER_API_KEY:-}" ]; then
     PROVIDER_KEY_FLAGS="$PROVIDER_KEY_FLAGS --openrouter-key-present"
 fi

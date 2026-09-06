@@ -219,19 +219,48 @@ harden.
 
 ## Multi-model delegation
 
-Claude Code stays the orchestrator. A bead names a route, Claude writes the
-brief and dispatches headless:
+The assumed stack is **Claude Code as the master** — planning, decomposing,
+reviewing — with **low-cost OpenRouter models as the workers**. A bead names
+a route, Claude writes the brief and dispatches headless:
 
 ```bash
-delegate run --route glm --bead claude-orca-3sk.22
+delegate run --route deepseek --bead claude-orca-3sk.22
 ```
 
 Routes live in `config/delegate-routes.json` (runners: `opencode run`,
-`codex exec`, `gemini -p`), each job gets an ephemeral worktree under
+`codex exec`, `gemini -p`). It ships `glm`, `deepseek` and `qwen-coder` on
+OpenRouter, `local` on Ollama, plus `codex`/`gemini` examples — **the file is
+yours to edit**: any model id from
+[openrouter.ai/models](https://openrouter.ai/models) works as
+`openrouter/<id>`. Each job gets an ephemeral worktree under
 `.claude-dev/delegate/<job>`, provider keys are masked through `srt`
 credentials, and the receipt lands in the bead's notes. Interactive Codex,
 Gemini and OpenCode sessions you open in Orca are sandboxed by the same
 shell hook and share the beads database.
+
+**Your OpenRouter key.** Put it in
+`.claude-dev/state/openrouter.key` — one line, nothing else:
+
+```bash
+printf '%s\n' 'sk-or-...' > .claude-dev/state/openrouter.key
+chmod 600 .claude-dev/state/openrouter.key
+```
+
+You create that file yourself; no command here ever writes your key. The
+shell wrapper reads it on the host at launch (where the sandbox cannot see
+it), exports `OPENROUTER_API_KEY` into the session, and has `srt` mask it —
+the agent sees a sentinel and the proxy injects the real value only on the
+way to `openrouter.ai`. An `OPENROUTER_API_KEY` already exported in your
+shell wins, so the file is a default and not an override. No key file means
+no export and no mask: a folder without one has no OpenRouter surface at all.
+
+`claude-dev register` seeds `openrouter.ai` into `network.extraAllowedDomains`
+for **new** folders only. A folder registered before this change keeps its
+own `sandbox.json` untouched; add the one line yourself:
+
+```json
+{"network": {"extraAllowedDomains": ["openrouter.ai"]}}
+```
 
 ## Knowledge base
 

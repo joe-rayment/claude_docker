@@ -341,9 +341,15 @@ cmd_register() {
     # What that grants is real and written down in ORCA_INTEGRATION.md: the
     # sandboxed agent can reach the host Orca app's unix socket and drive
     # it. Opt out with one key: {"orca":{"cli":false}}.
+    #
+    # V6 (claude-orca-riu.4): openrouter.ai rides along for the same reason
+    # -- OpenRouter is the assumed worker provider, and delegate.sh's egress
+    # preflight reads exactly this list. An allowlist entry grants nothing
+    # by itself: without .claude-dev/state/openrouter.key there is no key,
+    # no credential mask and nothing to send. Drop the entry to opt out.
     if [ ! -f "$dir/.claude-dev/sandbox.json" ]; then
         cat > "$dir/.claude-dev/sandbox.json" <<'JSON'
-{"version":1,"network":{"extraAllowedDomains":[]},"filesystem":{"extraAllowWrite":[]},"orca":{"cli":true}}
+{"version":1,"network":{"extraAllowedDomains":["openrouter.ai"]},"filesystem":{"extraAllowWrite":[]},"orca":{"cli":true}}
 JSON
     fi
 
