@@ -134,6 +134,22 @@ if [ "$1" = "auth" ] && [ "$2" = "token" ]; then
     printf '%s\n' "${STUB_GH_TOKEN:-gho_stubfaketoken0123456789abcdef}"
     exit 0
 fi
+# qa2.8: the launcher reads the token's OAuth scopes from the response
+# header of an authenticated API call (`gh api -i user` -> X-Oauth-Scopes),
+# because `gh auth status` words its scopes line differently per version.
+# CLAUDE_ORCA_TEST_GH_SCOPES pins the comma-separated list; the default
+# carries read:packages, which is what every pre-qa2.8 suite assumes (they
+# assert the pull path runs).
+if [ "$1" = "api" ] && [ "$2" = "-i" ] && [ "${3:-}" = "user" ]; then
+    [ "${STUB_GH_UNAUTH:-}" = "1" ] && exit 1
+    printf 'HTTP/2.0 200 OK\r\n'
+    printf 'X-Oauth-Scopes: %s\r\n' \
+        "${CLAUDE_ORCA_TEST_GH_SCOPES:-repo, read:org, workflow, read:packages}"
+    printf 'X-Accepted-Oauth-Scopes: \r\n'
+    printf '\r\n'
+    printf '{"login":"%s"}\n' "${STUB_GH_LOGIN:-joe-rayment}"
+    exit 0
+fi
 # v3 (claude-orca-qa2.2): `container registry login ghcr.io` needs a
 # username, and the launcher reads it from `gh api user --jq .login`.
 if [ "$1" = "api" ] && [ "$2" = "user" ]; then
