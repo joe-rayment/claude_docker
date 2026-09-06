@@ -316,6 +316,38 @@ socket_probe() {
         "$BATS_TEST_TMPDIR/orca-probe.json"
 }
 
+# Why riu.2's register-refusal case lives here rather than in
+# tests/selftest.bats: tests/run-dir.bats (V2c's frozen contract) pins
+# tests/selftest.bats at exactly 5 cases and the combined plan at 1..34,
+# so a sixth case there fails that suite -- the same reason V3's
+# orca-layer probe case sits in tests/how-to-run.bats. riu.2's CHECK runs
+# both files, which is what its TAP assertions are about.
+@test "register refusal names the FAILed probes and the next step" {
+    make_project "$PROJECT_DIR"
+    primary="$(abspath "$PROJECT_DIR")"
+    launcher="$ORCA_HOST/bin/claude-dev"
+
+    # One probe FAILed, everything else fine -- the shape a real refusal
+    # has, and the shape the user has to be able to act on.
+    fake="$BATS_TEST_TMPDIR/fake-one-fail.txt"
+    sed 's/^network-allowed-domain=0$/network-allowed-domain=1/' \
+        "$CLAUDE_ORCA_SELFTEST_FAKE" > "$fake"
+    grep -qx 'network-allowed-domain=1' "$fake"
+    export CLAUDE_ORCA_SELFTEST_FAKE="$fake"
+
+    run bash -c "cd '$primary' && '$launcher' register"
+    [ "$status" -eq 2 ]
+
+    # The probe table (which probe, and why) ...
+    [[ "$output" == *"[FAIL]"* ]]
+    [[ "$output" == *"network-allowed-domain"* ]]
+    # ... the refusal itself ...
+    [[ "$output" == *"Refusing to hand off to Orca"* ]]
+    # ... and what to do next: re-run the gate, read the per-probe detail.
+    [[ "$output" == *"then re-run: claude-dev --doctor"* ]]
+    [[ "$output" == *"$primary/.claude-dev/run/selftest.json"* ]]
+}
+
 @test "socket probe: cli=false and runtime unreachable is a PASS" {
     setup_socket_probe
     set_orca_cli "$PROJECT_DIR" false
