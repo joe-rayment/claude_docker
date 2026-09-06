@@ -10,7 +10,7 @@ the details. Start with [../README.md](../README.md) for setup and daily use.
 | Page | Read it when |
 |---|---|
 | [SANDBOX.md](SANDBOX.md) | You need the trust boundary, the write/read/network scope, what the 17 self-test probes assert, or how to audit the generated Seatbelt profile. Also: the bash 3.2 rule every script here obeys. |
-| [ORCA_INTEGRATION.md](ORCA_INTEGRATION.md) | Status dots or sub-agent rows stopped moving, the session-history panel is empty, worktrees land somewhere unexpected, or you are considering the opt-in Orca CLI mode. |
+| [ORCA_INTEGRATION.md](ORCA_INTEGRATION.md) | Status dots or sub-agent rows stopped moving, the session-history panel is empty, worktrees land somewhere unexpected, or you are tuning the Orca CLI mode new folders get on by default. |
 | [CONFIG_SYNC.md](CONFIG_SYNC.md) | A hook, agent, command or skill is missing or stale in a project; you want a local override that survives; you want to know where `/tier` state actually lives. |
 | [TEARDOWN_RECOVERY.md](TEARDOWN_RECOVERY.md) | Before `claude-dev --teardown` or `--uninstall`, and when restoring beads from a snapshot afterwards. |
 
@@ -20,7 +20,7 @@ the details. Start with [../README.md](../README.md) for setup and daily use.
 |---|---|
 | [TIERED_ORCHESTRATION.md](TIERED_ORCHESTRATION.md) | Choosing models for orchestrator / executor / scout / verifier, debugging `/tier`, or reasoning about cost. The long one — skim the headings. |
 | [ACCEPTANCE_CONTRACTS.md](ACCEPTANCE_CONTRACTS.md) | Writing a `CHECK`/`PASS-IF`/`FROZEN`/`CLASS` contract on a bead, or running the verifier's five checks against a `RED-AT`/`GREEN-AT` pair. |
-| [DELEGATION_ROUTES.md](DELEGATION_ROUTES.md) | Dispatching a slice onto an external model (`delegate run --route …`), reading a receipt, or debugging a `delegate check` reason. |
+| [DELEGATION_ROUTES.md](DELEGATION_ROUTES.md) | Pushing worker-grade slices onto cheap OpenRouter models without losing quality, dispatching one (`delegate run --route …`), reading a receipt, or debugging a `delegate check` reason. |
 
 ## Hooks, transcripts, issues
 

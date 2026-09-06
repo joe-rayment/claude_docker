@@ -6,6 +6,15 @@ Everything it installs lives **inside that folder**: the session manager
 `sandbox-runtime` (`srt`), and the folder's own pinned Claude Code. There is
 no central install, so there is no unsandboxed copy to start by mistake.
 
+**The stack it assumes.** Claude Code is the master: it plans, decomposes,
+reviews and decides. Low-cost **OpenRouter** models are the workers — a bead
+names a route and Claude dispatches the slice headless, with the acceptance
+contract and the check staying on the strong model ([Cheap workers without
+losing quality](knowledge-base/DELEGATION_ROUTES.md#cheap-workers-without-losing-quality)).
+**Orca's native coordination is on by default** for every folder this
+registers, so worker terminals and orchestration are part of the setup
+rather than an add-on.
+
 Two layers do the confining:
 
 - **Layer 1 — the Orca app itself.** The folder's `Orca.app` is started by
@@ -18,17 +27,17 @@ Two layers do the confining:
 The worst a runaway `rm -rf` can do is empty the project folder and the
 worktree you are sitting in.
 
-## Setup
+## Quickstart
 
-Once per machine, [Homebrew](https://brew.sh) and an authenticated GitHub
-CLI:
+**1. Once per machine** — [Homebrew](https://brew.sh) and an authenticated
+GitHub CLI:
 
 ```bash
 brew install gh
 gh auth login
 ```
 
-Then, **from inside the folder you want to sandbox**:
+**2. Bootstrap the folder**, from inside the folder you want to sandbox:
 
 ```bash
 gh api repos/joe-rayment/claude_orca/contents/bootstrap.sh -H "Accept: application/vnd.github.raw" | bash
@@ -45,19 +54,29 @@ same one-liner from inside it.
 Registration ends by running the sandbox self-test and **refuses to hand off
 to Orca unless it passes** — see [Self-test](#self-test).
 
-Then, in a terminal in that folder:
+**3. Finish setup with the guided walk-through.** This is the setup path;
+everything below it is reference:
 
 ```bash
 ./claude-dev setup
 ```
 
-A guided walk-through of the six things only you can do: signing Claude Code
-in, the git identity commits from this folder carry, `gh auth login`, your
-OpenRouter key, `bd init`, and the one Orca setting worth changing. Every
-step is skippable — Enter or `n` skips one, `a` skips the rest — and it ends
-with a menu that opens Orca, or runs `claude-dev --doctor`. Registration
-offers it when it finishes in a terminal; `CLAUDE_ORCA_SKIP_SETUP=1` turns
-that offer off.
+It walks the six things only you can do: signing Claude Code in, the git
+identity commits from this folder carry, `gh auth login`, your OpenRouter
+key (that is what pays the workers), `bd init`, and the one Orca setting
+worth changing. Every step is skippable — Enter or `n` skips one, `a` skips
+the rest — and it ends with a menu that opens Orca, or runs `claude-dev
+--doctor`. Registration offers it when it finishes in a terminal;
+`CLAUDE_ORCA_SKIP_SETUP=1` turns that offer off.
+
+**4. Open Orca.** Double-click **`Orca.app` in the project folder** — not a
+copy in `/Applications`, which is the unsandboxed one this design exists to
+avoid. The first launch needs right-click → Open, because the bundle is
+generated on your machine and unsigned. From a terminal, `./claude-dev open`
+does the same thing, and step 3's menu ends there too. Orca opens with this
+folder already added; pick **Claude Code** and work as usual. Each terminal
+prints `[claude-orca] sandboxed: writes limited to <project>` as it starts,
+and the first `claude` run prints a login URL to open on this Mac.
 
 Upgrading from a pre-v2 install? `claude-dev --doctor` flags the old central
 `~/.claude-orca`; `claude-dev --uninstall` and `claude-dev --remove-v1` both
@@ -89,16 +108,7 @@ If it stops *after* the preflight, the last line names the step —
 `Bootstrap failed during: …` — with the failing command's own output above
 it.
 
-## Run it
-
-Double-click **`Orca.app` in the project folder** — not a copy in
-`/Applications`, which is the unsandboxed one this design exists to avoid.
-The first launch needs right-click → Open, because the bundle is generated
-on your machine and unsigned. From a terminal, `./claude-dev open` does
-exactly the same thing. Orca opens with this folder already added; pick
-**Claude Code** and work as usual. Each terminal prints
-`[claude-orca] sandboxed: writes limited to <project>` as it starts, and the
-first `claude` run prints a login URL to open on this Mac.
+## Day to day
 
 | Command | What it does |
 |---|---|
@@ -210,7 +220,7 @@ data landed there, and that the host-owned files are write-denied.
 - Your git identity (name and email only) is seeded into the sandbox
   `.gitconfig` at bootstrap.
 
-## Orca CLI (on by default for new folders)
+## Orca coordination (on by default)
 
 `orca.cli: true` exposes the Orca CLI's unix socket to the sandbox and
 unlocks native orchestration (`orca orchestration worker-start --agent
@@ -232,11 +242,10 @@ harden.
 **Opt out with one key**: `{"orca": {"cli": false}}` in
 `.claude-dev/sandbox.json`.
 
-## Multi-model delegation
+## The workers: OpenRouter models on a route
 
-The assumed stack is **Claude Code as the master** — planning, decomposing,
-reviewing — with **low-cost OpenRouter models as the workers**. A bead names
-a route, Claude writes the brief and dispatches headless:
+A bead names a route, Claude writes the brief and dispatches the slice
+headless:
 
 ```bash
 delegate run --route deepseek --bead claude-orca-3sk.22
@@ -252,6 +261,11 @@ yours to edit**: any model id from
 credentials, and the receipt lands in the bead's notes. Interactive Codex,
 Gemini and OpenCode sessions you open in Orca are sandboxed by the same
 shell hook and share the beads database.
+
+**Which slices go there, and how quality survives it** —
+[knowledge-base/DELEGATION_ROUTES.md](knowledge-base/DELEGATION_ROUTES.md#cheap-workers-without-losing-quality)
+has the one explanation, with a worked `bd create` → `delegate run` →
+verify sequence.
 
 **Your OpenRouter key.** Put it in
 `.claude-dev/state/openrouter.key` — one line, nothing else:

@@ -147,7 +147,12 @@ One command (`gh api … bootstrap.sh | bash`), run from inside a project
 folder, installs everything **into that folder**: `<project>/.claude-dev/`
 carries the template clone, a pinned `@anthropic-ai/sandbox-runtime`
 (`srt`), a pinned Claude Code, `app/Orca.app` from the pinned release DMG,
-and `bin/`. There is no central install.
+and `bin/`. There is no central install. `claude-dev register` seeds a new
+folder for the stack this template assumes — Claude Code as the master,
+low-cost OpenRouter models as delegate-route workers (`openrouter.ai` in
+`network.extraAllowedDomains`), and Orca's native coordination on
+(`orca.cli: true`) — and `claude-dev setup` is the guided walk-through of
+the human half.
 
 Two Seatbelt layers confine it. **Layer 1**: `Orca.app` in the project root
 is a generated launcher bundle that runs `.claude-dev/bin/orca-launch`,

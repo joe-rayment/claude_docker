@@ -192,13 +192,15 @@ while IFS= read -r p; do
     extra_write_paths+=("$resolved")
 done < <(jq -r '.[]' <<<"$extra_write_json")
 
-# S9 (claude-orca-3sk.20): the opt-in Orca CLI mode. `orca` talks to the
-# running app over a Unix socket under the REAL home's Orca runtime dir --
-# the same path the wrapper exports as ORCA_USER_DATA_PATH -- which the
-# denyRead of $real_home otherwise closes. Reachability is a remote
-# control for an UNSANDBOXED app (see config/orca-cli-addendum.md), so it
-# is off unless sandbox.json says otherwise, and a non-boolean value is
-# rejected rather than coerced: fail closed, like every other extra here.
+# S9 (claude-orca-3sk.20): the Orca CLI mode, which `claude-dev register`
+# now seeds `true` for a new folder (V6, claude-orca-riu.3). `orca` talks
+# to the running app over a Unix socket under the REAL home's Orca runtime
+# dir -- the same path the wrapper exports as ORCA_USER_DATA_PATH -- which
+# the denyRead of $real_home otherwise closes. Reachability is a remote
+# control for an UNSANDBOXED app (see config/orca-cli-addendum.md), so the
+# default HERE stays off: this script reads sandbox.json and never invents
+# a mode the file did not ask for, and a non-boolean value is rejected
+# rather than coerced -- fail closed, like every other extra here.
 if ! jq -e '(.orca.cli // false) | type == "boolean"' "$sandbox_json" >/dev/null 2>&1; then
     die "orca.cli must be a boolean"
 fi

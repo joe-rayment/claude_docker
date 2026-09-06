@@ -113,6 +113,64 @@ registered before this change needs the one-line add:
 {"network": {"extraAllowedDomains": ["openrouter.ai"]}}
 ```
 
+## Cheap workers without losing quality
+
+The saving comes from moving *typing* to a cheap model, never from moving
+*judgement*. Split every job the same way:
+
+| Stays on the strong model (Claude Code) | Goes to a delegate route |
+|---|---|
+| Deciding the lane, decomposing, sequencing slices | Implementing one already-specified slice |
+| Writing the bead and its `CHECK`/`PASS-IF`/`FROZEN`/`CLASS` contract | Mechanical refactors, boilerplate, a well-fenced bug fix |
+| Reviewing the diff and running the `verifier` | Bulk edits with an existing test to satisfy |
+| Anything hard to reverse, security-shaped, or ambiguous | Anything whose success is a command's exit code |
+
+Two rules keep the quality where it was:
+
+1. **The contract is written before dispatch, by the strong model.** A
+   worker that can see `PASS-IF` cannot negotiate it, and the `FROZEN` test
+   is pinned at `RED-AT` before any worker touches the repo.
+2. **The check is never delegated.** `verifier` runs on a native Claude
+   tier ([TIERED_ORCHESTRATION.md](TIERED_ORCHESTRATION.md)) against the
+   contract, and anything short of `PASS` goes back to an executor. A
+   worker's summary is a claim, not evidence.
+
+Because `delegate.sh` never merges, a bad worker run costs one throwaway
+branch and the receipt's dollars — not a regression.
+
+### A worked run
+
+```bash
+# 1. The strong model files the slice with its contract attached.
+bd create --title "Extract the retry helper" \
+          --description "Move the retry loop out of fetch.sh into lib/retry.sh; callers unchanged." \
+          --acceptance 'CHECK:   ./run-tests.sh
+PASS-IF: exit 0; zero "not ok" lines; tests/retry.bats present and passing
+FROZEN:  tests/retry.bats
+CLASS:   standard'
+
+# 2. Confirm the route is live (informational, always exits 0).
+delegate check
+
+# 3. Dispatch the slice headless to a cheap OpenRouter worker.
+delegate run --route deepseek --bead claude-orca-abc.1
+
+# 4. Watch it, then read the receipt the job appended to the bead.
+delegate ps
+bd show claude-orca-abc.1
+
+# 5. Verification stays here: spawn the native verifier on the bead, which
+#    runs the CHECK verbatim against the RED-AT/GREEN-AT pair.
+#    On PASS, merging is an ordinary orchestrator step:
+git merge --no-ff delegate/deepseek-1757000000-a1b2c3
+
+# 6. What it cost, native vs delegated.
+delegate report
+```
+
+Publish main only when the prompt asks for it — the merge above is local,
+like every other commit in this template.
+
 ## Receipt schema (`<job_dir>/receipt.json`)
 
 Written after every job, success or failure:

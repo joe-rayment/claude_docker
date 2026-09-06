@@ -274,7 +274,8 @@ if [ "$MODE" = "print-settings" ]; then
     exit 0
 fi
 
-# S9 (claude-orca-3sk.20): the opt-in Orca CLI mode, read AFTER
+# S9 (claude-orca-3sk.20): the Orca CLI mode (seeded `true` for folders
+# registered since V6, claude-orca-riu.3), read AFTER
 # gen-settings.sh has accepted this sandbox.json -- that script is the
 # validator (a non-boolean orca.cli already exited 2 above), so anything
 # other than a literal true here is off.
