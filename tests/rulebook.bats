@@ -28,6 +28,7 @@ REPO_ROOT="$(cd "$REPO_ROOT/.." && pwd)"
 
 CLAUDE_MD="$REPO_ROOT/CLAUDE.md"
 USER_MEMORY="$REPO_ROOT/config/claude-user-memory.md"
+PLAYBOOK="$REPO_ROOT/knowledge-base/TIERED_ORCHESTRATION.md"
 
 # The seven phrases the pre-rewrite text carried (Opus Answer Protocol,
 # the old file-count lane trigger, the old verifier-per-bead phrasing, the
@@ -91,6 +92,68 @@ setup() {
         run grep -F -- "$heading" "$USER_MEMORY"
         [ "$status" -eq 0 ]
     done
+}
+
+# claude-orca-qa2.14 (O4): Orca workers replace the in-process Agent tool as
+# the DEFAULT executor seat. Both the shipped rulebook and the playbook must
+# say so, name the fallback, and carry the parallel-by-default invariant that
+# replaces "slices run sequentially, fan-out is for recon".
+@test "the playbook and rulebook route executor slices through orca-dispatch when Orca is reachable and the Agent tool otherwise" {
+    [ -f "$PLAYBOOK" ]
+
+    # --- the rulebook's own § Delegation (it is the last section) ---
+    local deleg
+    deleg="$(sed -n '/^## Delegation/,$p' "$USER_MEMORY")"
+    [ -n "$deleg" ]
+
+    local phrase
+    for phrase in 'orca-dispatch' 'Agent tool' 'reachable' \
+                  'checkers and recon stay in-process' \
+                  'independent slices run in parallel' \
+                  'share files run sequentially' \
+                  'recon fans out freely' \
+                  '<role>-<agent>-<model-slug>'; do
+        case "$deleg" in
+            *"$phrase"*) ;;
+            *) printf 'rulebook § Delegation missing: %s\n' "$phrase"; return 1 ;;
+        esac
+    done
+
+    # the retired invariant must be gone from the whole rulebook
+    run grep -F -- 'slices run sequentially, fan-out is for recon' "$USER_MEMORY"
+    [ "$status" -ne 0 ]
+
+    # --- the playbook: backends, the dispatch loop, parallel, fallback ---
+    local heading
+    for heading in '^#+ .*Backends' '^#+ .*[Tt]he dispatch loop' \
+                   '^#+ .*Parallel by default' '^#+ .*Fallback'; do
+        run grep -E -- "$heading" "$PLAYBOOK"
+        [ "$status" -eq 0 ] || { printf 'playbook missing heading: %s\n' "$heading"; return 1; }
+    done
+
+    # the tools it documents, and the loop's own vocabulary
+    for phrase in 'orca-dispatch' 'orca-wait' 'orca-reply' 'orca-workers' \
+                  'orca-run' 'worker_done' 'worker-release' 'merge_ready' \
+                  'nestedWorkerMaxDepth' 'WORKER RULES'; do
+        run grep -F -- "$phrase" "$PLAYBOOK"
+        [ "$status" -eq 0 ] || { printf 'playbook missing: %s\n' "$phrase"; return 1; }
+    done
+
+    # the fallback rule, including the explicit-model clause
+    local fb
+    fb="$(sed -n '/^#\+ .*Fallback/,/^#\+ /p' "$PLAYBOOK")"
+    for phrase in 'exits 3' 'an explicit `model`'; do
+        case "$fb" in
+            *"$phrase"*) ;;
+            *) printf 'playbook Fallback section missing: %s\n' "$phrase"; return 1 ;;
+        esac
+    done
+
+    # a mixed Run: one claude worker and one openrouter worker
+    run grep -F -- 'claude:sonnet' "$PLAYBOOK"
+    [ "$status" -eq 0 ]
+    run grep -F -- 'openrouter:qwen/qwen3-coder' "$PLAYBOOK"
+    [ "$status" -eq 0 ]
 }
 
 @test "rulebook: no '## ' heading text is shared between CLAUDE.md and config/claude-user-memory.md" {

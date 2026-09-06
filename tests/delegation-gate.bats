@@ -551,6 +551,30 @@ set_lane() {
     [ ! -f "$(state_file s37)" ]
 }
 
+# ── the nudge points at the Orca dispatch loop (claude-orca-qa2.14) ─────────
+
+@test "delegation-gate names orca-dispatch in its nudge" {
+    # the repeating warn note
+    export DELEGATION_GATE_MODE=warn-only
+    export DELEGATION_GATE_WARN_AT=2
+    run sh -c 'jq -cn "{tool_name:\"Read\",session_id:\"s40\",agent_id:null,tool_input:{}}" | python3 '"$GATE"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+    run sh -c 'jq -cn "{tool_name:\"Read\",session_id:\"s40\",agent_id:null,tool_input:{}}" | python3 '"$GATE"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.hookSpecificOutput.permissionDecision == "allow"'
+    echo "$output" | jq -e '.hookSpecificOutput.additionalContext | test("orca-dispatch")'
+
+    # and the guard-mode edit denial, which is the nudge that always lands
+    unset DELEGATION_GATE_MODE
+    unset DELEGATION_GATE_WARN_AT
+    run sh -c 'jq -cn "{tool_name:\"Write\",session_id:\"s41\",agent_id:null,tool_input:{file_path:\"/srv/app/x.py\"}}" | python3 '"$GATE"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.hookSpecificOutput.permissionDecision == "deny"'
+    echo "$output" | jq -e '.hookSpecificOutput.permissionDecisionReason | test("orca-dispatch")'
+    echo "$output" | jq -e '.hookSpecificOutput.permissionDecisionReason | test("executor")'
+}
+
 # ── robustness ───────────────────────────────────────────────────────────────
 
 @test "junk stdin fails open: exit 0, no output" {
