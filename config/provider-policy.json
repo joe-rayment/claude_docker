@@ -1,0 +1,53 @@
+{
+  "_doc": {
+    "purpose": "Default-deny allowlist of OpenRouter provider slugs. The user's rule (2026-09-06) is that their data never routes to China; the model alone decides nothing on OpenRouter, the serving PROVIDER does, so the provider set is pinned here and enforced by scripts/container/openrouter-guard.py -- not by any client setting a client could change.",
+    "enforced_by": "scripts/container/openrouter-guard.py rewrites every completion request body's `provider` object before forwarding it to openrouter.ai. Clients never hold the real key; they hold a guard token and the guard's loopback base URL.",
+    "openrouter_fields": {
+      "provider.only": "string[] -- the ONLY providers allowed for the request. The guard sets this to [.allow[].slug] on every completion request, which is what makes the allowlist default-deny.",
+      "provider.allow_fallbacks": "boolean, OpenRouter default true -- whether a backup provider may serve the request. Forced to false (.force.allow_fallbacks) so a failed allowlisted provider is an error, never a silent hop somewhere else.",
+      "provider.data_collection": "\"allow\" | \"deny\", OpenRouter default \"allow\" -- forced to \"deny\" (.force.data_collection) so providers that may store prompts are skipped.",
+      "provider.order": "string[] -- providers to try in order. A client-supplied order is KEPT only when every entry is in .allow; otherwise it is dropped and logged.",
+      "provider.ignore": "string[] -- providers to skip. Not used: with provider.only set to the allowlist, everything else is already excluded. .deny below is documentation of WHY a host is out, and the source for the guard's log and the docs.",
+      "source": "https://openrouter.ai/docs/features/provider-routing (field table), verified 2026-09-06"
+    },
+    "slug_source": "Slugs are the `tag` prefix before '/' in https://openrouter.ai/api/v1/models/<author>/<slug>/endpoints, cross-checked against https://openrouter.ai/api/v1/providers (slug + headquarters + datacenters), verified 2026-09-06. `lambda` and `hyperbolic` were on the user's candidate list but no longer exist in the OpenRouter provider registry, so they are not listed; a slug that is not in the registry can never be selected anyway.",
+    "country": "The country a request's prompt is processed in, as far as it can be established from the provider's headquarters and declared datacenters. A provider with no establishable country is NOT allowed -- absence of evidence is denial here."
+  },
+  "version": 1,
+  "force": {
+    "allow_fallbacks": false,
+    "data_collection": "deny"
+  },
+  "allow": [
+    { "slug": "amazon-bedrock", "name": "Amazon Bedrock", "country": "US" },
+    { "slug": "azure", "name": "Azure", "country": "US" },
+    { "slug": "baseten", "name": "BaseTen", "country": "US" },
+    { "slug": "cerebras", "name": "Cerebras", "country": "US" },
+    { "slug": "coreweave", "name": "CoreWeave", "country": "US" },
+    { "slug": "crusoe", "name": "Crusoe", "country": "US" },
+    { "slug": "deepinfra", "name": "DeepInfra", "country": "US" },
+    { "slug": "digitalocean", "name": "DigitalOcean", "country": "US", "note": "US company (New York); the OpenRouter registry leaves its headquarters field blank." },
+    { "slug": "fireworks", "name": "Fireworks", "country": "US" },
+    { "slug": "google-vertex", "name": "Google Vertex", "country": "US" },
+    { "slug": "groq", "name": "Groq", "country": "US" },
+    { "slug": "mistral", "name": "Mistral", "country": "FR" },
+    { "slug": "nebius", "name": "Nebius", "country": "NL" },
+    { "slug": "parasail", "name": "Parasail", "country": "US" },
+    { "slug": "together", "name": "Together", "country": "US" },
+    { "slug": "venice", "name": "Venice", "country": "US" }
+  ],
+  "deny": [
+    { "slug": "z-ai", "name": "Z.AI", "country": "CN", "reason": "Zhipu AI, Beijing; the OpenRouter registry lists a Singapore entity, which does not change who operates it. Serves GLM first-party." },
+    { "slug": "baidu", "name": "Baidu", "country": "CN", "reason": "China-based host." },
+    { "slug": "alibaba", "name": "Alibaba", "country": "CN", "reason": "China-based host; the registry lists SG headquarters with SG and CN datacenters." },
+    { "slug": "siliconflow", "name": "SiliconFlow", "country": "CN", "reason": "China-based host (Beijing); the registry lists a Singapore entity." },
+    { "slug": "streamlake", "name": "StreamLake", "country": "CN", "reason": "China-based host (Kuaishou)." },
+    { "slug": "novita", "name": "Novita", "country": "unverified", "reason": "Registry self-reports a US headquarters but declares no datacenter; GPU capacity is resold across regions and the serving location cannot be verified. Denied by default (user list, 2026-09-06)." },
+    { "slug": "atlas-cloud", "name": "AtlasCloud", "country": "unverified", "reason": "Registry self-reports a US headquarters but declares no datacenter; serving location cannot be verified. Denied by default (user list, 2026-09-06)." },
+    { "slug": "gmicloud", "name": "GMICloud", "country": "unverified", "reason": "Registry self-reports US headquarters and a US datacenter, but the company also operates Asia-Pacific capacity and the per-request location cannot be verified. Denied by default (user list, 2026-09-06)." },
+    { "slug": "phala", "name": "Phala", "country": "unverified", "reason": "Decentralised (TEE) compute network: the physical host of any one request is not knowable in advance. Denied by default." },
+    { "slug": "chutes", "name": "Chutes", "country": "unverified", "reason": "Decentralised (Bittensor) compute network: the physical host of any one request is not knowable in advance. Denied by default." },
+    { "slug": "inceptron", "name": "Inceptron", "country": "unverified", "reason": "Registry lists a Swedish company with a Finnish datacenter, but it is not on the user's verified list and GLM capacity there is new. Denied by default (user list, 2026-09-06); an allow candidate if verified later." },
+    { "slug": "ambient", "name": "Ambient", "country": "unverified", "reason": "Registry declares neither headquarters nor datacenter. Denied by default." }
+  ]
+}

@@ -113,20 +113,35 @@ valid_model_ref() {
 }
 
 # write_state <top> <worker> <recon> <pinned:true|false> <overdrive:true|false>
+#             [<auto-derived:true|false>]
 # Writes the file whole -- v1 keys plus the v2 .roles block at its defaults
 # (worker on the orca backend when the runtime answers, else subagent), so a
 # plain `/tier <top>` resets every role, exactly as it resets pin/overdrive.
+#
+# claude-orca-qa2.20: on the AUTO-DERIVED path only ($6 = true, i.e. a plain
+# `/tier <top>`), a folder that has an OpenRouter key gets the GLM worker
+# instead of the claude rung -- the key decides the VENDOR (opencode running
+# openrouter/z-ai/glm-5.3), the Orca probe decides only the BACKEND. An
+# explicit 2/3-arg pin and `overdrive` are explicit requests for a claude
+# model and are left alone. TIER_EFFECTIVE_WORKER carries the model actually
+# bound back to the caller, for the message it prints.
+TIER_EFFECTIVE_WORKER=""
 write_state() {
     [ -n "$STATE_FILE" ] || { echo "tier-set: cannot determine the project's tier state file (not inside a bootstrapped project; set CLAUDE_ORCA_ROOT or TIER_STATE_FILE) -- nothing bound" >&2; return 1; }
     mkdir -p "$(dirname "$STATE_FILE")" 2>/dev/null
-    local tmp wb
+    local tmp wb wa wm
     wb=subagent
     tier_orca_reachable && wb=orca
+    wa=claude; wm="$2"
+    if [ "${6:-false}" = "true" ] && tier_openrouter_key_present; then
+        wa=opencode; wm="$TIER_OPENROUTER_DEFAULT_MODEL"
+    fi
+    TIER_EFFECTIVE_WORKER="$wm"
     tmp=$(mktemp "$STATE_FILE.XXXXXX") || return 1
-    if jq -n --arg t "$1" --arg w "$2" --arg c "$3" --argjson p "$4" --argjson o "$5" \
-          --arg wb "$wb" --arg u "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    if jq -n --arg t "$1" --arg w "$wm" --arg c "$3" --argjson p "$4" --argjson o "$5" \
+          --arg wb "$wb" --arg wa "$wa" --arg u "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
           '{top: $t, worker: $w, recon: $c,
-            roles: {worker:  {backend: $wb,       agent: "claude", model: $w},
+            roles: {worker:  {backend: $wb,       agent: $wa,      model: $w},
                     recon:   {backend: "subagent", agent: "claude", model: $c},
                     checker: {backend: "subagent", agent: "claude", model: "inherit"}},
             pinned: $p, overdrive: $o, updated: $u}' \
@@ -316,9 +331,14 @@ if [ $# -eq 1 ]; then
         W=$R; C=$R
         echo "tier: top '$R' is off-ladder — worker/recon set to the same model (not derivable)" >&2
     fi
-    write_state "$R" "$W" "$C" false false || exit 1
+    write_state "$R" "$W" "$C" false false true || exit 1
     merge_model "$R" || exit 1
-    echo "tier bound  top=$R  →  worker=$W  recon=$C  (worker/recon derived from the top)"
+    if [ "$TIER_EFFECTIVE_WORKER" != "$W" ]; then
+        echo "tier bound  top=$R  →  worker=$TIER_EFFECTIVE_WORKER (opencode)  recon=$C  (this folder has an OpenRouter key, so the worker default is the GLM rung)"
+        echo "→ every OpenRouter request goes through the in-VM guard, which forces config/provider-policy.json's US/EU provider allowlist — no China-hosted provider can serve it. /tier worker claude:sonnet puts the claude rung back."
+    else
+        echo "tier bound  top=$R  →  worker=$W  recon=$C  (worker/recon derived from the top)"
+    fi
     echo "→ run  /model $R  to move THIS session's model now — new sessions pick everything up automatically."
     exit 0
 fi

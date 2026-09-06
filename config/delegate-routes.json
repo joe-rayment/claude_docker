@@ -2,8 +2,8 @@
   "routes": {
     "glm": {
       "runner": "opencode",
-      "model": "openrouter/z-ai/glm-5.2",
-      "pin": { "order": ["novita", "parasail"], "allow_fallbacks": false },
+      "model": "openrouter/z-ai/glm-5.3",
+      "pin": { "order": ["deepinfra", "parasail"], "allow_fallbacks": false },
       "grade": "executor"
     },
     "deepseek": {

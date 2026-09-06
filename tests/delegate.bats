@@ -424,6 +424,14 @@ ROUTES_EOF
     [ "$(jq -r '.provider.openrouter.options.apiKey' "$cfg")" = "{env:OPENROUTER_API_KEY}" ]
     [ "$(jq -r "$m.order | join(\",\")" "$cfg")" = "novita,parasail" ]
     [ "$(jq -r "$m.allow_fallbacks" "$cfg")" = "false" ]
+
+    # claude-orca-qa2.20: the job never talks to openrouter.ai itself -- it
+    # talks to the in-VM guard, which holds the real key and forces the
+    # provider allowlist. The key var the runner carries is the guard token.
+    [ "$(jq -r '.provider.openrouter.options.baseURL' "$cfg")" = "http://127.0.0.1:4141/api/v1" ]
+    envfile="$(job_dirs "$repo")/home/opencode.env"
+    grep -qx 'OPENAI_BASE_URL=http://127.0.0.1:4141/api/v1' "$envfile"
+    grep -qx 'OPENROUTER_BASE_URL=http://127.0.0.1:4141/api/v1' "$envfile"
 }
 
 @test "run --route local --prompt: generated config uses the openai-compatible ollama provider at the loopback endpoint" {
@@ -685,8 +693,15 @@ STUB
 
     [ "$(jq -r '.routes | keys | join(",")' "$SHIPPED_ROUTES")" = "codex,deepseek,gemini,glm,local,qwen-coder" ]
     [ "$(jq -r '.routes.glm.runner' "$SHIPPED_ROUTES")" = "opencode" ]
-    [ "$(jq -r '.routes.glm.model' "$SHIPPED_ROUTES")" = "openrouter/z-ai/glm-5.2" ]
-    [ "$(jq -r '.routes.glm.pin.order | join(",")' "$SHIPPED_ROUTES")" = "novita,parasail" ]
+    [ "$(jq -r '.routes.glm.model' "$SHIPPED_ROUTES")" = "openrouter/z-ai/glm-5.3" ]
+    [ "$(jq -r '.routes.glm.pin.order | join(",")' "$SHIPPED_ROUTES")" = "deepinfra,parasail" ]
+    # claude-orca-qa2.20: every pinned provider is on the shipped allowlist,
+    # so the shipped routes cannot ask for a host the guard would strip.
+    for slug in $(jq -r '.routes[].pin.order // [] | .[]' "$SHIPPED_ROUTES"); do
+        run jq -e --arg s "$slug" '[.allow[] | select(.slug == $s)] | length == 1' \
+            "$REPO_ROOT/config/provider-policy.json"
+        [ "$status" -eq 0 ]
+    done
     [ "$(jq -r '.routes.glm.pin.allow_fallbacks' "$SHIPPED_ROUTES")" = "false" ]
     [ "$(jq -r '.routes.glm.grade' "$SHIPPED_ROUTES")" = "executor" ]
     [ "$(jq -r '.routes.local.runner' "$SHIPPED_ROUTES")" = "opencode" ]

@@ -166,6 +166,14 @@ provider_host() {
 # leaves the loopback interface.
 OLLAMA_BASE_URL="http://127.0.0.1:11434"
 
+# claude-orca-qa2.20: no delegate job talks to openrouter.ai directly. It
+# talks to the in-VM guard (scripts/container/openrouter-guard.py), which is
+# the only holder of the real key and forces config/provider-policy.json's
+# US/EU provider allowlist onto every request -- the "data never routes to
+# China" rule, enforced where a runner config cannot reach it. The key var
+# handed to the runner therefore carries the GUARD TOKEN, not the key.
+OPENROUTER_BASE_URL="${OPENROUTER_GUARD_URL:-http://127.0.0.1:4141/api/v1}"
+
 # route_status <route> -- prints "<live|degraded>\t<reason>". Shared by
 # `check` (all routes) and `run`'s preflight (one route, hard-fails on
 # anything but live).
@@ -276,13 +284,14 @@ generate_runner_config() {
             allow_fb="$(route_field "$route" ".pin.allow_fallbacks // false")"
             jq -n \
                 --arg model "$model_id" \
+                --arg base "$OPENROUTER_BASE_URL" \
                 --argjson order "$order_json" \
                 --argjson allow_fallbacks "$allow_fb" \
                 '{
                     "$schema": "https://opencode.ai/config.json",
                     provider: {
                         openrouter: {
-                            options: { apiKey: "{env:OPENROUTER_API_KEY}" },
+                            options: { apiKey: "{env:OPENROUTER_API_KEY}", baseURL: $base },
                             models: {
                                 ($model): {
                                     options: {
@@ -439,6 +448,12 @@ cmd_run() {
     env_args=(PATH="$PATH" HOME="$job_dir/home" XDG_CONFIG_HOME="$job_dir/config" TERM=dumb)
     if [ -n "$key_var" ] && [ -n "$key_value" ]; then
         env_args+=("$key_var=$key_value")
+    fi
+    # An OpenRouter route is pointed at the guard, never at openrouter.ai:
+    # opencode reads the baseURL from the config generated above, codex reads
+    # OPENAI_BASE_URL from its environment.
+    if [ "$provider" = "openrouter" ]; then
+        env_args+=("OPENROUTER_BASE_URL=$OPENROUTER_BASE_URL" "OPENAI_BASE_URL=$OPENROUTER_BASE_URL")
     fi
     local entry name
     : > "$job_dir/env"

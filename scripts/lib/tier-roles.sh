@@ -84,6 +84,45 @@ tier_role_label() {
     fi
 }
 
+# The default worker vendor when this folder has an OpenRouter key
+# (claude-orca-qa2.20; plan .claude/plans/orca-orchestration.md "Default
+# stack and data residency"): Fable orchestrates, the most capable GLM
+# executes. The provider that actually serves it is not decided here -- the
+# in-VM guard forces config/provider-policy.json's allowlist onto every
+# request, which is what keeps the traffic out of China.
+TIER_OPENROUTER_DEFAULT_MODEL="openrouter/z-ai/glm-5.3"
+
+# tier_openrouter_key_file -- where this folder's OpenRouter key lives:
+# .claude-dev/home/.openrouter.key, the file `claude-dev key openrouter`
+# writes (scripts/launcher.sh). TIER_OPENROUTER_KEY_FILE overrides it
+# (tests). Falls back to $CLAUDE_ORCA_HOME/$HOME when the project cannot be
+# resolved -- inside the VM $HOME *is* .claude-dev/home.
+tier_openrouter_key_file() {
+    local p=""
+    if [ -n "${TIER_OPENROUTER_KEY_FILE:-}" ]; then
+        printf '%s\n' "$TIER_OPENROUTER_KEY_FILE"
+        return 0
+    fi
+    if command -v project_dir >/dev/null 2>&1; then
+        p="$(project_dir 2>/dev/null)" || p=""
+    fi
+    if [ -n "$p" ]; then
+        printf '%s\n' "$p/.claude-dev/home/.openrouter.key"
+    else
+        printf '%s\n' "${CLAUDE_ORCA_HOME:-$HOME}/.openrouter.key"
+    fi
+}
+
+# tier_openrouter_key_present -- does this folder have an OpenRouter key at
+# all? The env var (what agent terminals carry -- the GUARD TOKEN, in the
+# wired-up VM) or a non-empty key file. Never prints, never leaks the value.
+tier_openrouter_key_present() {
+    [ -n "${OPENROUTER_API_KEY:-}" ] && return 0
+    local f
+    f="$(tier_openrouter_key_file)"
+    [ -n "$f" ] && [ -s "$f" ]
+}
+
 # tier_orca_reachable -- is an Orca runtime up? `orca-ide status --json`
 # (falling back to `orca`), 2s cap, parsed as .runtime.reachable. Nothing is
 # cached: the answer is only ever used at bind time. No CLI on PATH, no
