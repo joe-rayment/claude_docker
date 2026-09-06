@@ -1,0 +1,11 @@
+# The image carries this template at /opt/claude-orca (COPY . there), so
+# keep the build context to what actually runs inside the VM.
+.git
+.github
+attachments
+graphify-out
+tests/.cache
+**/node_modules
+**/.DS_Store
+*.dmg
+*.AppImage

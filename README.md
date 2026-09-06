@@ -319,6 +319,29 @@ own `sandbox.json` untouched; add the one line yourself:
 
 Deeper documentation lives in [knowledge-base/](knowledge-base/README.md).
 
+## The Linux container image (v3, in progress)
+
+A second isolation model is being built alongside the one above: instead of
+Seatbelt on the Mac, the project folder gets its own Linux VM and Orca runs
+*inside* it, headless, serving its web UI back to the Mac's browser. The VM
+boundary is the sandbox — the only Mac paths inside are the project folder
+and its own `.claude-dev/home`.
+
+- `Dockerfile` — Ubuntu 24.04 with pinned Orca Linux, Claude Code, beads,
+  bats and Node 22. This template lands at `/opt/claude-orca`.
+- `scripts/container/entrypoint.sh` — runs as PID 1 under tini: drops to
+  the `agent` user, config-syncs, starts `orca-ide --serve`, and writes the
+  browser URL to `<project>/.claude-dev/run/orca-web-url.txt` (mode 600 —
+  it carries a pairing code) plus the port to `run/port`.
+- `scripts/container/smoke.sh` — run inside the freshly built image by CI;
+  starts the entrypoint against a throwaway project and fails the build
+  unless Orca serves and the URL answers.
+- `.github/workflows/image.yml` — builds, smoke-tests and publishes
+  `ghcr.io/joe-rayment/claude_orca`.
+
+The Mac-side launcher for it is not written yet; the plan is
+`.claude/plans/container-v3.md`.
+
 ## Tests
 
 ```bash

@@ -1,0 +1,73 @@
+name: image
+
+# Builds the claude_orca v3 VM image, proves Orca actually comes up inside
+# it, and only then publishes it. This box cannot run containers, so this
+# workflow is where "the image builds and Orca serves in it" is checked
+# for real (.claude/plans/container-v3.md S7).
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: image-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/joe-rayment/claude_orca
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Short SHA
+        id: sha
+        run: echo "short=$(echo ${{ github.sha }} | cut -c1-7)" >> "$GITHUB_OUTPUT"
+
+      # Native amd64 first, loaded into the local daemon so the smoke stage
+      # can actually run it.
+      - name: Build linux/amd64
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          tags: ${{ env.IMAGE }}:smoke
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # The gate: Orca must serve, and the web URL must answer, inside the
+      # image that was just built. smoke.sh makes its own temp git project.
+      - name: Smoke test (Orca serves headless in the image)
+        run: |
+          docker run --rm -e CLAUDE_ORCA_SMOKE=1 ${{ env.IMAGE }}:smoke \
+            /opt/claude-orca/scripts/container/smoke.sh
+
+      - name: Build and push multi-arch
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:${{ steps.sha.outputs.short }}
+            ${{ env.IMAGE }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
