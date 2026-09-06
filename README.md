@@ -51,32 +51,38 @@ root, adds one marker-delimited block to `~/.zshrc`, `~/.zprofile` and
 registers the folder. Re-running is safe. To sandbox another folder, run the
 same one-liner from inside it.
 
-Registration ends by running the sandbox self-test and **refuses to hand off
-to Orca unless it passes** — see [Self-test](#self-test).
+It ends by initialising this folder's `bd` tracker, running the sandbox
+self-test — which **refuses to hand off to Orca** if a *confinement* probe
+fails, see [Self-test](#self-test) — and then opening
+**`Orca.app` in the project folder** for you. It asks nothing along the way.
+A probe that only reports something unavailable (a domain unreachable, the
+Orca socket down) prints a warning and hands off anyway.
 
-**3. Finish setup with the guided walk-through.** This is the setup path;
-everything below it is reference:
+**3. Sign in to Claude, inside Orca.** Orca opens with this folder already
+added; pick **Claude Code** and work as usual. Each terminal prints
+`[claude-orca] sandboxed: writes limited to <project>` as it starts, and the
+first `claude` run prints a login URL — open it on this Mac and paste the
+code back. That is the whole first run.
+
+The app that opens is the folder's own `Orca.app`, never a copy in
+`/Applications` (the unsandboxed one this design exists to avoid). Its very
+first launch may need right-click → Open, because the bundle is generated on
+your machine and unsigned. `./claude-dev open` opens it again later, and
+`CLAUDE_ORCA_OPEN=0` tells registration not to open it at all.
+
+**4. Optional extras — the guided walk-through.** Everything below this is
+reference:
 
 ```bash
 ./claude-dev setup
 ```
 
-It walks the six things only you can do: signing Claude Code in, the git
-identity commits from this folder carry, `gh auth login`, your OpenRouter
-key (that is what pays the workers), `bd init`, and the one Orca setting
-worth changing. Every step is skippable — Enter or `n` skips one, `a` skips
-the rest — and it ends with a menu that opens Orca, or runs `claude-dev
---doctor`. Registration offers it when it finishes in a terminal;
-`CLAUDE_ORCA_SKIP_SETUP=1` turns that offer off.
-
-**4. Open Orca.** Double-click **`Orca.app` in the project folder** — not a
-copy in `/Applications`, which is the unsandboxed one this design exists to
-avoid. The first launch needs right-click → Open, because the bundle is
-generated on your machine and unsigned. From a terminal, `./claude-dev open`
-does the same thing, and step 3's menu ends there too. Orca opens with this
-folder already added; pick **Claude Code** and work as usual. Each terminal
-prints `[claude-orca] sandboxed: writes limited to <project>` as it starts,
-and the first `claude` run prints a login URL to open on this Mac.
+Nothing here is required to start working. It walks the things only you can
+do: your OpenRouter key (that is what pays the cheap workers), `gh auth
+login` inside the sandbox, the git identity commits from this folder carry,
+Claude sign-in, and the one Orca worktree setting worth changing. Every step
+is skippable — Enter or `n` skips one, `a` skips the rest — and it ends with
+a menu that opens Orca, or runs `claude-dev --doctor`.
 
 Upgrading from a pre-v2 install? `claude-dev --doctor` flags the old central
 `~/.claude-orca`; `claude-dev --uninstall` and `claude-dev --remove-v1` both

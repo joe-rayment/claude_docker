@@ -357,29 +357,105 @@ cmd_setup() {
     setup_menu_main "$PROJECT_SELF"
 }
 
-# Registration itself stays non-interactive: it prints the pointer and
-# nothing else unless a real terminal is on the other end of stdout AND the
-# user has not asked to be left alone (CLAUDE_ORCA_SKIP_SETUP). The
-# bootstrap one-liner is piped into bash, so stdin is never the test --
-# stdout being a terminal, and /dev/tty being openable, is.
-register_setup_offer() {
-    local dir="$1" reply=""
-    if [ -n "${CLAUDE_ORCA_SKIP_SETUP:-}" ] || [ ! -t 1 ] || \
-       ! (exec 3</dev/tty) 2>/dev/null; then
-        echo "Run 'claude-dev setup' for a guided walk-through"
-        return 0
-    fi
+# V7 (claude-orca-2qo): registration asks nothing. The bootstrap
+# one-liner is the whole install, so the last thing a user sees is what
+# they can do next -- never a question standing between them and a
+# working folder. The walk-through is an EXTRA now, and this line says
+# what is in it so nobody has to run it to find out.
+register_optional_extras() {
+    echo "Optional extras: claude-dev setup (OpenRouter key for cheap workers, gh sign-in inside the sandbox, Orca worktree setting)"
+}
 
-    printf 'Walk through setup now? [Y/n] '
-    IFS= read -r reply </dev/tty || reply="n"
-    case "$reply" in
-        n|N|no|No|NO)
-            echo "Run 'claude-dev setup' for a guided walk-through"
-            ;;
+# V7 (claude-orca-2qo): the folder's task tracker, seeded by registration
+# rather than left to the walk-through -- an agent that starts working
+# here immediately needs `bd` to work immediately. Best-effort by
+# construction: no bd on PATH, an existing .beads, or a failing init are
+# all non-fatal, because none of them makes the sandbox any less safe.
+# CLAUDE_ORCA_SKIP_BEADS=1 opts out (the test suite sets it globally --
+# hundreds of make_project registrations must never touch a real DB).
+register_beads_init() {
+    local dir="$1" name="$2"
+    [ "${CLAUDE_ORCA_SKIP_BEADS:-0}" = "1" ] && return 0
+    command -v bd >/dev/null 2>&1 || return 0
+    [ -e "$dir/.beads" ] && return 0
+
+    if ( cd "$dir" && bd init --prefix "$name" ) >/dev/null 2>&1; then
+        echo "Beads: initialized (prefix: $name)"
+    else
+        echo "Warning: bd init failed -- run 'bd init --prefix $name' in $dir"
+    fi
+    return 0
+}
+
+# V7 (claude-orca-2qo): "run one command, start working" ends with Orca
+# actually open. Only where that can mean anything: a Mac, with a human
+# watching the terminal that ran the one-liner. CLAUDE_ORCA_OPEN forces
+# either answer -- 1 for CI and for tests, 0 for a scripted install that
+# wants the folder prepared and nothing launched.
+register_maybe_open() {
+    local dir="$1"
+    case "${CLAUDE_ORCA_OPEN:-}" in
+        0) return 0 ;;
+        1) ;;
         *)
-            cmd_setup
+            [ "$(uname -s)" = "Darwin" ] || return 0
+            [ -t 1 ] || return 0
             ;;
     esac
+    echo "Opening Orca now (first launch: macOS may ask you to confirm)."
+    cmd_open "$dir" || true
+    return 0
+}
+
+# Everything a passing registration does after the sandbox is proven:
+# the one screen a first-time user needs, the pointer at the extras, and
+# the launch itself. One function so the two success paths (self-test
+# passed, self-test skipped) cannot drift apart.
+register_handoff() {
+    local dir="$1"
+    print_run_it_block "$dir"
+    register_optional_extras
+    register_maybe_open "$dir"
+}
+
+# V7 (claude-orca-2qo): which self-test failures are allowed to stop the
+# hand-off. These are the CONFINEMENT probes -- each one answers "does
+# the sandbox hold?", and a FAIL means handing off would hand off
+# something unconfined. Every other probe answers "is this working
+# right now?" (network reachability, the srt pin, Orca's socket): a FAIL
+# there is a nuisance, not a hole, and refusing on it strands a folder
+# that is perfectly safe to use.
+REGISTER_CONFINEMENT_PROBES="write-outside-denied read-real-home-denied keychain-denied sibling-worktree-denied tmp-outside-denied network-blocked-domain host-files-write-denied orca-profile-active git-hooks-audit srt-launch"
+
+# Reads the results of a self-test that exited non-zero and decides
+# whether the hand-off may still happen: returns 1 (refuse) if any FAILed
+# probe is a confinement probe, or if the results cannot be read at all;
+# otherwise prints one warning per FAILed probe and returns 0. Warnings
+# are printed only on the proceed path -- a refusal must not also invite
+# the user past it.
+register_selftest_triage() {
+    local results="$1" fails="" name detail
+    [ -f "$results" ] || return 1
+    command -v jq >/dev/null 2>&1 || return 1
+
+    fails="$(jq -r '[.probes[]? | select(.status == "FAIL") | .name] | join(" ")' \
+        "$results" 2>/dev/null)"
+    # A non-zero exit with nothing marked FAIL is unexplained: refuse.
+    [ -n "$fails" ] || return 1
+
+    for name in $fails; do
+        case " $REGISTER_CONFINEMENT_PROBES " in
+            *" $name "*) return 1 ;;
+        esac
+    done
+
+    for name in $fails; do
+        detail="$(jq -r --arg n "$name" \
+            '[.probes[]? | select(.name == $n) | .detail][0] // ""' \
+            "$results" 2>/dev/null)"
+        echo "Warning: self-test probe $name failed ($detail) -- not a confinement failure; see claude-dev --doctor"
+    done
+    return 0
 }
 
 cmd_register() {
@@ -425,6 +501,12 @@ JSON
     # S12 (claude-orca-3sk.23): resume a torn-down project -- pull the most
     # recent beads snapshot back in when this project has none of its own.
     restore_beads_snapshot "$dir" "$project_name"
+
+    # V7 (claude-orca-2qo): and if there was nothing to restore, start a
+    # fresh tracker rather than leaving `bd` broken until someone runs
+    # the walk-through. Runs after the restore so a recovered project
+    # keeps its own history.
+    register_beads_init "$dir" "$project_name"
 
     seed_git_identity "$dir"
 
@@ -472,19 +554,24 @@ JSON
     # ever handing off to Orca -- see .claude/plans/orca-port.md S3.
     if [ "${CLAUDE_ORCA_SKIP_SELFTEST:-0}" = "1" ]; then
         echo "Skipping sandbox self-test (CLAUDE_ORCA_SKIP_SELFTEST=1) -- 'claude-dev --doctor' will show it as not run"
-        print_run_it_block "$dir"
-        register_setup_offer "$dir"
+        register_handoff "$dir"
         return 0
     fi
 
     local selftest_bin="$SCRIPT_DIR/sandbox/claude-orca-shell"
     if [ -x "$selftest_bin" ] && "$selftest_bin" --selftest --root "$dir" --cwd "$dir"; then
-        print_run_it_block "$dir"
-        register_setup_offer "$dir"
+        register_handoff "$dir"
         return 0
     fi
 
     local results="$dir/.claude-dev/run/selftest.json"
+    # V7 (claude-orca-2qo): a failure that leaves confinement intact is a
+    # warning, not a wall -- see register_selftest_triage.
+    if register_selftest_triage "$results"; then
+        register_handoff "$dir"
+        return 0
+    fi
+
     if [ -f "$results" ]; then
         doctor_print_probes "$results"
     fi
@@ -990,8 +1077,12 @@ cmd_remove_v1() {
 # started it is free immediately). The log lives in the host-owned state
 # dir, which is correct: this launcher is the host side.
 cmd_open() {
-    local dir="$PROJECT_SELF" launch log
-    launch="$HOST_DIR/bin/orca-launch"
+    local dir="${1:-$PROJECT_SELF}" launch log
+    # V7 (claude-orca-2qo): $1 lets cmd_register open the folder it just
+    # registered, which is not always this launcher's own folder -- so the
+    # launch binary is resolved from that folder first.
+    launch="$dir/.claude-dev/bin/orca-launch"
+    [ -x "$launch" ] || launch="$HOST_DIR/bin/orca-launch"
     [ -x "$launch" ] || launch="$SCRIPT_DIR/sandbox/orca-launch"
     if [ ! -x "$launch" ]; then
         echo "Error: no orca-launch in this folder ($HOST_DIR/bin/orca-launch) -- run 'claude-dev register'" >&2
@@ -1029,7 +1120,7 @@ HELP
 case "${1:-}" in
     register)      shift; cmd_register "${1:-$PROJECT_SELF}" ;;
     setup)         cmd_setup || exit $?; exit 0 ;;
-    open)          cmd_open || exit $?; exit 0 ;;
+    open)          shift; cmd_open "${1:-$PROJECT_SELF}" || exit $?; exit 0 ;;
     --how-to-run)  print_run_it_block "$PROJECT_SELF"; exit 0 ;;
     --doctor)      cmd_doctor || exit $?; exit 0 ;;
     --update)      shift; cmd_update "${1:-$PROJECT_SELF}" || exit $?; exit 0 ;;

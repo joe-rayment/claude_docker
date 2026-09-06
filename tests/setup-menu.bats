@@ -137,7 +137,7 @@ STEP5="Step 5/5: Orca settings"
     # never asks anything itself.
     run bash -c "cd '$PROJECT_DIR' && '$ORCA_HOST/bin/claude-dev' register"
     [ "$status" -eq 0 ]
-    [[ "$output" == *"Run 'claude-dev setup' for a guided walk-through"* ]]
+    [[ "$output" == *"Optional extras: claude-dev setup (OpenRouter key for cheap workers, gh sign-in inside the sandbox, Orca worktree setting)"* ]]
     [[ "$output" != *"Step 1/5"* ]]
     [[ "$output" != *"Walk through setup now?"* ]]
 }

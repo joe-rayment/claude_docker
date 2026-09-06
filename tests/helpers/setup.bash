@@ -440,6 +440,20 @@ case "$cmd" in
     show)
         jq --arg id "${args[1]}" '[.[] | select(.id == $id)]' "$db"
         ;;
+    init)
+        # What `claude-dev register` calls (claude-orca-2qo): make the
+        # marker a real bd would make, and keep the prefix where a test
+        # can read it back.
+        prefix=""
+        i=1
+        while [ "$i" -lt "${#args[@]}" ]; do
+            [ "${args[$i]}" = "--prefix" ] && { i=$((i+1)); prefix="${args[$i]}"; }
+            i=$((i+1))
+        done
+        mkdir -p "$dir/.beads"
+        printf '%s\n' "$prefix" > "$dir/.beads/stub-prefix"
+        echo "initialized $prefix"
+        ;;
     update)
         id="${args[1]}"; notes=""
         i=2
@@ -491,6 +505,14 @@ setup() {
     write_stub_curl "$STUB_BIN/curl"
     write_stub_hdiutil "$STUB_BIN/hdiutil"
     export PATH="$STUB_BIN:$PATH"
+
+    # V7 (claude-orca-2qo): `claude-dev register` now runs `bd init`
+    # itself when bd is on PATH and the folder has no .beads. A real bd
+    # IS on PATH in the dev container, and make_project registers a
+    # folder in hundreds of tests -- so the suite opts out globally and
+    # tests/register-flow.bats is the one place that turns it back on,
+    # against write_stub_bd rather than a real Dolt DB.
+    export CLAUDE_ORCA_SKIP_BEADS=1
 
     export PROJECT_DIR="$BATS_TEST_TMPDIR/project"
     mkdir -p "$PROJECT_DIR"
