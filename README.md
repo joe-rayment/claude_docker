@@ -80,7 +80,7 @@ reference:
 Nothing here is required to start working. It walks the things only you can
 do: your OpenRouter key (that is what pays the cheap workers), `gh auth
 login` inside the sandbox, the git identity commits from this folder carry,
-Claude sign-in, and the one Orca worktree setting worth changing. Every step
+beads, and the one Orca worktree setting worth changing. Every step
 is skippable — Enter or `n` skips one, `a` skips the rest — and it ends with
 a menu that opens Orca, or runs `claude-dev --doctor`.
 
