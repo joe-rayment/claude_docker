@@ -6,9 +6,8 @@
 #
 #   orca-dispatch <bead-id> [--worker|--checker] [--backend orca|subagent]
 #                 [--agent claude|opencode|codex|gemini|bash] [--model <id>]
-#                 [--worktree current|new-child|path:<dir>|id:<wt>|…]
-#                 [--task <task_id>] [--task-deps <json array>]
-#                 [--from <handle>] [--timeout-ms <n>]
+#                 [--worktree current|new-child|path:<dir>|…] [--from <handle>]
+#                 [--timeout-ms <n>]
 #
 # What it does, in order: resolve the coordinator handle -> ensure ONE Run
 # per coordinator (<root>/.claude-dev/run/orchestration/run.json, reused by
@@ -62,7 +61,6 @@ die()  { printf 'orca-dispatch: %s\n' "$*" >&2; exit "${2:-2}"; }
 
 BEAD=""; ROLE="worker"; BACKEND=""; AGENT=""; MODEL=""; WORKTREE=""
 FROM=""; TIMEOUT_MS="${CLAUDE_ORCA_DISPATCH_TIMEOUT_MS:-90000}"
-TASK_ID=""; TASK_DEPS=""
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -73,11 +71,9 @@ while [ "$#" -gt 0 ]; do
         --agent)    AGENT="${2:-}"; shift ;;
         --model)    MODEL="${2:-}"; shift ;;
         --worktree) WORKTREE="${2:-}"; shift ;;
-        --task)     TASK_ID="${2:-}"; shift ;;
-        --task-deps) TASK_DEPS="${2:-}"; shift ;;
         --from)     FROM="${2:-}"; shift ;;
         --timeout-ms) TIMEOUT_MS="${2:-}"; shift ;;
-        -h|--help)  sed -n '3,33p' "$(_resolve_script_path)"; exit 0 ;;
+        -h|--help)  sed -n '3,32p' "$(_resolve_script_path)"; exit 0 ;;
         -*)         die "unknown flag: $1" ;;
         *)          [ -z "$BEAD" ] && BEAD="$1" || die "unexpected argument: $1" ;;
     esac
@@ -149,28 +145,48 @@ FROM_ARGS=()
 
 # --- one Run per coordinator ---------------------------------------------
 
-RUN_ID="$(orch_ensure_run "$ROOT" "$HANDLE")" ||
-    die "could not bind a Run for this coordinator" 4
+ODIR="$(orch_dir "$ROOT")"
+RUN_FILE="$(orch_run_file "$ROOT")"
+mkdir -p "$ODIR/dispatch" || die "cannot write $ODIR"
+
+RUN_ID=""
+if [ -f "$RUN_FILE" ]; then
+    prev_run="$(jq -r '.run_id // ""' "$RUN_FILE" 2>/dev/null)"
+    prev_coord="$(jq -r '.coordinator_handle // ""' "$RUN_FILE" 2>/dev/null)"
+    if [ -n "$prev_run" ] && { [ -z "$HANDLE" ] || [ "$prev_coord" = "$HANDLE" ]; }; then
+        if out="$(orca_call orchestration run-use --id "$prev_run" \
+                    ${FROM_ARGS[@]+"${FROM_ARGS[@]}"} --json)"; then
+            RUN_ID="$prev_run"
+            note "reusing Run $RUN_ID for this coordinator"
+        else
+            note "Run $prev_run is gone ($(orca_error "$out")); creating a new one"
+        fi
+    fi
+fi
+
+if [ -z "$RUN_ID" ]; then
+    out="$(orca_call orchestration run-create \
+        --objective "claude-orca orchestrator: $ROOT" \
+        ${FROM_ARGS[@]+"${FROM_ARGS[@]}"} --json)" ||
+        die "run-create failed: $(orca_error "$out")" 4
+    RUN_ID="$(orca_field "$out" '.result.run.id')"
+    [ -n "$RUN_ID" ] || die "run-create returned no run id" 4
+    COORD="$(orca_field "$out" '.result.run.coordinator_handle')"
+    [ -n "$COORD" ] || COORD="$HANDLE"
+    jq -n --arg r "$RUN_ID" --arg c "$COORD" \
+        --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        '{run_id: $r, coordinator_handle: $c, created: $t}' >"$RUN_FILE"
+    note "created Run $RUN_ID"
+fi
 
 # --- the Task ------------------------------------------------------------
-#
-# --task adopts a Task somebody else created (orca-run pre-creates the
-# whole epic DAG so `task-list --ready` can answer "what may run now");
-# without it we create one here, with --task-deps mirrored onto it.
 
-if [ -n "$TASK_ID" ]; then
-    note "using existing Task $TASK_ID"
-else
-    DEPS_ARGS=()
-    [ -n "$TASK_DEPS" ] && DEPS_ARGS=(--deps "$TASK_DEPS")
-    out="$(orca_call orchestration task-create --spec "$SPEC" \
-        --task-title "$BEAD: $TITLE" --display-name "$BEAD" --run "$RUN_ID" \
-        ${DEPS_ARGS[@]+"${DEPS_ARGS[@]}"} \
-        ${FROM_ARGS[@]+"${FROM_ARGS[@]}"} --json)" ||
-        die "task-create failed: $(orca_error "$out")" 4
-    TASK_ID="$(orca_field "$out" '.result.task.id')"
-    [ -n "$TASK_ID" ] || die "task-create returned no task id" 4
-fi
+out="$(orca_call orchestration task-create --spec "$SPEC" \
+    --task-title "$BEAD: $TITLE" --display-name "$BEAD" --run "$RUN_ID" \
+    ${FROM_ARGS[@]+"${FROM_ARGS[@]}"} --json)" ||
+    die "task-create failed: $(orca_error "$out")" 4
+TASK_ID="$(orca_field "$out" '.result.task.id')"
+[ -n "$TASK_ID" ] || die "task-create returned no task id" 4
 
 # --- the worker ----------------------------------------------------------
 

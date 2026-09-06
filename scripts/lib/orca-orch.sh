@@ -100,9 +100,6 @@ orch_root() {
 }
 
 orch_dir()      { printf '%s/.claude-dev/run/orchestration' "$1"; }
-orch_epic_file() {
-    printf '%s/.claude-dev/run/orchestration/epics/%s.json' "$1" "$2"
-}
 orch_run_file() { printf '%s/.claude-dev/run/orchestration/run.json' "$1"; }
 orch_disp_file() {
     printf '%s/.claude-dev/run/orchestration/dispatch/%s.json' "$1" "$2"
@@ -119,60 +116,6 @@ orch_handle() {
     fi
     if [ -n "${ORCA_PANE_KEY:-}" ]; then printf '%s' "$ORCA_PANE_KEY"; return 0; fi
     printf ''
-}
-
-# --- one Run per coordinator ---------------------------------------------
-
-# orch_ensure_run <root> <handle> -- the Run id on stdout, human notes on
-# stderr; exit 1 if the runtime would not give us one.
-#
-# run.json is the coordinator's memory of its Run. It is reused whenever
-# the runtime still knows that Run AND it belongs to this coordinator, so
-# orca-dispatch and orca-run land in the same Run and orca-wait has one
-# mailbox to watch. `run-use` is the reachability test: a Run from a dead
-# runtime fails it and we make a new one.
-orch_ensure_run() {
-    local root="$1" handle="$2"
-    local odir run_file prev_run prev_coord out run_id coord
-    local from_args
-    odir="$(orch_dir "$root")"
-    run_file="$(orch_run_file "$root")"
-    mkdir -p "$odir/dispatch" || { printf 'cannot write %s\n' "$odir" >&2; return 1; }
-
-    from_args=()
-    [ -n "$handle" ] && from_args=(--from "$handle")
-
-    if [ -f "$run_file" ]; then
-        prev_run="$(jq -r '.run_id // ""' "$run_file" 2>/dev/null)"
-        prev_coord="$(jq -r '.coordinator_handle // ""' "$run_file" 2>/dev/null)"
-        if [ -n "$prev_run" ] &&
-           { [ -z "$handle" ] || [ "$prev_coord" = "$handle" ]; }; then
-            if out="$(orca_call orchestration run-use --id "$prev_run" \
-                        ${from_args[@]+"${from_args[@]}"} --json)"; then
-                printf 'reusing Run %s for this coordinator\n' "$prev_run" >&2
-                printf '%s' "$prev_run"
-                return 0
-            fi
-            printf 'Run %s is gone (%s); creating a new one\n' \
-                "$prev_run" "$(orca_error "$out")" >&2
-        fi
-    fi
-
-    out="$(orca_call orchestration run-create \
-        --objective "claude-orca orchestrator: $root" \
-        ${from_args[@]+"${from_args[@]}"} --json)" || {
-        printf 'run-create failed: %s\n' "$(orca_error "$out")" >&2
-        return 1
-    }
-    run_id="$(orca_field "$out" '.result.run.id')"
-    [ -n "$run_id" ] || { printf 'run-create returned no run id\n' >&2; return 1; }
-    coord="$(orca_field "$out" '.result.run.coordinator_handle')"
-    [ -n "$coord" ] || coord="$handle"
-    jq -n --arg r "$run_id" --arg c "$coord" \
-        --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-        '{run_id: $r, coordinator_handle: $c, created: $t}' >"$run_file"
-    printf 'created Run %s\n' "$run_id" >&2
-    printf '%s' "$run_id"
 }
 
 # --- the bead ------------------------------------------------------------
