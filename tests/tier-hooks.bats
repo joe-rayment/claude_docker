@@ -388,6 +388,116 @@ seed_state() {  # seed_state <worker> <recon> -- a bound, unpinned, non-overdriv
     [ "$(cat "$STATE_FILE")" = "$before" ]
 }
 
+# ── tier v2: a backend per role (claude-orca-qa2.12) ────────────────────────
+
+@test "tier.json v2 carries backend, agent and model per role and a v1 file reads as subagent backend" {
+    TIER_DERIVE="$DERIVE" tier_set fable
+    [ "$status" -eq 0 ]
+
+    # the v1 keys stay exactly what they were -- the model id per role ...
+    run jq -e '.worker == "claude-sonnet-5" and .recon == "claude-haiku-4-5-20251001"' "$STATE_FILE"
+    [ "$status" -eq 0 ]
+    # ... and .roles carries backend + agent + model for all three roles.
+    run jq -e '.roles.worker | .backend == "subagent" and .agent == "claude" and .model == "claude-sonnet-5"' "$STATE_FILE"
+    [ "$status" -eq 0 ]
+    run jq -e '.roles.recon | .backend == "subagent" and .agent == "claude" and .model == "claude-haiku-4-5-20251001"' "$STATE_FILE"
+    [ "$status" -eq 0 ]
+    run jq -e '.roles.checker | .backend == "subagent" and .agent == "claude" and .model == "inherit"' "$STATE_FILE"
+    [ "$status" -eq 0 ]
+
+    # a v1 file (no .roles block at all) reads as the subagent backend
+    seed_state claude-sonnet-5 claude-haiku-4-5-20251001
+    run jq -e 'has("roles") | not' "$STATE_FILE"
+    [ "$status" -eq 0 ]
+    prime
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"worker=subagent:claude-sonnet-5"* ]]
+    [[ "$output" == *"recon=subagent:claude-haiku-4-5-20251001"* ]]
+    [[ "$output" == *"checker=subagent:inherit"* ]]
+}
+
+@test "tier-set binds worker openrouter:<vendor/model> to the orca backend with agent opencode and claude: to agent claude" {
+    TIER_DERIVE="$DERIVE" tier_set fable
+    [ "$status" -eq 0 ]
+
+    TIER_DERIVE="$DERIVE" tier_set worker openrouter:qwen/qwen3-coder
+    [ "$status" -eq 0 ]
+    run jq -e '.roles.worker | .backend == "orca" and .agent == "opencode" and .model == "openrouter/qwen/qwen3-coder"' "$STATE_FILE"
+    [ "$status" -eq 0 ]
+    # the v1 mirror follows the role's model; the other roles are untouched
+    run jq -e '.worker == "openrouter/qwen/qwen3-coder" and .roles.recon.backend == "subagent"' "$STATE_FILE"
+    [ "$status" -eq 0 ]
+
+    TIER_DERIVE="$DERIVE" tier_set worker claude:sonnet
+    [ "$status" -eq 0 ]
+    run jq -e '.roles.worker | .backend == "orca" and .agent == "claude" and .model == "claude-sonnet-5"' "$STATE_FILE"
+    [ "$status" -eq 0 ]
+
+    # `subagent` puts the worker back in-process on the DERIVED model
+    TIER_DERIVE="$DERIVE" tier_set worker subagent
+    [ "$status" -eq 0 ]
+    run jq -e '.roles.worker | .backend == "subagent" and .agent == "claude" and .model == "claude-sonnet-5"' "$STATE_FILE"
+    [ "$status" -eq 0 ]
+    run jq -e '.worker == "claude-sonnet-5"' "$STATE_FILE"
+    [ "$status" -eq 0 ]
+
+    # the same grammar on the recon and checker roles
+    TIER_DERIVE="$DERIVE" tier_set recon openrouter:qwen/qwen3-coder
+    [ "$status" -eq 0 ]
+    run jq -e '.roles.recon | .backend == "orca" and .agent == "opencode" and .model == "openrouter/qwen/qwen3-coder"' "$STATE_FILE"
+    [ "$status" -eq 0 ]
+    TIER_DERIVE="$DERIVE" tier_set checker claude:opus
+    [ "$status" -eq 0 ]
+    run jq -e '.roles.checker | .backend == "orca" and .agent == "claude" and .model == "claude-opus-5"' "$STATE_FILE"
+    [ "$status" -eq 0 ]
+}
+
+@test "tier-prime prints the backend per role" {
+    TIER_DERIVE="$DERIVE" tier_set fable
+    TIER_DERIVE="$DERIVE" tier_set worker openrouter:qwen/qwen3-coder
+    prime
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"worker=orca:opencode:openrouter/qwen/qwen3-coder"* ]]
+    [[ "$output" == *"recon=subagent:claude-haiku-4-5-20251001"* ]]
+    [[ "$output" == *"checker=subagent:inherit"* ]]
+    # the orchestrator line is still printed
+    [[ "$output" == *"orchestrator=claude-fable-5"* ]]
+}
+
+@test "tier-gate still injects the worker model into generic Agent spawns and leaves named roles alone" {
+    seed_state claude-sonnet-5 claude-haiku-4-5-20251001
+    gate '{"tool_name":"Agent","tool_input":{"prompt":"p"}}'
+    [ "$status" -eq 0 ]
+    run jq -e '.hookSpecificOutput.updatedInput.model == "sonnet"' <<<"$output"
+    [ "$status" -eq 0 ]
+
+    gate '{"tool_name":"Agent","tool_input":{"subagent_type":"verifier","prompt":"p"}}'
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+
+    # an orca-backed worker: the spawn is still ALLOWED, with one note and no
+    # model injection (the orchestrator should have used orca-dispatch)
+    TIER_DERIVE="$DERIVE" tier_set fable
+    TIER_DERIVE="$DERIVE" tier_set worker openrouter:qwen/qwen3-coder
+    gate '{"tool_name":"Agent","tool_input":{"subagent_type":"executor","prompt":"p"}}'
+    [ "$status" -eq 0 ]
+    orca_out="$output"
+    run jq -e '.systemMessage | test("orca")' <<<"$orca_out"
+    [ "$status" -eq 0 ]
+    run jq -e 'has("hookSpecificOutput") | not' <<<"$orca_out"
+    [ "$status" -eq 0 ]
+
+    # back on the subagent backend, injection is exactly as before
+    TIER_DERIVE="$DERIVE" tier_set worker subagent
+    gate '{"tool_name":"Agent","tool_input":{"subagent_type":"executor","prompt":"p"}}'
+    [ "$status" -eq 0 ]
+    run jq -e '.hookSpecificOutput.updatedInput.model == "sonnet"' <<<"$output"
+    [ "$status" -eq 0 ]
+    gate '{"tool_name":"Agent","tool_input":{"subagent_type":"scout","prompt":"p"}}'
+    run jq -e '.hookSpecificOutput.updatedInput.model == "haiku"' <<<"$output"
+    [ "$status" -eq 0 ]
+}
+
 # ── bash 3.2 exercise ────────────────────────────────────────────────────────
 
 @test "tier-set, tier-gate and tier-prime run cleanly under bash 3.2" {
