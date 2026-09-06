@@ -171,6 +171,71 @@ STUB
     [ "$status" -eq 0 ]
 }
 
+# V6 (claude-orca-riu.3): native Orca orchestration is the default for a
+# NEWLY registered folder -- the user coordinates multi-provider agents
+# through the host Orca app, so the socket allowance is seeded ON rather
+# than discovered later. gen-settings.sh still fails closed on a file with
+# no orca key (tests/orca-cli-mode.bats): this is the seed, not the parser.
+@test "register seeds sandbox.json with orca.cli true by default" {
+    run bash "$REPO_ROOT/bootstrap.sh" "$PROJECT_DIR"
+    [ "$status" -eq 0 ]
+
+    run jq -e '.version == 1
+        and .network.extraAllowedDomains == []
+        and .filesystem.extraAllowWrite == []
+        and .orca.cli == true' "$PROJECT_DIR/.claude-dev/sandbox.json"
+    [ "$status" -eq 0 ]
+
+    # With the mode on, the orca-socket probe reports N/A when the app is
+    # simply not running (claude-orca-riu.2). That must never brick a first
+    # registration: N/A is tallied apart from FAIL, and only FAIL refuses.
+    fake="$BATS_TEST_TMPDIR/fake-socket-na.txt"
+    sed 's/^orca-socket-unreachable=0$/orca-socket-unreachable=2/' \
+        "$CLAUDE_ORCA_SELFTEST_FAKE" > "$fake"
+    grep -qx 'orca-socket-unreachable=2' "$fake"
+    export CLAUDE_ORCA_SELFTEST_FAKE="$fake"
+
+    run bash -c "cd '$PROJECT_DIR' && '$ORCA_HOST/bin/claude-dev' register"
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"Refusing to hand off"* ]]
+
+    run jq -e '.summary.fail == 0 and .summary.na >= 1
+        and ([.probes[] | select(.name == "orca-socket-unreachable") | .status]
+             == ["N/A"])' "$PROJECT_DIR/.claude-dev/run/selftest.json"
+    [ "$status" -eq 0 ]
+}
+
+# The other half of the same decision: an existing sandbox.json is the
+# user's file. Register seeds defaults only when there is no file at all,
+# so neither an explicit opt-out nor a hand-written file with no orca key
+# is ever rewritten into the new default.
+@test "register never overwrites an existing sandbox.json orca.cli choice" {
+    run bash "$REPO_ROOT/bootstrap.sh" "$PROJECT_DIR"
+    [ "$status" -eq 0 ]
+    sandbox_json="$PROJECT_DIR/.claude-dev/sandbox.json"
+
+    # No orca key at all: left byte for byte, and gen-settings.sh's
+    # fail-closed default (absent == false) still governs it.
+    printf '%s\n' '{"version":1,"network":{"extraAllowedDomains":["example.com"]},"filesystem":{"extraAllowWrite":[]}}' > "$sandbox_json"
+    before="$(cat "$sandbox_json")"
+
+    run bash -c "cd '$PROJECT_DIR' && '$ORCA_HOST/bin/claude-dev' register"
+    [ "$status" -eq 0 ]
+    [ "$(cat "$sandbox_json")" = "$before" ]
+    run jq -e '.orca == null' "$sandbox_json"
+    [ "$status" -eq 0 ]
+
+    # An explicit opt-out survives a re-register too.
+    printf '%s\n' '{"version":1,"network":{"extraAllowedDomains":[]},"filesystem":{"extraAllowWrite":[]},"orca":{"cli":false}}' > "$sandbox_json"
+    before="$(cat "$sandbox_json")"
+
+    run bash -c "cd '$PROJECT_DIR' && '$ORCA_HOST/bin/claude-dev' register"
+    [ "$status" -eq 0 ]
+    [ "$(cat "$sandbox_json")" = "$before" ]
+    run jq -e '.orca.cli == false' "$sandbox_json"
+    [ "$status" -eq 0 ]
+}
+
 @test "gitignore seeded idempotently with .claude-dev/, /claude-dev, Orca.app/, .mcp.json, attachments/, .claude/logs/" {
     echo "node_modules/" > "$PROJECT_DIR/.gitignore"
 

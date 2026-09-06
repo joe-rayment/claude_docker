@@ -130,6 +130,40 @@ orca_runtime_dir() {
     unset STUB_SRT_NOEXEC CLAUDE_ORCA_REAL_HOME
 }
 
+# V6 (claude-orca-riu.3): the two halves joined. What `claude-dev register`
+# writes into a NEW folder is what gen-settings.sh turns into a socket
+# allowance, with nobody editing sandbox.json in between -- and the opt-out
+# is still the single key, effective with no other change.
+@test "the seeded default flows through gen-settings to allowUnixSockets" {
+    make_project "$PROJECT_DIR"
+    real_home="$(abspath "$(make_real_home)")"
+    primary="$(abspath "$PROJECT_DIR")"
+    runtime_dir="$(orca_runtime_dir "$real_home")"
+
+    run jq -e '.orca.cli == true' "$PROJECT_DIR/.claude-dev/sandbox.json"
+    [ "$status" -eq 0 ]
+
+    run GEN_SETTINGS \
+        --primary "$primary" --worktree "$primary" \
+        --real-home "$real_home" --host "$ORCA_HOST" \
+        --sandbox-json "$PROJECT_DIR/.claude-dev/sandbox.json"
+    [ "$status" -eq 0 ]
+
+    [ "$(jq -c '.network.allowUnixSockets' <<<"$output")" \
+        = "$(jq -nc --arg d "$runtime_dir" '[$d]')" ]
+    [ "$(jq --arg d "$runtime_dir" '.filesystem.allowRead | index($d) != null' \
+        <<<"$output")" = "true" ]
+
+    set_orca_cli "$PROJECT_DIR" false
+    run GEN_SETTINGS \
+        --primary "$primary" --worktree "$primary" \
+        --real-home "$real_home" --host "$ORCA_HOST" \
+        --sandbox-json "$PROJECT_DIR/.claude-dev/sandbox.json"
+    [ "$status" -eq 0 ]
+    [ "$(jq -c '.network.allowUnixSockets' <<<"$output")" = "[]" ]
+    [[ "$output" != *"Application Support/orca"* ]]
+}
+
 @test "generated settings with orca.cli on validate against the pinned srt schema" {
     real_srt_dir="$(ensure_real_srt)" || skip "no real node/npm available to fetch or run the pinned srt schema"
 
