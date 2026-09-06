@@ -354,13 +354,147 @@ record_image_source() {
 # The fallback half of the pull, and the whole of the no-scope path: build
 # the pinned tag from the folder's own template clone.
 build_image_locally() {
-    local dir="$1" tmpl="$2" ref="$3"
+    local dir="$1" tmpl="$2" ref="$3" log
     if [ ! -f "$tmpl/Dockerfile" ]; then
         echo "Error: no Dockerfile at $tmpl/Dockerfile -- re-run the bootstrap one-liner." >&2
         return 1
     fi
-    ctr build -t "$ref" -f "$tmpl/Dockerfile" "$tmpl"
-    record_image_source "$dir" built
+    # Through tee, so the reason a build failed is both on screen and on
+    # disk for the next command to read. pipefail is on, so the pipeline
+    # still carries `container build`'s own status.
+    mkdir -p "$dir/.claude-dev/run" 2>/dev/null || true
+    log="$dir/.claude-dev/run/build.log"
+    if ctr build -t "$ref" -f "$tmpl/Dockerfile" "$tmpl" 2>&1 | tee "$log"; then
+        record_image_source "$dir" built
+        return 0
+    fi
+    # The common failure is Apple's builder VM coming up without a resolver,
+    # which apt-get inside the Dockerfile reports as a DNS error. `container
+    # build --dns <ip>` hands the builder one, so it is worth one retry
+    # before making the user restart the service.
+    if grep -qE "Temporary failure resolving|Temporary failure in name resolution" \
+            "$log" 2>/dev/null; then
+        echo "Apple's builder VM had no DNS -- retrying the build with --dns 1.1.1.1"
+        if ctr build --dns 1.1.1.1 -t "$ref" -f "$tmpl/Dockerfile" "$tmpl" 2>&1 | tee -a "$log"; then
+            record_image_source "$dir" built
+            return 0
+        fi
+    fi
+    {
+        echo "Error: 'container build' failed -- the image was not built."
+        echo "  If the log above says 'Temporary failure resolving', Apple's builder VM had no DNS: run 'container system stop && container system start' and re-run ./claude-dev."
+        echo "  Or grant gh the scope for the prebuilt image instead:  gh auth refresh -s read:packages"
+    } >&2
+    return 1
+}
+
+# A terminal to prompt on. Written as a subshell redirect rather than
+# `[ -t 0 ]`: the launcher is routinely run from a pipe (the bootstrap
+# one-liner) while the person is still sat at a terminal.
+# CLAUDE_ORCA_TEST_TTY stands in for one, the same way CLAUDE_ORCA_KEY_INPUT
+# does for the OpenRouter key -- bats has no /dev/tty.
+have_tty() {
+    if [ -n "${CLAUDE_ORCA_TEST_TTY:-}" ]; then
+        return 0
+    fi
+    ( : </dev/tty ) 2>/dev/null
+}
+
+# The prebuilt image is private, so a token without read:packages is denied
+# the manifest however well the login went. One browser round trip beats a
+# several-minute local build, so ask gh for the scope in place when there is
+# a terminal to ask on; without one, the caller falls back to the build.
+ensure_packages_scope() {
+    if gh_has_scope read:packages; then
+        return 0
+    fi
+    command -v gh >/dev/null 2>&1 || return 1
+    have_tty || return 1
+    echo "The prebuilt image is private, so gh needs the read:packages scope -- granting it now (one time, in your browser)."
+    if [ -n "${CLAUDE_ORCA_TEST_TTY:-}" ]; then
+        gh auth refresh -h github.com -s read:packages </dev/null || true
+    else
+        gh auth refresh -h github.com -s read:packages </dev/tty || true
+    fi
+    gh_has_scope read:packages
+}
+
+# The image is on GHCR, which needs a login even for a public package when
+# pulled by tag from a private-by-default account. The token goes in on
+# stdin: never in argv, never in the container log.
+registry_login() {
+    local registry token user
+    registry="$(image_registry)"
+    token="$(gh auth token 2>/dev/null || true)"
+    user="$(gh api user --jq .login 2>/dev/null || true)"
+    [ -n "$token" ] || return 0
+    if printf '%s' "$token" \
+            | ctr registry login "$registry" --username "${user:-token}" --password-stdin \
+              >/dev/null 2>&1; then
+        echo "Signed in to $registry as ${user:-the gh token}"
+    else
+        echo "Warning: 'container registry login $registry' failed -- the pull may fail too" >&2
+        # Whatever is in the keychain for this registry is worse than
+        # nothing now: sent to ghcr.io/token and rejected, it makes the pull
+        # fail with an authentication challenge rather than fall back to an
+        # anonymous attempt.
+        ctr registry logout "$registry" >/dev/null 2>&1 || true
+    fi
+}
+
+# One `container image pull`, keeping what it printed: with this registry the
+# reason a pull was refused IS the diagnosis, so the caller reads PULL_OUT
+# rather than guessing from the exit status.
+PULL_OUT=""
+try_pull() {
+    local rc=0
+    PULL_OUT="$(ctr image pull "$1" 2>&1)" || rc=$?
+    return "$rc"
+}
+
+# This folder's image, by whichever path it can reach: the prebuilt one when
+# the token carries read:packages, a local build from the template's own
+# Dockerfile otherwise. A fourth argument of 1 keeps a folder that already
+# has an image on it when the pull fails (--update), rather than rebuilding.
+acquire_image() {
+    local dir="$1" tmpl="$2" ref="$3" keep_existing="${4:-0}" registry
+    if ensure_packages_scope; then
+        registry_login
+        echo "==> Pulling $ref"
+        if try_pull "$ref"; then
+            record_image_source "$dir" pulled
+            return 0
+        fi
+        printf '%s\n' "$PULL_OUT" | tail -1 >&2
+        # "refusing insecure credential exchange" (and "access denied or
+        # wrong credentials") means STORED keychain credentials were sent to
+        # ghcr.io/token and rejected -- a stale login from an earlier run,
+        # not a bad token now. Clear it, sign in again, pull once more.
+        case "$PULL_OUT" in
+            *"insecure credential exchange"*|*"access denied or wrong credentials"*)
+                registry="$(image_registry)"
+                echo "  The registry credentials in your keychain were rejected -- clearing them (container registry logout $registry) and trying again" >&2
+                ctr registry logout "$registry" >/dev/null 2>&1 || true
+                registry_login
+                if try_pull "$ref"; then
+                    record_image_source "$dir" pulled
+                    return 0
+                fi
+                printf '%s\n' "$PULL_OUT" | tail -1 >&2
+                ;;
+        esac
+        if [ "$keep_existing" = "1" ]; then
+            echo "Warning: could not pull $ref -- keeping the image this folder already has" >&2
+            return 0
+        fi
+        echo "Pull failed -- building the image from $tmpl/Dockerfile instead (this takes a few minutes)"
+    else
+        # qa2.8: a token without read:packages can only ever be denied the
+        # manifest, so skip the login and the pull entirely rather than make
+        # the user watch both fail.
+        echo "$IMAGE_SOURCE_NOTE"
+    fi
+    build_image_locally "$dir" "$tmpl" "$ref"
 }
 
 orca_json() { printf '%s\n' "$1/.claude-dev/claude-orca.json"; }
@@ -611,7 +745,13 @@ EXTRA
 
     set -- "$@" "$ref"
     echo "==> Starting the container $name ($ref)"
-    ctr "$@" >/dev/null
+    # Checked, not trusted: errexit is off inside a function called under
+    # `|| return`, so an unchecked failure here would fall through to a
+    # two-minute wait for a URL no container is ever going to write.
+    if ! ctr "$@" >/dev/null; then
+        echo "Error: 'container run' failed for $name -- see $dir/.claude-dev/run/container.log" >&2
+        return 1
+    fi
 }
 
 cmd_open_v3() {
@@ -634,11 +774,14 @@ cmd_open_v3() {
             echo "Container $name is already running."
             ;;
         "")
-            container_create "$dir" "$name" "$port"
+            container_create "$dir" "$name" "$port" || return 1
             ;;
         *)
             echo "==> Starting $name (was $state)"
-            ctr start "$name" >/dev/null
+            if ! ctr start "$name" >/dev/null; then
+                echo "Error: 'container start $name' failed" >&2
+                return 1
+            fi
             ;;
     esac
 
@@ -656,7 +799,7 @@ cmd_open_v3() {
 }
 
 cmd_register_v3() {
-    local dir="${1:-$PROJECT_SELF}" name port token user registry ref tmpl
+    local dir="${1:-$PROJECT_SELF}" name port ref tmpl
     [ -d "$dir" ] || { echo "Error: directory does not exist: $dir" >&2; return 1; }
     dir="$(cd "$dir" && pwd -P)"
     name="$(derive_project_name "$dir")"
@@ -687,39 +830,7 @@ JSON
     tmpl="$dir/.claude-dev/template"
     if [ ! -d "$tmpl" ]; then tmpl="$TEMPLATE_ROOT"; fi
 
-    # qa2.8: a token without read:packages can only ever be denied the
-    # manifest, so skip the login and the pull entirely rather than make
-    # the user watch both fail.
-    if ! gh_has_scope read:packages; then
-        echo "$IMAGE_SOURCE_NOTE"
-        build_image_locally "$dir" "$tmpl" "$ref" || return 1
-        cmd_open_v3 "$dir"
-        return $?
-    fi
-
-    # The image is on GHCR, which needs a login even for a public package
-    # when pulled by tag from a private-by-default account. The token goes
-    # in on stdin: never in argv, never in the container log.
-    registry="$(image_registry)"
-    token="$(gh auth token 2>/dev/null || true)"
-    user="$(gh api user --jq .login 2>/dev/null || true)"
-    if [ -n "$token" ]; then
-        if printf '%s' "$token" \
-                | ctr registry login "$registry" --username "${user:-token}" --password-stdin \
-                  >/dev/null 2>&1; then
-            echo "Signed in to $registry as ${user:-the gh token}"
-        else
-            echo "Warning: 'container registry login $registry' failed -- the pull may fail too" >&2
-        fi
-    fi
-
-    echo "==> Pulling $ref"
-    if ctr image pull "$ref" >/dev/null 2>&1; then
-        record_image_source "$dir" pulled
-    else
-        echo "Pull failed -- building the image from $tmpl/Dockerfile instead (this takes a few minutes)"
-        build_image_locally "$dir" "$tmpl" "$ref" || return 1
-    fi
+    acquire_image "$dir" "$tmpl" "$ref" || return 1
 
     cmd_open_v3 "$dir"
 }
@@ -877,17 +988,9 @@ cmd_update_v3() {
     "$SCRIPT_DIR/link-bin.sh" "$HOST_DIR"
 
     ref="$(image_ref)"
-    if gh_has_scope read:packages; then
-        echo "==> Pulling $ref"
-        if ctr image pull "$ref" >/dev/null 2>&1; then
-            record_image_source "$dir" pulled
-        else
-            echo "Warning: could not pull $ref -- keeping the image this folder already has" >&2
-        fi
-    else
-        echo "$IMAGE_SOURCE_NOTE"
-        build_image_locally "$dir" "$tmpl" "$ref" || return 1
-    fi
+    # keep_existing: an update runs against a folder that already has a
+    # working image, so a failed pull is a warning, not a rebuild.
+    acquire_image "$dir" "$tmpl" "$ref" 1 || return 1
 
     # Recreate rather than restart: a new image only takes effect in a new
     # container, and everything that matters is in the mounted folder.

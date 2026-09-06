@@ -81,6 +81,22 @@ Everything below this is reference.
   from the template's own `Dockerfile`, which takes a few minutes but needs
   nothing else. A pull failure is usually a `gh` token without
   `read:packages`; `gh auth refresh -s read:packages` fixes it.
+- **`refusing insecure credential exchange`** — the prebuilt image is
+  private, so pulling it always needs a token carrying `read:packages`;
+  anonymous pulls are refused by GHCR. Registration asks for the scope in
+  your browser when it has a terminal to ask on. If it could not, run
+  `gh auth refresh -s read:packages` yourself and re-run the one-liner.
+- **`'container build' failed` / `Temporary failure resolving`** — the local
+  build fell over because Apple's builder VM had no DNS. Registration retries
+  it once with `--dns 1.1.1.1` by itself; the full output is in
+  `.claude-dev/run/build.log`. If the retry failed too, restart the service
+  and re-run:
+
+  ```bash
+  container system stop && container system start
+  ```
+
+  Granting `gh` the `read:packages` scope avoids the build altogether.
 - **Orca never publishes a URL.** `./claude-dev logs` follows the
   container's output, and `.claude-dev/run/orca-serve.log` inside the folder
   has Orca's own. `./claude-dev --doctor` says which of the six steps is the

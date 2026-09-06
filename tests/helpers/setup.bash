@@ -223,6 +223,14 @@ if [ "$1" = "auth" ] && [ "$2" = "login" ]; then
     echo "gh $*" >> "$STUB_LOG"
     exit 0
 fi
+# The launcher asks for read:packages in place when a terminal is there.
+# STUB_GH_REFRESH_MARK names a file the refresh touches, which the scopes
+# branch below then reads as "this token carries read:packages now".
+if [ "$1" = "auth" ] && [ "$2" = "refresh" ]; then
+    echo "gh $*" >> "$STUB_LOG"
+    [ -n "${STUB_GH_REFRESH_MARK:-}" ] && : > "$STUB_GH_REFRESH_MARK"
+    exit 0
+fi
 # The bootstrap's container install: Apple's signed .pkg off the releases
 # page. STUB_GH_NO_ASSET=1 stands in for "the release carries no such
 # asset" -- nothing is written to --dir.
@@ -257,9 +265,14 @@ fi
 # assert the pull path runs).
 if [ "$1" = "api" ] && [ "$2" = "-i" ] && [ "${3:-}" = "user" ]; then
     [ "${STUB_GH_UNAUTH:-}" = "1" ] && exit 1
+    scopes="${CLAUDE_ORCA_TEST_GH_SCOPES:-repo, read:org, workflow, read:packages}"
+    # A refresh that has run wins over the pinned list: the token the
+    # launcher asked to widen carries read:packages from then on.
+    if [ -n "${STUB_GH_REFRESH_MARK:-}" ] && [ -f "$STUB_GH_REFRESH_MARK" ]; then
+        scopes="repo, read:org, workflow, read:packages"
+    fi
     printf 'HTTP/2.0 200 OK\r\n'
-    printf 'X-Oauth-Scopes: %s\r\n' \
-        "${CLAUDE_ORCA_TEST_GH_SCOPES:-repo, read:org, workflow, read:packages}"
+    printf 'X-Oauth-Scopes: %s\r\n' "$scopes"
     printf 'X-Accepted-Oauth-Scopes: \r\n'
     printf '\r\n'
     printf '{"login":"%s"}\n' "${STUB_GH_LOGIN:-joe-rayment}"
@@ -314,6 +327,14 @@ case "$1 ${2:-}" in
         rm -f "$state/service"; exit 0 ;;
     "image pull")
         [ "${CLAUDE_ORCA_TEST_PULL_FAIL:-0}" = "1" ] && { echo "pull failed" >&2; exit 1; }
+        # =stale: what a rejected keychain entry does. The pull only works
+        # once the launcher has cleared it, which the logged `registry
+        # logout` line stands in for.
+        if [ "${CLAUDE_ORCA_TEST_PULL_FAIL:-0}" = "stale" ] \
+                && ! grep -q "^registry logout " "${CONTAINER_STUB_LOG:-/dev/null}"; then
+            echo "Error: refusing insecure credential exchange" >&2
+            exit 1
+        fi
         printf '%s\n' "$3" > "$state/image"; exit 0 ;;
     "image ls"|"image list"|"image inspect")
         [ -f "$state/image" ] || exit 1
@@ -325,11 +346,33 @@ case "$1 ${2:-}" in
         cat > "$state/registry-password"
         printf '%s\n' "$*" > "$state/registry-argv"
         exit 0 ;;
+    "registry logout")
+        rm -f "$state/registry-password" "$state/registry-argv"
+        exit 0 ;;
 esac
 
 cmd="$1"; shift
 case "$cmd" in
     build)
+        # CLAUDE_ORCA_TEST_BUILD_FAIL=1: apt-get inside Apple's builder VM
+        # with no DNS, the real failure this box cannot reproduce. No image
+        # marker is written, exactly as a failed build leaves nothing.
+        if [ "${CLAUDE_ORCA_TEST_BUILD_FAIL:-0}" = "1" ]; then
+            echo "Temporary failure resolving 'ports.ubuntu.com'" >&2
+            exit 100
+        fi
+        # =dns: the builder VM comes up without a resolver, so the plain
+        # build fails and only a build carrying --dns gets through.
+        if [ "${CLAUDE_ORCA_TEST_BUILD_FAIL:-0}" = "dns" ]; then
+            has_dns=0
+            for a in "$@"; do
+                [ "$a" = "--dns" ] && has_dns=1
+            done
+            if [ "$has_dns" = "0" ]; then
+                echo "Temporary failure resolving 'ports.ubuntu.com'" >&2
+                exit 100
+            fi
+        fi
         tag=""; prev=""
         for a in "$@"; do
             [ "$prev" = "-t" ] && tag="$a"
@@ -338,6 +381,13 @@ case "$cmd" in
         printf '%s\n' "${tag:-local}" > "$state/image"
         exit 0 ;;
     run)
+        # CLAUDE_ORCA_TEST_RUN_FAIL=1: `container run` pulling an image that
+        # is not there, denied by ghcr's own auth challenge. No container
+        # marker, so nothing is left running.
+        if [ "${CLAUDE_ORCA_TEST_RUN_FAIL:-0}" = "1" ]; then
+            echo "Error: refusing insecure credential exchange" >&2
+            exit 1
+        fi
         name=""; port=""; proj=""; prev=""
         for a in "$@"; do
             case "$prev" in
