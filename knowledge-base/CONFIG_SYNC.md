@@ -12,8 +12,16 @@ repo config/                    -->  <project>/.claude-dev/home/.claude/
   agents/*.md                   -->    agents/
   claude-commands/*.md          -->    commands/
   skills/**                     -->    skills/
+  opencode/opencode.json        -->  <project>/.claude-dev/home/.config/opencode/opencode.json
   .zshrc                        -->  <project>/.claude-dev/home/.zshrc
 ```
+
+`opencode/opencode.json` is the one target outside `.claude/`: it is
+opencode's own config, not Claude Code's, and `~/.config/opencode` is where
+opencode looks for it. It carries the OpenRouter provider with
+`{env:OPENROUTER_API_KEY}` — never a key — and no `model`, because the model
+is chosen per worker on argv. `seed-orca-state.sh` points Orca's
+`agentDefaultEnv.opencode.OPENCODE_CONFIG` at its path inside the VM.
 
 Invocation: `config-sync --project <primary checkout> --host
 <project>/.claude-dev`. The source is always `$HOST/template/config` — the

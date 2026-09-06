@@ -26,6 +26,8 @@
 #   claude-commands/*.md  -> .claude/commands/
 #   skills/**             -> .claude/skills/
 #   workflows/*.js        -> .claude/workflows/
+#   opencode/opencode.json -> .config/opencode/opencode.json (opencode's own
+#                             provider config, outside .claude/)
 #   .zshrc                -> .zshrc
 #
 # settings.local.json itself is only ever READ, never rewritten or moved --
@@ -182,6 +184,19 @@ fi
 
 if [ -f "$TEMPLATE_CONFIG/.zshrc" ]; then
     cp "$TEMPLATE_CONFIG/.zshrc" "$project/.claude-dev/home/.zshrc"
+fi
+
+# opencode's provider config (claude-orca-qa2.11): an Orca worker terminal
+# running a non-Anthropic model is `opencode --model openrouter/<model>`,
+# and opencode reads its providers from a file rather than argv. It lives
+# outside .claude/ because it is not Claude Code's -- ~/.config/opencode is
+# where opencode looks, and where seed-orca-state.sh points OPENCODE_CONFIG.
+# Template-owned like everything else here: no key in the file, just the
+# {env:OPENROUTER_API_KEY} reference the VM's environment satisfies.
+if [ -f "$TEMPLATE_CONFIG/opencode/opencode.json" ]; then
+    mkdir -p "$project/.claude-dev/home/.config/opencode"
+    cp "$TEMPLATE_CONFIG/opencode/opencode.json" \
+        "$project/.claude-dev/home/.config/opencode/opencode.json"
 fi
 
 # --- settings.local.json overlay: preserved on disk, and merged IN (local

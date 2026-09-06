@@ -25,6 +25,7 @@ set -Eeuo pipefail
 
 ORCA_VERSION="${ORCA_VERSION:-1.4.197}"
 CLAUDE_CODE_VERSION="${CLAUDE_CODE_VERSION:-2.1.261}"
+OPENCODE_VERSION="${OPENCODE_VERSION:-1.18.25}"
 BD_VERSION="${BD_VERSION:-1.2.2}"
 DOLT_VERSION="${DOLT_VERSION:-2.3.1}"
 BATS_VERSION="${BATS_VERSION:-1.14.0}"
@@ -32,7 +33,7 @@ NODE_MAJOR="${NODE_MAJOR:-22}"
 
 export DEBIAN_FRONTEND="${DEBIAN_FRONTEND:-noninteractive}"
 
-PHASES="base node gh bats bd dolt claude orca user template"
+PHASES="base node gh bats bd dolt claude opencode orca user template"
 
 # The base apt set: only what Orca's own package does NOT already depend
 # on. The .deb pulls libgtk-3-0, libnss3, libnotify4, libxss1, libxtst6,
@@ -97,6 +98,23 @@ installed_bats() {
 installed_bd() {
     command -v bd >/dev/null 2>&1 || return 1
     bd version 2>/dev/null | sed -n 's/^bd version \([0-9][^ ]*\).*/\1/p' | head -1
+}
+
+# What npm has on disk, read from the package rather than by running the
+# binary: opencode is a Bun executable and Bun reads /proc at startup,
+# which the chroot verify-rootfs.sh uses does not have (the same
+# constraint phase_claude documents). Reading package.json is also what
+# keeps the phase idempotent in there -- a check that had to RUN opencode
+# would re-install on every pass.
+installed_opencode() {
+    local root pkg
+    command -v npm >/dev/null 2>&1 || return 1
+    command -v opencode >/dev/null 2>&1 || return 1
+    root="$(npm root -g 2>/dev/null)" || return 1
+    pkg="$root/opencode-ai"
+    [ -f "$pkg/package.json" ] || return 1
+    [ -x "$pkg/bin/opencode.exe" ] || return 1
+    jq -r '.version // empty' "$pkg/package.json" 2>/dev/null
 }
 
 installed_dolt() {
@@ -261,6 +279,60 @@ phase_claude() {
     fi
 }
 
+# --- opencode, the OpenRouter worker's CLI (pinned) ---------------------
+#
+# An Orca worker terminal running a non-Anthropic model is `opencode
+# --model openrouter/<vendor>/<model>` (.claude/plans/orca-orchestration.md).
+# It is a plain npm global install -- the package ships the per-platform
+# binary in its postinstall, so nothing here maps an arch by hand -- and
+# its config comes from the file config-sync writes into the agent home,
+# pointed at by OPENCODE_CONFIG in Orca's own settings
+# (scripts/container/seed-orca-state.sh). No key is baked in anywhere: the
+# config reads OPENROUTER_API_KEY from the environment the VM already
+# carries (claude-orca-qa2.7).
+phase_opencode() {
+    need_root opencode
+    if [ "$(installed_opencode || true)" = "$OPENCODE_VERSION" ]; then
+        say "opencode: ${OPENCODE_VERSION} already present"
+        return 0
+    fi
+    say "opencode: installing ${OPENCODE_VERSION}"
+    # --ignore-scripts, then place the platform binary by hand. The
+    # package's postinstall picks that binary by probing the machine and
+    # then RUNS it to confirm; under a chroot with no /proc the run fails,
+    # postinstall falls through to the musl build, npm rejects it
+    # (EBADPLATFORM) and the whole install exits 1. The optional
+    # dependency npm already resolved for this platform is the same
+    # binary, so copying it is the honest, probe-free version of what the
+    # postinstall would have done.
+    npm install -g --ignore-scripts --no-fund --no-audit "opencode-ai@${OPENCODE_VERSION}"
+
+    local root pkg binpkg src tmp=""
+    root="$(npm root -g)"
+    pkg="$root/opencode-ai"
+    # opencode spells the arch the way downloads.claude.ai does: x64/arm64.
+    # (x64 also has a `-baseline` build for CPUs without AVX2; the image is
+    # cross-built under QEMU, whose CPU says nothing about the Mac that
+    # will run it, so the normal build is the right default.)
+    binpkg="opencode-linux-$(claude_arch)"
+    src="$pkg/node_modules/$binpkg/bin/opencode"
+    [ -f "$src" ] || src="$root/$binpkg/bin/opencode"
+    if [ ! -f "$src" ]; then
+        tmp="$(mktemp -d)"
+        npm install --prefix "$tmp" --no-save --ignore-scripts --loglevel=error \
+            "${binpkg}@${OPENCODE_VERSION}"
+        src="$tmp/node_modules/$binpkg/bin/opencode"
+    fi
+    install -m 0755 "$src" "$pkg/bin/opencode.exe"
+    if [ -n "$tmp" ]; then rm -rf "$tmp"; fi
+
+    if [ -r /proc/self/cmdline ]; then
+        opencode --version
+    else
+        say "opencode: not running \`opencode --version\` (no /proc; npm's own integrity check is the proof)"
+    fi
+}
+
 # --- Orca Linux, pinned, from the release .deb --------------------------
 #
 # NOT the AppImage (claude-orca-qa2.6). An AppImage's runtime carries the
@@ -401,6 +473,13 @@ run_checks() {
         ck_fail "claude: want ${CLAUDE_CODE_VERSION} in /opt/claude/VERSION, got ${v:-none}"
     fi
 
+    v="$(installed_opencode 2>/dev/null || true)"
+    if [ "$v" = "$OPENCODE_VERSION" ]; then
+        ck_ok "opencode ${v}"
+    else
+        ck_fail "opencode: want ${OPENCODE_VERSION}, got ${v:-none}"
+    fi
+
     v="$(stamp /opt/orca/VERSION 2>/dev/null || true)"
     if [ "$v" = "$ORCA_VERSION" ] && [ -x /opt/orca/orca-ide ] \
         && [ -x /opt/orca/resources/bin/orca-ide ]; then
@@ -439,7 +518,7 @@ run_checks() {
 
 run_phase() {
     case "$1" in
-        base|node|gh|bats|bd|dolt|claude|orca|user|template) "phase_$1" ;;
+        base|node|gh|bats|bd|dolt|claude|opencode|orca|user|template) "phase_$1" ;;
         *) die "unknown phase: $1 (have: ${PHASES})" ;;
     esac
 }

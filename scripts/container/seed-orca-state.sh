@@ -26,6 +26,21 @@
 #                              flat KEY:value map is silently dropped by
 #                              normalizeTuiAgentEnvRecord. Orca merges its
 #                              own defaults (goose) back in on load.
+#                              agentDefaultEnv.opencode.OPENCODE_CONFIG is
+#                              the file config-sync.sh writes into the
+#                              agent home, named by its path INSIDE the VM
+#                              (.claude-dev/home is mounted /home/agent);
+#                              opencode reads its OpenRouter provider from
+#                              there rather than from argv.
+#   settings.agentDefaultArgs  how Orca launches each agent id
+#                              (claude-orca-qa2.11): `claude
+#                              --dangerously-skip-permissions` and
+#                              `opencode --auto`. The VM is the boundary,
+#                              so a worker terminal that stops for
+#                              permission prompts is just a hung worker.
+#   settings.nestedWorkerMaxDepth
+#                              1 -- an orchestrator delegates to workers;
+#                              workers do not delegate further.
 #
 # Where: Orca keeps its global state per profile, at
 # <user-data-dir>/profiles/<activeProfileId>/orca-data.json (verified
@@ -135,8 +150,16 @@ cat > "$tmp" <<JSON
     "agentDefaultEnv": {
       "claude": {
         "CLAUDE_ORCA_ROOT": "$e_project"
+      },
+      "opencode": {
+        "OPENCODE_CONFIG": "/home/agent/.config/opencode/opencode.json"
       }
-    }
+    },
+    "agentDefaultArgs": {
+      "claude": "--dangerously-skip-permissions",
+      "opencode": "--auto"
+    },
+    "nestedWorkerMaxDepth": 1
   }
 }
 JSON
