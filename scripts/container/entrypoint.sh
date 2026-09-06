@@ -32,6 +32,12 @@
 #   CLAUDE_ORCA_PROJECT_NAME  the beads prefix for `bd init` (default:
 #                 the project folder's basename).
 #   CLAUDE_ORCA_SKIP_BEADS=1  do not `bd init` the project folder.
+#   CLAUDE_ORCA_GIT_NAME / CLAUDE_ORCA_GIT_EMAIL   the Mac's global git
+#                 identity, copied into the agent's ~/.gitconfig on a
+#                 folder that has none. Optional; may be empty.
+#   CLAUDE_ORCA_SETUP         the install script (default:
+#                 <template root>/scripts/container/setup.sh).
+#   CLAUDE_ORCA_SKIP_SETUP=1  do not run it.
 #   CLAUDE_ORCA_WEBURL_TIMEOUT        seconds to wait for serve (120).
 #   CLAUDE_ORCA_ENTRYPOINT_NO_PRIVDROP=1   skip usermod/setpriv (tests,
 #                 and any run that is already unprivileged).
@@ -83,7 +89,53 @@ RUN_DIR="$PROJECT_DIR/.claude-dev/run"
 SERVE_LOG="$RUN_DIR/orca-serve.log"
 URL_FILE="$RUN_DIR/orca-web-url.txt"
 PORT_FILE="$RUN_DIR/port"
+SETUP_LOG="$RUN_DIR/setup.log"
 mkdir -p "$RUN_DIR" "$PROJECT_DIR/.claude-dev/home"
+
+# --- where the template is (startup v4, claude-orca-qa2.9) --------------
+#
+# The prebuilt image carries this repo at /opt/claude-orca. On a plain base
+# image there is nothing there and the only copy is the folder's own clone,
+# bind-mounted with the project -- which is also the copy this very script
+# was read from. Everything template-shaped (setup.sh, config/) comes from
+# the same root, so the two paths never mix.
+
+if [ -d /opt/claude-orca ]; then
+    TEMPLATE_ROOT="/opt/claude-orca"
+else
+    TEMPLATE_ROOT="$PROJECT_DIR/.claude-dev/template"
+fi
+log "template root: $TEMPLATE_ROOT"
+
+# --- install the toolchain (startup v4, claude-orca-qa2.9) --------------
+#
+# setup.sh is what the Dockerfile used to RUN at build time. Running it at
+# every start instead is what makes a plain ubuntu:24.04 a usable VM: on
+# the prebuilt image every phase is already satisfied and this costs
+# seconds, on a base image the first start installs everything. It runs
+# before the privilege drop because the phases need root (setup.sh checks
+# per phase itself, so an unprivileged run -- the native test run -- is
+# still safe).
+
+SETUP="${CLAUDE_ORCA_SETUP:-$TEMPLATE_ROOT/scripts/container/setup.sh}"
+log "setup: $SETUP"
+
+if [ "${CLAUDE_ORCA_SKIP_SETUP:-0}" = "1" ]; then
+    log "CLAUDE_ORCA_SKIP_SETUP=1; skipping setup"
+elif [ ! -x "$SETUP" ]; then
+    log "no setup script at $SETUP; skipping setup"
+else
+    # --check installs nothing and needs no root: it is only here to decide
+    # whether to warn that this start is going to take minutes.
+    if ! "$SETUP" --check >/dev/null 2>&1; then
+        log "First start: installing the toolchain inside the VM (several minutes; progress in .claude-dev/run/setup.log)"
+    fi
+    if "$SETUP" 2>&1 | tee -a "$SETUP_LOG"; then
+        log "setup done (log: $SETUP_LOG)"
+    else
+        die "setup.sh failed -- see $SETUP_LOG"
+    fi
+fi
 
 # --- who we run Orca as -------------------------------------------------
 #
@@ -153,9 +205,12 @@ mkdir -p "$USER_DATA_DIR"
 # <project>/.claude-dev/home/.claude, which IS the agent's own config dir
 # (the same directory, bind-mounted).
 
+# config-sync takes the dir ABOVE the template ($HOST/template/config), so
+# the mounted clone is passed as its own parent and the image's copy through
+# /opt/claude-orca-host/template, the symlink setup.sh's template phase made.
 sync_host=""
-if [ -d "$PROJECT_DIR/.claude-dev/template/config" ]; then
-    sync_host="$PROJECT_DIR/.claude-dev"
+if [ "$(basename "$TEMPLATE_ROOT")" = "template" ] && [ -d "$TEMPLATE_ROOT/config" ]; then
+    sync_host="$(dirname "$TEMPLATE_ROOT")"
 elif [ -d "$HOST_DIR/template/config" ]; then
     sync_host="$HOST_DIR"
 fi
@@ -167,7 +222,81 @@ if [ -n "$sync_host" ]; then
         warn "config-sync failed (continuing without it)"
     fi
 else
-    log "no template config found (looked in $PROJECT_DIR/.claude-dev and $HOST_DIR); skipping config-sync"
+    log "no template config found (looked in $TEMPLATE_ROOT and $HOST_DIR/template); skipping config-sync"
+fi
+
+# --- seed the project folder (startup v4, claude-orca-qa2.9) ------------
+#
+# The four things `claude-dev register` used to seed on the Mac. They are
+# all writes into the bind mount or the agent's HOME, so they belong to the
+# side that can actually see the result, and they run before `bd init`
+# because the snapshot restore is what that init must not clobber.
+# Everything here is idempotent: a folder is started many times.
+
+# Same entries and marker as launcher.sh's seed_gitignore: only the missing
+# lines are appended, under one marker, and nothing existing is touched.
+seed_gitignore() {
+    gitignore="$PROJECT_DIR/.gitignore"
+    touch "$gitignore" 2>/dev/null || return 0
+    if ! grep -qF "# claude_orca" "$gitignore"; then
+        {
+            echo ""
+            echo "# claude_orca"
+        } >> "$gitignore"
+    fi
+    for pattern in '.claude-dev/' '.claude-dev-snapshots/' '/claude-dev' \
+                   'Orca.app/' '.mcp.json' 'attachments/' '.claude/logs/'; do
+        grep -qxF "$pattern" "$gitignore" || echo "$pattern" >> "$gitignore"
+    done
+}
+
+# The other half of the launcher's beads round trip, and the reason it is
+# safe to run unprompted: only ever when the project has no issues.jsonl of
+# its own, so there is nothing here to lose. The Dolt DB rebuilds from the
+# JSONL, which is why only these two files travel.
+restore_beads_snapshot() {
+    snap_root="$PROJECT_DIR/.claude-dev-snapshots"
+    [ -d "$snap_root" ] || return 0
+    [ -f "$PROJECT_DIR/.beads/issues.jsonl" ] && return 0
+    latest="$(ls -1 "$snap_root" 2>/dev/null | sort -r | head -1)"
+    [ -n "$latest" ] || return 0
+    [ -f "$snap_root/$latest/issues.jsonl" ] || return 0
+
+    mkdir -p "$PROJECT_DIR/.beads"
+    cp "$snap_root/$latest/issues.jsonl" "$PROJECT_DIR/.beads/issues.jsonl"
+    if [ -f "$snap_root/$latest/metadata.json" ]; then
+        cp "$snap_root/$latest/metadata.json" "$PROJECT_DIR/.beads/metadata.json"
+    fi
+    log "restored beads snapshot $latest from $snap_root/$latest (the Dolt DB rebuilds from the JSONL)"
+}
+
+# A fresh .claude-dev/home has no git identity, so every commit inside the
+# VM fails. The Mac passes exactly its user.name and user.email; nothing
+# else follows the identity in, and an existing file always wins.
+seed_git_identity() {
+    gc="$AGENT_HOME/.gitconfig"
+    [ -f "$gc" ] && return 0
+    [ -n "${CLAUDE_ORCA_GIT_NAME:-}" ] || return 0
+    [ -n "${CLAUDE_ORCA_GIT_EMAIL:-}" ] || return 0
+    {
+        printf '[user]\n'
+        printf '\tname = %s\n' "$CLAUDE_ORCA_GIT_NAME"
+        printf '\temail = %s\n' "$CLAUDE_ORCA_GIT_EMAIL"
+    } > "$gc" || return 0
+    log "seeded git identity in $gc"
+}
+
+seed_gitignore
+mkdir -p "$PROJECT_DIR/attachments"
+restore_beads_snapshot
+seed_git_identity
+
+# Written as root when we are root: hand them to the agent, who is the one
+# that edits them from here on.
+if [ "$PRIVDROP" = "1" ]; then
+    chown "$AGENT_UID:$AGENT_GID" "$PROJECT_DIR/.gitignore" \
+        "$PROJECT_DIR/attachments" "$AGENT_HOME/.gitconfig" 2>/dev/null
+    chown -R "$AGENT_UID:$AGENT_GID" "$PROJECT_DIR/.beads" 2>/dev/null
 fi
 
 # --- seed Orca's own state, once (claude-orca-qa2.5) --------------------
