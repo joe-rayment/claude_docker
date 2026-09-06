@@ -39,8 +39,11 @@
 #                              so a worker terminal that stops for
 #                              permission prompts is just a hung worker.
 #   settings.nestedWorkerMaxDepth
-#                              1 -- an orchestrator delegates to workers;
-#                              workers do not delegate further.
+#                              2 -- an orchestrator may dispatch an "epic
+#                              coordinator" worker that runs orca-run over
+#                              its own executors (claude-orca-qa2.16,
+#                              plan "Parallel by default"); those
+#                              executors do not delegate further.
 #
 # Where: Orca keeps its global state per profile, at
 # <user-data-dir>/profiles/<activeProfileId>/orca-data.json (verified
@@ -159,7 +162,7 @@ cat > "$tmp" <<JSON
       "claude": "--dangerously-skip-permissions",
       "opencode": "--auto"
     },
-    "nestedWorkerMaxDepth": 1
+    "nestedWorkerMaxDepth": 2
   }
 }
 JSON
