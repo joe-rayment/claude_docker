@@ -25,6 +25,11 @@ setup() {
     # .claude-dev/run -- tier-set runs INSIDE the sandbox, and state/ is
     # write-denied there.
     mkdir -p "$CLAUDE_ORCA_ROOT/.claude-dev/run" "$CLAUDE_CONFIG_DIR/agents"
+    # claude-orca-qa2.20: the derived worker depends on whether an OpenRouter
+    # key is present, so every case that pins the claude rung needs a box with
+    # no key at all -- neither the env var nor the on-disk key file.
+    unset OPENROUTER_API_KEY
+    export TIER_OPENROUTER_KEY_FILE="$BATS_TEST_TMPDIR/no-such-openrouter.key"
     STATE_FILE="$CLAUDE_ORCA_ROOT/.claude-dev/run/tier.json"
     LOCAL_SETTINGS="$CLAUDE_CONFIG_DIR/settings.local.json"
     BASE_SETTINGS="$CLAUDE_CONFIG_DIR/settings.json"
@@ -495,6 +500,71 @@ seed_state() {  # seed_state <worker> <recon> -- a bound, unpinned, non-overdriv
     [ "$status" -eq 0 ]
     gate '{"tool_name":"Agent","tool_input":{"subagent_type":"scout","prompt":"p"}}'
     run jq -e '.hookSpecificOutput.updatedInput.model == "haiku"' <<<"$output"
+    [ "$status" -eq 0 ]
+}
+
+# ── the GLM-by-default worker (claude-orca-qa2.20) ──────────────────────────
+
+@test "tier derives an openrouter glm-5.3 opencode worker when an OpenRouter key is present and the claude rung when it is not" {
+    orca_up="$BATS_TEST_TMPDIR/orca-up"
+    cat > "$orca_up" <<'STUB'
+#!/bin/sh
+echo '{"ok":true,"result":{"runtime":{"reachable":true}}}'
+STUB
+    chmod +x "$orca_up"
+    keyfile="$BATS_TEST_TMPDIR/openrouter.key"
+    printf 'sk-or-v1-testkey\n' > "$keyfile"
+
+    # no key anywhere -> the claude rung, exactly as before
+    TIER_DERIVE="$DERIVE" tier_set fable
+    [ "$status" -eq 0 ]
+    run jq -e '.worker == "claude-sonnet-5" and (.roles.worker | .agent == "claude" and .model == "claude-sonnet-5")' "$STATE_FILE"
+    [ "$status" -eq 0 ]
+
+    # a key file -> the worker becomes the GLM rung on opencode, and with a
+    # reachable Orca runtime it lands on the orca backend
+    TIER_OPENROUTER_KEY_FILE="$keyfile" TIER_ORCA_PROBE_CMD="$orca_up" \
+        TIER_DERIVE="$DERIVE" tier_set fable
+    [ "$status" -eq 0 ]
+    run jq -e '.roles.worker | .backend == "orca" and .agent == "opencode" and .model == "openrouter/z-ai/glm-5.3"' "$STATE_FILE"
+    [ "$status" -eq 0 ]
+    # the v1 mirror follows, the top is untouched, and only the worker moved
+    run jq -e '.worker == "openrouter/z-ai/glm-5.3" and .top == "claude-fable-5"' "$STATE_FILE"
+    [ "$status" -eq 0 ]
+    run jq -e '.roles.recon | .backend == "subagent" and .agent == "claude" and .model == "claude-haiku-4-5-20251001"' "$STATE_FILE"
+    [ "$status" -eq 0 ]
+    run jq -e '.roles.checker | .agent == "claude" and .model == "inherit"' "$STATE_FILE"
+    [ "$status" -eq 0 ]
+
+    # tier-prime shows it
+    prime
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"worker=orca:opencode:openrouter/z-ai/glm-5.3"* ]]
+
+    # the env var alone is enough; with no Orca the vendor still holds and
+    # only the backend falls back
+    OPENROUTER_API_KEY=sk-or-v1-fromenv TIER_DERIVE="$DERIVE" tier_set opus
+    [ "$status" -eq 0 ]
+    run jq -e '.top == "claude-opus-5" and (.roles.worker | .backend == "subagent" and .agent == "opencode" and .model == "openrouter/z-ai/glm-5.3")' "$STATE_FILE"
+    [ "$status" -eq 0 ]
+
+    # an explicit /tier worker claude:<x> still overrides the default
+    OPENROUTER_API_KEY=sk-or-v1-fromenv TIER_DERIVE="$DERIVE" tier_set worker claude:sonnet
+    [ "$status" -eq 0 ]
+    run jq -e '.roles.worker | .agent == "claude" and .model == "claude-sonnet-5" and .pinned == true' "$STATE_FILE"
+    [ "$status" -eq 0 ]
+
+    # an explicit 3-arg pin is an explicit pin: the key never overrides it
+    OPENROUTER_API_KEY=sk-or-v1-fromenv TIER_DERIVE="$DERIVE" tier_set opus sonnet haiku
+    [ "$status" -eq 0 ]
+    run jq -e '.worker == "claude-sonnet-5" and (.roles.worker | .agent == "claude") and .pinned == true' "$STATE_FILE"
+    [ "$status" -eq 0 ]
+
+    # an empty key file is not a key
+    : > "$keyfile"
+    TIER_OPENROUTER_KEY_FILE="$keyfile" TIER_DERIVE="$DERIVE" tier_set fable
+    [ "$status" -eq 0 ]
+    run jq -e '.worker == "claude-sonnet-5" and (.roles.worker | .agent == "claude")' "$STATE_FILE"
     [ "$status" -eq 0 ]
 }
 
