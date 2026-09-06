@@ -318,6 +318,49 @@ ctr() {
     command container "$@"
 }
 
+# qa2.8: a stock gh OAuth token (repo, read:org, gist, workflow) can log in
+# to ghcr.io and still be denied the manifest, so the pull is worth
+# attempting only when the token actually carries read:packages. The scopes
+# come from the X-Oauth-Scopes response header of any authenticated API
+# call: `gh auth status` prints them too, but its wording moves between gh
+# versions, while the header does not. Header name matched
+# case-insensitively (lowercased under HTTP/2), value comma-separated.
+# Never prompts and never runs `gh auth refresh` -- that is interactive.
+gh_has_scope() {
+    local want="$1" scopes=""
+    command -v gh >/dev/null 2>&1 || return 1
+    scopes="$(gh api -i user 2>/dev/null \
+        | tr -d '\r' \
+        | tr '[:upper:]' '[:lower:]' \
+        | sed -n 's/^x-oauth-scopes:[[:space:]]*//p' \
+        | head -1 \
+        | tr -d '[:space:]')" || scopes=""
+    case ",$scopes," in
+        *",$want,"*) return 0 ;;
+    esac
+    return 1
+}
+
+# Which of the two paths this folder's image came from, for the doctor.
+IMAGE_SOURCE_NOTE="gh token lacks read:packages -- building the image locally (one-time, several minutes). For the prebuilt image next time: gh auth refresh -s read:packages"
+
+record_image_source() {
+    mkdir -p "$1/.claude-dev/run" 2>/dev/null || true
+    printf '%s\n' "$2" > "$1/.claude-dev/run/image-source" 2>/dev/null || true
+}
+
+# The fallback half of the pull, and the whole of the no-scope path: build
+# the pinned tag from the folder's own template clone.
+build_image_locally() {
+    local dir="$1" tmpl="$2" ref="$3"
+    if [ ! -f "$tmpl/Dockerfile" ]; then
+        echo "Error: no Dockerfile at $tmpl/Dockerfile -- re-run the bootstrap one-liner." >&2
+        return 1
+    fi
+    ctr build -t "$ref" -f "$tmpl/Dockerfile" "$tmpl"
+    record_image_source "$dir" built
+}
+
 orca_json() { printf '%s\n' "$1/.claude-dev/claude-orca.json"; }
 
 # One scalar out of claude-orca.json, empty when absent, null or unreadable.
@@ -570,6 +613,20 @@ JSON
     persist_port "$dir" "$port"
     echo "Project '$name' registered at $dir (port $port)"
 
+    ref="$(image_ref)"
+    tmpl="$dir/.claude-dev/template"
+    if [ ! -d "$tmpl" ]; then tmpl="$TEMPLATE_ROOT"; fi
+
+    # qa2.8: a token without read:packages can only ever be denied the
+    # manifest, so skip the login and the pull entirely rather than make
+    # the user watch both fail.
+    if ! gh_has_scope read:packages; then
+        echo "$IMAGE_SOURCE_NOTE"
+        build_image_locally "$dir" "$tmpl" "$ref" || return 1
+        cmd_open_v3 "$dir"
+        return $?
+    fi
+
     # The image is on GHCR, which needs a login even for a public package
     # when pulled by tag from a private-by-default account. The token goes
     # in on stdin: never in argv, never in the container log.
@@ -586,17 +643,12 @@ JSON
         fi
     fi
 
-    ref="$(image_ref)"
-    tmpl="$dir/.claude-dev/template"
-    if [ ! -d "$tmpl" ]; then tmpl="$TEMPLATE_ROOT"; fi
     echo "==> Pulling $ref"
-    if ! ctr image pull "$ref" >/dev/null 2>&1; then
+    if ctr image pull "$ref" >/dev/null 2>&1; then
+        record_image_source "$dir" pulled
+    else
         echo "Pull failed -- building the image from $tmpl/Dockerfile instead (this takes a few minutes)"
-        if [ ! -f "$tmpl/Dockerfile" ]; then
-            echo "Error: no Dockerfile at $tmpl/Dockerfile -- re-run the bootstrap one-liner." >&2
-            return 1
-        fi
-        ctr build -t "$ref" -f "$tmpl/Dockerfile" "$tmpl"
+        build_image_locally "$dir" "$tmpl" "$ref" || return 1
     fi
 
     cmd_open_v3 "$dir"
@@ -646,7 +698,7 @@ doctor_row() {
 # the CLI, the service, the image, the container, the port and the URL the
 # entrypoint published. Exits 2 on any finding, so it is usable in a script.
 cmd_doctor_v3() {
-    local dir="$PROJECT_SELF" rc=0 ref name state port url_file
+    local dir="$PROJECT_SELF" rc=0 ref name state port url_file src_file
     ref="$(image_ref)"
 
     if command -v container >/dev/null 2>&1; then
@@ -672,6 +724,15 @@ cmd_doctor_v3() {
     else
         doctor_row missing "image" "$ref (pull it: ./claude-dev --update)"
         rc=2
+    fi
+
+    # qa2.8: pulled or built -- the same tag can arrive either way, and
+    # which one it was is the first thing to know when the image is stale.
+    src_file="$dir/.claude-dev/run/image-source"
+    if [ -s "$src_file" ]; then
+        doctor_row ok "image source" "$(head -1 "$src_file")"
+    else
+        doctor_row warn "image source" "unknown -- no $src_file"
     fi
 
     if [ ! -f "$(orca_json "$dir")" ]; then
@@ -738,9 +799,16 @@ cmd_update_v3() {
     "$SCRIPT_DIR/link-bin.sh" "$HOST_DIR"
 
     ref="$(image_ref)"
-    echo "==> Pulling $ref"
-    if ! ctr image pull "$ref" >/dev/null 2>&1; then
-        echo "Warning: could not pull $ref -- keeping the image this folder already has" >&2
+    if gh_has_scope read:packages; then
+        echo "==> Pulling $ref"
+        if ctr image pull "$ref" >/dev/null 2>&1; then
+            record_image_source "$dir" pulled
+        else
+            echo "Warning: could not pull $ref -- keeping the image this folder already has" >&2
+        fi
+    else
+        echo "$IMAGE_SOURCE_NOTE"
+        build_image_locally "$dir" "$tmpl" "$ref" || return 1
     fi
 
     # Recreate rather than restart: a new image only takes effect in a new
