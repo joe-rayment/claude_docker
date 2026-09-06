@@ -1394,6 +1394,7 @@ JSON
 
     seed_gitignore "$dir"
     write_project_stub "$dir"
+    mkdir -p "$dir/attachments"
     restore_beads_snapshot "$dir" "$name"
     seed_git_identity "$dir"
 
