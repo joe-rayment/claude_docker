@@ -200,3 +200,282 @@ jobs:
             ${{ env.IMAGE }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  # The whole product on the platform it is actually for: a real Mac, a
+  # real Docker daemon, the real bootstrap.sh, the real launcher.sh, and a
+  # real container serving Orca over a real published port. Everywhere else
+  # bootstrap.sh is only ever run against tests/helpers/setup.bash's stubs
+  # on Linux, so nothing checked that it survives real bash 3.2 (macOS
+  # ships 3.2.57), real BSD userland (stat, readlink), `git clone` and
+  # `ln -sfn` on APFS, or Docker-on-macOS at all.
+  #
+  # NO SHIM. GitHub's macOS runners cannot run Docker Desktop headless, so
+  # the daemon comes from colima, which boots a real Linux VM and a real
+  # dockerd on the runner. If colima cannot start, this job FAILS and says
+  # the macOS path is unverified. It never substitutes a fake: a green that
+  # proves nothing is worse than an honest red. The "daemon is real" step
+  # below is the gate -- a trivial container must actually run before
+  # anything else is attempted.
+  #
+  # WHICH IMAGE, and the tradeoff: this job deliberately has no `needs:
+  # build`, so a Mac-side regression can never hold up the image push and
+  # is never hidden by an unrelated build failure. The cost is that the
+  # image it exercises is the multi-arch `:latest` from the PREVIOUS
+  # successful push, not the one built alongside it -- which is the right
+  # trade, because the image's own contents are what the linux job's two
+  # smoke stages prove, while what only a Mac can prove is the host side:
+  # the preflight, the clone, the argv, the mounts, the port forward.
+  # `:latest` is also exactly what a user's Mac pulls (IMAGE_TAG pins it),
+  # so the launcher does its own real GHCR login and pull here.
+  #
+  # macos-latest is Apple silicon, so the arm64 half of the multi-arch
+  # manifest is what gets run; the pull gate below fails loudly rather than
+  # letting the launcher fall back to its several-minute in-VM toolchain
+  # install, which would blow the timeout and prove nothing either way.
+  macos-docker-e2e:
+    runs-on: macos-latest
+    timeout-minutes: 75
+    env:
+      PROJECT: ${{ runner.temp }}/mac-project
+      CNAME: claude-orca-mac-project
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Preflight facts (recorded, not asserted)
+        run: |
+          sw_vers
+          uname -sm
+          /bin/bash --version | head -1
+          git --version
+          gh --version | head -1
+          jq --version
+
+      - name: Install colima and the docker CLI
+        run: |
+          set -euo pipefail
+          brew update --quiet || true
+          brew install colima docker
+          colima version
+          docker --version
+
+      # First boot downloads and unpacks a VM image, so this is the slow
+      # step. vz (Apple's Virtualization framework) with virtiofs is tried
+      # first because it is much faster; qemu is the fallback for a runner
+      # that cannot nest vz. $RUNNER_TEMP is mounted WRITABLE on purpose:
+      # colima mounts the home directory read-only by default, and the
+      # project folder is bind-mounted into the container and written to by
+      # the entrypoint (run/orca-web-url.txt, /home/agent).
+      - name: Start a real Linux VM and dockerd (colima)
+        timeout-minutes: 30
+        run: |
+          set -euo pipefail
+          mkdir -p "$PROJECT"
+
+          attempt() {
+            echo "==> colima start --vm-type=$1 --mount-type=$2"
+            colima delete --force >/dev/null 2>&1 || true
+            colima start --cpu 3 --memory 6 --disk 30 \
+                --vm-type "$1" --mount-type "$2" \
+                --mount "$RUNNER_TEMP:w"
+          }
+
+          if attempt vz virtiofs; then
+            echo "colima: up on the Apple Virtualization framework"
+          elif attempt qemu sshfs; then
+            echo "colima: up on qemu"
+          else
+            echo "macos FAIL: colima could not start a Linux VM on this runner." >&2
+            echo "  The macOS Docker path is UNVERIFIED by this run." >&2
+            echo "  No shim is substituted: a fake daemon would make this job lie." >&2
+            colima status || true
+            exit 1
+          fi
+          colima status
+          colima list
+
+      # The gate. Nothing past here is allowed to run against a pretend
+      # daemon, so the daemon has to prove itself by running a container.
+      - name: Prove the daemon is real (and that no shim is on PATH)
+        run: |
+          set -euo pipefail
+          fail() { echo "macos FAIL: $*" >&2; exit 1; }
+
+          resolved="$(command -v docker)" || fail "no docker on PATH"
+          case "$resolved" in
+            "$RUNNER_TEMP"/*|*shim*|*stub*) fail "docker resolves to $resolved" ;;
+          esac
+          echo "ok -- docker is $resolved"
+
+          docker info || fail "'docker info' failed: there is no daemon"
+          server="$(docker version --format '{{.Server.Version}}')" \
+            || fail "no Server section: the CLI is talking to nothing"
+          arch="$(docker version --format '{{.Server.Arch}}')"
+          os="$(docker version --format '{{.Server.Os}}')"
+          echo "ok -- daemon $server, $os/$arch"
+          [ "$os" = "linux" ] || fail "the daemon reports $os, expected linux"
+
+          # A real container, really run. This is what a shim cannot do,
+          # and what a daemon that answers `info` but cannot unshare
+          # namespaces also cannot do -- so the message keeps docker's own
+          # words rather than just the exit status.
+          out="$(docker run --rm alpine echo daemon-is-real 2>&1)" \
+            || fail "'docker run alpine' failed: $out"
+          [ "$out" = "daemon-is-real" ] \
+            || fail "'docker run alpine' printed '$out'"
+          echo "ok -- a container ran and printed: $out"
+
+      # Fail in a minute with a clear reason if the arm64 image is not
+      # published, rather than in forty with a timeout. The launcher does
+      # its own login and pull straight after; this only warms the cache.
+      - name: Gate -- the published multi-arch image must be pullable here
+        run: |
+          set -euo pipefail
+          echo "${{ secrets.GITHUB_TOKEN }}" \
+            | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker pull "$IMAGE:latest" || {
+            echo "macos FAIL: cannot pull $IMAGE:latest for $(uname -m)." >&2
+            echo "  The Mac path is unverified this run: without the prebuilt" >&2
+            echo "  image the launcher falls back to its in-VM toolchain install." >&2
+            exit 1
+          }
+          docker image inspect "$IMAGE:latest" \
+            --format 'pulled {{.Id}} {{.Os}}/{{.Architecture}}'
+
+      # The real one-liner's work, minus only the network clone: the
+      # template comes from this checkout instead of github.com, so the
+      # commit under test is the one that gets installed. Nothing else is
+      # substituted -- bootstrap runs its own preflight, its own
+      # `docker info`, its own `register`, its own `docker run`.
+      - name: Run the real bootstrap.sh against a throwaway project
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CLAUDE_ORCA_OPEN: "0"
+          CLAUDE_ORCA_WEBURL_TIMEOUT: "900"
+        run: |
+          set -euo pipefail
+          rm -rf "$PROJECT"
+          mkdir -p "$PROJECT"
+          git init -q -b main "$PROJECT"
+          git -C "$PROJECT" -c user.email=mac@example.com -c user.name=mac \
+              commit -q --allow-empty -m mac
+
+          CLAUDE_ORCA_TEMPLATE_URL="$GITHUB_WORKSPACE" \
+              bash "$GITHUB_WORKSPACE/bootstrap.sh" "$PROJECT"
+
+      - name: Assert the layout bootstrap.sh left behind
+        run: |
+          set -euo pipefail
+          host="$PROJECT/.claude-dev"
+          fail() { echo "macos FAIL: $*" >&2; exit 1; }
+
+          for d in template bin home; do
+              [ -d "$host/$d" ] || fail "no $host/$d"
+          done
+          [ -d "$host/template/.git" ] || fail "the template clone has no .git"
+          echo "ok -- .claude-dev/{template,bin,home} exist"
+
+          # A RELATIVE symlink into the clone beside it: the folder has to
+          # stay movable, and `claude-dev --update` must not need relinking.
+          [ -L "$host/bin/claude-dev" ] || fail "bin/claude-dev is not a symlink"
+          target="$(readlink "$host/bin/claude-dev")"
+          [ "$target" = "../template/scripts/launcher.sh" ] \
+              || fail "bin/claude-dev -> '$target', expected ../template/scripts/launcher.sh"
+          [ -x "$host/bin/claude-dev" ] || fail "bin/claude-dev is not executable"
+          echo "ok -- bin/claude-dev -> $target, executable"
+
+          json="$host/claude-orca.json"
+          [ -f "$json" ] || fail "no claude-orca.json"
+          jq -e '.version == 3' "$json" >/dev/null || fail "claude-orca.json is not version 3"
+          jq -e '.cpus == null and .memory == null and .extraMounts == []' "$json" >/dev/null \
+              || fail "claude-orca.json defaults are wrong: $(cat "$json")"
+          port="$(jq -r '.port' "$json")"
+          case "$port" in
+              ''|*[!0-9]*) fail "claude-orca.json port is '$port'" ;;
+          esac
+          [ "$port" -ge 6768 ] || fail "port $port is below the 6768 base"
+          [ "$(cat "$host/run/port")" = "$port" ] \
+              || fail "run/port disagrees with claude-orca.json"
+          echo "ok -- claude-orca.json v3, defaults null/[], port $port"
+
+          # The Mac side must leave nothing outside the folder.
+          [ ! -e "$HOME/.claude-dev" ] || fail "$HOME/.claude-dev was created"
+          echo "ok -- nothing installed outside the project folder"
+
+      # The same evidence the linux e2e stage demands, asserted on macOS:
+      # the container is up, it is the prebuilt image, the port is bound to
+      # loopback only, the handshake file is mode 600, and the URL serves
+      # Orca. The curl is retried because colima forwards the guest's
+      # published port to the host a moment after the bind.
+      - name: Assert the container is up and Orca answers on the published port
+        run: |
+          set -euo pipefail
+          fail() { echo "macos FAIL: $*" >&2; exit 1; }
+          url_file="$PROJECT/.claude-dev/run/orca-web-url.txt"
+
+          state="$(docker inspect -f '{{.State.Status}}' "$CNAME")" \
+              || fail "no container named $CNAME"
+          [ "$state" = "running" ] || fail "$CNAME is '$state', expected running"
+          echo "ok -- container $CNAME is running"
+
+          ran="$(docker inspect -f '{{.Config.Image}}' "$CNAME")"
+          [ "$ran" = "$IMAGE:latest" ] \
+              || fail "$CNAME runs '$ran', expected $IMAGE:latest (the runtime fallback was taken)"
+          echo "ok -- it runs the published $ran"
+
+          ports="$(docker inspect -f '{{json .NetworkSettings.Ports}}' "$CNAME")"
+          case "$ports" in
+              *127.0.0.1*) echo "ok -- published on 127.0.0.1 only: $ports" ;;
+              *) fail "the port is not bound to 127.0.0.1: $ports" ;;
+          esac
+
+          [ -s "$url_file" ] || fail "no $url_file (Orca published no web url)"
+          mode="$(stat -f '%Lp' "$url_file")"
+          [ "$mode" = "600" ] || fail "$url_file is mode $mode, expected 600"
+          url="$(head -1 "$url_file")"
+          [ -n "$url" ] || fail "$url_file is empty"
+          echo "ok -- web url published, mode $mode"
+
+          # The fragment carries the pairing code, so it is dropped before
+          # the request rather than sent to the server.
+          base="${url%%#*}"
+          body="$RUNNER_TEMP/mac-body.html"
+          code=""
+          waited=0
+          while [ "$waited" -lt 120 ]; do
+              code="$(curl -sSL -o "$body" -w '%{http_code}' --max-time 20 "$base" || true)"
+              case "$code" in 2??|3??) break ;; esac
+              sleep 5
+              waited=$((waited + 5))
+          done
+          case "$code" in
+              2??|3??) echo "ok -- GET $base -> $code after ${waited}s" ;;
+              *) fail "GET $base -> '$code' after ${waited}s" ;;
+          esac
+          grep -qi 'orca' "$body" \
+              || fail "the served page does not look like Orca: $(head -c 200 "$body")"
+          echo "ok -- the page it served is Orca Web"
+          echo "macos-docker-e2e: all checks passed"
+
+      - name: macOS diagnostics
+        if: failure()
+        run: |
+          echo "===== colima ====="
+          colima status || true
+          colima list || true
+          echo "===== docker ====="
+          docker version || true
+          docker ps -a || true
+          echo "===== .claude-dev/run ====="
+          for f in container.log setup.log orca-serve.log; do
+              echo "----- $f -----"
+              tail -200 "$PROJECT/.claude-dev/run/$f" 2>/dev/null || echo "(absent)"
+          done
+          echo "===== docker logs $CNAME ====="
+          docker logs --tail 300 "$CNAME" 2>&1 || true
+
+      - name: macOS teardown
+        if: always()
+        run: |
+          docker rm -f "$CNAME" >/dev/null 2>&1 || true
+          colima delete --force >/dev/null 2>&1 || true
+          rm -rf "$PROJECT" "$RUNNER_TEMP/mac-body.html"
