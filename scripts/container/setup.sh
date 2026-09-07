@@ -33,7 +33,41 @@ NODE_MAJOR="${NODE_MAJOR:-22}"
 
 export DEBIAN_FRONTEND="${DEBIAN_FRONTEND:-noninteractive}"
 
-PHASES="base node gh bats bd dolt claude opencode orca user template"
+# Where global npm packages go. `npm root -g` says /usr/lib/node_modules,
+# which the node .deb owns and the container layer holds -- so opencode's
+# 352 MB would be re-downloaded on every recreate. /usr/local is the
+# toolchain cache, so it is installed once per folder. Passed as --prefix
+# on the one install that needs it rather than written into an npmrc: the
+# npmrc for a /usr/local prefix would itself live in the cache.
+NPM_PREFIX="${NPM_PREFIX:-/usr/local}"
+npm_global_root() { printf '%s/lib/node_modules\n' "$NPM_PREFIX"; }
+
+PHASES="base node gh orcadeps bats bd dolt claude opencode orca user template"
+
+# WHERE EACH PHASE RUNS, and why the line falls here.
+#
+# A folder's toolchain cache is a bind mount (<project>/.claude-dev/
+# toolchain, mounted over /usr/local, /opt/Orca and /opt/claude), so it can
+# hold FILES and nothing else. apt state is not files: it is /var/lib/dpkg,
+# /etc, ld.so caches and a hundred paths across the filesystem, and a bind
+# mount cannot carry any of it. So the line is drawn at apt:
+#
+#   IMAGE_PHASES      everything apt-managed -- the base packages, node,
+#                     gh, and the GTK/at-spi/xvfb libraries Orca links
+#                     against. Slow (~340 s) and almost never changes.
+#   TOOLCHAIN_PHASES  the payload: six pinned tools that land under
+#                     /usr/local, /opt/Orca and /opt/claude and nowhere
+#                     else. ~1.2 GB, ~340 s, and the half that actually
+#                     churns -- a version bump here is a template pull,
+#                     not an image rebuild.
+#
+# A plain `setup.sh` still runs every phase in order, which is exactly what
+# a folder with no prebuilt image does on its first start.
+# `template` is in neither set on purpose: it only links a template that
+# has to be COPYed in first, so the Dockerfile runs it by name after the
+# copy, and a folder running the base image has nothing to link.
+IMAGE_PHASES="base node gh orcadeps user"
+TOOLCHAIN_PHASES="bats bd dolt claude opencode orca"
 
 # The base apt set: only what Orca's own package does NOT already depend
 # on. The .deb pulls libgtk-3-0, libnss3, libnotify4, libxss1, libxtst6,
@@ -125,7 +159,7 @@ installed_opencode() {
     local root pkg
     command -v npm >/dev/null 2>&1 || return 1
     command -v opencode >/dev/null 2>&1 || return 1
-    root="$(npm root -g 2>/dev/null)" || return 1
+    root="$(npm_global_root)"
     pkg="$root/opencode-ai"
     [ -f "$pkg/package.json" ] || return 1
     [ -x "$pkg/bin/opencode.exe" ] || return 1
@@ -320,10 +354,10 @@ phase_opencode() {
     # dependency npm already resolved for this platform is the same
     # binary, so copying it is the honest, probe-free version of what the
     # postinstall would have done.
-    npm install -g --ignore-scripts --no-fund --no-audit "opencode-ai@${OPENCODE_VERSION}"
+    npm install -g --prefix "$NPM_PREFIX" --ignore-scripts --no-fund --no-audit "opencode-ai@${OPENCODE_VERSION}"
 
     local root pkg binpkg src tmp=""
-    root="$(npm root -g)"
+    root="$(npm_global_root)"
     pkg="$root/opencode-ai"
     # opencode spells the arch the way downloads.claude.ai does: x64/arm64.
     # (x64 also has a `-baseline` build for CPUs without AVX2; the image is
@@ -348,6 +382,44 @@ phase_opencode() {
     fi
 }
 
+# --- Orca's apt dependencies (image phase) ------------------------------
+#
+# These used to arrive for free: the .deb was installed with apt at build
+# time and apt pulled its Depends. The payload now installs at first start
+# into the folder's toolchain cache, which is a bind mount and cannot hold
+# apt state -- so the libraries Orca links against have to be here, in the
+# image, hand-listed.
+#
+# Hand-listing invites drift, so phase_orca CHECKS it: it reads Depends
+# straight out of the .deb it just downloaded and dies naming any package
+# that is missing. The list is 24.04's real package names (the .deb asks
+# for libgtk-3-0 and libatspi2.0-0, which 24.04 ships as the t64 variants).
+#
+# xvfb matters and is why it is here: `orca-ide --serve` refuses to start
+# with no usable display server and spawns its own Xvfb when the binary is
+# present. An image without it is what failed CI's first smoke stage.
+ORCA_PACKAGES="libgtk-3-0t64 libnotify4 libnss3 libxss1 libxtst6 xdg-utils
+libatspi2.0-0t64 libuuid1 libsecret-1-0 python3 python3-gi
+gir1.2-atspi-2.0 at-spi2-core xdotool xclip xvfb"
+
+phase_orcadeps() {
+    need_root orcadeps
+    local missing=0 p
+    for p in $ORCA_PACKAGES; do
+        dpkg-query -W -f='${Status}' "$p" 2>/dev/null \
+            | grep -q '^install ok installed$' || { missing=1; break; }
+    done
+    if [ "$missing" -eq 0 ]; then
+        say "orca deps: already present"
+        return 0
+    fi
+    say "orca deps: installing the libraries Orca links against"
+    apt_update_or_die
+    # shellcheck disable=SC2086
+    apt-get install -y --no-install-recommends $ORCA_PACKAGES
+    apt_cleanup
+}
+
 # --- Orca Linux, pinned, from the release .deb --------------------------
 #
 # NOT the AppImage (claude-orca-qa2.6). An AppImage's runtime carries the
@@ -362,28 +434,71 @@ phase_opencode() {
 # binary is slow to start and proves nothing about the target machine;
 # `test -x` is the only claim a build can honestly make. The runtime check
 # that Orca actually serves belongs to scripts/container/smoke.sh.
+# The three names the rest of the system reaches Orca by. Two of them
+# (/opt/orca, /usr/bin/orca-ide) live outside the toolchain cache, so a
+# recreated container has neither even when the payload is right there --
+# they are re-made on every run, before anything asks a question about
+# what is installed.
+orca_relink() {
+    [ -d /opt/Orca ] || return 0
+    ln -sfn /opt/Orca /opt/orca
+    ln -sf /opt/Orca/resources/bin/orca-ide /usr/local/bin/orca
+    ln -sf /opt/Orca/resources/bin/orca-ide /usr/bin/orca-ide
+}
+
 phase_orca() {
     need_root orca
+    orca_relink
     if [ "$(stamp /opt/orca/VERSION || true)" = "$ORCA_VERSION" ] \
         && [ -x /opt/orca/orca-ide ]; then
         say "orca: ${ORCA_VERSION} already present"
         return 0
     fi
     say "orca: installing ${ORCA_VERSION}"
-    local debarch asset url tmp
+    local debarch asset url tmp dep installed missing=""
     debarch="$(deb_arch)"
     asset="orca-ide_${ORCA_VERSION}_${debarch}.deb"
     url="https://github.com/stablyai/orca/releases/download/v${ORCA_VERSION}/${asset}"
     tmp="$(mktemp -d)"
     curl -fsSL -o "${tmp}/orca.deb" "$url"
-    apt_update_or_die
-    apt-get install -y --no-install-recommends "${tmp}/orca.deb"
-    apt_cleanup
+
+    # The .deb's own Depends, checked against what the image actually has.
+    # phase_orcadeps hand-lists those packages because the payload no
+    # longer goes in through apt, and a hand-list drifts -- so the drift
+    # is caught HERE, by the package itself, naming what is missing
+    # instead of leaving Orca to die on a missing .so at first start.
+    # Provides counts: 24.04 satisfies libgtk-3-0 with libgtk-3-0t64.
+    installed=" $(dpkg-query -W -f='${Package} ${Provides}\n' 2>/dev/null \
+        | tr ',()' '   ' | tr -s ' ' | tr '\n' ' ') "
+    for dep in $(dpkg-deb --field "${tmp}/orca.deb" Depends 2>/dev/null \
+        | tr ',' '\n' | awk '{print $1}'); do
+        [ -n "$dep" ] || continue
+        case "$installed" in
+            *" $dep "*) ;;
+            *) missing="$missing $dep" ;;
+        esac
+    done
+    if [ -n "$missing" ]; then
+        die "orca ${ORCA_VERSION} depends on packages this image does not have:${missing}
+      Add them to ORCA_PACKAGES in this file (phase orcadeps) and rebuild the image."
+    fi
+
+    # dpkg-deb -x, not `apt-get install`: the payload belongs to the
+    # folder's toolchain cache, and apt would register a package in a dpkg
+    # database that dies with the container -- leaving the next start with
+    # an installed-but-unknown Orca. Extraction has no such memory, which
+    # is what makes the cache the single source of truth. /opt/Orca is a
+    # mount point, so its CONTENTS are replaced, never the directory.
+    dpkg-deb -x "${tmp}/orca.deb" "${tmp}/x"
+    test -x "${tmp}/x/opt/Orca/orca-ide"
+    mkdir -p /opt/Orca
+    find /opt/Orca -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+    cp -a "${tmp}/x/opt/Orca/." /opt/Orca/
     rm -rf "$tmp"
+
     test -x /opt/Orca/orca-ide
     test -x /opt/Orca/resources/bin/orca-ide
-    ln -sfn /opt/Orca /opt/orca
-    ln -sf /opt/Orca/resources/bin/orca-ide /usr/local/bin/orca
+    orca_relink
     echo "${ORCA_VERSION}" > /opt/orca/VERSION
 }
 
@@ -592,7 +707,8 @@ run_checks() {
 
 run_phase() {
     case "$1" in
-        base|node|gh|bats|bd|dolt|claude|opencode|orca|user|template) "phase_$1" ;;
+        base|node|gh|orcadeps|bats|bd|dolt|claude|opencode|orca|user|template)
+            "phase_$1" ;;
         *) die "unknown phase: $1 (have: ${PHASES})" ;;
     esac
 }
@@ -603,11 +719,29 @@ main() {
             run_checks
             ;;
         --list)
-            printf '%s\n' $PHASES
+            case "${2:-}" in
+                image)     printf '%s\n' $IMAGE_PHASES ;;
+                toolchain) printf '%s\n' $TOOLCHAIN_PHASES ;;
+                *)         printf '%s\n' $PHASES ;;
+            esac
             ;;
         --phase)
             [ -n "${2:-}" ] || die "--phase needs a name (have: ${PHASES})"
             run_phase "$2"
+            ;;
+        # The two halves of the line drawn at IMAGE_PHASES above: the
+        # Dockerfile bakes one, the entrypoint installs the other into the
+        # folder's toolchain cache on first start. Running both, in this
+        # order, is the same filesystem as running --all.
+        --image)
+            local ip
+            for ip in $IMAGE_PHASES; do run_phase "$ip"; done
+            say "image phases done"
+            ;;
+        --toolchain)
+            local tp
+            for tp in $TOOLCHAIN_PHASES; do run_phase "$tp"; done
+            say "toolchain phases done"
             ;;
         ""|--all)
             local p

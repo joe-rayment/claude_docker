@@ -148,7 +148,15 @@ if ! have gh; then
             sudo installer -pkg "$TMP_DIR/gh.pkg" -target / </dev/null || true
         fi
     fi
-    PATH="/usr/local/bin:/opt/homebrew/bin:$PATH"
+    # APPENDED, never prepended. Prepending puts the machine's own
+    # /usr/local/bin ahead of everything the caller chose, which is how
+    # tests/bootstrap.bats ended up driving a REAL docker daemon on a Mac:
+    # the case hides docker from PATH, bootstrap "installs" it through the
+    # brew stub, and this line then reached past the stub to the real
+    # /usr/local/bin/docker -- a real container, a real 11-minute toolchain
+    # install, and a suite that sat on it for 30 minutes. Appending still
+    # finds a freshly installed binary, which is all this line is for.
+    PATH="$PATH:/usr/local/bin:/opt/homebrew/bin"
     hash -r
 
     if ! have gh; then
@@ -230,7 +238,7 @@ if ! have docker; then
     if have brew; then
         step "Installing Docker Desktop (brew install --cask docker)"
         brew install --cask docker </dev/null || true
-        PATH="/usr/local/bin:/opt/homebrew/bin:$PATH"
+        PATH="$PATH:/usr/local/bin:/opt/homebrew/bin"   # appended: see above
         hash -r
     fi
 fi

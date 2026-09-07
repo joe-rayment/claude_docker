@@ -41,7 +41,21 @@ on the Mac runs an agent.
 The boundary is the container's. `claude-dev` runs one Docker container per
 folder from `ghcr.io/joe-rayment/claude_orca` (pinned by the `IMAGE_TAG` file),
 mounting the project at its own absolute path and `.claude-dev/home` as
-`/home/agent`, publishing Orca's port on `127.0.0.1` only. Inside,
+`/home/agent`, publishing Orca's port on `127.0.0.1` only. The image carries
+only what a bind mount cannot: apt state — the base packages, node, gh and
+the libraries Orca links against (`setup.sh`'s `IMAGE_PHASES`). The toolchain
+proper — Orca, Claude Code, opencode, bd, dolt, bats — installs on a folder's
+first start into `<project>/.claude-dev/toolchain`, mounted over `/usr/local`,
+`/opt/Orca` and `/opt/claude`, so it is installed once per folder, survives
+every recreate, and can be read and deleted from the Mac. What a recreate
+then costs depends on the image (measured on a Mac, 2026-09-07): with the
+prebuilt one, 3.7 s against ~11 minutes before, because both halves are
+already in hand; on the runtime path (`ubuntu:24.04`, where a token without
+`read:packages` lands a folder) 4m40s, because the apt half is reinstalled
+every time — dpkg state is exactly what a bind mount cannot carry. First
+starts pay ~3 minutes more than they used to on that path: 1.3 GB of
+toolchain now lands in the folder over virtiofs rather than in the image. `setup.sh --check` is what says the two halves add up
+to the same filesystem the fully baked image used to hand over. Inside,
 `scripts/container/entrypoint.sh` runs as PID 1, drops to the `agent` user,
 config-syncs, and starts `orca-ide --serve`; it writes the browser URL to
 `run/orca-web-url.txt` (mode 600 — the fragment carries a pairing code),

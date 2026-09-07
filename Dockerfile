@@ -29,10 +29,20 @@ ENV DEBIAN_FRONTEND=noninteractive \
 ARG CLAUDE_CODE_VERSION=2.1.261
 ARG ORCA_VERSION=1.4.197
 
-# Everything the image installs, in one layer that is cached until
+# Only the apt half (setup.sh's IMAGE_PHASES: base, node, gh, Orca's
+# runtime libraries, the agent user), in one layer that is cached until
 # setup.sh itself changes -- the repo copy below must NOT invalidate it.
+#
+# The other half -- Orca itself, Claude Code, opencode, bd, dolt, bats,
+# ~1.2 GB of pinned payload -- is NOT baked. The entrypoint installs it on
+# a folder's first start into <project>/.claude-dev/toolchain, which the
+# launcher mounts over /usr/local, /opt/Orca and /opt/claude, so it is
+# installed once per folder and survives every recreate. What that buys:
+# an image with no fast-moving parts in it, a build that no longer carries
+# them under QEMU, and a toolchain a person can see, read and delete from
+# the Mac without going anywhere near a registry.
 COPY scripts/container/setup.sh /opt/claude-orca-setup.sh
-RUN CLAUDE_CODE_VERSION=$CLAUDE_CODE_VERSION ORCA_VERSION=$ORCA_VERSION /opt/claude-orca-setup.sh
+RUN CLAUDE_CODE_VERSION=$CLAUDE_CODE_VERSION ORCA_VERSION=$ORCA_VERSION /opt/claude-orca-setup.sh --image
 
 # --- this template ------------------------------------------------------
 #

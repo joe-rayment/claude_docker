@@ -43,7 +43,10 @@ jobs:
         run: echo "short=$(echo ${{ github.sha }} | cut -c1-7)" >> "$GITHUB_OUTPUT"
 
       # Native amd64 first, loaded into the local daemon so the smoke stage
-      # can actually run it.
+      # can actually run it. What it holds is the apt half of setup.sh
+      # (IMAGE_PHASES) -- the toolchain itself installs on a folder's
+      # first start, so the smoke below is now also the proof that a first
+      # start works from this image.
       - name: Build linux/amd64
         uses: docker/build-push-action@v6
         with:
@@ -168,6 +171,53 @@ jobs:
               || fail "the served page does not look like Orca: $(head -c 200 "$body")"
           echo "ok -- the page it served is Orca Web"
           echo "e2e: all checks passed"
+
+      # The half of tests/toolchain-cache.bats that needs a daemon. The
+      # image carries apt and nothing else now, so the two claims that
+      # matter are: a folder's first start ends up with the same
+      # filesystem the baked image used to hand it, and a recreate reuses
+      # the folder's cache instead of installing all over again.
+      - name: e2e (the toolchain cache is what a recreate reuses)
+        run: |
+          set -euo pipefail
+          project="$RUNNER_TEMP/e2e-project"
+          name="claude-orca-e2e-project"
+          fail() { echo "e2e FAIL: $*" >&2; exit 1; }
+
+          # 1. The shape. setup.sh --check is the whole toolchain answering
+          #    for itself: every tool, its version, and the path it is at.
+          docker exec "$name" /opt/claude-orca/scripts/container/setup.sh --check \
+              > "$RUNNER_TEMP/shape-first.txt" 2>&1 \
+              || fail "setup.sh --check is not clean after the first start:
+          $(cat "$RUNNER_TEMP/shape-first.txt")"
+          echo "ok -- the shape after a first start is clean:"
+          sed 's/^/     /' "$RUNNER_TEMP/shape-first.txt"
+
+          # 2. The cache is in the FOLDER, where a person can see it.
+          for d in usr-local opt-Orca opt-claude; do
+              [ -d "$project/.claude-dev/toolchain/$d" ] \
+                  || fail "no toolchain cache at .claude-dev/toolchain/$d"
+          done
+          [ -x "$project/.claude-dev/toolchain/opt-Orca/orca-ide" ] \
+              || fail "the cache has no Orca binary in it"
+          echo "ok -- the toolchain is in the folder: $(du -sh "$project/.claude-dev/toolchain" | cut -f1)"
+
+          # 3. The recreate. Same folder, new container: every phase must
+          #    say "already present", and the shape must not move.
+          docker rm -f "$name" >/dev/null
+          start="$(date +%s)"
+          ( cd "$project" && CLAUDE_ORCA_OPEN=0 ./claude-dev >/dev/null )
+          echo "ok -- recreated and serving again in $(( $(date +%s) - start ))s"
+
+          installed="$(grep -c 'installing' "$project/.claude-dev/run/setup.log" || true)"
+          tail -14 "$project/.claude-dev/run/setup.log" | grep -q 'all phases done' \
+              || fail "setup.sh did not finish on the recreate"
+          docker exec "$name" /opt/claude-orca/scripts/container/setup.sh --check \
+              > "$RUNNER_TEMP/shape-again.txt" 2>&1 \
+              || fail "setup.sh --check is not clean after the recreate"
+          diff "$RUNNER_TEMP/shape-first.txt" "$RUNNER_TEMP/shape-again.txt" \
+              || fail "the recreate changed the shape of the toolchain"
+          echo "ok -- the recreate reused the cache and the shape is unchanged"
 
       - name: e2e diagnostics
         if: failure()

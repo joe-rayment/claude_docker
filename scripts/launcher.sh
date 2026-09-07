@@ -830,20 +830,45 @@ container_state() {
 # the fragment carries a pairing code) once Orca is serving. That file is
 # the handshake between the two halves: everything before it is the Mac
 # starting a VM, everything after is a browser talking to Orca.
-# How long to wait for that handshake. A pulled image already carries the
-# toolchain, so Orca serves in seconds; the runtime path installs it on
-# first start -- minutes of apt and npm before serve is even spawned.
-# Waiting 120 s there kills a folder that is working fine (a real Mac run
-# on 2026-09-06 died at 2m12s mid-install); smoke.sh has always drawn the
-# same distinction.
+# How long to wait for that handshake, and the question that decides it:
+# is this start going to INSTALL something? Not "which image is it" --
+# that used to be the same question and no longer is. The image carries
+# apt and nothing else now, so a folder whose toolchain cache is empty
+# installs Orca, Claude Code and the rest on this start whether the image
+# was pulled or not; a folder whose cache is full serves in seconds either
+# way. Waiting 120 s on an install kills a folder that is working fine (a
+# real Mac run on 2026-09-06 died at 2m12s mid-install).
+#
+# There are TWO halves that can be missing, and either one costs minutes:
+#
+#   the toolchain  <project>/.claude-dev/toolchain, filled on first start.
+#                  Its Orca binary is the flag -- the last phase to land,
+#                  so its absence means this start installs.
+#   the apt half   baked into a prebuilt image. A folder on the runtime
+#                  path (plain ubuntu:24.04, where a token without
+#                  read:packages lands) reinstalls it on EVERY recreate,
+#                  because dpkg state cannot live in a bind mount.
+#
+# So the short timeout needs both to be in hand. Measured the hard way on
+# a Mac (2026-09-07): with only the toolchain checked, a runtime-path
+# recreate got 120 s for a job that needs ~5 minutes of apt, and the
+# launcher gave up on a container that was working fine.
+toolchain_cached() {
+    [ -x "$1/.claude-dev/toolchain/opt-Orca/orca-ide" ]
+}
+
+start_installs_nothing() {
+    toolchain_cached "$1" && [ "$(image_source "$1")" != "runtime" ]
+}
+
 weburl_timeout() {
     local dir="$1"
     if [ -n "${CLAUDE_ORCA_WEBURL_TIMEOUT:-}" ]; then
         printf '%s\n' "$CLAUDE_ORCA_WEBURL_TIMEOUT"
-    elif [ "$(image_source "$dir")" = "runtime" ]; then
-        printf '%s\n' "${CLAUDE_ORCA_WEBURL_TIMEOUT_RUNTIME:-1800}"
-    else
+    elif start_installs_nothing "$dir"; then
         printf '%s\n' "120"
+    else
+        printf '%s\n' "${CLAUDE_ORCA_WEBURL_TIMEOUT_RUNTIME:-1800}"
     fi
 }
 
@@ -862,7 +887,7 @@ wait_for_web_url() {
     file="$dir/.claude-dev/run/orca-web-url.txt"
     setup_log="$dir/.claude-dev/run/setup.log"
     timeout="$(weburl_timeout "$dir")"
-    if [ "$(image_source "$dir")" = "runtime" ]; then runtime=1; fi
+    if ! start_installs_nothing "$dir"; then runtime=1; fi
     while [ "$waited" -lt "$timeout" ]; do
         if [ -s "$file" ]; then
             url="$(head -1 "$file")"
@@ -886,8 +911,8 @@ wait_for_web_url() {
         if [ "$waited" = "0" ]; then
             echo "Waiting for Orca to come up inside the container..." >&2
         fi
-        # On the runtime path the silence is the whole problem: setup.sh is
-        # working, so show its last line every 15 s rather than nothing.
+        # While the toolchain installs, the silence is the whole problem:
+        # setup.sh is working, so show its last line every 15 s.
         if [ -n "$runtime" ] && [ "$((waited % 15))" = "0" ] && [ -s "$setup_log" ]; then
             line="$(tail -1 "$setup_log" 2>/dev/null)"
             if [ -n "$line" ] && [ "$line" != "$last" ]; then
@@ -958,6 +983,29 @@ RUNIT
 # no longer does is sit in the folder where the Mac can see it.
 state_volume() { printf '%s-orca-state\n' "$1"; }
 
+# --- the folder's toolchain cache ---------------------------------------
+#
+# The image carries the apt half of the install and nothing else (see
+# setup.sh's IMAGE_PHASES). The other half -- Orca, Claude Code, opencode,
+# bd, dolt, bats: ~1.2 GB of pinned payload -- is installed by the
+# entrypoint on a folder's first start, into <project>/.claude-dev/
+# toolchain, mounted here over the three paths those tools live at. So the
+# container's filesystem after setup.sh is the same as when the image
+# baked them, and `setup.sh --check` says so.
+#
+# In the folder rather than a docker volume because that is the half a
+# person has to be able to look at: on a Mac it is `ls`, `du` and `rm -rf`
+# away, and it goes when the folder goes. Measured on a real Mac
+# (2026-09-07, Docker Desktop 29, 529 MB / 3620 files): copying the
+# payload in costs 1.6 s against 0.5 s on the container filesystem, a
+# metadata walk 172 ms against 5 ms, and launching the Orca binary about
+# 70 ms more. Virtiofs is slower in ratio and irrelevant in seconds --
+# against ~5 minutes of reinstalling the toolchain on every recreate.
+#
+# One mount per path, never /opt itself: /opt also holds /opt/claude-orca,
+# which IS the image's copy of this template.
+TOOLCHAIN_MOUNTS="usr-local:/usr/local opt-Orca:/opt/Orca opt-claude:/opt/claude"
+
 container_dns() {
     local dns=""
     if [ -n "${CLAUDE_ORCA_DNS+x}" ]; then
@@ -992,6 +1040,12 @@ container_create() {
     # Never open a stale pairing URL from a previous container.
     rm -f "$dir/.claude-dev/run/orca-web-url.txt"
 
+    # The toolchain cache, made before the run so docker mounts real
+    # directories rather than creating root-owned ones of its own.
+    for mount in $TOOLCHAIN_MOUNTS; do
+        mkdir -p "$dir/.claude-dev/toolchain/${mount%%:*}"
+    done
+
     set -- run -d --name "$name" \
         --volume "$dir:$dir" \
         --volume "$dir/.claude-dev/home:/home/agent" \
@@ -1005,6 +1059,11 @@ container_create() {
         -e "CLAUDE_ORCA_PROJECT_NAME=$(derive_project_name "$dir")" \
         -e "CLAUDE_ORCA_GIT_NAME=$(git_identity_name)" \
         -e "CLAUDE_ORCA_GIT_EMAIL=$(git_identity_email)"
+
+    for mount in $TOOLCHAIN_MOUNTS; do
+        set -- "$@" --volume \
+            "$dir/.claude-dev/toolchain/${mount%%:*}:${mount#*:}"
+    done
 
     # qa2.7: only when the folder has a key -- an empty OPENROUTER_API_KEY
     # would read as "set" to the delegate routes. The value is in argv for

@@ -138,7 +138,16 @@ registration restores it.
 | the project folder, at its real absolute path, read-write | — |
 | `<project>/.claude-dev/home` as `/home/agent`: Claude's credentials, the git identity | — |
 | Orca's own `~/.config/orca`, in a docker volume named after the container | — |
+| the toolchain (Orca, Claude Code, opencode, bd, dolt, bats) in `<project>/.claude-dev/toolchain` | visible: it is in the folder |
 | any extra mounts you name, always read-only | — |
+
+The image is deliberately thin: it carries apt state — base packages, node,
+gh, and the GTK/at-spi/xvfb libraries Orca links against — because that is
+the half a bind mount cannot hold. Everything else installs on a folder's
+first start (a few minutes, progress in `.claude-dev/run/setup.log`) into
+`.claude-dev/toolchain`, and every later start reuses it. Version pins for
+those tools live in `scripts/container/setup.sh`, so moving one is a
+template pull rather than an image rebuild.
 
 Orca's user-data dir is the one thing that cannot live in the folder: it
 holds the unix sockets Orca chmods and hard-links on startup, and a macOS
