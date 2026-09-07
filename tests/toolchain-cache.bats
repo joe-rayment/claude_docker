@@ -1,43 +1,41 @@
 #!/usr/bin/env bats
 #
-# The line between what an image bakes and what a folder installs.
+# The line between what the image bakes and what a folder installs.
 #
-# The image used to carry the whole toolchain: ~1.9 GB, ~11 minutes of
-# install, and 15m41s of every CI run spent carrying it through QEMU for
-# an arm64 image (run 34138260827's own step timings). All of it rebuilt
-# and republished whenever any pin moved, and none of it visible from the
-# Mac -- a version bump meant a CI round trip before a folder could see
-# the result.
+# It has moved twice, and the second move is the one that stuck.
 #
-# So the line is drawn at apt, because that is where it can be drawn:
+# Until 2026-09-07 the image carried the whole toolchain: ~1.9 GB, and
+# 15m41s of every CI run spent carrying it through QEMU for the arm64 leg.
+# So it was split at apt -- apt state in the image, the six pinned tools
+# into <project>/.claude-dev/toolchain on a folder's first start -- on the
+# reasoning that a bind mount can hold files and cannot hold dpkg state.
 #
-#   IMAGE_PHASES      base, node, gh, Orca's GTK/at-spi/xvfb libraries,
-#                     the agent user. apt state -- /var/lib/dpkg, /etc,
-#                     ld caches -- which no bind mount can hold.
-#   TOOLCHAIN_PHASES  bats, bd, dolt, claude, opencode, orca. Files, under
-#                     /usr/local, /opt/Orca and /opt/claude and nowhere
-#                     else, which a bind mount holds perfectly well.
+# Then the split was measured on a real Mac, and the reasoning was right
+# about bind mounts and wrong about the cost. A folder's FIRST start went
+# to ~18 minutes, of which 15.5 were setup.sh downloading 1.3 GB of
+# payload at the network's 2.5 MB/s -- once per folder, with nothing
+# shared between folders, because a per-folder cache is by definition not
+# a cache anyone else can use. Docker's own layer cache had been doing
+# exactly that job for free. Worse, installing into a bind mount is what
+# broke the macOS CI job outright: colima's virtiofs refuses the chown
+# (`install: cannot change ownership of '/usr/local/bin/dolt'`), so the
+# one automated check of the Mac path could never pass.
 #
-# The second set installs into <project>/.claude-dev/toolchain on a
-# folder's first start, mounted over those three paths -- so it survives
-# every recreate, a person can read and delete it from the Mac, and the
-# filesystem Orca runs on is the same one the baked image produced.
+# So the toolchain is baked again, and the folder carries a cache only on
+# the runtime path -- plain ubuntu:24.04, where a token that cannot pull
+# the private image lands and where there is no baked anything to reuse.
+# One pull per Mac, layer-cached and shared by every folder; a pin bump
+# re-pulls the layers below it and no more, which is what the per-phase
+# RUN ordering in the Dockerfile is for.
 #
-# Measured on a real Mac, 2026-09-07: with the prebuilt image, a recreate
-# went from ~11 minutes to 3.7 s, every phase reporting "already present".
-# On the runtime path (plain ubuntu:24.04) the apt half still reinstalls,
-# because dpkg state is exactly what a bind mount cannot carry.
+# The phase partition itself is unchanged and still load-bearing: --image
+# and --toolchain are how the Dockerfile bakes in two halves, and how a
+# runtime-path folder installs the half it is missing.
 #
-# One thing did move, deliberately: opencode installs with --prefix
-# /usr/local instead of npm's default /usr/lib/node_modules, so its 352 MB
-# lands in the cache. Same binary, same PATH, same version -- a different
-# node_modules root, and `installed_opencode` looks where it installs.
-#
-# These cases are the static half: the partition, the Dockerfile, and the
-# mounts. The half that needs a real container -- that the shape after
-# setup.sh matches the shape the old image had (`setup.sh --check`), and
-# that a recreate says "already present" instead of installing again --
-# is in .github/workflows/image.yml, which has a daemon to prove it with.
+# These cases are the static half: the partition, the Dockerfile, the
+# mounts and the wait. The half that needs a real container -- that the
+# shape after setup.sh is the shape the image promised -- is in
+# .github/workflows/image.yml and tests/mac-e2e.sh, which have a daemon.
 #
 # Assertions are functions, never a bare `[[ ]]`: under macOS bash 3.2 a
 # failing `[[ ]]` does not fail its test (see run-tests.sh).
@@ -98,29 +96,76 @@ lacks() {
     [ "$toolchain" = "bats bd claude dolt opencode orca " ]
 }
 
-@test "the Dockerfile bakes the image phases only, and never the toolchain" {
+@test "the Dockerfile bakes the apt half in one layer and each toolchain phase in its own" {
     run grep -qE '^RUN .*/opt/claude-orca-setup\.sh --image$' "$DOCKERFILE"
     [ "$status" -eq 0 ]
 
-    # The old form ran every phase, which is what baked 1.2GB of payload.
-    run grep -qE '^RUN .*claude-orca-setup\.sh$' "$DOCKERFILE"
-    [ "$status" -ne 0 ]
+    # One RUN per toolchain phase, not one RUN for all six: a pin bump
+    # then rebuilds that layer and the ones after it, never the whole
+    # 1.3 GB.
+    local p
+    for p in $(bash "$SETUP" --list toolchain); do
+        run grep -qE "^RUN .*claude-orca-setup\.sh --phase $p\$" "$DOCKERFILE"
+        [ "$status" -eq 0 ] || { echo "no RUN for toolchain phase $p"; return 1; }
+    done
 
     # `template` still runs by name after the repo is copied in.
     run grep -qE '^RUN /opt/claude-orca/scripts/container/setup\.sh --phase template' "$DOCKERFILE"
     [ "$status" -eq 0 ]
 }
 
-@test "the launcher mounts the folder's toolchain cache over the three paths the tools live at" {
+@test "the repo copy comes after every toolchain layer, so editing a script rebuilds none of them" {
+    # COPY . /opt/claude-orca changes on every commit. Above the toolchain
+    # RUNs it would invalidate all of them, and the image would cost a
+    # full payload rebuild for a one-line comment.
+    local copy_at last_phase_at p at
+    copy_at="$(grep -n '^COPY \. /opt/claude-orca$' "$DOCKERFILE" | head -1 | cut -d: -f1)"
+    [ -n "$copy_at" ]
+
+    last_phase_at=0
+    for p in $(bash "$SETUP" --list toolchain); do
+        at="$(grep -n -- "--phase $p\$" "$DOCKERFILE" | head -1 | cut -d: -f1)"
+        [ -n "$at" ] || { echo "no RUN for toolchain phase $p"; return 1; }
+        [ "$at" -gt "$last_phase_at" ] && last_phase_at="$at"
+    done
+
+    [ "$copy_at" -gt "$last_phase_at" ] \
+        || { echo "COPY . /opt/claude-orca is at line $copy_at, above a toolchain RUN at $last_phase_at"; return 1; }
+}
+
+@test "a folder on the prebuilt image mounts no toolchain cache, and grows no toolchain directory" {
+    # The image carries the payload now. Mounting a folder directory over
+    # /usr/local would hide it and hand the folder a 15-minute install it
+    # does not need.
     mkdir -p "$PROJECT_DIR"
     local primary line
     primary="$(abspath "$PROJECT_DIR")"
     run make_project_v3 "$primary"
     [ "$status" -eq 0 ]
+    [ "$(cat "$primary/.claude-dev/run/image-source")" = "pulled" ]
 
     line="$(grep '^run ' "$CONTAINER_STUB_LOG" | head -1)"
     [ -n "$line" ]
+    lacks "$line" "toolchain"
 
+    [ ! -d "$primary/.claude-dev/toolchain" ] \
+        || { echo "a pulled folder grew a toolchain directory"; return 1; }
+}
+
+@test "a folder on the runtime path mounts the cache it installs into, and the launcher makes it first" {
+    # No prebuilt image within reach: plain ubuntu:24.04, and setup.sh
+    # installs the payload at first start -- into the folder, mounted over
+    # the three paths those tools live at, so a recreate reuses it.
+    mkdir -p "$PROJECT_DIR"
+    local primary line d
+    primary="$(abspath "$PROJECT_DIR")"
+    export CLAUDE_ORCA_TEST_PULL_FAIL=1
+    run make_project_v3 "$primary"
+    [ "$status" -eq 0 ]
+    [ "$(cat "$primary/.claude-dev/run/image-source")" = "runtime" ]
+
+    line="$(grep '^run ' "$CONTAINER_STUB_LOG" | head -1)"
+    [ -n "$line" ]
     contains "$line" "--volume $primary/.claude-dev/toolchain/usr-local:/usr/local"
     contains "$line" "--volume $primary/.claude-dev/toolchain/opt-Orca:/opt/Orca"
     contains "$line" "--volume $primary/.claude-dev/toolchain/opt-claude:/opt/claude"
@@ -129,18 +174,37 @@ lacks() {
     # image's copy of this template.
     run grep -qE -- "--volume [^ ]*toolchain[^ ]*:/opt " <<<"$line"
     [ "$status" -ne 0 ]
-}
 
-@test "the launcher creates the cache directories before the run, so docker does not" {
-    mkdir -p "$PROJECT_DIR"
-    local primary d
-    primary="$(abspath "$PROJECT_DIR")"
-    run make_project_v3 "$primary"
-    [ "$status" -eq 0 ]
-
+    # Made by the launcher, so docker does not create root-owned ones.
     for d in usr-local opt-Orca opt-claude; do
         [ -d "$primary/.claude-dev/toolchain/$d" ]
     done
+}
+
+@test "the wait is chosen by which image the folder runs, and a cache cannot shorten it" {
+    # Keying the short timeout on a folder's cache is what killed a
+    # working container at 2m12s on a real Mac. The question is only ever
+    # "does this start install anything", and the image answers it.
+    local fns probe out
+    fns="$(sed -n '/^image_source()/,/^}$/p;/^weburl_timeout()/,/^}$/p' "$LAUNCHER")"
+    [ -n "$fns" ]
+    probe="$BATS_TEST_TMPDIR/timeout-probe.sh"
+    mkdir -p "$BATS_TEST_TMPDIR/pulled/.claude-dev/run" \
+             "$BATS_TEST_TMPDIR/runtime/.claude-dev/run" \
+             "$BATS_TEST_TMPDIR/runtime/.claude-dev/toolchain/opt-Orca"
+    printf 'pulled\n'  > "$BATS_TEST_TMPDIR/pulled/.claude-dev/run/image-source"
+    printf 'runtime\n' > "$BATS_TEST_TMPDIR/runtime/.claude-dev/run/image-source"
+    # A full cache on the runtime folder: it still installs apt every time.
+    printf '#!/bin/sh\n' > "$BATS_TEST_TMPDIR/runtime/.claude-dev/toolchain/opt-Orca/orca-ide"
+
+    {
+        printf '%s\n' 'set -uo pipefail'
+        printf '%s\n' "$fns"
+        printf '%s\n' 'printf "pulled=%s runtime=%s\n" "$(weburl_timeout "$1")" "$(weburl_timeout "$2")"'
+    } > "$probe"
+    out="$(bash "$probe" "$BATS_TEST_TMPDIR/pulled" "$BATS_TEST_TMPDIR/runtime")"
+    [ "$out" = "pulled=120 runtime=1800" ] \
+        || { echo "want 'pulled=120 runtime=1800', got '$out'"; return 1; }
 }
 
 @test "orca's already-present check is answerable from the cache alone" {
