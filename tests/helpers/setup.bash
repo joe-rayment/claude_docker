@@ -310,7 +310,7 @@ write_stub_docker() {
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "${CONTAINER_STUB_LOG:-/dev/null}"
 state="${CONTAINER_STUB_STATE:-${TMPDIR:-/tmp}/container-stub}"
-mkdir -p "$state/containers"
+mkdir -p "$state/containers" "$state/volumes"
 
 # `docker image inspect REF` -- two words, so it is matched before the
 # one-word dispatch below.
@@ -372,6 +372,20 @@ case "$cmd" in
         done
         [ -n "$name" ] || { echo "docker: run needs --name" >&2; exit 1; }
         echo running > "$state/containers/$name"
+        # A --volume whose source is not a path is a NAMED volume, and
+        # docker creates it on demand here. It outlives `docker rm`, so
+        # the stub keeps it in its own directory, not the container's.
+        prev=""
+        for a in "$@"; do
+            case "$prev" in
+                -v|--volume)
+                    case "$a" in
+                        /*) ;;
+                        *)  : > "$state/volumes/${a%%:*}" ;;
+                    esac ;;
+            esac
+            prev="$a"
+        done
         # Stands in for the entrypoint (scripts/container/entrypoint.sh):
         # Orca comes up and publishes its pairing URL and bound port.
         # CLAUDE_ORCA_TEST_NO_URL: the container starts but never publishes
@@ -400,6 +414,20 @@ case "$cmd" in
             [ -e "$f" ] || continue
             printf '%-38s%s\n' "$(basename "$f")" "$(cat "$f")"
         done
+        exit 0 ;;
+    volume)
+        sub="$1"; shift
+        case "$sub" in
+            create)  : > "$state/volumes/$1"; printf '%s\n' "$1"; exit 0 ;;
+            inspect) [ -f "$state/volumes/$1" ] || exit 1; printf '[]\n'; exit 0 ;;
+            rm)      [ -f "$state/volumes/$1" ] || exit 1
+                     rm -f "$state/volumes/$1"; exit 0 ;;
+            ls)      for f in "$state"/volumes/*; do
+                         [ -e "$f" ] || continue
+                         basename "$f"
+                     done
+                     exit 0 ;;
+        esac
         exit 0 ;;
     exec|logs)
         exit 0 ;;
