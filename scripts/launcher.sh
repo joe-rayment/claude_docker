@@ -1400,6 +1400,20 @@ cmd_update_v3() {
 
     echo "==> Updating the template at $tmpl"
     before="$(git -C "$tmpl" rev-parse HEAD 2>/dev/null || echo unknown)"
+    # Same managed clone, same abort, same answer as bootstrap.sh: a local
+    # change here is something that got written into a directory the tool
+    # owns, and `pull --ff-only` refuses to move past it. Stash it, name
+    # the stash, and say how to get it back.
+    if [ -n "$(git -C "$tmpl" status --porcelain --untracked-files=no 2>/dev/null)" ]; then
+        echo "  the template clone has local changes; stashing them:"
+        git -C "$tmpl" status --short --untracked-files=no | sed 's/^/    /'
+        if git -C "$tmpl" stash push --quiet \
+                -m "claude-orca update $(date -u +%Y-%m-%dT%H:%M:%SZ)"; then
+            echo "    stashed -- recover with: git -C $tmpl stash pop"
+        else
+            echo "    could not stash them; the pull below may fail" >&2
+        fi
+    fi
     git -C "$tmpl" pull --ff-only
     after="$(git -C "$tmpl" rev-parse HEAD)"
     if [ "$before" = "$after" ]; then

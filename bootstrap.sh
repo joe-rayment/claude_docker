@@ -322,6 +322,23 @@ mkdir -p "$HOST"
 
 step "Installing the claude_orca template under $HOST/template"
 if [ -d "$HOST/template/.git" ]; then
+    # The template is a MANAGED clone: bootstrap writes it, --update pulls
+    # it, and nothing in it is meant to be edited by hand. But things do
+    # edit it -- an agent testing a patch, a half-finished experiment --
+    # and `git pull --ff-only` then aborts with "your local changes would
+    # be overwritten", which takes the whole bootstrap down with a git
+    # error and no way forward that the message actually names. Stash the
+    # changes instead: recoverable, named, and out of the pull's way.
+    if [ -n "$(git -C "$HOST/template" status --porcelain --untracked-files=no 2>/dev/null)" ]; then
+        echo "    the template clone has local changes; stashing them:"
+        git -C "$HOST/template" status --short --untracked-files=no | sed 's/^/      /'
+        if git -C "$HOST/template" stash push --quiet \
+                -m "claude-orca bootstrap $(date -u +%Y-%m-%dT%H:%M:%SZ)"; then
+            echo "      stashed -- recover with: git -C $HOST/template stash pop"
+        else
+            echo "      could not stash them; the pull below may fail" >&2
+        fi
+    fi
     git -C "$HOST/template" pull --ff-only
 else
     rm -rf "$HOST/template"

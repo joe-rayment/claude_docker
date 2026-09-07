@@ -365,3 +365,32 @@ shadow_path_without() {
     [ ! -e "$HOME/.zshrc" ]
     [ ! -e "$HOME/.bash_profile" ]
 }
+
+@test "a template clone with local changes is stashed, not left to abort the pull" {
+    mac_env
+    run make_project_v3 "$PROJECT_DIR"
+    [ "$status" -eq 0 ]
+
+    local tmpl="$PROJECT_DIR/.claude-dev/template"
+    [ -d "$tmpl/.git" ]
+
+    # What an agent testing a patch leaves behind -- and what `git pull
+    # --ff-only` refuses to move past, aborting bootstrap with a git error
+    # ("Your local changes to the following files would be overwritten by
+    # merge"). Seen for real on 2026-09-07.
+    printf '\n# a local edit\n' >> "$tmpl/bootstrap.sh"
+    [ -n "$(git -C "$tmpl" status --porcelain --untracked-files=no)" ]
+
+    # A second bootstrap over the same folder has to get past it.
+    run bash "$REPO_ROOT/bootstrap.sh" "$PROJECT_DIR"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"stashing them"* ]]
+
+    # Stashed, not discarded: the edit is recoverable and named.
+    run git -C "$tmpl" stash list
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"claude-orca bootstrap"* ]]
+
+    # And the clone is clean, so the pull had a tree it could move.
+    [ -z "$(git -C "$tmpl" status --porcelain --untracked-files=no)" ]
+}
