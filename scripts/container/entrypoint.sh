@@ -249,6 +249,21 @@ if [ "${CLAUDE_ORCA_ENTRYPOINT_NO_PRIVDROP:-0}" != "1" ] && [ "$(id -u)" = "0" ]
         mkdir -p "$AGENT_HOME"
         chown "$AGENT_UID:$AGENT_GID" "$AGENT_HOME" 2>/dev/null || true
         chown_agent_tree "$RUN_DIR"
+        # The toolchain cache, when it is the folder's rather than the
+        # image's. setup.sh installs it as root, and on Linux a bind mount
+        # keeps that: root-owned files in <project>/.claude-dev/toolchain
+        # that the person who owns the folder cannot delete, so
+        # `./claude-dev --teardown` fails on 1.3 GB it cannot remove (CI
+        # run 34150776165: "rm: cannot remove '.../opt-Orca/orca-ide':
+        # Permission denied"). macOS hides this -- Docker Desktop maps
+        # every write to the calling user -- which is exactly why it had to
+        # be caught on Linux. Handing the cache to the host uid is what
+        # keeps "the state dies with the folder" true on both.
+        for toolchain_mount in /usr/local /opt/Orca /opt/claude; do
+            if mountpoint -q "$toolchain_mount" 2>/dev/null; then
+                chown_agent_tree "$toolchain_mount"
+            fi
+        done
         PRIVDROP=1
     else
         warn "user $AGENT_USER not found; staying root"

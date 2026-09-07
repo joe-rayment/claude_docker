@@ -212,3 +212,18 @@ contains() {
     [ "$status" -ne 0 ]
     contains "$output" "within 2s"
 }
+
+@test "the entrypoint hands a mounted toolchain cache to the host uid, so the folder can be deleted" {
+    # setup.sh installs the cache as root. On Linux a bind mount keeps
+    # that, so <project>/.claude-dev/toolchain ends up full of root-owned
+    # files the folder's owner cannot remove and `--teardown` dies on 1.3
+    # GB it cannot delete (CI run 34150776165). macOS hides it: Docker
+    # Desktop maps every write to the calling user. So the entrypoint
+    # chowns the cache after the uid remap -- and only when those paths
+    # really are the folder's mounts, never the image's own /usr/local.
+    local body
+    body="$(sed -n '/HOST_UID/,/^fi$/p' "${BATS_TEST_DIRNAME}/../scripts/container/entrypoint.sh")"
+    contains "$body" "mountpoint -q"
+    contains "$body" "/opt/Orca"
+    contains "$body" "chown_agent_tree"
+}

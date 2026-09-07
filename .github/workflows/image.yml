@@ -186,11 +186,22 @@ jobs:
 
           # 1. The shape. setup.sh --check is the whole toolchain answering
           #    for itself: every tool, its version, and the path it is at.
-          docker exec "$name" /opt/claude-orca/scripts/container/setup.sh --check \
-              > "$RUNNER_TEMP/shape-first.txt" 2>&1 \
-              || fail "setup.sh --check is not clean after the first start:
-          $(cat "$RUNNER_TEMP/shape-first.txt")"
-          echo "ok -- the shape after a first start is clean:"
+          #
+          #    Its EXIT STATUS is not the gate, and cannot be: the
+          #    entrypoint remaps `agent` to the host uid (1001 here, 501 on
+          #    a Mac), so the uid row always reports FAIL in a running
+          #    container. That one row is allowed; nothing else is.
+          check() { docker exec "$name" \
+              /opt/claude-orca/scripts/container/setup.sh --check 2>&1 || true; }
+
+          check > "$RUNNER_TEMP/shape-first.txt"
+          notok="$(grep -v '^\[check\] ok' "$RUNNER_TEMP/shape-first.txt" || true)"
+          [ "$(printf '%s' "$notok" | grep -c .)" = "1" ] \
+              || fail "expected exactly one non-ok row (the remapped uid), got:
+          $notok"
+          printf '%s' "$notok" | grep -q 'agent user: want uid' \
+              || fail "the one non-ok row is not the uid row: $notok"
+          echo "ok -- the shape after a first start, one expected uid row aside:"
           sed 's/^/     /' "$RUNNER_TEMP/shape-first.txt"
 
           # 2. The cache is in the FOLDER, where a person can see it.
@@ -212,12 +223,21 @@ jobs:
           installed="$(grep -c 'installing' "$project/.claude-dev/run/setup.log" || true)"
           tail -14 "$project/.claude-dev/run/setup.log" | grep -q 'all phases done' \
               || fail "setup.sh did not finish on the recreate"
-          docker exec "$name" /opt/claude-orca/scripts/container/setup.sh --check \
-              > "$RUNNER_TEMP/shape-again.txt" 2>&1 \
-              || fail "setup.sh --check is not clean after the recreate"
+          check > "$RUNNER_TEMP/shape-again.txt"
           diff "$RUNNER_TEMP/shape-first.txt" "$RUNNER_TEMP/shape-again.txt" \
               || fail "the recreate changed the shape of the toolchain"
           echo "ok -- the recreate reused the cache and the shape is unchanged"
+
+          # 4. And the folder can still be thrown away by the person who
+          #    owns it. setup.sh installs the cache as root; on Linux a
+          #    bind mount keeps that, so without the entrypoint handing it
+          #    to the host uid, `--teardown` dies on 1.3 GB of root-owned
+          #    files it cannot remove -- which is what this run caught.
+          ( cd "$project" && ./claude-dev --teardown >/dev/null ) \
+              || fail "--teardown failed"
+          [ ! -e "$project/.claude-dev" ] \
+              || fail "--teardown left $(du -sh "$project/.claude-dev" | cut -f1) behind"
+          echo "ok -- teardown removed the folder's toolchain as the ordinary user"
 
       - name: e2e diagnostics
         if: failure()
