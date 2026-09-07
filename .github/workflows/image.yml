@@ -178,6 +178,10 @@ jobs:
       # filesystem the baked image used to hand it, and a recreate reuses
       # the folder's cache instead of installing all over again.
       - name: e2e (the toolchain cache is what a recreate reuses)
+        env:
+          CLAUDE_ORCA_OPEN: "0"
+          CLAUDE_ORCA_IMAGE: ${{ env.IMAGE }}:smoke
+          CLAUDE_ORCA_WEBURL_TIMEOUT: "300"
         run: |
           set -euo pipefail
           project="$RUNNER_TEMP/e2e-project"
@@ -217,7 +221,8 @@ jobs:
           #    say "already present", and the shape must not move.
           docker rm -f "$name" >/dev/null
           start="$(date +%s)"
-          ( cd "$project" && CLAUDE_ORCA_OPEN=0 ./claude-dev >/dev/null )
+          "$project/.claude-dev/bin/claude-dev" >/dev/null \
+              || fail "the recreate did not come up"
           echo "ok -- recreated and serving again in $(( $(date +%s) - start ))s"
 
           installed="$(grep -c 'installing' "$project/.claude-dev/run/setup.log" || true)"
@@ -233,7 +238,7 @@ jobs:
           #    bind mount keeps that, so without the entrypoint handing it
           #    to the host uid, `--teardown` dies on 1.3 GB of root-owned
           #    files it cannot remove -- which is what this run caught.
-          ( cd "$project" && ./claude-dev --teardown >/dev/null ) \
+          "$project/.claude-dev/bin/claude-dev" --teardown >/dev/null \
               || fail "--teardown failed"
           [ ! -e "$project/.claude-dev" ] \
               || fail "--teardown left $(du -sh "$project/.claude-dev" | cut -f1) behind"
