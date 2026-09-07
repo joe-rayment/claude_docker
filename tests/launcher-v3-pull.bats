@@ -1,8 +1,10 @@
 #!/usr/bin/env bats
 #
-# Acceptance contract for claude-orca-qa2.10 -- FROZEN from RED-AT onward.
-# It replaces qa2.8's contract for this file: there is no image build on
-# the Mac any more, so the cases that asserted one are gone.
+# Acceptance contract for claude-orca-xnh -- FROZEN from RED-AT onward.
+# It supersedes qa2.10's contract for this file (which replaced qa2.8's):
+# same seven questions, and one of them has a different answer now that
+# the image carries apt and the folder carries the toolchain. There is
+# still no image build on the Mac, so qa2.8's cases stay gone.
 #
 # startup v4 (.claude/plans/startup-v4.md): the Mac side cannot be tested
 # anywhere but against stubs, so it does as little as possible. Pulling the
@@ -172,10 +174,21 @@ BASE_IMAGE="docker.io/library/ubuntu:24.04"
 # than sourcing it or duplicating them here.
 lift_launcher_fns() {
     local f="$1/.claude-dev/template/scripts/launcher.sh"
-    sed -n '/^image_source()/,/^}/p;/^weburl_timeout()/,/^}/p;/^wait_for_web_url()/,/^}/p' "$f"
+    sed -n '/^image_source()/,/^}/p;/^toolchain_cached()/,/^}/p;/^start_installs_nothing()/,/^}/p;/^weburl_timeout()/,/^}/p;/^wait_for_web_url()/,/^}/p' "$f"
 }
 
-@test "the launcher waits 1800s for the web URL on the runtime-install path and 120s on the pulled path" {
+# qa2.10 asked one question here -- which image is it? -- because that
+# was the same question as "does this start install anything". It stopped
+# being the same question when the image lost the toolchain: the payload
+# now installs into <project>/.claude-dev/toolchain on first start, so a
+# PULLED image with an empty cache has ~5 minutes of work to do, and a
+# RUNTIME image reinstalls its apt half on every recreate no matter how
+# full that cache is. Both halves have to be in hand for the short wait.
+#
+# Measured on a Mac, 2026-09-07: keyed on the cache alone, a runtime-path
+# recreate got 120 s for a 280 s job and the launcher gave up on a
+# container that was working fine.
+@test "the launcher waits 1800s whenever a start has something to install, and 120s only when both halves are in hand" {
     mkdir -p "$PROJECT_DIR"
     primary="$(abspath "$PROJECT_DIR")"
     run make_project_v3 "$primary"
@@ -185,17 +198,31 @@ lift_launcher_fns() {
     fns="$(lift_launcher_fns "$primary")"
     [ -n "$fns" ]
 
-    printf 'runtime\n' > "$primary/.claude-dev/run/image-source"
-    run bash -c "unset CLAUDE_ORCA_WEBURL_TIMEOUT; $fns
+    ask() {
+        run bash -c "unset CLAUDE_ORCA_WEBURL_TIMEOUT; $fns
 weburl_timeout '$primary'"
-    [ "$status" -eq 0 ]
-    [ "$output" = "1800" ]
+        [ "$status" -eq 0 ]
+    }
+    cache_full() {
+        mkdir -p "$primary/.claude-dev/toolchain/opt-Orca"
+        printf '#!/bin/sh\n' > "$primary/.claude-dev/toolchain/opt-Orca/orca-ide"
+        chmod +x "$primary/.claude-dev/toolchain/opt-Orca/orca-ide"
+    }
+    cache_empty() { rm -rf "$primary/.claude-dev/toolchain"; }
 
+    # The apt half is missing on the runtime path, cache or no cache.
+    printf 'runtime\n' > "$primary/.claude-dev/run/image-source"
+    cache_empty; ask; [ "$output" = "1800" ]
+    cache_full;  ask; [ "$output" = "1800" ]
+
+    # The toolchain half is missing until a first start fills it, image or
+    # no image.
     printf 'pulled\n' > "$primary/.claude-dev/run/image-source"
-    run bash -c "unset CLAUDE_ORCA_WEBURL_TIMEOUT; $fns
-weburl_timeout '$primary'"
-    [ "$status" -eq 0 ]
-    [ "$output" = "120" ]
+    cache_empty; ask; [ "$output" = "1800" ]
+
+    # Both in hand: Orca serves in seconds, so waiting minutes would only
+    # hide a folder that is actually broken.
+    cache_full;  ask; [ "$output" = "120" ]
 }
 
 @test "CLAUDE_ORCA_WEBURL_TIMEOUT overrides both paths" {

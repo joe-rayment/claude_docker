@@ -27,8 +27,12 @@ IMAGE_YML="$REPO_ROOT/.github/workflows/image.yml"
 # The Orca phase alone: from its function header to the closing brace at
 # column 0. Scoping the positive assertions this way keeps them from being
 # satisfied by some unrelated line elsewhere in the file.
+# phase_orca plus orca_relink, which it calls: the three symlinks moved
+# into that helper when the payload moved into the folder's toolchain
+# cache, because a recreated container has the payload but none of the
+# links, and both the fast path and the install path have to make them.
 orca_phase() {
-    sed -n '/^phase_orca()/,/^}/p' "$SETUP"
+    sed -n '/^orca_relink()/,/^}/p;/^phase_orca()/,/^}/p' "$SETUP"
 }
 
 # The opencode phase alone, scoped the same way.
@@ -67,10 +71,18 @@ setup_steps() {
     printf '%s\n' "$arch" | grep -qE 'x86_64\|amd64\)[^;]*amd64'
     printf '%s\n' "$arch" | grep -qE 'arm64\|aarch64\)[^;]*arm64'
 
-    # Installed through apt, which resolves the package's own Depends
-    # (gtk/nss/at-spi/xdotool/xclip/xvfb) instead of this file guessing at
-    # them -- not unpacked by hand.
-    printf '%s\n' "$phase" | grep -qE 'apt-get install[^;]*orca\.deb'
+    # UNPACKED, not apt-installed. The payload lives in the folder's
+    # toolchain cache now (<project>/.claude-dev/toolchain, mounted at
+    # /opt/Orca), and apt would register a package in a dpkg database that
+    # dies with the container -- so the next start would find an
+    # installed-but-unknown Orca. Extraction has no such memory.
+    printf '%s\n' "$phase" | grep -qE 'dpkg-deb -x'
+    printf '%s\n' "$phase" | grep -qE 'apt-get install[^;]*orca\.deb' && return 1
+
+    # What apt used to do for free -- resolve the .deb's own Depends -- is
+    # now phase_orcadeps hand-listing them in the image, so the .deb is
+    # asked directly whether that list still covers it.
+    printf '%s\n' "$phase" | grep -qE 'dpkg-deb --field .* Depends'
 
     # The package lands in /opt/Orca, but ORCA_BIN's default and every
     # doc say /opt/orca; the symlink is what makes both true.
