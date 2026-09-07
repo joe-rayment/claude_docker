@@ -186,7 +186,7 @@ lacks() {
     # working container at 2m12s on a real Mac. The question is only ever
     # "does this start install anything", and the image answers it.
     local fns probe out
-    fns="$(sed -n '/^image_source()/,/^}$/p;/^weburl_timeout()/,/^}$/p' "$LAUNCHER")"
+    fns="$(sed -n '/^image_source()/,/^}$/p;/^folder_installs_toolchain()/,/^}$/p;/^weburl_timeout()/,/^}$/p' "$LAUNCHER")"
     [ -n "$fns" ]
     probe="$BATS_TEST_TMPDIR/timeout-probe.sh"
     mkdir -p "$BATS_TEST_TMPDIR/pulled/.claude-dev/run" \

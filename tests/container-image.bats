@@ -107,7 +107,7 @@ setup_steps() {
     [ -z "$output" ]
 }
 
-@test "the Dockerfile installs nothing itself: no apt-get, no curl, just the two setup.sh calls" {
+@test "the Dockerfile installs nothing itself: no apt-get, no curl, only setup.sh calls" {
     # Comments are free to name what setup.sh does; instructions are not.
     run bash -c "grep -v '^[[:space:]]*#' '$DOCKERFILE' | grep -n 'apt-get'"
     [ "$status" -ne 0 ]
@@ -116,14 +116,17 @@ setup_steps() {
     [ "$status" -ne 0 ]
     [ -z "$output" ]
 
-    # Exactly two RUN instructions, and each one runs setup.sh.
-    run bash -c "grep -c '^RUN' '$DOCKERFILE'"
-    [ "$output" = "2" ]
-    run bash -c "grep '^RUN' '$DOCKERFILE' | grep -c 'setup\.sh'"
-    [ "$output" = "2" ]
+    # Every RUN runs setup.sh and nothing else: one for the apt half, one
+    # per toolchain phase, one for the template link. The count is not
+    # fixed here -- the phase list owns it (tests/toolchain-cache.bats).
+    local runs setups
+    runs="$(grep -c '^RUN' "$DOCKERFILE")"
+    setups="$(grep '^RUN' "$DOCKERFILE" | grep -c 'setup\.sh')"
+    [ "$runs" = "$setups" ] || { echo "$runs RUN lines but only $setups run setup.sh"; return 1; }
+    [ "$runs" -ge 3 ]
 
-    # The install layer copies the script by itself, so a change anywhere
-    # else in the repo does not invalidate it.
+    # The apt layer copies the script by itself, so a change anywhere else
+    # in the repo does not invalidate it.
     run grep -qE '^COPY scripts/container/setup\.sh ' "$DOCKERFILE"
     [ "$status" -eq 0 ]
     run grep -qE '^RUN /opt/claude-orca/scripts/container/setup\.sh --phase template' "$DOCKERFILE"

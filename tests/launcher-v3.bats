@@ -154,7 +154,7 @@ path_without_docker() {
     ! grep -q "^build " "$CONTAINER_STUB_LOG"
 }
 
-@test "open runs the container with the project and home mounted at the same paths, the port published on 127.0.0.1, PROJECT_DIR/ORCA_PORT/HOST_UID/GH_TOKEN in the environment, waits for run/orca-web-url.txt and opens it" {
+@test "open runs the container with the project at /workspace/<name> and the home at /home/agent, the port published on 127.0.0.1, PROJECT_DIR/ORCA_PORT/HOST_UID/GH_TOKEN/BEADS_DIR in the environment, waits for run/orca-web-url.txt and opens it" {
     mkdir -p "$PROJECT_DIR"
     primary="$(abspath "$PROJECT_DIR")"
     run make_project_v3 "$primary"
@@ -164,12 +164,28 @@ path_without_docker() {
     name="claude-orca-$(basename "$primary")"
 
     line="$(ctr_line "run ")"
+    guest="/workspace/$(basename "$primary")"
     [[ "$line" == *" -d "* ]]
     [[ "$line" == *"--name $name"* ]]
-    [[ "$line" == *"--volume $primary:$primary"* ]]
+    # The project is mounted at /workspace/<name>, NOT at its Mac path.
+    # Mounted at its Mac path, the container spells out the owner's home
+    # directory and their folder tree in every prompt and every `cd ..`,
+    # and a real owner read that as the sandbox being broken (2026-09-07).
+    # Nothing inside needs the two paths to agree: everything in the
+    # container takes the path from PROJECT_DIR.
+    [[ "$line" == *"--volume $primary:$guest"* ]]
+    [[ "$line" != *"--volume $primary:$primary"* ]]
     [[ "$line" == *"--volume $primary/.claude-dev/home:/home/agent"* ]]
     [[ "$line" == *"-p 127.0.0.1:$port:$port"* ]]
-    [[ "$line" == *"-e PROJECT_DIR=$primary"* ]]
+    [[ "$line" == *"-e PROJECT_DIR=$guest"* ]]
+    # The Mac path still rides along, for messages that name a file a
+    # person has to open on the Mac.
+    [[ "$line" == *"-e CLAUDE_ORCA_HOST_PROJECT_DIR=$primary"* ]]
+    # bd walks UP from the cwd for .beads, so from anywhere but the
+    # project it finds nothing -- which is exactly what "no beads database
+    # found" meant on 2026-09-07. The folder's tracker is named outright.
+    [[ "$line" == *"-e BEADS_DIR=$guest/.beads"* ]]
+    [[ "$line" == *"-e CLAUDE_ORCA_ROOT=$guest"* ]]
     [[ "$line" == *"-e ORCA_PORT=$port"* ]]
     [[ "$line" == *"-e HOST_UID=$(id -u)"* ]]
     [[ "$line" == *"-e GH_TOKEN=$STUB_TOKEN"* ]]
@@ -224,7 +240,7 @@ path_without_docker() {
     shell_line="$(ctr_line "exec ")"
     [[ "$shell_line" == *"$name"* ]]
     [[ "$shell_line" == *"zsh"* ]]
-    [[ "$shell_line" == *"--workdir $primary"* ]]
+    [[ "$shell_line" == *"--workdir /workspace/$(basename "$primary")"* ]]
 
     : > "$CONTAINER_STUB_LOG"
     run bash -c "cd '$primary' && ./claude-dev logs"

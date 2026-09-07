@@ -60,7 +60,7 @@ project_sections() {
 # and naming Docker meant naming the wrong design. The runtime IS Docker
 # now, so the term is the docs' own vocabulary and only the other three
 # stay banned.
-@test "no doc mentions tmux, fleet, or /workspace as the project path" {
+@test "no doc mentions tmux or fleet" {
     local files=("$README_MD" "$CLAUDE_MD" "$AGENTS_MD")
     while IFS= read -r f; do
         files+=("$f")
@@ -68,7 +68,11 @@ project_sections() {
 
     local f term hits=""
     for f in "${files[@]}"; do
-        for term in "tmux" "fleet" "/workspace"; do
+        # /workspace was on this list as residue from the OLD template,
+        # which mounted every project at a bare /workspace. It is the
+        # right path again -- /workspace/<name>, one folder per container
+        # (recovery plan step 4) -- so it is no longer residue.
+        for term in "tmux" "fleet"; do
             if grep -F -i -q -- "$term" "$f"; then
                 hits="$hits${f}: ${term}"$'\n'
             fi

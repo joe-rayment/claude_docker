@@ -43,7 +43,7 @@ BASE_IMAGE="docker.io/library/ubuntu:24.04"
     ! grep -q "^build " "$CONTAINER_STUB_LOG"
 
     runline="$(grep "^run " "$CONTAINER_STUB_LOG" | head -1)"
-    [[ "$runline" == *"$BASE_IMAGE bash $primary/.claude-dev/template/scripts/container/entrypoint.sh"* ]]
+    [[ "$runline" == *"$BASE_IMAGE bash /workspace/$(basename "$primary")/.claude-dev/template/scripts/container/entrypoint.sh"* ]]
     [[ "$runline" != *"ghcr.io/joe-rayment/claude_orca"* ]]
 
     # Which of the two images this folder runs, for container_create and the
@@ -135,7 +135,7 @@ BASE_IMAGE="docker.io/library/ubuntu:24.04"
     [[ "$output" == *"No prebuilt image: the VM installs its toolchain on first start (several minutes); progress: ./claude-dev logs"* ]]
 
     runline="$(grep "^run " "$CONTAINER_STUB_LOG" | head -1)"
-    [[ "$runline" == *"$BASE_IMAGE bash $primary/.claude-dev/template/scripts/container/entrypoint.sh"* ]]
+    [[ "$runline" == *"$BASE_IMAGE bash /workspace/$(basename "$primary")/.claude-dev/template/scripts/container/entrypoint.sh"* ]]
     [ "$(cat "$primary/.claude-dev/run/image-source")" = "runtime" ]
 
     # And the same on --update: an update whose pull fails moves the folder
@@ -174,21 +174,23 @@ BASE_IMAGE="docker.io/library/ubuntu:24.04"
 # than sourcing it or duplicating them here.
 lift_launcher_fns() {
     local f="$1/.claude-dev/template/scripts/launcher.sh"
-    sed -n '/^image_source()/,/^}/p;/^toolchain_cached()/,/^}/p;/^start_installs_nothing()/,/^}/p;/^weburl_timeout()/,/^}/p;/^wait_for_web_url()/,/^}/p' "$f"
+    sed -n '/^image_source()/,/^}/p;/^folder_installs_toolchain()/,/^}/p;/^weburl_timeout()/,/^}/p;/^wait_for_web_url()/,/^}/p' "$f"
 }
 
-# qa2.10 asked one question here -- which image is it? -- because that
-# was the same question as "does this start install anything". It stopped
-# being the same question when the image lost the toolchain: the payload
-# now installs into <project>/.claude-dev/toolchain on first start, so a
-# PULLED image with an empty cache has ~5 minutes of work to do, and a
-# RUNTIME image reinstalls its apt half on every recreate no matter how
-# full that cache is. Both halves have to be in hand for the short wait.
+# One question decides the wait: which image is this folder running?
 #
-# Measured on a Mac, 2026-09-07: keyed on the cache alone, a runtime-path
-# recreate got 120 s for a 280 s job and the launcher gave up on a
-# container that was working fine.
-@test "the launcher waits 1800s whenever a start has something to install, and 120s only when both halves are in hand" {
+# It briefly became two, while the image carried only apt and the payload
+# installed into <project>/.claude-dev/toolchain -- and a folder's cache
+# had to be consulted as well. That split is gone (the image carries the
+# toolchain again, tests/toolchain-cache.bats says why), so the cache is
+# back to being irrelevant here, and this case pins that: whatever the
+# folder has cached, the runtime path waits long and the prebuilt image
+# waits short.
+#
+# Measured on a Mac, 2026-09-07, when the cache alone decided it: a
+# runtime-path recreate got 120 s for a 280 s job and the launcher gave
+# up on a container that was working fine.
+@test "the launcher waits 1800s on the runtime path and 120s on the prebuilt image, whatever the folder has cached" {
     mkdir -p "$PROJECT_DIR"
     primary="$(abspath "$PROJECT_DIR")"
     run make_project_v3 "$primary"
@@ -203,6 +205,9 @@ lift_launcher_fns() {
 weburl_timeout '$primary'"
         [ "$status" -eq 0 ]
     }
+    # A folder's toolchain cache exists only on the runtime path now, but
+    # a folder that once ran that way keeps the directory. It must not
+    # move the answer either way.
     cache_full() {
         mkdir -p "$primary/.claude-dev/toolchain/opt-Orca"
         printf '#!/bin/sh\n' > "$primary/.claude-dev/toolchain/opt-Orca/orca-ide"
@@ -210,18 +215,16 @@ weburl_timeout '$primary'"
     }
     cache_empty() { rm -rf "$primary/.claude-dev/toolchain"; }
 
-    # The apt half is missing on the runtime path, cache or no cache.
+    # The runtime path installs apt on every start and the payload on the
+    # first, cache or no cache.
     printf 'runtime\n' > "$primary/.claude-dev/run/image-source"
     cache_empty; ask; [ "$output" = "1800" ]
     cache_full;  ask; [ "$output" = "1800" ]
 
-    # The toolchain half is missing until a first start fills it, image or
-    # no image.
+    # The prebuilt image arrives complete: Orca serves in seconds, so
+    # waiting minutes would only hide a folder that is actually broken.
     printf 'pulled\n' > "$primary/.claude-dev/run/image-source"
-    cache_empty; ask; [ "$output" = "1800" ]
-
-    # Both in hand: Orca serves in seconds, so waiting minutes would only
-    # hide a folder that is actually broken.
+    cache_empty; ask; [ "$output" = "120" ]
     cache_full;  ask; [ "$output" = "120" ]
 }
 
