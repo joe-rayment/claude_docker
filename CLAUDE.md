@@ -53,7 +53,13 @@ opt-in now that Orca runs in the container.
 
 `HOME` is `<project>/.claude-dev/home`, whose `.claude` config dir is
 populated from this repo's `config/` by a checksum-gated sync that preserves
-Orca's own managed hook entries (status dots, sub-agent rows). The hook/guard
+Orca's own managed hook entries (status dots, sub-agent rows). One directory
+under that home is NOT the folder's: Orca's `--user-data-dir`
+(`~/.config/orca`) is a docker volume named after the container, because a
+macOS bind mount cannot `chmod` or `link` a unix socket and that is where
+Orca puts its RPC and daemon sockets — on the folder home it never publishes
+a web URL at all. `./claude-dev --teardown` removes the volume with the
+container, so the state still dies with the folder. The hook/guard
 suite (lane, tier, bd-guard, outbound-guard, auth-guard, contract-gate,
 cost-mirror…) runs from there. `/tier` state lives in
 `.claude-dev/run/tier.json` and is injected into sub-agent spawns by a

@@ -930,6 +930,34 @@ RUNIT
 # every path Orca stores and every path an agent prints means the same
 # thing on both sides; the folder-local home becomes /home/agent, so
 # credentials and Orca state live and die with the folder.
+#
+# ... with ONE exception, and it is the reason a Mac could not boot a
+# folder at all. Orca's --user-data-dir is where it puts its own unix
+# domain sockets: the headless RPC socket it chmods on startup, and the
+# daemon socket it publishes with link(2). A macOS bind mount is not a
+# Linux filesystem -- Docker Desktop hands it through virtiofs, where a
+# socket can be created and then neither chmod'd nor hard-linked:
+#
+#   chmod('<udd>/o-7563-9c89.sock')            -> EINVAL
+#   link('<udd>/.pce...' -> 'daemon-v36.sock') -> ENOENT
+#
+# Orca takes the first as an unhandled rejection and the second as a fatal
+# daemon start, so it never prints a Web client URL and the entrypoint
+# gives up on it (verified on this Mac against orca-ide 1.4.197: the same
+# image, the same mounts, a user-data-dir on the folder home publishes no
+# URL, one on a real Linux filesystem is ready in two seconds). On Linux
+# the same bind mount is an ordinary directory where all of this works, so
+# the ubuntu-latest e2e stays green; and the macOS CI job runs Docker under
+# colima, whose sshfs mount refuses setup.sh's chown outright ("Permission
+# denied" on every path in the home, run 34122589713) -- it dies one step
+# before Orca and has never reached this.
+#
+# So Orca's user-data-dir gets a docker volume -- a real Linux filesystem
+# at the path Orca already expects. It is named after the container and
+# removed by teardown, so the state still dies with the folder; what it
+# no longer does is sit in the folder where the Mac can see it.
+state_volume() { printf '%s-orca-state\n' "$1"; }
+
 container_dns() {
     local dns=""
     if [ -n "${CLAUDE_ORCA_DNS+x}" ]; then
@@ -967,6 +995,7 @@ container_create() {
     set -- run -d --name "$name" \
         --volume "$dir:$dir" \
         --volume "$dir/.claude-dev/home:/home/agent" \
+        --volume "$(state_volume "$name"):/home/agent/.config/orca" \
         -p "127.0.0.1:$port:$port" \
         -e "PROJECT_DIR=$dir" \
         -e "ORCA_PORT=$port" \
@@ -1186,7 +1215,7 @@ doctor_row() {
 # the CLI, the service, the image, the container, the port and the URL the
 # entrypoint published. Exits 2 on any finding, so it is usable in a script.
 cmd_doctor_v3() {
-    local dir="$PROJECT_SELF" rc=0 ref name state port url_file src
+    local dir="$PROJECT_SELF" rc=0 ref name state port url_file src vol
     # Whichever image THIS folder runs: a runtime-install folder has no
     # prebuilt image and never will, so asking after one would be a finding
     # about something it does not use.
@@ -1256,6 +1285,18 @@ cmd_doctor_v3() {
         doctor_row warn "container" "$name ($state) -- ./claude-dev starts it"
     fi
 
+    # Orca cannot keep its user-data-dir on the folder home (a Mac bind
+    # mount cannot chmod or link a unix socket), so it lives here; a
+    # missing volume is not a fault, just a folder that has not started.
+    if [ "$CTR_RUNTIME" != "local" ]; then
+        vol="$(state_volume "$name")"
+        if ctr volume inspect "$vol" >/dev/null 2>&1; then
+            doctor_row ok "Orca state" "$vol (docker volume, mounted at /home/agent/.config/orca)"
+        else
+            doctor_row warn "Orca state" "no volume $vol yet -- ./claude-dev creates it"
+        fi
+    fi
+
     port=""
     if [ -f "$dir/.claude-dev/run/port" ]; then
         port="$(head -1 "$dir/.claude-dev/run/port")"
@@ -1317,7 +1358,9 @@ cmd_update_v3() {
     acquire_image "$dir" "$(image_ref)" || return 1
 
     # Recreate rather than restart: a new image only takes effect in a new
-    # container, and everything that matters is in the mounted folder.
+    # container, and everything that matters is in the mounted folder --
+    # or, for Orca's own user-data-dir, in the named volume, which is why
+    # this removes the container and never the volume.
     name="$(container_name "$dir")"
     state="$(container_state "$name")"
     if [ -n "$state" ]; then
@@ -1346,6 +1389,11 @@ cmd_teardown_v3() {
     name="$(container_name "$dir")"
     ctr stop "$name" >/dev/null 2>&1 || true
     ctr rm "$name" >/dev/null 2>&1 || true
+    # Orca's user-data-dir is the one piece of folder state that lives in a
+    # volume rather than in .claude-dev (see state_volume): teardown is
+    # what keeps "dies with the folder" true of it. A `docker rm` on the
+    # container never touches a NAMED volume, so this is not redundant.
+    ctr volume rm "$(state_volume "$name")" >/dev/null 2>&1 || true
 
     snap="$(snapshot_beads "$dir" "$project")"
     if [ -n "$snap" ]; then
@@ -1367,7 +1415,7 @@ cmd_teardown_v3() {
         echo "Removed $dir/.beads (--purge-beads)"
     fi
 
-    echo "Teardown complete for '$project' at $dir (container $name removed)"
+    echo "Teardown complete for '$project' at $dir (container $name and its Orca state removed)"
     if [ -n "$snap" ]; then
         echo "Re-register this directory later to restore the snapshot."
     fi

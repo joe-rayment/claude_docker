@@ -136,8 +136,16 @@ registration restores it.
 |---|---|
 | Orca, Claude Code, every agent and every shell they open | the `./claude-dev` launcher and nothing else |
 | the project folder, at its real absolute path, read-write | — |
-| `<project>/.claude-dev/home` as `/home/agent`: Claude's credentials, Orca's state, the git identity | — |
+| `<project>/.claude-dev/home` as `/home/agent`: Claude's credentials, the git identity | — |
+| Orca's own `~/.config/orca`, in a docker volume named after the container | — |
 | any extra mounts you name, always read-only | — |
+
+Orca's user-data dir is the one thing that cannot live in the folder: it
+holds the unix sockets Orca chmods and hard-links on startup, and a macOS
+bind mount supports neither (`chmod` returns EINVAL, `link` fails), so Orca
+would never come up. It gets a docker volume — a real Linux filesystem at
+the path Orca expects — named `claude-orca-<folder>-orca-state` and removed
+by `./claude-dev --teardown`, so it still dies with the folder.
 
 Nothing else under `/Users` is visible. The pairing URL Orca prints is a
 credential (its fragment carries the pairing code), so it is written to
