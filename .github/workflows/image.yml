@@ -234,7 +234,7 @@ jobs:
   # install, which would blow the timeout and prove nothing either way.
   macos-docker-e2e:
     runs-on: macos-latest
-    timeout-minutes: 75
+    timeout-minutes: 90
     env:
       CNAME: claude-orca-mac-project
     steps:
@@ -259,13 +259,19 @@ jobs:
           gh --version | head -1
           jq --version
 
-      - name: Install colima and the docker CLI
+      # qemu is installed even though vz is tried first: colima validates
+      # `--vm-type qemu` against qemu-img BEFORE it boots anything, so
+      # without this package the qemu branch below is not a fallback at
+      # all -- it dies at config validation without ever starting a VM,
+      # which is exactly how run 34120180831 ended.
+      - name: Install colima, the docker CLI and qemu
         run: |
           set -euo pipefail
           brew update --quiet || true
-          brew install colima docker
+          brew install colima docker qemu
           colima version
           docker --version
+          qemu-img --version | head -1
 
       # First boot downloads and unpacks a VM image, so this is the slow
       # step. vz (Apple's Virtualization framework) with virtiofs is tried
@@ -274,18 +280,47 @@ jobs:
       # colima mounts the home directory read-only by default, and the
       # project folder is bind-mounted into the container and written to by
       # the entrypoint (run/orca-web-url.txt, /home/agent).
+      #
+      # 50 minutes, not 30: qemu on an Apple silicon runner is emulated
+      # rather than accelerated, so a first boot that takes ~5 minutes
+      # under vz can take most of an hour. The job timeout goes to 90 to
+      # match, leaving ~40 for the pull, the bootstrap (whose own web-url
+      # wait is 900s) and the assertions.
       - name: Start a real Linux VM and dockerd (colima)
-        timeout-minutes: 30
+        timeout-minutes: 50
         run: |
           set -euo pipefail
           mkdir -p "$PROJECT"
 
+          # colima's fatal message points at lima's hostagent logs and we
+          # used to throw them away, so a vz failure had no diagnosis.
+          # They must be dumped BEFORE the next `colima delete`, which
+          # removes the instance directory that holds them.
+          lima_logs() {
+            local d="$HOME/.colima/_lima/colima" f
+            echo "===== lima hostagent logs ($d) ====="
+            for f in "$d/ha.stderr.log" "$d/ha.stdout.log"; do
+              echo "----- $f -----"
+              tail -100 "$f" 2>/dev/null || echo "(absent)"
+            done
+            for f in "$d"/serial*.log; do
+              [ -f "$f" ] || continue
+              echo "----- $f -----"
+              tail -100 "$f" 2>/dev/null || true
+            done
+          }
+
           attempt() {
             echo "==> colima start --vm-type=$1 --mount-type=$2"
             colima delete --force >/dev/null 2>&1 || true
-            colima start --cpu 3 --memory 6 --disk 30 \
+            if colima start --cpu 3 --memory 6 --disk 30 \
                 --vm-type "$1" --mount-type "$2" \
-                --mount "$RUNNER_TEMP:w"
+                --mount "$RUNNER_TEMP:w"; then
+              return 0
+            fi
+            echo "colima start --vm-type=$1 failed; its own logs follow" >&2
+            lima_logs
+            return 1
           }
 
           if attempt vz virtiofs; then
