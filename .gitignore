@@ -19,3 +19,5 @@ attachments/
 # ensure_real_srt() in tests/helpers/setup.bash for schema validation.
 tests/.cache/
 .playwright-mcp/
+.claude-dev-snapshots/
+Orca.app/
