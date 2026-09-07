@@ -531,8 +531,18 @@ phase_user() {
     # user's home to make a chown succeed is the wrong trade. A real
     # failure on a real file still fails the phase (xargs exits 123,
     # pipefail propagates it); an empty result does not (`xargs -r`).
+    # ... and -h, so a DANGLING symlink is chowned rather than followed.
+    # Orca leaves SingletonCookie, SingletonLock and SingletonSocket in
+    # .config/orca pointing at a pid, a cookie and a /tmp path that a new
+    # container does not have, and plain chown answers "cannot
+    # dereference" -> xargs 123 -> pipefail -> the container dies on every
+    # recreate. CI run 34154457951 caught it; the Mac hid it, because
+    # .config/orca is a docker volume and `-xdev` stops find at a device
+    # boundary that exists on macOS (virtiofs vs the VM's disk) and does
+    # not on Linux (both on the same filesystem). -h needs neither to be
+    # true: owning the link is what was meant either way.
     find /home/agent -xdev ! -type s -print0 \
-        | xargs -0 -r chown agent:agent
+        | xargs -0 -r chown -h agent:agent
 }
 
 # --- this template ------------------------------------------------------

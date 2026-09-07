@@ -71,12 +71,15 @@ die()  { printf '[entrypoint] %s\n' "$*" >&2; exit 1; }
 # the bind-mounted folder home returns EINVAL on a socket -- Orca leaves
 # its own in .config/orca between boots -- and once it hits one the rest
 # of the tree keeps the wrong owner while the error goes to /dev/null.
-# Skipping sockets is what makes the chown actually complete. Best
-# effort, like every chown on this side: never fatal, and the sockets
-# themselves are left alone because something may still be using them.
+# Skipping sockets is what makes the chown actually complete, and -h is
+# what keeps a dangling symlink (Orca's SingletonLock and SingletonCookie
+# outlive the container that made them) from being followed to a target
+# that is not there. Best effort, like every chown on this side: never
+# fatal, and the sockets themselves are left alone because something may
+# still be using them.
 chown_agent_tree() {
     find "$1" -xdev ! -type s -print0 2>/dev/null \
-        | xargs -0 -r chown "$AGENT_UID:$AGENT_GID" 2>/dev/null || true
+        | xargs -0 -r chown -h "$AGENT_UID:$AGENT_GID" 2>/dev/null || true
 }
 
 _resolve_script_path() {

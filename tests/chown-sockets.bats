@@ -61,13 +61,20 @@ write_chown_shim() {
     mkdir -p "$TMP/bin"
     cat > "$TMP/bin/chown" <<'SHIM'
 #!/usr/bin/env bash
+# The real tools, wherever this box keeps them: coreutils lives in
+# /usr/bin on Linux and /usr/sbin (chown) on macOS, and hardcoding the
+# Linux path is why this shim could only ever run on Linux.
+real_chown=/usr/bin/chown; [ -x "$real_chown" ] || real_chown=/usr/sbin/chown
+real_find=/usr/bin/find;   [ -x "$real_find" ]  || real_find=/usr/sbin/find
 recurse=0
+nodereference=0
 owner=""
 rc=0
 targets=()
 for a in "$@"; do
     case "$a" in
         -*R*) recurse=1 ;;
+        -*h*) nodereference=1 ;;
         -*)   ;;
         *)    if [ -z "$owner" ]; then owner="$a"; else targets+=("$a"); fi ;;
     esac
@@ -76,7 +83,7 @@ expanded=()
 for t in "${targets[@]}"; do
     if [ "$recurse" = "1" ] && [ -d "$t" ]; then
         while IFS= read -r -d '' f; do expanded+=("$f"); done \
-            < <(/usr/bin/find "$t" -print0)
+            < <("$real_find" "$t" -print0)
     else
         expanded+=("$t")
     fi
@@ -88,7 +95,20 @@ for t in "${expanded[@]}"; do
         rc=1
         continue
     fi
-    /usr/bin/chown "$owner" "$t" || rc=1
+    # GNU chown follows a symlink unless -h, and says so when the target
+    # is not there. macOS's chown returns 0 on the same dangling link, so
+    # without this the non-vacuity half of the dangling case would be
+    # measuring the local chown rather than the shipped one.
+    if [ -L "$t" ] && [ ! -e "$t" ] && [ "$nodereference" = "0" ]; then
+        printf "chown: cannot dereference '%s': No such file or directory\n" "$t" >&2
+        rc=1
+        continue
+    fi
+    if [ "$nodereference" = "1" ]; then
+        "$real_chown" -h "$owner" "$t" || rc=1
+    else
+        "$real_chown" "$owner" "$t" || rc=1
+    fi
 done
 exit $rc
 SHIM
@@ -106,7 +126,7 @@ lift_phase_user_chown() {
 @test "setup.sh phase_user chowns a home containing a live unix socket without failing" {
     lifted="$(lift_phase_user_chown)"
     [[ "$lifted" == *"! -type s"* ]]
-    [[ "$lifted" == *"xargs -0 -r chown agent:agent"* ]]
+    [[ "$lifted" == *"xargs -0 -r chown -h agent:agent"* ]]
 
     home="$TMP/home"
     make_home "$home"
@@ -199,4 +219,64 @@ chown_agent_tree '$TMP/nope'
 echo REACHED_END"
     [ "$status" -eq 0 ]
     [[ "$output" == *"REACHED_END"* ]]
+}
+
+# --- and the other thing that outlives a container: a dangling symlink ---
+#
+# Orca leaves SingletonCookie -> <cookie>, SingletonLock -> <host>-<pid>
+# and SingletonSocket -> /tmp/scoped_dir.../SingletonSocket in its
+# user-data dir. That dir is a docker volume now, so it survives the
+# container that made it and all three point at nothing on the next start.
+# Plain chown follows a symlink: "cannot dereference", xargs 123,
+# pipefail, and setup.sh takes the container with it -- on every recreate,
+# which is exactly the shape of the socket bug this file was written for.
+#
+# CI run 34154457951 caught it on Linux. A Mac does not see it: .config/orca
+# is a different DEVICE there (a docker volume against virtiofs) so `find
+# -xdev` never descends into it, while on Linux both live on the same
+# filesystem and it does. -h makes the device question irrelevant.
+
+make_home_with_dangling_links() {
+    local home="$1"
+    mkdir -p "$home/.config/orca"
+    printf 'x\n' > "$home/.zshrc"
+    ln -s "16491037762841382642" "$home/.config/orca/SingletonCookie"
+    ln -s "068b8e393ba3-7473" "$home/.config/orca/SingletonLock"
+    ln -s "/tmp/scoped_dirGone/SingletonSocket" "$home/.config/orca/SingletonSocket"
+    [ -L "$home/.config/orca/SingletonLock" ]
+    [ ! -e "$home/.config/orca/SingletonLock" ]
+}
+
+@test "setup.sh's phase_user chowns a home whose Orca links dangle, instead of dying on them" {
+    local home="$TMP/home"
+    make_home_with_dangling_links "$home"
+
+    # Through the shim, for the same reason the socket cases use it: this
+    # box's own chown returns 0 on a dangling symlink where GNU's does not,
+    # so the local one would answer a question about macOS rather than
+    # about the image.
+    write_chown_shim
+
+    # The real command, lifted out of phase_user.
+    run env PATH="$TMP/bin:$PATH" CHOWN_LOG="$TMP/dangling.log" \
+        bash -c "set -Eeuo pipefail
+find '$home' -xdev ! -type s -print0 | xargs -0 -r chown -h $ME"
+    [ "$status" -eq 0 ]
+
+    # Non-vacuity: without -h the same command fails on the same tree.
+    run env PATH="$TMP/bin:$PATH" CHOWN_LOG="$TMP/dangling.log" \
+        bash -c "set -Eeuo pipefail
+find '$home' -xdev ! -type s -print0 | xargs -0 -r chown $ME"
+    [ "$status" -ne 0 ]
+
+    # And the links are still links, pointing where Orca left them.
+    [ -L "$home/.config/orca/SingletonLock" ]
+    [ "$(readlink "$home/.config/orca/SingletonLock")" = "068b8e393ba3-7473" ]
+}
+
+@test "the shipped chowns both pass -h" {
+    run grep -qE 'xargs -0 -r chown -h agent:agent' "$SETUP_SH"
+    [ "$status" -eq 0 ]
+    run grep -qE 'xargs -0 -r chown -h "\$AGENT_UID:\$AGENT_GID"' "$ENTRYPOINT"
+    [ "$status" -eq 0 ]
 }
