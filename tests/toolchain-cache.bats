@@ -56,6 +56,15 @@ contains() {
     return 1
 }
 
+lacks() {
+    case "$1" in
+        *"$2"*)
+            printf 'expected NOT to contain: %s\n               actual: %s\n' "$2" "$1" >&2
+            return 1 ;;
+    esac
+    return 0
+}
+
 @test "the phase sets partition every phase except template, which the Dockerfile runs by name" {
     local all image toolchain p
     all="$(bash "$SETUP" --list | tr '\n' ' ')"
@@ -226,4 +235,70 @@ contains() {
     contains "$body" "mountpoint -q"
     contains "$body" "/opt/Orca"
     contains "$body" "chown_agent_tree"
+}
+
+@test "a pull that says nothing is reported as such, with the clock and a way out" {
+    # `==> Pulling ...` and then nothing was the whole of the output while
+    # two wedged pulls of the same image sat with no network activity for
+    # 20 minutes on 2026-09-07. The setup.log wait had already solved this
+    # shape; the pull had not.
+    local fns out
+    fns="$(sed -n '/^PULL_TICK=/,/^}$/p' "${BATS_TEST_DIRNAME}/../scripts/launcher.sh" \
+        | sed -n '/^try_pull()/,/^}$/p')"
+    [ -n "$fns" ]
+
+    # A pull that speaks once and then wedges, which is what a stuck one
+    # looks like from out here.
+    out="$(CTR_RUN_DIR="$BATS_TEST_TMPDIR" bash -c "
+set -uo pipefail
+ctr() { printf 'latest: Pulling from joe-rayment/claude_orca\n'; sleep 6; }
+$fns
+PULL_TICK=1; PULL_STALL=2
+try_pull ghcr.io/joe-rayment/claude_orca:latest" 2>&1)"
+
+    contains "$out" "pulling (1s): latest: Pulling from joe-rayment/claude_orca"
+    contains "$out" "it may be stuck"
+    contains "$out" "^C is safe"
+
+    # The how-to once, the clock as often as it likes.
+    [ "$(printf '%s\n' "$out" | grep -c '\^C is safe')" = "1" ]
+    [ "$(printf '%s\n' "$out" | grep -c 'it may be stuck')" -ge 2 ]
+}
+
+@test "a pull that works still returns its output for the failure diagnosis" {
+    local fns probe out
+    fns="$(sed -n '/^PULL_TICK=/,/^}$/p' "${BATS_TEST_DIRNAME}/../scripts/launcher.sh" \
+        | sed -n '/^try_pull()/,/^}$/p')"
+    [ -n "$fns" ]
+    probe="$BATS_TEST_TMPDIR/probe.sh"
+
+    # Failure: the last line of the pull's own output is the diagnosis the
+    # caller prints, so try_pull has to keep carrying it in PULL_OUT.
+    {
+        printf '%s\n' 'set -uo pipefail'
+        printf '%s\n' 'ctr() { printf "Error response from daemon: denied\n"; return 1; }'
+        printf '%s\n' "$fns"
+        printf '%s\n' 'PULL_TICK=1; PULL_STALL=999'
+        printf '%s\n' 'if try_pull ghcr.io/joe-rayment/claude_orca:latest; then'
+        printf '%s\n' '    echo "rc=0"'
+        printf '%s\n' 'else'
+        printf '%s\n' '    echo "rc=$?"'
+        printf '%s\n' '    printf "last=%s\n" "$(printf "%s\n" "$PULL_OUT" | tail -1)"'
+        printf '%s\n' 'fi'
+    } > "$probe"
+    out="$(CTR_RUN_DIR="$BATS_TEST_TMPDIR" bash "$probe" 2>&1)"
+    contains "$out" "rc=1"
+    contains "$out" "last=Error response from daemon: denied"
+
+    # Success: rc 0, and nothing extra on a pull too quick to tick.
+    {
+        printf '%s\n' 'set -uo pipefail'
+        printf '%s\n' 'ctr() { printf "Status: Downloaded newer image\n"; return 0; }'
+        printf '%s\n' "$fns"
+        printf '%s\n' 'PULL_TICK=1; PULL_STALL=999'
+        printf '%s\n' 'try_pull x && echo "rc=0"'
+    } > "$probe"
+    out="$(CTR_RUN_DIR="$BATS_TEST_TMPDIR" bash "$probe" 2>&1)"
+    contains "$out" "rc=0"
+    lacks "$out" "may be stuck"
 }

@@ -630,9 +630,59 @@ registry_login() {
 # reason a pull was refused IS the diagnosis, so the caller reads PULL_OUT
 # rather than guessing from the exit status.
 PULL_OUT=""
+# How often the pull says something, and how long it may say nothing
+# before this points at the possibility that it is wedged.
+# 180s, not 60: without a TTY `docker pull` prints one line per layer
+# EVENT, not a progress bar, so a big layer is legitimately quiet for
+# minutes. Three minutes of nothing is the point where "slow" and "stuck"
+# stop being distinguishable from out here.
+PULL_TICK="${CLAUDE_ORCA_PULL_TICK:-10}"
+PULL_STALL="${CLAUDE_ORCA_PULL_STALL:-180}"
+
+# A pull with the sound turned on. `==> Pulling ...` used to be the last
+# thing a person saw until the pull returned, however long that took and
+# whether or not it was still doing anything -- and on 2026-09-07 it took
+# 20 minutes, because two pulls of the same image were wedged with no
+# network activity at all and nothing said so. The setup.log wait already
+# solved this shape: run the work in the background and show its last line
+# every few seconds. Silence is now itself reported, with the elapsed
+# time, so a stuck pull looks stuck instead of looking slow.
 try_pull() {
-    local rc=0
-    PULL_OUT="$(ctr image pull "$1" 2>&1)" || rc=$?
+    local ref="$1" log rc=0 pid waited=0 quiet=0 last="" line="" said_how=0
+    log="${CTR_RUN_DIR:-${TMPDIR:-/tmp}}/pull.log"
+    : > "$log" 2>/dev/null || log="${TMPDIR:-/tmp}/claude-orca-pull.log"
+    ctr image pull "$ref" > "$log" 2>&1 &
+    pid=$!
+    while kill -0 "$pid" 2>/dev/null; do
+        sleep 1
+        waited=$((waited + 1))
+        [ "$((waited % PULL_TICK))" -eq 0 ] || continue
+        line="$(tail -1 "$log" 2>/dev/null)"
+        if [ -n "$line" ] && [ "$line" != "$last" ]; then
+            echo "  pulling (${waited}s): $line" >&2
+            last="$line"
+            quiet=0
+        else
+            quiet=$((quiet + PULL_TICK))
+            if [ "$quiet" -ge "$PULL_STALL" ]; then
+                echo "  the pull has said nothing for ${quiet}s (${waited}s in); it may be stuck." >&2
+                # The how-to once, then just the clock: a warning that
+                # repeats in full every three minutes is its own noise.
+                if [ "$said_how" -eq 0 ]; then
+                    if [ -n "$last" ]; then
+                        echo "    last it said: $last" >&2
+                    fi
+                    echo "    a wedged pull shows no network activity: check with" >&2
+                    echo "      lsof -nP -iTCP -sTCP:ESTABLISHED | grep -i docker" >&2
+                    echo "    ^C is safe -- bootstrap and ./claude-dev are both idempotent." >&2
+                    said_how=1
+                fi
+                quiet=0
+            fi
+        fi
+    done
+    wait "$pid" || rc=$?
+    PULL_OUT="$(cat "$log" 2>/dev/null)"
     return "$rc"
 }
 
