@@ -1,0 +1,202 @@
+#!/usr/bin/env bats
+#
+# The folder home is a bind mount, and chown on a unix domain socket over
+# that mount returns EINVAL. Orca leaves sockets in ~/.config/orca between
+# boots, so `chown -R agent:agent /home/agent` in setup.sh's phase_user
+# died on one -- seen on a real Mac run:
+#
+#   chown: changing ownership of '/home/agent/.config/orca/o-7563-9c89.sock': Invalid argument
+#
+# setup.sh runs under `set -Eeuo pipefail`, so that took setup.sh, the
+# entrypoint and the container with it, on every restart from then on:
+# once a socket was left behind the folder could not boot again.
+#
+# These cases run the real chown logic lifted out of the scripts, as this
+# box's unprivileged user, against a fixture holding a real AF_UNIX
+# socket. A no-op chown to the current user/group is what isolates the
+# file-type behaviour from permissions, which is the only thing a
+# non-root run could otherwise be measuring.
+#
+# This filesystem is overlayfs, where chown on a socket happens to
+# succeed, so the EINVAL itself is modelled by a chown shim that refuses
+# sockets exactly as the bind mount does. The shim is what makes the
+# non-vacuity case honest: under it, the old `chown -R` form fails and
+# the new form does not.
+
+REPO_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)"
+SETUP_SH="$REPO_ROOT/scripts/container/setup.sh"
+ENTRYPOINT="$REPO_ROOT/scripts/container/entrypoint.sh"
+
+# AF_UNIX paths cap at ~108 bytes, so the fixture lives under a short
+# /tmp prefix (same reason as tests/container-entrypoint-seed.bats).
+setup() {
+    TMP="$(mktemp -d /tmp/co-chown-XXXXXX)"
+    export TMP
+    ME="$(id -un):$(id -gn)"
+}
+
+teardown() {
+    [ -n "${TMP:-}" ] && rm -rf "$TMP"
+    return 0
+}
+
+# A home-shaped tree: a regular file, a subdirectory with a file in it,
+# and a real unix domain socket where Orca puts its own.
+make_home() {
+    local home="$1"
+    mkdir -p "$home/.config/orca" "$home/.claude"
+    printf 'x\n' > "$home/.zshrc"
+    printf 'y\n' > "$home/.claude/settings.json"
+    python3 -c 'import socket, sys
+s = socket.socket(socket.AF_UNIX)
+s.bind(sys.argv[1])' "$home/.config/orca/o-7563-9c89.sock"
+    [ -S "$home/.config/orca/o-7563-9c89.sock" ]
+}
+
+# chown as the bind mount behaves: EINVAL on a socket, real chown
+# otherwise, GNU semantics (report, keep going, exit non-zero). Every
+# path it is asked to change is appended to $CHOWN_LOG, so a test can
+# tell "skipped the socket" from "did nothing".
+write_chown_shim() {
+    mkdir -p "$TMP/bin"
+    cat > "$TMP/bin/chown" <<'SHIM'
+#!/usr/bin/env bash
+recurse=0
+owner=""
+rc=0
+targets=()
+for a in "$@"; do
+    case "$a" in
+        -*R*) recurse=1 ;;
+        -*)   ;;
+        *)    if [ -z "$owner" ]; then owner="$a"; else targets+=("$a"); fi ;;
+    esac
+done
+expanded=()
+for t in "${targets[@]}"; do
+    if [ "$recurse" = "1" ] && [ -d "$t" ]; then
+        while IFS= read -r -d '' f; do expanded+=("$f"); done \
+            < <(/usr/bin/find "$t" -print0)
+    else
+        expanded+=("$t")
+    fi
+done
+for t in "${expanded[@]}"; do
+    printf '%s\n' "$t" >> "$CHOWN_LOG"
+    if [ -S "$t" ]; then
+        printf "chown: changing ownership of '%s': Invalid argument\n" "$t" >&2
+        rc=1
+        continue
+    fi
+    /usr/bin/chown "$owner" "$t" || rc=1
+done
+exit $rc
+SHIM
+    chmod +x "$TMP/bin/chown"
+    : > "$TMP/chown.log"
+}
+
+# The chown phase_user actually runs, lifted from setup.sh and pointed at
+# the fixture instead of /home/agent.
+lift_phase_user_chown() {
+    sed -n '/^ *find \/home\/agent -xdev/,/xargs -0 -r chown agent:agent/p' \
+        "$SETUP_SH"
+}
+
+@test "setup.sh phase_user chowns a home containing a live unix socket without failing" {
+    lifted="$(lift_phase_user_chown)"
+    [[ "$lifted" == *"! -type s"* ]]
+    [[ "$lifted" == *"xargs -0 -r chown agent:agent"* ]]
+
+    home="$TMP/home"
+    make_home "$home"
+
+    # The real command, with the real chown, under phase_user's own
+    # shell options.
+    run bash -c "set -Eeuo pipefail
+${lifted//\/home\/agent/$home}"
+    [ "$status" -eq 0 ]
+
+    # The socket is still there: nothing was deleted to make chown work.
+    [ -S "$home/.config/orca/o-7563-9c89.sock" ]
+    [ -f "$home/.claude/settings.json" ]
+}
+
+@test "the old chown -R form is what the socket kills, and the new one survives it" {
+    write_chown_shim
+    home="$TMP/home"
+    make_home "$home"
+
+    # OLD form: this is the line that aborted setup.sh on the Mac.
+    : > "$TMP/old.log"
+    run env PATH="$TMP/bin:$PATH" CHOWN_LOG="$TMP/old.log" \
+        bash -c "set -Eeuo pipefail; chown -R $ME '$home'; echo REACHED_END"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"o-7563-9c89.sock"* ]]
+    [[ "$output" == *"Invalid argument"* ]]
+    [[ "$output" != *"REACHED_END"* ]]
+
+    # NEW form: same fixture, same shim, same shell options.
+    lifted="$(lift_phase_user_chown)"
+    : > "$TMP/new.log"
+    run env PATH="$TMP/bin:$PATH" CHOWN_LOG="$TMP/new.log" \
+        bash -c "set -Eeuo pipefail
+${lifted//\/home\/agent/$home}
+echo REACHED_END"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"REACHED_END"* ]]
+    [[ "$output" != *"Invalid argument"* ]]
+
+    # ...and it was not vacuous: chown saw the real files and never the
+    # socket.
+    run grep -c 'settings.json' "$TMP/new.log"
+    [ "$output" = "1" ]
+    run grep -c 'o-7563-9c89.sock' "$TMP/new.log"
+    [ "$output" = "0" ]
+}
+
+@test "setup.sh no longer carries a blanket chown -R over the folder home" {
+    run grep -n 'chown -R agent:agent /home/agent' "$SETUP_SH"
+    [ "$status" -ne 0 ]
+}
+
+@test "the entrypoint's recursive chowns skip sockets and stay non-fatal" {
+    write_chown_shim
+    fn="$(sed -n '/^chown_agent_tree()/,/^}/p' "$ENTRYPOINT")"
+    [[ "$fn" == *"! -type s"* ]]
+
+    # Every -R chown on this side goes through the helper (comments
+    # naming the old form do not count).
+    run grep -nE '^[^#]*chown -R' "$ENTRYPOINT"
+    [ "$status" -ne 0 ]
+
+    home="$TMP/home"
+    make_home "$home"
+    : > "$TMP/ep.log"
+
+    run env PATH="$TMP/bin:$PATH" CHOWN_LOG="$TMP/ep.log" \
+        bash -c "set -uo pipefail
+AGENT_UID='$(id -u)'
+AGENT_GID='$(id -g)'
+$fn
+chown_agent_tree '$home'
+echo REACHED_END"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"REACHED_END"* ]]
+
+    run grep -c 'settings.json' "$TMP/ep.log"
+    [ "$output" = "1" ]
+    run grep -c 'o-7563-9c89.sock' "$TMP/ep.log"
+    [ "$output" = "0" ]
+
+    # A missing directory is not fatal either.
+    run env PATH="$TMP/bin:$PATH" CHOWN_LOG="$TMP/ep.log" \
+        bash -c "set -uo pipefail
+AGENT_UID='$(id -u)'
+AGENT_GID='$(id -g)'
+$fn
+chown_agent_tree '$TMP/nope'
+echo REACHED_END"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"REACHED_END"* ]]
+}

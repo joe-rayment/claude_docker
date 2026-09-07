@@ -236,10 +236,19 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 75
     env:
-      PROJECT: ${{ runner.temp }}/mac-project
       CNAME: claude-orca-mac-project
     steps:
       - uses: actions/checkout@v4
+
+      # PROJECT cannot live in the job-level `env:` above: the `runner`
+      # context is not available there (only github, inputs, matrix, needs,
+      # secrets, strategy and vars are), and GitHub rejects the whole
+      # workflow rather than the one line -- run 34068515697 died in 0s with
+      # zero jobs. $RUNNER_TEMP is an ordinary variable inside a `run:`
+      # block, so resolve it here and publish it to every later step.
+      - name: Resolve the project path
+        run: |
+          echo "PROJECT=$RUNNER_TEMP/mac-project" >> "$GITHUB_ENV"
 
       - name: Preflight facts (recorded, not asserted)
         run: |
@@ -318,6 +327,11 @@ jobs:
           # and what a daemon that answers `info` but cannot unshare
           # namespaces also cannot do -- so the message keeps docker's own
           # words rather than just the exit status.
+          # Pulled first and separately so the two failures stay apart:
+          # a VM with no network, and a VM that cannot start a container.
+          # Both keep docker's own words -- the reason IS the diagnosis.
+          pulled="$(docker pull --quiet alpine 2>&1)" \
+            || fail "'docker pull alpine' failed: $pulled"
           out="$(docker run --rm alpine echo daemon-is-real 2>&1)" \
             || fail "'docker run alpine' failed: $out"
           [ "$out" = "daemon-is-real" ] \

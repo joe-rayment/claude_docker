@@ -737,6 +737,14 @@ cmd_key_v3() {
 
     mkdir -p "$dir/.claude-dev/home"
     file="$(openrouter_key_file "$dir")"
+    # Unlink first, always, and here it is a credential at stake: `>`
+    # FOLLOWS a symlink, so a link planted at .openrouter.key sends the
+    # user's real OpenRouter key straight through it into whatever it
+    # points at -- and the chmod below then relaxes THAT file to 600. The
+    # umask is no help, because an existing target keeps its own mode. After
+    # the rm the key can only ever land on a fresh regular file the umask
+    # governs.
+    rm -f "$file"
     ( umask 077; printf '%s\n' "$key" > "$file" )
     chmod 600 "$file"
     echo "Saved the OpenRouter key to .claude-dev/home/.openrouter.key (mode 600)."
@@ -1102,6 +1110,13 @@ cmd_register_v3() {
     # memory null mean "whatever `container` defaults to"; extraMounts are
     # host paths mounted read-only beside the project.
     if [ ! -f "$(orca_json "$dir")" ]; then
+        # `-f` follows symlinks, so a link to an existing file takes the
+        # branch that leaves a folder's own config alone -- but a DANGLING
+        # link passes the guard, and `cat >` then follows it and creates the
+        # defaults somewhere outside the project entirely. Unlink first: the
+        # guard's answer for the ordinary cases is unchanged, and the write
+        # can only ever land at this path.
+        rm -f "$(orca_json "$dir")"
         cat > "$(orca_json "$dir")" <<'JSON'
 {"version":3,"port":null,"cpus":null,"memory":null,"extraMounts":[]}
 JSON

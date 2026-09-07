@@ -405,7 +405,19 @@ phase_user() {
         useradd -u 1000 -g 1000 -m -d /home/agent -s /usr/bin/zsh agent
     fi
     mkdir -p /home/agent/.claude /home/agent/.config/orca /home/agent/.local/bin
-    chown -R agent:agent /home/agent
+    # Not `chown -R`: /home/agent is the bind-mounted folder home, and
+    # chown on a unix socket over that mount returns EINVAL. Orca leaves
+    # its sockets in .config/orca, so on the next boot `chown -R` died on
+    # one -- `.config/orca/o-7563-9c89.sock: Invalid argument` on a real
+    # Mac run -- and under `set -Eeuo pipefail` that took setup.sh, the
+    # entrypoint and the container with it, every restart from then on.
+    # Chown everything that is not a socket instead. The sockets stay:
+    # they may belong to something running, and deleting a file in the
+    # user's home to make a chown succeed is the wrong trade. A real
+    # failure on a real file still fails the phase (xargs exits 123,
+    # pipefail propagates it); an empty result does not (`xargs -r`).
+    find /home/agent -xdev ! -type s -print0 \
+        | xargs -0 -r chown agent:agent
 }
 
 # --- this template ------------------------------------------------------

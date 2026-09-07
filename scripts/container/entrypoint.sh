@@ -67,6 +67,18 @@ log()  { printf '[entrypoint] %s\n' "$*"; }
 warn() { printf '[entrypoint] %s\n' "$*" >&2; }
 die()  { printf '[entrypoint] %s\n' "$*" >&2; exit 1; }
 
+# Recursive chown for the agent, minus the unix sockets. `chown -R` over
+# the bind-mounted folder home returns EINVAL on a socket -- Orca leaves
+# its own in .config/orca between boots -- and once it hits one the rest
+# of the tree keeps the wrong owner while the error goes to /dev/null.
+# Skipping sockets is what makes the chown actually complete. Best
+# effort, like every chown on this side: never fatal, and the sockets
+# themselves are left alone because something may still be using them.
+chown_agent_tree() {
+    find "$1" -xdev ! -type s -print0 2>/dev/null \
+        | xargs -0 -r chown "$AGENT_UID:$AGENT_GID" 2>/dev/null || true
+}
+
 _resolve_script_path() {
     src="${BASH_SOURCE[0]}"
     while [ -L "$src" ]; do
@@ -236,7 +248,7 @@ if [ "${CLAUDE_ORCA_ENTRYPOINT_NO_PRIVDROP:-0}" != "1" ] && [ "$(id -u)" = "0" ]
         [ -n "$AGENT_HOME" ] || AGENT_HOME="/home/$AGENT_USER"
         mkdir -p "$AGENT_HOME"
         chown "$AGENT_UID:$AGENT_GID" "$AGENT_HOME" 2>/dev/null || true
-        chown -R "$AGENT_UID:$AGENT_GID" "$RUN_DIR" 2>/dev/null || true
+        chown_agent_tree "$RUN_DIR"
         PRIVDROP=1
     else
         warn "user $AGENT_USER not found; staying root"
@@ -270,7 +282,7 @@ agent_exec() {
 export GH_TOKEN="${GH_TOKEN:-}"
 USER_DATA_DIR="${ORCA_USER_DATA_DIR:-$AGENT_HOME/.config/orca}"
 mkdir -p "$USER_DATA_DIR"
-[ "$PRIVDROP" = "1" ] && chown -R "$AGENT_UID:$AGENT_GID" "$USER_DATA_DIR" 2>/dev/null
+[ "$PRIVDROP" = "1" ] && chown_agent_tree "$USER_DATA_DIR"
 
 # --- config-sync (best effort, never fatal) -----------------------------
 #
@@ -436,7 +448,7 @@ if [ "$PRIVDROP" = "1" ]; then
         "$PROJECT_DIR/attachments" "$AGENT_HOME/.gitconfig" \
         "$AGENT_HOME/.claude.json" "$AGENT_HOME/.claude" \
         "$AGENT_HOME/.claude/settings.json" 2>/dev/null
-    chown -R "$AGENT_UID:$AGENT_GID" "$PROJECT_DIR/.beads" 2>/dev/null
+    chown_agent_tree "$PROJECT_DIR/.beads"
 fi
 
 # --- the OpenRouter guard (claude-orca-qa2.21) --------------------------
@@ -563,7 +575,7 @@ else
     warn "seeding Orca state failed (continuing)"
 fi
 if [ "$PRIVDROP" = "1" ]; then
-    chown -R "$AGENT_UID:$AGENT_GID" "$USER_DATA_DIR" 2>/dev/null
+    chown_agent_tree "$USER_DATA_DIR"
 fi
 
 # --- beads, once (claude-orca-qa2.5) ------------------------------------
