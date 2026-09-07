@@ -31,8 +31,10 @@ need_real_docker() {
 
 # The launcher's own mirror of the argv it executed, one line per ctr()
 # call: "<runtime> <argv...>". $1 is the subcommand.
+# The stamp is optional here on purpose: this file is about the FLAGS, and
+# tests/run-logs.bats is what holds the launcher to stamping at all.
 launcher_argv() {
-    grep "^docker $1 " "$2/.claude-dev/run/container.log" | tail -1
+    grep -E "^([0-9:]{8} )?docker $1 " "$2/.claude-dev/run/container.log" | tail -1
 }
 
 # Every long flag in an argv line, one per line, de-duplicated and with any

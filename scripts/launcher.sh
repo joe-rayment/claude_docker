@@ -291,11 +291,20 @@ ctr_log_line() {
         esac
         out="$out $a"
     done
-    printf '%s%s\n' "$CTR_RUNTIME" "$out"
+    # Stamped: the whole point of this file is answering "how long did
+    # that take", and it could not (recovery plan step 0.2).
+    printf '%s %s%s\n' "$(date '+%H:%M:%S')" "$CTR_RUNTIME" "$out"
 }
 
-# Every backend mirrors its argv into the folder's log, redaction and all.
+# Every backend mirrors its argv into the folder's log, redaction and all
+# -- except the container-state poll, which every wait loop runs once a
+# second and which buried this file under 4,625 identical lines on a real
+# Mac (2026-09-07), leaving the handful that say what actually happened
+# unfindable. What the poll observes is logged by its caller instead.
 ctr_mirror() {
+    case "${1:-}" in
+        inspect) return 0 ;;
+    esac
     if [ -n "${CTR_LOG:-}" ]; then
         ctr_log_line "$@" >> "$CTR_LOG" 2>/dev/null || true
     fi
@@ -1171,7 +1180,7 @@ EXTRA
 }
 
 cmd_open_v3() {
-    local dir="${1:-$PROJECT_SELF}" name port state url rc=0
+    local dir="${1:-$PROJECT_SELF}" name port state url rc=0 t0 t1
     [ -d "$dir" ] || { echo "Error: directory does not exist: $dir" >&2; return 1; }
     dir="$(cd "$dir" && pwd -P)"
     if [ ! -f "$(orca_json "$dir")" ]; then
@@ -1201,7 +1210,9 @@ cmd_open_v3() {
             ;;
     esac
 
+    t0="$(date +%s)"
     url="$(wait_for_web_url "$dir" "$name")" || rc=$?
+    t1="$(date +%s)"
     if [ "$rc" -ne 0 ]; then
         {
             if [ "$rc" -eq 2 ]; then
@@ -1231,6 +1242,8 @@ cmd_open_v3() {
         return 1
     fi
 
+    # The one number a person actually wants after typing ./claude-dev.
+    echo "Orca is up ($((t1 - t0))s)"
     open_url "$url"
     print_run_it_block_v3 "$dir" "$url"
 }

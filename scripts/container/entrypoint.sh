@@ -63,9 +63,12 @@
 
 set -uo pipefail
 
-log()  { printf '[entrypoint] %s\n' "$*"; }
-warn() { printf '[entrypoint] %s\n' "$*" >&2; }
-die()  { printf '[entrypoint] %s\n' "$*" >&2; exit 1; }
+# Elapsed seconds on every line: the entrypoint's own steps (setup, the
+# privilege drop, config-sync, the seeds, serve) are the other half of a
+# first start's timeline (recovery plan step 0.2).
+log()  { printf '[entrypoint +%ss] %s\n' "$SECONDS" "$*"; }
+warn() { printf '[entrypoint +%ss] %s\n' "$SECONDS" "$*" >&2; }
+die()  { printf '[entrypoint +%ss] %s\n' "$SECONDS" "$*" >&2; exit 1; }
 
 # Recursive chown for the agent, minus the unix sockets. `chown -R` over
 # the bind-mounted folder home returns EINVAL on a socket -- Orca leaves

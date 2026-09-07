@@ -88,9 +88,12 @@ python3 python3-pip locales tini util-linux procps psmisc
 build-essential unzip xz-utils sudo
 libasound2t64 libgbm1 xauth fonts-liberation"
 
-say()  { printf '[setup] %s\n' "$*"; }
-warn() { printf '[setup] %s\n' "$*" >&2; }
-die()  { printf '[setup] error: %s\n' "$*" >&2; exit 1; }
+# Elapsed seconds, not a clock: this log is read to find out which phase
+# cost the minutes, and $SECONDS answers that without the reader having to
+# subtract anything (recovery plan step 0.2).
+say()  { printf '[setup +%ss] %s\n' "$SECONDS" "$*"; }
+warn() { printf '[setup +%ss] %s\n' "$SECONDS" "$*" >&2; }
+die()  { printf '[setup +%ss] error: %s\n' "$SECONDS" "$*" >&2; exit 1; }
 
 need_root() {
     [ "$(id -u)" -eq 0 ] || die "must run as root (phase: ${1:-all})"
