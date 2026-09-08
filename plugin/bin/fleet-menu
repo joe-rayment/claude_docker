@@ -24,32 +24,17 @@ die() { err "$*"; exit 1; }
 # this real tab byte instead of writing \t directly.
 TAB=$'\t'
 
-# FLEET_BIN — the 'fleet' script cmd_sidebar delegates to. Prefers PATH
-# (the installed /usr/local/bin/fleet), falling back to the script
-# sitting right next to this one when 'fleet' isn't on PATH -- the same
-# gap fleet.sh's own SELF comment documents for its --watch
-# re-invocation: a container that hasn't re-synced /usr/local/bin since
-# the last image build, or this script run straight from a
-# checkout/test. Resolved once at load time since it never changes for
-# the life of one invocation.
-if command -v fleet >/dev/null 2>&1; then
-    FLEET_BIN="fleet"
-else
-    FLEET_BIN="$(dirname "$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")")/fleet.sh"
-fi
-
 # CS_NEW_BIN — the cs-new launcher cmd_new runs. Prefers the exact
 # sibling next to THIS copy of fleet-menu.sh (scripts/cs-new.sh in a
 # checkout, cs-new alongside an installed/staged fleet-menu) over a bare
-# PATH lookup -- inverted from FLEET_BIN's own precedence on purpose,
-# the same anti-staleness rationale fleet.sh's own CS_NEW_BIN documents:
-# a test running the edited source checkout must never shell out to a
-# stale /usr/local/bin/cs-new left over from before the last image sync
-# (confirmed to actually be stale during beads_claude_docker-8wy7's own
-# implementation -- lacked --open entirely), while in a real deployment
-# the sibling IS the installed/staged copy anyway (same file, same
-# result either way). Falls back to PATH's cs-new only if no sibling
-# script is found next to SELF.
+# PATH lookup -- a test running the edited source checkout must never
+# shell out to a stale /usr/local/bin/cs-new left over from before the
+# last image sync (confirmed to actually be stale during
+# beads_claude_docker-8wy7's own implementation -- lacked --open
+# entirely), while in a real deployment the sibling IS the
+# installed/staged copy anyway (same file, same result either way).
+# Falls back to PATH's cs-new only if no sibling script is found next to
+# SELF.
 if [ -f "$(dirname "$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")")/cs-new.sh" ]; then
     CS_NEW_BIN="$(dirname "$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")")/cs-new.sh"
 elif [ -f "$(dirname "$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")")/cs-new" ]; then
@@ -148,9 +133,6 @@ Subcommands:
                             change) if the target branch is not merged
                             into main. --print lists the merged candidates
                             (name, branch) only.
-  sidebar                   Toggle the fleet sidebar in the current
-                            window: delegates straight to `fleet toggle
-                            <pane_id>` (see scripts/fleet.sh).
 EOF
 }
 
@@ -462,17 +444,6 @@ cmd_review() {
     esac
 }
 
-cmd_sidebar() {
-    parse_pane_args "$@"
-    local pane_id
-    if [ -n "$PANE_ID" ]; then
-        pane_id="$PANE_ID"
-    else
-        pane_id="$(current_pane_id)"
-    fi
-    "$FLEET_BIN" toggle "$pane_id"
-}
-
 cmd_remove_merged() {
     parse_pane_args "$@"
     local root
@@ -526,7 +497,6 @@ case "$sub" in
     jump)          cmd_jump "$@" ;;
     review)        cmd_review "$@" ;;
     remove-merged) cmd_remove_merged "$@" ;;
-    sidebar)       cmd_sidebar "$@" ;;
     *)
         err "unknown subcommand: $sub"
         usage

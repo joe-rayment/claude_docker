@@ -8,29 +8,6 @@ set -euo pipefail
 err() { printf 'cs-new: %s\n' "$*" >&2; }
 die() { err "$*"; exit 1; }
 
-# SELF — this script's own absolute path, used by FLEET_BIN below to
-# find its sibling fleet script regardless of cwd.
-SELF="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")"
-
-# FLEET_BIN — the 'fleet' launcher cs-new calls (fleet follow, once the
-# new window exists) so an open sidebar joins the fresh session right
-# away. Prefers the exact sibling next to THIS copy of cs-new.sh
-# (scripts/fleet.sh in a checkout, fleet alongside an installed/staged
-# cs-new) over a bare PATH lookup -- same anti-staleness rationale as
-# fleet.sh's own CS_NEW_BIN (see its comment): a test running the edited
-# source checkout must never shell out to a stale /usr/local/bin/fleet
-# left over from before the last image sync, while in a real deployment
-# the sibling IS the installed/staged copy anyway (same file, same
-# result either way). Falls back to PATH's fleet only if no sibling
-# script is found next to SELF.
-if [ -f "$(dirname "$SELF")/fleet.sh" ]; then
-    FLEET_BIN="$(dirname "$SELF")/fleet.sh"
-elif [ -f "$(dirname "$SELF")/fleet" ]; then
-    FLEET_BIN="$(dirname "$SELF")/fleet"
-else
-    FLEET_BIN="fleet"
-fi
-
 # seed_trust <root> <worktree> — best-effort: if $HOME/.claude.json
 # exists and <root> is already trusted there, copy that trust to
 # <worktree> too (same code the user already trusted, one directory
@@ -196,9 +173,6 @@ fi
 if [ -n "${TMUX:-}" ]; then
     tmux new-window -n "$name" -c "$path" -e "BEADS_DIR=$root/.beads" -- "$launch_cmd"
     tmux select-window -t "$name" 2>/dev/null || true
-    # An open sidebar should join the fresh session immediately rather
-    # than waiting for the next --watch tick or a manual jump.
-    "$FLEET_BIN" follow >/dev/null 2>&1 || true
 else
     cd "$path"
     exec env BEADS_DIR="$root/.beads" bash -c "$launch_cmd"

@@ -239,7 +239,7 @@ walk(hooks_block)
 # `command -v` -- they're run directly by a person (e.g. via a shell
 # alias), not by a hook. Keep this list small and explicit rather than
 # inferring it from anywhere else that could drift.
-STANDALONE_NAMES = {"cs-new", "fleet-menu", "fleet"}
+STANDALONE_NAMES = {"cs-new", "fleet-menu"}
 names |= STANDALONE_NAMES
 
 bin_dir = os.path.join(plugin_dir, "bin")

@@ -213,7 +213,6 @@ COPY --chown=agent:agent scripts/take-screenshot.sh /usr/local/bin/take-screensh
 COPY --chown=agent:agent scripts/csearch.sh /usr/local/bin/csearch
 COPY --chown=agent:agent scripts/cs-new.sh /usr/local/bin/cs-new
 COPY --chown=agent:agent scripts/fleet-menu.sh /usr/local/bin/fleet-menu
-COPY --chown=agent:agent scripts/fleet.sh /usr/local/bin/fleet
 COPY --chown=agent:agent scripts/peers.sh /usr/local/bin/peers
 COPY --chown=agent:agent scripts/session-title.sh /usr/local/bin/session-title
 COPY --chown=agent:agent scripts/tier-set.sh /usr/local/bin/tier-set
