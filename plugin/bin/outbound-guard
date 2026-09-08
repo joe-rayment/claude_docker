@@ -80,8 +80,13 @@ github_auth_present() {
         tok=$(gh auth token 2>/dev/null) && [ -n "$tok" ] && return 0
     fi
 
+    # A PRIVATE key only. The id_* glob also matches id_rsa.pub, and a
+    # public key on its own is not authentication -- counting it would
+    # allow exactly the push-with-no-credentials this guard exists to
+    # stop (beads_claude_docker-t1ym).
     local f
     for f in "${HOME:-}"/.ssh/id_*; do
+        case "$f" in *.pub) continue ;; esac
         [ -f "$f" ] && return 0
     done
 

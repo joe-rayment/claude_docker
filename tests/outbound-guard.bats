@@ -161,6 +161,14 @@ deny_reason() {
     [ -z "$output" ]
 }
 
+@test "outbound-guard: git push is DENIED when ~/.ssh holds only a public key (id_rsa.pub is not authentication)" {
+    mkdir -p "$HOME/.ssh"
+    : > "$HOME/.ssh/id_rsa.pub"
+    run_pretool 'git push origin main'
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"no GitHub authentication"* ]]
+}
+
 @test "outbound-guard: gh pr create is allowed when GH_TOKEN is set" {
     export GH_TOKEN="fake-gh-token-value"
     run_pretool 'gh pr create --fill'
