@@ -358,7 +358,7 @@ case "$cmd" in
             echo "docker: Error response from daemon: pull access denied" >&2
             exit 1
         fi
-        name=""; port=""; proj=""; prev=""
+        name=""; port=""; proj=""; hostproj=""; prev=""
         for a in "$@"; do
             case "$prev" in
                 --name) name="$a" ;;
@@ -366,10 +366,17 @@ case "$cmd" in
                     case "$a" in
                         ORCA_PORT=*)   port="${a#ORCA_PORT=}" ;;
                         PROJECT_DIR=*) proj="${a#PROJECT_DIR=}" ;;
+                        CLAUDE_ORCA_HOST_PROJECT_DIR=*)
+                            hostproj="${a#CLAUDE_ORCA_HOST_PROJECT_DIR=}" ;;
                     esac ;;
             esac
             prev="$a"
         done
+        # PROJECT_DIR is the path INSIDE the container (/workspace/<name>),
+        # which does not exist out here. What the entrypoint writes to it
+        # lands in the bind mount, and the bind mount is the host folder --
+        # so a stub standing in for the entrypoint writes to the host path.
+        [ -n "$hostproj" ] && proj="$hostproj"
         [ -n "$name" ] || { echo "docker: run needs --name" >&2; exit 1; }
         echo running > "$state/containers/$name"
         # A --volume whose source is not a path is a NAMED volume, and

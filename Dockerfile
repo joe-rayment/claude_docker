@@ -29,20 +29,34 @@ ENV DEBIAN_FRONTEND=noninteractive \
 ARG CLAUDE_CODE_VERSION=2.1.261
 ARG ORCA_VERSION=1.4.197
 
-# Only the apt half (setup.sh's IMAGE_PHASES: base, node, gh, Orca's
-# runtime libraries, the agent user), in one layer that is cached until
-# setup.sh itself changes -- the repo copy below must NOT invalidate it.
-#
-# The other half -- Orca itself, Claude Code, opencode, bd, dolt, bats,
-# ~1.2 GB of pinned payload -- is NOT baked. The entrypoint installs it on
-# a folder's first start into <project>/.claude-dev/toolchain, which the
-# launcher mounts over /usr/local, /opt/Orca and /opt/claude, so it is
-# installed once per folder and survives every recreate. What that buys:
-# an image with no fast-moving parts in it, a build that no longer carries
-# them under QEMU, and a toolchain a person can see, read and delete from
-# the Mac without going anywhere near a registry.
+# The apt half (setup.sh's IMAGE_PHASES: base, node, gh, Orca's runtime
+# libraries, the agent user), in one layer that is cached until setup.sh
+# itself changes -- the repo copy below must NOT invalidate it.
 COPY scripts/container/setup.sh /opt/claude-orca-setup.sh
 RUN CLAUDE_CODE_VERSION=$CLAUDE_CODE_VERSION ORCA_VERSION=$ORCA_VERSION /opt/claude-orca-setup.sh --image
+
+# ... and the payload: Orca, Claude Code, opencode, bd, dolt and bats,
+# ~1.3 GB of pinned tools.
+#
+# This was briefly NOT baked -- the entrypoint installed it on a folder's
+# first start into <project>/.claude-dev/toolchain -- and the measurement
+# that ended that experiment was a folder taking ~18 minutes to come up on
+# a real Mac, 15.5 of them downloading this payload at 2.5 MB/s, once per
+# folder, shared with no other folder. Docker's layer cache does that job
+# for every folder on the machine at once, and does it here. (The other
+# half of the verdict: installing into a bind mount is what made the
+# macOS CI job impossible -- colima's virtiofs refuses the chown.)
+#
+# ONE RUN PER PHASE, rarest-changing first, so moving a pin rebuilds that
+# layer and the ones below it rather than all 1.3 GB. The ARGs above are
+# in scope for every RUN in this stage, which is how setup.sh sees the
+# two pins the build takes as arguments.
+RUN /opt/claude-orca-setup.sh --phase bats
+RUN /opt/claude-orca-setup.sh --phase dolt
+RUN /opt/claude-orca-setup.sh --phase bd
+RUN /opt/claude-orca-setup.sh --phase orca
+RUN /opt/claude-orca-setup.sh --phase opencode
+RUN /opt/claude-orca-setup.sh --phase claude
 
 # --- this template ------------------------------------------------------
 #

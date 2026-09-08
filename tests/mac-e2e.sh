@@ -326,13 +326,25 @@ in_toolchain_shape() {
 }
 
 in_no_mac_paths() {
-    # The boundary a person can SEE. /Users existing inside is what made a
-    # real container look unsandboxed to its owner on 2026-09-07.
+    # The boundary a person can SEE. A project mounted at its own Mac path
+    # makes the container spell out its owner's home directory and folder
+    # tree, which is what made a working sandbox look broken to its owner
+    # on 2026-09-07.
+    #
+    # Asserted on the guest path, not on /Users: a throwaway folder under
+    # /tmp has no /Users inside either, so that check would pass while the
+    # thing it is about is still wrong.
+    case "$GUEST_DIR" in
+        /workspace/*) ;;
+        *) echo "the project is mounted at $GUEST_DIR (want /workspace/<name>)"; return 1 ;;
+    esac
+    [ "$GUEST_DIR" != "$PROJECT" ] \
+        || { echo "the guest path is the Mac path"; return 1; }
     if inc ls /Users >/dev/null 2>&1; then
-        echo "/Users exists inside the container (recovery plan step 4 removes it)"
+        echo "/Users exists inside the container"
         return 1
     fi
-    printf 'no /Users inside\n'
+    printf '%s, and no /Users\n' "$GUEST_DIR"
 }
 
 in_one_folder() {

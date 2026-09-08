@@ -55,6 +55,25 @@ HOST_DIR="$(dirname "$TEMPLATE_ROOT")"
 # per-folder launcher can only ever be about its own folder.
 PROJECT_SELF="$(dirname "$HOST_DIR")"
 
+# WHERE THE PROJECT LIVES INSIDE THE CONTAINER.
+#
+# /workspace/<name>, not the folder's own Mac path. Mounting it at the Mac
+# path was deliberate once -- "every path Orca stores and every path an
+# agent prints means the same thing on both sides" -- and the price of it
+# was that the container spells out its owner's home directory and folder
+# tree at every prompt. `pwd` answered /Users/<them>/Documents/<project>
+# and `cd ..` walked a plausible-looking Mac, so a real owner read a
+# working sandbox as a broken one on 2026-09-07. (Those parents are empty
+# scaffolding Docker creates so the mount can sit at that path; the only
+# host paths inside are the project and the folder's own home.)
+#
+# Nothing inside needs the two to agree: the entrypoint, seed-orca-state,
+# `bd init`, the Claude trust seed and `orca repo add` all take the path
+# from PROJECT_DIR. The Mac path still rides in as
+# CLAUDE_ORCA_HOST_PROJECT_DIR, for messages that name a file a person has
+# to open on the Mac.
+guest_project_dir() { printf '/workspace/%s\n' "$(derive_project_name "$1")"; }
+
 derive_project_name() {
     local raw name
     raw="$(basename "$1")"
@@ -198,6 +217,21 @@ gitignore_unseed() {
 # $HOST/state/<project>/<timestamp>/ and prints the snapshot dir. Silent
 # no-op when the project has no exported beads. The Dolt DB itself is not
 # copied -- it rebuilds from the JSONL.
+# rm -rf, then verify -- with a bounded wait, because the thing that
+# holds the directory open is Docker unmounting it and that finishes on
+# its own. Returns non-zero only if it is STILL there afterwards.
+remove_host_dir() {
+    local dir="$1" tries=0
+    while [ "$tries" -lt 10 ]; do
+        rm -rf "$dir" 2>/dev/null
+        [ -e "$dir" ] || return 0
+        sleep 1
+        tries=$((tries + 1))
+    done
+    rm -rf "$dir" 2>/dev/null
+    [ ! -e "$dir" ]
+}
+
 snapshot_root() {
     printf '%s\n' "$1/.claude-dev-snapshots"
 }
@@ -889,45 +923,30 @@ container_state() {
 # the fragment carries a pairing code) once Orca is serving. That file is
 # the handshake between the two halves: everything before it is the Mac
 # starting a VM, everything after is a browser talking to Orca.
-# How long to wait for that handshake, and the question that decides it:
-# is this start going to INSTALL something? Not "which image is it" --
-# that used to be the same question and no longer is. The image carries
-# apt and nothing else now, so a folder whose toolchain cache is empty
-# installs Orca, Claude Code and the rest on this start whether the image
-# was pulled or not; a folder whose cache is full serves in seconds either
-# way. Waiting 120 s on an install kills a folder that is working fine (a
-# real Mac run on 2026-09-06 died at 2m12s mid-install).
+# How long to wait for that handshake, and the one question that decides
+# it: is this start going to INSTALL something? The image answers it. A
+# folder that pulled the prebuilt image has the whole toolchain the
+# moment the container starts and serves in seconds; a folder on the
+# runtime path (plain ubuntu:24.04, where a token without read:packages
+# lands) installs apt on every start and the payload on the first, and
+# needs minutes.
 #
-# There are TWO halves that can be missing, and either one costs minutes:
-#
-#   the toolchain  <project>/.claude-dev/toolchain, filled on first start.
-#                  Its Orca binary is the flag -- the last phase to land,
-#                  so its absence means this start installs.
-#   the apt half   baked into a prebuilt image. A folder on the runtime
-#                  path (plain ubuntu:24.04, where a token without
-#                  read:packages lands) reinstalls it on EVERY recreate,
-#                  because dpkg state cannot live in a bind mount.
-#
-# So the short timeout needs both to be in hand. Measured the hard way on
-# a Mac (2026-09-07): with only the toolchain checked, a runtime-path
-# recreate got 120 s for a job that needs ~5 minutes of apt, and the
-# launcher gave up on a container that was working fine.
-toolchain_cached() {
-    [ -x "$1/.claude-dev/toolchain/opt-Orca/orca-ide" ]
-}
-
-start_installs_nothing() {
-    toolchain_cached "$1" && [ "$(image_source "$1")" != "runtime" ]
+# A folder's own cache is deliberately NOT part of this. Keying the short
+# timeout on it is what killed a working container at 2m12s on a real Mac
+# (2026-09-06): the cache was full, so the wait was 120 s, while the apt
+# half the cache cannot hold was still installing.
+folder_installs_toolchain() {
+    [ "$(image_source "$1")" = "runtime" ]
 }
 
 weburl_timeout() {
     local dir="$1"
     if [ -n "${CLAUDE_ORCA_WEBURL_TIMEOUT:-}" ]; then
         printf '%s\n' "$CLAUDE_ORCA_WEBURL_TIMEOUT"
-    elif start_installs_nothing "$dir"; then
-        printf '%s\n' "120"
-    else
+    elif folder_installs_toolchain "$dir"; then
         printf '%s\n' "${CLAUDE_ORCA_WEBURL_TIMEOUT_RUNTIME:-1800}"
+    else
+        printf '%s\n' "120"
     fi
 }
 
@@ -946,7 +965,7 @@ wait_for_web_url() {
     file="$dir/.claude-dev/run/orca-web-url.txt"
     setup_log="$dir/.claude-dev/run/setup.log"
     timeout="$(weburl_timeout "$dir")"
-    if ! start_installs_nothing "$dir"; then runtime=1; fi
+    if folder_installs_toolchain "$dir"; then runtime=1; fi
     while [ "$waited" -lt "$timeout" ]; do
         if [ -s "$file" ]; then
             url="$(head -1 "$file")"
@@ -1042,24 +1061,18 @@ RUNIT
 # no longer does is sit in the folder where the Mac can see it.
 state_volume() { printf '%s-orca-state\n' "$1"; }
 
-# --- the folder's toolchain cache ---------------------------------------
+# --- the folder's toolchain cache, on the runtime path only -------------
 #
-# The image carries the apt half of the install and nothing else (see
-# setup.sh's IMAGE_PHASES). The other half -- Orca, Claude Code, opencode,
-# bd, dolt, bats: ~1.2 GB of pinned payload -- is installed by the
-# entrypoint on a folder's first start, into <project>/.claude-dev/
-# toolchain, mounted here over the three paths those tools live at. So the
-# container's filesystem after setup.sh is the same as when the image
-# baked them, and `setup.sh --check` says so.
+# The prebuilt image carries the whole toolchain, so a folder that pulls
+# it mounts nothing here: a folder directory over /usr/local would HIDE
+# the payload the image just shipped and hand that folder a fifteen-minute
+# install it does not need.
 #
-# In the folder rather than a docker volume because that is the half a
-# person has to be able to look at: on a Mac it is `ls`, `du` and `rm -rf`
-# away, and it goes when the folder goes. Measured on a real Mac
-# (2026-09-07, Docker Desktop 29, 529 MB / 3620 files): copying the
-# payload in costs 1.6 s against 0.5 s on the container filesystem, a
-# metadata walk 172 ms against 5 ms, and launching the Orca binary about
-# 70 ms more. Virtiofs is slower in ratio and irrelevant in seconds --
-# against ~5 minutes of reinstalling the toolchain on every recreate.
+# The runtime path is the exception and the reason this still exists. A
+# token that cannot pull the private image runs plain ubuntu:24.04, where
+# there is no baked anything; setup.sh installs the payload at first start
+# into <project>/.claude-dev/toolchain, mounted here over the three paths
+# those tools live at, so at least the recreate after it is fast.
 #
 # One mount per path, never /opt itself: /opt also holds /opt/claude-orca,
 # which IS the image's copy of this template.
@@ -1078,7 +1091,8 @@ container_dns() {
 }
 
 container_create() {
-    local dir="$1" name="$2" port="$3" ref src token cpus memory mount theme orkey dns
+    local dir="$1" name="$2" port="$3" ref src token cpus memory mount theme orkey dns guest
+    guest="$(guest_project_dir "$dir")"
     # startup v4: a folder with no reachable prebuilt image runs the public
     # base image with the mounted template's entrypoint as its command --
     # the template clone sits inside the project, which is mounted at its
@@ -1100,17 +1114,23 @@ container_create() {
     rm -f "$dir/.claude-dev/run/orca-web-url.txt"
 
     # The toolchain cache, made before the run so docker mounts real
-    # directories rather than creating root-owned ones of its own.
-    for mount in $TOOLCHAIN_MOUNTS; do
-        mkdir -p "$dir/.claude-dev/toolchain/${mount%%:*}"
-    done
+    # directories rather than creating root-owned ones of its own -- and
+    # only for a folder that is going to install into it.
+    if [ "$src" = "runtime" ]; then
+        for mount in $TOOLCHAIN_MOUNTS; do
+            mkdir -p "$dir/.claude-dev/toolchain/${mount%%:*}"
+        done
+    fi
 
     set -- run -d --name "$name" \
-        --volume "$dir:$dir" \
+        --volume "$dir:$guest" \
         --volume "$dir/.claude-dev/home:/home/agent" \
         --volume "$(state_volume "$name"):/home/agent/.config/orca" \
         -p "127.0.0.1:$port:$port" \
-        -e "PROJECT_DIR=$dir" \
+        -e "PROJECT_DIR=$guest" \
+        -e "CLAUDE_ORCA_HOST_PROJECT_DIR=$dir" \
+        -e "CLAUDE_ORCA_ROOT=$guest" \
+        -e "BEADS_DIR=$guest/.beads" \
         -e "ORCA_PORT=$port" \
         -e "HOST_UID=$(id -u)" \
         -e "GH_TOKEN=$token" \
@@ -1119,10 +1139,12 @@ container_create() {
         -e "CLAUDE_ORCA_GIT_NAME=$(git_identity_name)" \
         -e "CLAUDE_ORCA_GIT_EMAIL=$(git_identity_email)"
 
-    for mount in $TOOLCHAIN_MOUNTS; do
-        set -- "$@" --volume \
-            "$dir/.claude-dev/toolchain/${mount%%:*}:${mount#*:}"
-    done
+    if [ "$src" = "runtime" ]; then
+        for mount in $TOOLCHAIN_MOUNTS; do
+            set -- "$@" --volume \
+                "$dir/.claude-dev/toolchain/${mount%%:*}:${mount#*:}"
+        done
+    fi
 
     # qa2.7: only when the folder has a key -- an empty OPENROUTER_API_KEY
     # would read as "set" to the delegate routes. The value is in argv for
@@ -1163,7 +1185,7 @@ EXTRA
 
     set -- "$@" "$ref"
     if [ "$src" = "runtime" ]; then
-        set -- "$@" bash "$dir/.claude-dev/template/scripts/container/entrypoint.sh"
+        set -- "$@" bash "$guest/.claude-dev/template/scripts/container/entrypoint.sh"
     fi
     if [ "$CTR_RUNTIME" = "local" ]; then
         echo "==> Starting $name (local runtime: the entrypoint as a host process)"
@@ -1315,9 +1337,9 @@ cmd_shell_v3() {
     # -i -t only when there IS a terminal: `docker exec -t` with no tty
     # fails outright, and the suite runs this with stdin on a pipe.
     if [ -t 0 ]; then
-        ctr exec -it --workdir "$dir" "$name" zsh -l
+        ctr exec -it --workdir "$(guest_project_dir "$dir")" "$name" zsh -l
     else
-        ctr exec --workdir "$dir" "$name" zsh -l
+        ctr exec --workdir "$(guest_project_dir "$dir")" "$name" zsh -l
     fi
 }
 
@@ -1536,7 +1558,14 @@ cmd_teardown_v3() {
         echo "Beads snapshot saved to $snap"
     fi
 
-    rm -rf "$dir/.claude-dev"
+    # `rm -rf` on the folder Docker Desktop was just told to release can
+    # remove every file in it and still fail on the directory itself: the
+    # container is gone but the virtiofs share is not unmounted yet.
+    # tests/mac-e2e.sh caught it -- teardown said "complete" and left an
+    # empty .claude-dev behind, which a re-register then reuses. So: try,
+    # look, wait, try again, and say so if it really will not go.
+    remove_host_dir "$dir/.claude-dev" \
+        || echo "Warning: $dir/.claude-dev is still there; remove it by hand once Docker has settled" >&2
     rm -f "$dir/claude-dev"
     gitignore_unseed "$dir"
 
