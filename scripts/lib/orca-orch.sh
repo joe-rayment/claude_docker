@@ -258,6 +258,11 @@ orch_fallback() {
 # it writes a private env file next to it and has the command source that
 # file before exec'ing opencode, so the token is never on the command line
 # (visible in `ps`) and never in Orca's own state.
+#
+# OPENROUTER_BASE_URL is exported for codex's benefit; opencode itself does
+# NOT read it -- config/opencode/opencode.json hardcodes provider.openrouter
+# .options.baseURL to http://127.0.0.1:4141/api/v1, so changing
+# CLAUDE_ORCA_GUARD_PORT alone does not move where opencode talks to.
 
 # orca_opencode_command <model> <run_dir> -- the command string for
 # `terminal create --command`, on stdout. Pure given its two arguments plus
@@ -270,10 +275,10 @@ orca_opencode_command() {
         if [ -n "$token" ]; then
             port="${CLAUDE_ORCA_GUARD_PORT:-4141}"
             env_file="$run_dir/openrouter-guard.env"
-            ( umask 077 && printf 'OPENROUTER_API_KEY=%s\nOPENROUTER_BASE_URL=http://127.0.0.1:%s/api/v1\n' \
+            ( umask 077 && printf "OPENROUTER_API_KEY='%s'\nOPENROUTER_BASE_URL='http://127.0.0.1:%s/api/v1'\n" \
                 "$token" "$port" >"$env_file" )
             chmod 600 "$env_file"
-            printf 'set -a; . %s; set +a; opencode --model %s' "$env_file" "$model"
+            printf "set -a; . '%s'; set +a; opencode --model %s" "$env_file" "$model"
             return 0
         fi
     fi
