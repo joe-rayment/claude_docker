@@ -17,10 +17,12 @@ registers, so worker terminals and orchestration are part of the setup
 rather than an add-on.
 
 One boundary does the confining, and it is the container's own: the only
-host paths that exist inside it are your project folder, mounted at its real
-absolute path, and that folder's `.claude-dev/home`, mounted as the agent's
-home directory. The rest of your Mac is not missing a permission — it is not
-there. The worst a runaway `rm -rf` can do is empty the project folder.
+host paths that exist inside it are your project folder, mounted at
+`/workspace/<name>`, and that folder's `.claude-dev/home`, mounted as the
+agent's home directory. The rest of your Mac is not missing a permission — it
+is not there. Inside, `pwd` says `/workspace/your-project` and `cd ..` shows
+that one folder, which is the truth about what the container holds. The worst
+a runaway `rm -rf` can do is empty the project folder.
 
 ## Requirements
 
@@ -46,12 +48,12 @@ The only thing it ever asks you for is your **admin password**, which macOS
 needs to install those.
 
 The container's image comes one of two ways, and you do not choose: if your
-`gh` token carries `read:packages`, the prebuilt image is pulled and the
-first start takes seconds. If it does not, the folder runs the public
-`ubuntu:24.04` base image and installs its own toolchain inside the
-container the first time it starts — several minutes, once, with
-`./claude-dev logs` showing the progress. Either way the same command is all
-you run.
+`gh` token carries `read:packages`, the prebuilt image is pulled — once per
+Mac, shared by every folder afterwards — and a folder starts in seconds. If
+it does not, the folder runs the public `ubuntu:24.04` base image and
+installs the toolchain inside the container the first time it starts —
+several minutes, once, with `./claude-dev logs` showing the progress. Either
+way the same command is all you run.
 
 ## Quickstart
 
@@ -77,7 +79,7 @@ first run. Nothing is asked of you along the way.
 
 Everything below this is reference.
 
-### If the bootstrap stops
+### If something stops
 
 - **`docker: command not found`** — the bootstrap installs Docker Desktop
   with Homebrew itself; if that failed, install it by hand from
@@ -107,6 +109,19 @@ Everything below this is reference.
 - **The port is taken.** The port is chosen once, at registration, and kept
   in `claude-orca.json`. Change the number there and run
   `./claude-dev --update` to recreate the container on it.
+- **Pasting an image into a terminal fails** with `Failed to execute 'read'
+  on 'Clipboard': Read permission denied`. That is the browser, not the
+  container: Orca Web reads images with the Clipboard API, which every
+  Chromium browser gates behind a per-site permission. Each folder has its
+  own port, so each is its own origin with its own permission. In Chrome open
+  `chrome://settings/content/siteDetails?site=http://127.0.0.1:<port>`, set
+  **Clipboard** to Allow, reload the tab, and click into the terminal before
+  pasting. Text paste never needs it; only images do.
+- **A folder registered before the `/workspace` move.** Orca's state
+  remembers the repo at its old path. Tear the folder down and register it
+  again — `./claude-dev --teardown`, then the bootstrap one-liner. Beads
+  survive: teardown snapshots `.beads/issues.jsonl` and registration restores
+  it.
 
 ## Day to day
 
@@ -118,6 +133,7 @@ of them is about *this* folder:
 ./claude-dev stop             # stop this folder's container
 ./claude-dev shell            # a login shell inside the container, in the project
 ./claude-dev logs             # follow the container's output
+./claude-dev verify           # is this folder set up the way the template promises?
 ./claude-dev --how-to-run     # print the URL and the two commands again
 ./claude-dev --doctor         # CLI, daemon, image, container, port, web url
 ./claude-dev --update         # pull the template and the image, recreate
@@ -125,8 +141,12 @@ of them is about *this* folder:
 ```
 
 `./claude-dev shell` is where you run `claude`, `bd` or `git` by hand: it is
-a shell in the same container, in the same directory, with the same home the
-agents use. `--teardown` copies `.beads/issues.jsonl` to
+a shell in the same container, in `/workspace/<name>`, with the same home the
+agents use. `./claude-dev verify` is the other one worth knowing: `--doctor`
+says whether the folder can open, and `verify` says whether it is set up --
+the boundary, the toolchain pins, beads, the rulebook, the agent
+definitions, the hooks (with Orca's own kept), the git identity, the Claude
+first-run keys and Orca's worktree base, each as its own row. `--teardown` copies `.beads/issues.jsonl` to
 `.claude-dev-snapshots/<timestamp>/` before it deletes anything, and a later
 registration restores it.
 
@@ -135,19 +155,24 @@ registration restores it.
 | Inside the container | On the Mac |
 |---|---|
 | Orca, Claude Code, every agent and every shell they open | the `./claude-dev` launcher and nothing else |
-| the project folder, at its real absolute path, read-write | — |
+| the project folder, at `/workspace/<name>`, read-write | — |
 | `<project>/.claude-dev/home` as `/home/agent`: Claude's credentials, the git identity | — |
 | Orca's own `~/.config/orca`, in a docker volume named after the container | — |
-| the toolchain (Orca, Claude Code, opencode, bd, dolt, bats) in `<project>/.claude-dev/toolchain` | visible: it is in the folder |
+| the toolchain (Orca, Claude Code, opencode, bd, dolt, bats), from the image | — |
 | any extra mounts you name, always read-only | — |
 
-The image is deliberately thin: it carries apt state — base packages, node,
-gh, and the GTK/at-spi/xvfb libraries Orca links against — because that is
-the half a bind mount cannot hold. Everything else installs on a folder's
-first start (a few minutes, progress in `.claude-dev/run/setup.log`) into
-`.claude-dev/toolchain`, and every later start reuses it. Version pins for
-those tools live in `scripts/container/setup.sh`, so moving one is a
-template pull rather than an image rebuild.
+The image carries the whole install — apt state and the toolchain both — as
+one Docker layer per tool, so a folder that pulled it is ready the moment its
+container starts. Docker caches those layers per machine, which is what makes
+the second folder on a Mac free; the folder itself holds only your project,
+your agent home and your config. Version pins live in
+`scripts/container/setup.sh`.
+
+The exception is the runtime path. Without `read:packages` a folder runs
+plain `ubuntu:24.04`, where there is nothing baked to reuse: it installs the
+toolchain into `<project>/.claude-dev/toolchain` on its first start (several
+minutes, progress in `.claude-dev/run/setup.log`) and mounts that back on
+every later start.
 
 Orca's user-data dir is the one thing that cannot live in the folder: it
 holds the unix sockets Orca chmods and hard-links on startup, and a macOS

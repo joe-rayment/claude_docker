@@ -40,22 +40,30 @@ on the Mac runs an agent.
 
 The boundary is the container's. `claude-dev` runs one Docker container per
 folder from `ghcr.io/joe-rayment/claude_orca` (pinned by the `IMAGE_TAG` file),
-mounting the project at its own absolute path and `.claude-dev/home` as
-`/home/agent`, publishing Orca's port on `127.0.0.1` only. The image carries
-only what a bind mount cannot: apt state — the base packages, node, gh and
-the libraries Orca links against (`setup.sh`'s `IMAGE_PHASES`). The toolchain
-proper — Orca, Claude Code, opencode, bd, dolt, bats — installs on a folder's
-first start into `<project>/.claude-dev/toolchain`, mounted over `/usr/local`,
-`/opt/Orca` and `/opt/claude`, so it is installed once per folder, survives
-every recreate, and can be read and deleted from the Mac. What a recreate
-then costs depends on the image (measured on a Mac, 2026-09-07): with the
-prebuilt one, 3.7 s against ~11 minutes before, because both halves are
-already in hand; on the runtime path (`ubuntu:24.04`, where a token without
-`read:packages` lands a folder) 4m40s, because the apt half is reinstalled
-every time — dpkg state is exactly what a bind mount cannot carry. First
-starts pay ~3 minutes more than they used to on that path: 1.3 GB of
-toolchain now lands in the folder over virtiofs rather than in the image. `setup.sh --check` is what says the two halves add up
-to the same filesystem the fully baked image used to hand over. Inside,
+mounting the project at **`/workspace/<name>`** and `.claude-dev/home` as
+`/home/agent`, publishing Orca's port on `127.0.0.1` only. The project used
+to be mounted at its own Mac path so that paths meant the same thing on both
+sides; the price was a container that spelled out its owner's home directory
+and folder tree at every prompt, which reads as no sandbox at all. Everything
+inside takes the path from `PROJECT_DIR`, so nothing needed them to agree;
+the Mac path still rides in as `CLAUDE_ORCA_HOST_PROJECT_DIR` for messages
+that name a file to open on the Mac, and `BEADS_DIR` names the folder's
+tracker so `bd` answers from any directory.
+
+The image carries the whole install: apt state (`setup.sh`'s `IMAGE_PHASES`)
+plus the payload — Orca, Claude Code, opencode, bd, dolt, bats — one
+Docker layer per phase, rarest-changing first, with the repo copy below them
+so editing a script rebuilds no payload layer. That payload was briefly
+installed per folder into `<project>/.claude-dev/toolchain` instead, and the
+measurement that ended the experiment was a first start of ~18 minutes on a
+real Mac, 15.5 of them downloading 1.3 GB at 2.5 MB/s, once per folder,
+shared with no other folder — the job Docker's layer cache does for every
+folder at once. (It also made the macOS CI job impossible: colima's virtiofs
+refuses the `chown` into a bind mount.) A folder still carries a toolchain on
+the **runtime path** — plain `ubuntu:24.04`, where a token without
+`read:packages` lands — because there is no baked anything to reuse there.
+`setup.sh --check` is what says the image is the filesystem it promised.
+Inside,
 `scripts/container/entrypoint.sh` runs as PID 1, drops to the `agent` user,
 config-syncs, and starts `orca-ide --serve`; it writes the browser URL to
 `run/orca-web-url.txt` (mode 600 — the fragment carries a pairing code),

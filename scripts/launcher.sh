@@ -15,6 +15,7 @@
 #   claude-dev                    Open this folder's Orca in a browser
 #   claude-dev [register] [dir]   Register a project (default: current dir)
 #   claude-dev stop|shell|logs    Stop it / a shell inside it / its output
+#   claude-dev verify             Check the folder is set up as promised
 #   claude-dev key openrouter     Store this folder's OpenRouter key
 #   claude-dev --how-to-run       Print the URL and the two commands
 #   claude-dev --doctor           CLI, service, image, container, port, web url
@@ -1473,6 +1474,88 @@ cmd_doctor_v3() {
     return "$rc"
 }
 
+# ===== claude-dev verify ================================================
+#
+# The doctor answers "can this folder open at all" -- six rows about the
+# CLI, the daemon, the image, the container, the port and the URL. It says
+# nothing about whether the folder is SET UP: the rulebook, the agents, the
+# hooks, the git identity, the Claude first-run keys, Orca's worktree base,
+# the beads database. All of that is seeded by code that logs a line and
+# moves on, and until now nothing read any of it back -- so a folder whose
+# seeding half failed looked exactly like one that worked, which is how
+# "the basic things I asked to exist seem to be fundamentally missing"
+# became a reasonable thing to conclude on 2026-09-07.
+#
+# The rows that have to be asked inside the container are asked there
+# (scripts/container/verify-folder.sh prints them tab-separated); the ones
+# only the Mac can answer are here.
+
+# The image ref a container is actually running.
+docker_image_of() {
+    ctr inspect -f '{{.Config.Image}}' "$1" 2>/dev/null | head -1
+}
+
+cmd_verify_v3() {
+    local dir="${1:-$PROJECT_SELF}" name state rc=0 url_file port st nm detail
+    [ -d "$dir" ] || { echo "Error: directory does not exist: $dir" >&2; return 1; }
+    dir="$(cd "$dir" && pwd -P)"
+    if [ ! -f "$(orca_json "$dir")" ]; then
+        echo "Error: $dir is not registered -- run the bootstrap one-liner" >&2
+        return 1
+    fi
+    ctr_init "$dir"
+    name="$(container_name "$dir")"
+
+    echo "Verifying $dir"
+
+    state="$(container_state "$name")"
+    if [ "$state" = "running" ]; then
+        doctor_row ok "container" "$name (running)"
+    else
+        doctor_row missing "container" "$name is ${state:-absent} -- run ./claude-dev first"
+        return 2
+    fi
+
+    doctor_row ok "image" "$(image_source "$dir") -- $(docker_image_of "$name")"
+
+    port=""
+    [ -f "$dir/.claude-dev/run/port" ] && port="$(head -1 "$dir/.claude-dev/run/port")"
+    if [ -n "$port" ]; then
+        doctor_row ok "port" "$port (published on 127.0.0.1)"
+    else
+        doctor_row missing "port" "no $dir/.claude-dev/run/port"
+        rc=2
+    fi
+
+    url_file="$dir/.claude-dev/run/orca-web-url.txt"
+    if [ -s "$url_file" ]; then
+        doctor_row ok "web url" "published -- $url_file"
+    else
+        doctor_row missing "web url" "not published -- $url_file"
+        rc=2
+    fi
+
+    # ... and everything the container can see for itself.
+    while IFS="$(printf '\t')" read -r st nm detail; do
+        [ -n "$st" ] || continue
+        case "$st" in
+            ok)  doctor_row ok   "$nm" "$detail" ;;
+            n/a) doctor_row n/a  "$nm" "$detail" ;;
+            *)   doctor_row FAIL "$nm" "$detail"; rc=2 ;;
+        esac
+    done <<VERIFY
+$(ctr exec "$name" bash /opt/claude-orca/scripts/container/verify-folder.sh 2>/dev/null || true)
+VERIFY
+
+    if [ "$rc" -eq 0 ]; then
+        echo "Everything this folder promises is there."
+    else
+        echo "Some of what this folder promises is missing (the FAIL rows above)." >&2
+        echo "  ./claude-dev --update recreates the container and re-runs the seeding." >&2
+    fi
+    return "$rc"
+}
+
 cmd_update_v3() {
     local dir="${1:-$PROJECT_SELF}" tmpl before after ref name state
     tmpl="$HOST_DIR/template"
@@ -1597,6 +1680,10 @@ Usage:
   claude-dev open               Same as no arguments
   claude-dev stop               Stop this folder's container
   claude-dev shell              A login shell inside the container
+  claude-dev verify             Check this folder is set up the way the
+                                template promises: the boundary, the
+                                toolchain, beads, the rulebook, agents,
+                                hooks, git identity and Orca's own state
   claude-dev logs               Follow the container's output
   claude-dev key openrouter     Store this folder's OpenRouter key (not
                                 echoed) for the delegate routes
@@ -1614,6 +1701,7 @@ case "${1:-}" in
     open)          shift; cmd_open_v3 "${1:-$PROJECT_SELF}" || exit $?; exit 0 ;;
     stop)          shift; cmd_stop_v3 "${1:-$PROJECT_SELF}" || exit $?; exit 0 ;;
     shell)         shift; cmd_shell_v3 "${1:-$PROJECT_SELF}" || exit $?; exit 0 ;;
+    verify)        shift; cmd_verify_v3 "${1:-$PROJECT_SELF}" || exit $?; exit 0 ;;
     logs)          shift; cmd_logs_v3 "${1:-$PROJECT_SELF}" || exit $?; exit 0 ;;
     key)           shift; cmd_key_v3 "$@" || exit $?; exit 0 ;;
     --how-to-run)  print_run_it_block_v3 "$PROJECT_SELF"; exit 0 ;;

@@ -436,7 +436,27 @@ case "$cmd" in
                      exit 0 ;;
         esac
         exit 0 ;;
-    exec|logs)
+    exec)
+        # `claude-dev verify` runs the in-container checklist through
+        # `docker exec` and parses its tab-separated rows, so the stub has
+        # to answer like the real thing. CLAUDE_ORCA_TEST_VERIFY_FAIL
+        # makes one row fail, which is the case the launcher's exit code
+        # is about.
+        case "$*" in
+            *verify-folder.sh*)
+                printf 'ok\tmount point\t/workspace/stub\n'
+                printf 'ok\thost paths\tone folder beside it, no /Users\n'
+                if [ "${CLAUDE_ORCA_TEST_VERIFY_FAIL:-0}" = "1" ]; then
+                    printf 'FAIL\trulebook\t~/.claude/CLAUDE.md differs from the template\n'
+                else
+                    printf 'ok\trulebook\t~/.claude/CLAUDE.md matches the template\n'
+                fi
+                printf 'n/a\topenrouter guard\tno key in this folder\n'
+                [ "${CLAUDE_ORCA_TEST_VERIFY_FAIL:-0}" = "1" ] && exit 1
+                exit 0 ;;
+        esac
+        exit 0 ;;
+    logs)
         exit 0 ;;
 esac
 exit 0
