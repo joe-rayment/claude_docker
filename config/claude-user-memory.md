@@ -5,7 +5,7 @@
 This file is the rulebook. It ships to every project as `~/.claude/CLAUDE.md`; hook output carries state and pointers back here; a project's own `CLAUDE.md` holds project facts. If text elsewhere argues with this file, this file wins.
 
 ## Sandbox vs. your systems
-This sandbox is this folder: the OS denies writes outside it, the real home directory and Keychain are unreadable, and network access is allowlisted to a fixed set of domains. Inside it you can run anything: install packages, run the app, open it in the browser, `take-screenshot url` (images land in this folder's `attachments/`; look at them with Read). Verification *is* running it — never inspection, never "would need". If a tool is missing, install it and go on.
+This sandbox is a Linux container holding one folder: yours, at /workspace/<name>. The rest of the machine is not denied, it is absent. Network egress is open. Inside it you can run anything: install packages, run the app, open it in the browser, `take-screenshot url` (images land in this folder's `attachments/`; look at them with Read). Verification *is* running it — never inspection, never "would need". If a tool is missing, install it and go on.
 The user's external systems — Snowflake, cloud accounts, production databases, SaaS — are still unreachable: you have no credentials and never will. Never connect, deploy, or ask for logins; never install a CLI to try. Stub them with fixtures and run everything else locally. "No access to X" means "mock X and run", never "can't run".
 
 ## Push and deploy are the user's actions
