@@ -119,7 +119,7 @@ lacks() {
     # RUNs it would invalidate all of them, and the image would cost a
     # full payload rebuild for a one-line comment.
     local copy_at last_phase_at p at
-    copy_at="$(grep -n '^COPY \. /opt/claude-orca$' "$DOCKERFILE" | head -1 | cut -d: -f1)"
+    copy_at="$(grep -nE '^COPY (--chown=[^ ]+ )?\. /opt/claude-orca$' "$DOCKERFILE" | head -1 | cut -d: -f1)"
     [ -n "$copy_at" ]
 
     last_phase_at=0
@@ -205,6 +205,29 @@ lacks() {
     out="$(bash "$probe" "$BATS_TEST_TMPDIR/pulled" "$BATS_TEST_TMPDIR/runtime")"
     [ "$out" = "pulled=120 runtime=1800" ] \
         || { echo "want 'pulled=120 runtime=1800', got '$out'"; return 1; }
+}
+
+@test "the build context excludes the folder's own .claude-dev, and the template copy is not chowned into a second layer" {
+    # The first real build of the toolchain image came out at 7.84 GB.
+    # 1.39 GB of that was `COPY . /opt/claude-orca` carrying the working
+    # checkout's OWN .claude-dev -- an agent home and, on the runtime
+    # path, a 1.3 GB toolchain -- and another 1.51 GB was phase_template's
+    # `chown -R` rewriting every one of those inodes into a fresh
+    # overlayfs layer.
+    local ignore="${BATS_TEST_DIRNAME}/../.dockerignore"
+    local d
+    for d in .claude-dev .git tests/.cache attachments; do
+        grep -qxF "$d" "$ignore" || { echo ".dockerignore does not exclude $d"; return 1; }
+    done
+
+    # COPY --chown, so the chown in phase_template has nothing to do.
+    grep -qE '^COPY --chown=[^ ]+ \. /opt/claude-orca$' "$DOCKERFILE" \
+        || { echo "the template COPY does not set ownership itself"; return 1; }
+
+    # ... and the phase only chowns when it is actually wrong.
+    local body
+    body="$(sed -n '/^phase_template()/,/^}/p' "$SETUP")"
+    contains "$body" "stat -c '%u' /opt/claude-orca"
 }
 
 @test "orca's already-present check is answerable from the cache alone" {

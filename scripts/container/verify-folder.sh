@@ -121,7 +121,7 @@ for a in bead-auditor executor oracle professor scout verifier; do
     [ -f "$AGENT_HOME/.claude/agents/$a.md" ] || missing="$missing $a"
 done
 if [ -z "$missing" ]; then
-    ok "agents" "six definitions in ~/.claude/agents"
+    ok "agents" "six definitions in the agent home's .claude/agents"
 else
     bad "agents" "missing:$missing"
 fi

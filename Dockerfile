@@ -63,7 +63,7 @@ RUN /opt/claude-orca-setup.sh --phase claude
 # /opt/claude-orca-host/template -> /opt/claude-orca gives config-sync.sh
 # the <host>/template/config layout it expects without a --template flag
 # and without touching its contract (tests/config-sync.bats).
-COPY . /opt/claude-orca
+COPY --chown=agent:agent . /opt/claude-orca
 RUN /opt/claude-orca/scripts/container/setup.sh --phase template
 
 ENV HOME=/home/agent \

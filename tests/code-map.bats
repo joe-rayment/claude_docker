@@ -350,10 +350,17 @@ real_engine() {
 
 # Put the real engine where the shim looks first, so the resolution path under
 # test is the production one.
+# The real graphify engine is an OPTIONAL dependency: it is not one of
+# setup.sh's pinned phases, so it is absent from the image, from CI and
+# from a stock Mac. Twenty-two cases here need it, and they used to fail
+# rather than skip -- so a suite run anywhere but a box that happened to
+# have it reported 22 failures that meant nothing, and the whole suite
+# could never be a gate. Skipping says the same thing honestly, and leaves
+# room for CI to run the rest.
 install_real_engine() {
     local engine=""
     engine=$(real_engine) || true
-    [ -n "$engine" ]
+    [ -n "$engine" ] || skip "no graphify engine on this box (set CODE_MAP_REAL_ENGINE to point at one)"
     mkdir -p "$ENGINE_BIN"
     ln -sf "$engine" "$ENGINE_BIN/graphify"
 }
@@ -1056,7 +1063,9 @@ fixture_docs_repo() {
 # ── prime's slow-refresh branch ──────────────────────────────────────────────
 
 @test "e2e: a refresh too slow for session start is detached and the block still prints" {
-    [ -n "$(command -v timeout)" ]
+    # GNU coreutils' timeout; macOS ships none, so this case skips there
+    # rather than failing for a reason that is about the box.
+    command -v timeout >/dev/null 2>&1 || skip "no timeout(1) on this box"
     repo="$BATS_TEST_TMPDIR/repo"
     fixture_repo "$repo"
     cd "$repo"

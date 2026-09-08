@@ -1,10 +1,23 @@
 # The image carries this template at /opt/claude-orca (COPY . there), so
 # keep the build context to what actually runs inside the VM.
+#
+# .claude-dev above all: a checkout that has been bootstrapped carries its
+# own container's home and, on the runtime path, a 1.3 GB toolchain. The
+# first real build of the toolchain image was 7.84 GB, of which 2.9 GB was
+# this directory arriving twice -- once in `COPY . /opt/claude-orca` and
+# again in the chown layer behind it.
+.claude-dev
+.claude-dev-snapshots
 .git
 .github
 attachments
 graphify-out
 tests/.cache
+.beads/backup
+.beads/embeddeddolt
+.playwright-mcp
+Orca.app
+**/__pycache__
 **/node_modules
 **/.DS_Store
 *.dmg

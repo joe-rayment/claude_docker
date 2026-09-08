@@ -608,7 +608,13 @@ phase_template() {
              /opt/claude-orca/scripts/container/smoke.sh
     mkdir -p /opt/claude-orca-host
     ln -sfn /opt/claude-orca /opt/claude-orca-host/template
-    if id -u agent >/dev/null 2>&1; then
+    # Only when it is not already right. `chown -R` over a directory an
+    # image layer just added rewrites every inode, and overlayfs copies
+    # the lot up into a NEW layer -- 1.51 GB of second copy in the first
+    # real toolchain build. The Dockerfile COPYs with --chown so this is a
+    # no-op there, and it still does the work anywhere else.
+    if id -u agent >/dev/null 2>&1 \
+        && [ "$(stat -c '%u' /opt/claude-orca 2>/dev/null || echo x)" != "$(id -u agent)" ]; then
         chown -R agent:agent /opt/claude-orca
     fi
 }
