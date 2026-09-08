@@ -706,6 +706,47 @@ and none is a defect:
 they were checked by running the same files on real Linux inside the
 image. See "What is left" below.
 
+## 9b. Plan change, 2026-09-08: the seeding is Orca's, not the boot's
+
+Asked for after the first pass worked: use Orca's own project start-up
+script functionality for the seeding, beads included, so the initial build
+has fewer ways to fail.
+
+**What Orca actually offers**, read out of its CLI and bundle rather than
+assumed: `scripts.setup` in an `orca.yaml` at the repo root. Orca's own
+words: "setup script runs when a new workspace is created", in a terminal
+pane -- a vertical split by default. Defaults are `setupRunPolicy:
+run-by-default`, `setupAgentStartupPolicy: start-immediately`. The whole
+allowed key set is `scripts`, `setupAgentStartupPolicy`, `issueCommand`,
+`defaultTabs`, `environmentRecipes`, `worktree`. `orca vm recipe doctor`
+parses the file, which is how the yaml was confirmed valid.
+
+**What could not be verified**, and it changes the design: the setup
+script never fired from the CLI. Three attempts -- `orca worktree create
+--setup run`, before and after a runtime restart, with the yaml confirmed
+parsed -- produced a worktree and a terminal at a bare prompt, and
+`repo show` kept reporting `scripts.setup: ""`. The bundle carries strings
+about a "setup script import candidate" and "Run setup now?", so adoption
+looks like an in-app step. It was not possible to drive it headlessly.
+
+**So the change is: one body, two callers.**
+`scripts/container/seed-project.sh` holds the .gitignore block,
+`attachments/`, the beads snapshot restore, `bd init`, and the `orca.yaml`
+that points Orca at the script itself. Orca runs it through
+`scripts.setup`; the entrypoint also runs it, best effort, as a floor.
+Both, not one -- a folder must never depend on a hook having fired to have
+a tracker in it, and staking that on an unverified path would trade one
+point of failure for a less honest one. Neither caller can fail the boot.
+
+**A second failure found while testing it.** Orca spawns its own Xvfb, and
+the lock and socket it leaves in `/tmp` survive a `docker restart`, which
+keeps the container's writable layer. One restart in three died with
+"Missing X server or $DISPLAY" and a segfault, and PID 1 exiting takes the
+container with it -- so `./claude-dev stop` then `./claude-dev` could
+leave a folder dead. The entrypoint now clears that state before starting
+Orca and retries once if it exits before publishing a URL. Three restarts
+in a row afterwards: running, serving, HTTP 200, no retry needed.
+
 ## 10. What is left, and what it is worth
 
 **The 30 failing bats cases on this Mac.** Run inside the image as the
