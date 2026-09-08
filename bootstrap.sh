@@ -230,6 +230,47 @@ if [ "$SCOPE_RC" -eq 1 ] && ( : </dev/tty ) 2>/dev/null; then
     gh auth refresh -h github.com -s read:packages </dev/tty || true
 fi
 
+# WHAT THE PREFLIGHT DECIDED, in one block, before anything is installed.
+#
+# Four days of diagnosis in September 2026 turned on questions the output
+# could not answer: which gh account, what kind of token, whether it
+# carried read:packages, which docker. Each of them decides whether this
+# folder pulls the prebuilt image or spends several minutes installing a
+# toolchain inside the container, and none of them was written down --
+# so a pasted log could not say which path a folder had taken.
+preflight_facts() {
+    local token kind account scopes rc=0
+    echo "==> Preflight"
+    if [ "$UNAME_S" = "Darwin" ]; then
+        echo "    os          macOS $(sw_vers -productVersion 2>/dev/null || echo '?') ($(uname -m))"
+    else
+        echo "    os          $UNAME_S ($(uname -m))"
+    fi
+    echo "    git         $(git --version 2>/dev/null | head -1)"
+    echo "    gh          $(gh --version 2>/dev/null | head -1)"
+    account="$(gh api user --jq .login 2>/dev/null || true)"
+    token="$(gh auth token 2>/dev/null || true)"
+    case "$token" in
+        gho_*|ghp_*|ghu_*|ghs_*) kind="classic OAuth token" ;;
+        github_pat_*)            kind="fine-grained PAT" ;;
+        "")                      kind="none" ;;
+        *)                       kind="unrecognised" ;;
+    esac
+    echo "    account     ${account:-<not signed in>} ($kind)"
+    # The same three outcomes gh_token_has_scope answers with, said in
+    # words: a fine-grained PAT sends no scopes header at all, so its
+    # scopes are UNKNOWN rather than missing -- and treating the two the
+    # same is what sent every folder down the slow path on 2026-09-06.
+    gh_token_has_scope read:packages || rc=$?
+    case "$rc" in
+        0) scopes="yes -- the prebuilt image will be pulled" ;;
+        1) scopes="no -- this folder will install its toolchain inside the container" ;;
+        *) scopes="unknown (this token sends no scopes header) -- the pull is attempted anyway" ;;
+    esac
+    echo "    read:packages $scopes"
+    echo "    docker      $(docker --version 2>/dev/null | head -1)"
+}
+
 # Docker is the runtime. On a Mac that means Docker Desktop, which
 # Homebrew installs as a cask; without Homebrew there is nothing this
 # script can safely install for you, so it names the download instead. On
@@ -262,6 +303,8 @@ fi
 
 rm -rf "$TMP_DIR"
 
+preflight_facts
+
 PROJECT="${1:-$PWD}"
 [ -d "$PROJECT" ] || { echo "Error: directory does not exist: $PROJECT" >&2; exit 1; }
 PROJECT="$(cd "$PROJECT" && pwd -P)"
@@ -287,13 +330,17 @@ docker_up() { docker info >/dev/null 2>&1 </dev/null; }
 
 if ! docker_up; then
     if [ "$UNAME_S" = "Darwin" ]; then
-        echo "    Starting Docker Desktop; this can take a minute."
+        echo "    Starting Docker Desktop; a cold start takes a couple of minutes."
         open -a Docker >/dev/null 2>&1 </dev/null || true
         docker_waited=0
-        while [ "$docker_waited" -lt 60 ]; do
-            sleep 1
-            docker_waited=$((docker_waited + 1))
-            if docker_up; then break; fi
+        # 180s, not 60: a Docker Desktop that has not run since a reboot
+        # takes longer than a minute to answer, and giving up on it sends
+        # the user to a "start Docker" message while Docker is starting.
+        while [ "$docker_waited" -lt 180 ]; do
+            sleep 5
+            docker_waited=$((docker_waited + 5))
+            printf '.' >&2
+            if docker_up; then printf '\n' >&2; break; fi
         done
     fi
 fi
@@ -317,6 +364,30 @@ fi
 
 HOST="$PROJECT/.claude-dev"
 TEMPLATE_URL="${CLAUDE_ORCA_TEMPLATE_URL:-https://github.com/joe-rayment/claude_orca.git}"
+
+# A .claude-dev THIS template wrote has template/ and claude-orca.json in
+# it. One from an older generation has neither, and installing on top of
+# it leaves two layouts in one directory: the owner's own repo carried a
+# git clone of the previous template (claude_docker, docker-compose era)
+# with the current layout written into it as untracked files, and every
+# diagnosis after that had to guess which generation a file belonged to.
+#
+# Refuse, and name the command. Bootstrap is piped into bash, so it cannot
+# ask -- and moving it aside is safe: nothing in there is needed. Beads
+# live in <project>/.beads, not in here.
+if [ -d "$HOST" ] \
+    && [ ! -e "$HOST/claude-orca.json" ] \
+    && [ ! -d "$HOST/template" ] \
+    && [ -n "$(ls -A "$HOST" 2>/dev/null)" ]; then
+    {
+        echo "Error: $HOST is from an older claude_orca layout."
+        echo "  Installing on top of it would leave two generations in one directory."
+        echo "  Move it aside and re-run this same command:"
+        echo "    mv \"$HOST\" \"$HOST.old-$(date +%Y%m%d-%H%M%S)\""
+        echo "  Nothing in it is needed -- this folder's beads live in $PROJECT/.beads."
+    } >&2
+    exit 1
+fi
 
 mkdir -p "$HOST"
 
