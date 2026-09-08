@@ -247,3 +247,35 @@ orch_fallback() {
     printf 'SUBAGENT FALLBACK: spawn Agent(subagent_type=executor, model=%s) with this prompt:\n\n' "${2:-inherit}"
     printf '%s\n' "$1"
 }
+
+# --- opencode's command line ----------------------------------------------
+#
+# Orca locks its user-data-dir when --serve starts, and seed-orca-state.sh
+# (which is what writes agentDefaultEnv.opencode) runs before that -- so a
+# guard started mid-session, after auth, is invisible to Orca's own env for
+# a dispatched worker. orca_opencode_command works around that by composing
+# the terminal command itself: when a guard token exists at dispatch time,
+# it writes a private env file next to it and has the command source that
+# file before exec'ing opencode, so the token is never on the command line
+# (visible in `ps`) and never in Orca's own state.
+
+# orca_opencode_command <model> <run_dir> -- the command string for
+# `terminal create --command`, on stdout. Pure given its two arguments plus
+# CLAUDE_ORCA_GUARD_PORT: no Orca calls.
+orca_opencode_command() {
+    local model="$1" run_dir="$2" token_file token env_file port
+    token_file="$run_dir/openrouter-guard.token"
+    if [ -s "$token_file" ]; then
+        token="$(cat "$token_file" 2>/dev/null)"
+        if [ -n "$token" ]; then
+            port="${CLAUDE_ORCA_GUARD_PORT:-4141}"
+            env_file="$run_dir/openrouter-guard.env"
+            ( umask 077 && printf 'OPENROUTER_API_KEY=%s\nOPENROUTER_BASE_URL=http://127.0.0.1:%s/api/v1\n' \
+                "$token" "$port" >"$env_file" )
+            chmod 600 "$env_file"
+            printf 'set -a; . %s; set +a; opencode --model %s' "$env_file" "$model"
+            return 0
+        fi
+    fi
+    printf 'opencode --model %s' "$model"
+}

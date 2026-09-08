@@ -204,7 +204,7 @@ case "$AGENT" in
         ;;
     opencode)
         [ -n "$MODEL" ] || die "--agent opencode needs --model <provider/model>"
-        COMMAND="opencode --model $MODEL"
+        COMMAND="$(orca_opencode_command "$MODEL" "$ROOT/.claude-dev/run")"
         new_terminal "$COMMAND" "$BEAD $MODEL"
         orca_call terminal wait --terminal "$TERMINAL" --for tui-idle \
             --timeout-ms 30000 --json >/dev/null 2>&1 ||
