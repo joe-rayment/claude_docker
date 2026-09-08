@@ -1496,7 +1496,7 @@ docker_image_of() {
 }
 
 cmd_verify_v3() {
-    local dir="${1:-$PROJECT_SELF}" name state rc=0 url_file port st nm detail
+    local dir="${1:-$PROJECT_SELF}" name state rc=0 url_file port st nm detail rows
     [ -d "$dir" ] || { echo "Error: directory does not exist: $dir" >&2; return 1; }
     dir="$(cd "$dir" && pwd -P)"
     if [ ! -f "$(orca_json "$dir")" ]; then
@@ -1536,8 +1536,10 @@ cmd_verify_v3() {
     fi
 
     # ... and everything the container can see for itself.
+    rows=0
     while IFS="$(printf '\t')" read -r st nm detail; do
         [ -n "$st" ] || continue
+        rows=$((rows + 1))
         case "$st" in
             ok)  doctor_row ok   "$nm" "$detail" ;;
             n/a) doctor_row n/a  "$nm" "$detail" ;;
@@ -1546,6 +1548,16 @@ cmd_verify_v3() {
     done <<VERIFY
 $(ctr exec "$name" bash /opt/claude-orca/scripts/container/verify-folder.sh 2>/dev/null || true)
 VERIFY
+
+    # No rows at all is the ONE answer that must never read as a pass. It
+    # is what a container built from an image older than this checklist
+    # gives back -- the script is not in it, the exec fails, and the four
+    # Mac rows above would otherwise stand alone and say everything is
+    # fine. Which is exactly the failure this command exists to end.
+    if [ "$rows" -eq 0 ]; then
+        doctor_row FAIL "checklist" "the container answered nothing -- its image predates verify-folder.sh; ./claude-dev --update"
+        rc=2
+    fi
 
     if [ "$rc" -eq 0 ]; then
         echo "Everything this folder promises is there."

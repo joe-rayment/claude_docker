@@ -107,3 +107,21 @@ contains() {
 
     contains "$output" "mount point"
 }
+
+@test "a container whose image predates the checklist fails verify instead of passing it" {
+    # The four Mac rows are about the container, not about the folder's
+    # setup, so on their own they say nothing -- and an image older than
+    # verify-folder.sh makes the exec answer nothing at all. Reporting
+    # that as "everything this folder promises is there" would be the
+    # exact failure this command was written to end.
+    mkdir -p "$PROJECT_DIR"
+    local primary
+    primary="$(abspath "$PROJECT_DIR")"
+    make_project_v3 "$primary" >/dev/null
+
+    export CLAUDE_ORCA_TEST_VERIFY_SILENT=1
+    run bash -c "cd '$primary' && ./claude-dev verify"
+    [ "$status" -eq 2 ]
+    contains "$output" "answered nothing"
+    contains "$output" "--update"
+}

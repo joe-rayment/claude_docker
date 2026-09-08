@@ -444,6 +444,9 @@ case "$cmd" in
         # is about.
         case "$*" in
             *verify-folder.sh*)
+                # An image older than the checklist has no such script:
+                # the exec fails and nothing comes back.
+                [ "${CLAUDE_ORCA_TEST_VERIFY_SILENT:-0}" = "1" ] && exit 1
                 printf 'ok\tmount point\t/workspace/stub\n'
                 printf 'ok\thost paths\tone folder beside it, no /Users\n'
                 if [ "${CLAUDE_ORCA_TEST_VERIFY_FAIL:-0}" = "1" ]; then
