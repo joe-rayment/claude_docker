@@ -1,38 +1,69 @@
 #!/usr/bin/env bats
 # outbound-guard.bats — the two mechanical outbound-network rules a prose
-# instruction alone couldn't hold (beads_claude_docker-y2qe):
+# instruction alone couldn't hold (beads_claude_docker-y2qe, then re-gated on
+# auth by beads_claude_docker-t1ym):
 #   PreToolUse (matcher Bash)   deny any snow/snowsql invocation, always;
 #                               deny git push / gh pr create / gh repo create /
-#                               bd dolt push unless the current prompt asked
-#   UserPromptSubmit            outbound-guard --prompt: set/clear the
-#                               per-session "this prompt asked for a push"
-#                               marker from the prompt's own wording
-# Like every hook in this repo it MUST fail open: malformed/empty stdin,
-# missing session_id, a non-Bash tool — all silent exit 0, never a block.
+#                               bd dolt push ONLY when GitHub auth is
+#                               positively absent -- GH_TOKEN/GITHUB_TOKEN
+#                               unset, `gh auth token` fails or is empty, and
+#                               no ~/.ssh/id_* private key. No prompt wording,
+#                               no session marker, no network call involved.
+# Like every hook in this repo it MUST fail open: malformed/empty stdin, a
+# non-Bash tool -- all silent exit 0, never a block.
 
 GUARD=${OUTBOUND_GUARD_BIN:-/workspace/scripts/outbound-guard.sh}
 
 setup() {
     export TMPDIR="$BATS_TEST_TMPDIR"
-    export OUTBOUND_GUARD_STATE_DIR="$BATS_TEST_TMPDIR/outbound-guard-state"
+
+    # Isolated HOME with no ~/.ssh by default -- stub_ssh_key populates
+    # $HOME/.ssh/id_* for the tests that need the ssh-key auth signal.
+    export HOME="$BATS_TEST_TMPDIR/home"
+    mkdir -p "$HOME"
+
+    # Stub PATH `gh` that fails by default (no output, exit 1) -- simulates
+    # no-network "auth absent" for `gh auth token`. stub_gh_authenticated
+    # overwrites this for the tests that need an authenticated gh.
+    STUB_BIN="$BATS_TEST_TMPDIR/bin"
+    mkdir -p "$STUB_BIN"
+    cat > "$STUB_BIN/gh" <<'STUBEOF'
+#!/usr/bin/env bash
+exit 1
+STUBEOF
+    chmod +x "$STUB_BIN/gh"
+    export PATH="$STUB_BIN:$PATH"
+
+    unset GH_TOKEN GITHUB_TOKEN
 }
 
-# run_pretool <command> [session_id=s1] [tool_name=Bash]; sets $status/$output.
+stub_gh_authenticated() {
+    cat > "$STUB_BIN/gh" <<'STUBEOF'
+#!/usr/bin/env bash
+if [ "$1" = "auth" ] && [ "$2" = "token" ]; then
+    echo "fake-gh-token-value"
+    exit 0
+fi
+exit 1
+STUBEOF
+    chmod +x "$STUB_BIN/gh"
+}
+
+stub_ssh_key() {
+    mkdir -p "$HOME/.ssh"
+    : > "$HOME/.ssh/id_ed25519"
+}
+
+# run_pretool <command> [tool_name=Bash]; sets $status/$output.
 run_pretool() {
-    local cmd="$1" sid="${2:-s1}" tool="${3:-Bash}"
-    run bash -c 'jq -n --arg c "$1" --arg sid "$2" --arg tool "$3" "{tool_name:\$tool, session_id:\$sid, tool_input:{command:\$c}}" | "$0"' "$GUARD" "$cmd" "$sid" "$tool"
+    local cmd="$1" tool="${2:-Bash}"
+    run bash -c 'jq -n --arg c "$1" --arg tool "$2" "{tool_name:\$tool, session_id:\"s1\", tool_input:{command:\$c}}" | "$0"' "$GUARD" "$cmd" "$tool"
 }
 
 # run_pretool_no_sid <command> [tool_name=Bash]; payload with no session_id KEY at all.
 run_pretool_no_sid() {
     local cmd="$1" tool="${2:-Bash}"
     run bash -c 'jq -n --arg c "$1" --arg tool "$2" "{tool_name:\$tool, tool_input:{command:\$c}}" | "$0"' "$GUARD" "$cmd" "$tool"
-}
-
-# run_prompt <prompt text> [session_id=s1]; UserPromptSubmit payload.
-run_prompt() {
-    local prompt="$1" sid="${2:-s1}"
-    run bash -c 'jq -n --arg p "$1" --arg sid "$2" "{session_id:\$sid, prompt:\$p}" | "$0" --prompt' "$GUARD" "$prompt" "$sid"
 }
 
 deny_reason() {
@@ -56,9 +87,8 @@ deny_reason() {
     [[ "$(deny_reason)" == *"no Snowflake access"* ]]
 }
 
-@test "outbound-guard: snow deny is unconditional -- no prior push-prompt marker lifts it" {
-    run_prompt 'please push my changes'
-    [ "$status" -eq 0 ]
+@test "outbound-guard: snow deny is unconditional -- present GitHub auth does not lift it" {
+    export GH_TOKEN="fake-gh-token-value"
     run_pretool 'snow sql -q "select 1"'
     [ "$status" -eq 0 ]
     [[ "$(deny_reason)" == *"no Snowflake access"* ]]
@@ -76,76 +106,82 @@ deny_reason() {
     [[ "$(deny_reason)" == *"no Snowflake access"* ]]
 }
 
-# ── push/deploy: denied unless the current prompt's marker is set ──────────
+# ── push/deploy: denied only when GitHub auth is positively absent ─────────
 
-@test "outbound-guard: 'git push origin main' is denied with no marker" {
+@test "outbound-guard: 'git push origin main' is denied with no GitHub auth" {
     run_pretool 'git push origin main'
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.hookSpecificOutput.permissionDecision == "deny"'
-    [[ "$(deny_reason)" == *"opt-in"* ]]
+    [[ "$(deny_reason)" == *"no GitHub authentication"* ]]
 }
 
-@test "outbound-guard: 'gh pr create --fill' is denied with no marker" {
+@test "outbound-guard: 'gh pr create --fill' is denied with no GitHub auth" {
     run_pretool 'gh pr create --fill'
     [ "$status" -eq 0 ]
-    [[ "$(deny_reason)" == *"opt-in"* ]]
+    [[ "$(deny_reason)" == *"no GitHub authentication"* ]]
 }
 
-@test "outbound-guard: 'gh repo create' is denied with no marker" {
+@test "outbound-guard: 'gh repo create' is denied with no GitHub auth" {
     run_pretool 'gh repo create foo --public'
     [ "$status" -eq 0 ]
-    [[ "$(deny_reason)" == *"opt-in"* ]]
+    [[ "$(deny_reason)" == *"no GitHub authentication"* ]]
 }
 
-@test "outbound-guard: 'bd dolt push' is denied with no marker" {
+@test "outbound-guard: 'bd dolt push' is denied with no GitHub auth" {
     run_pretool 'bd dolt push'
     [ "$status" -eq 0 ]
-    [[ "$(deny_reason)" == *"opt-in"* ]]
+    [[ "$(deny_reason)" == *"no GitHub authentication"* ]]
 }
 
-# ── marker lifecycle: set by a prompt that asked, cleared by one that didn't ─
-
-@test "outbound-guard: git push is allowed only for the prompt that asked for it" {
-    run_pretool 'git push origin main' 's1'
-    [ "$status" -eq 0 ]
-    [[ "$(deny_reason)" == *"opt-in"* ]]
-
-    run_prompt 'please push this to origin' 's1'
-    [ "$status" -eq 0 ]
-
-    run_pretool 'git push origin main' 's1'
+@test "outbound-guard: git push is allowed when GH_TOKEN is set" {
+    export GH_TOKEN="fake-gh-token-value"
+    run_pretool 'git push origin main'
     [ "$status" -eq 0 ]
     [ -z "$output" ]
-
-    run_prompt 'fix the typo in the README' 's1'
-    [ "$status" -eq 0 ]
-
-    run_pretool 'git push origin main' 's1'
-    [ "$status" -eq 0 ]
-    [[ "$(deny_reason)" == *"opt-in"* ]]
 }
 
-@test "outbound-guard: the marker is per session -- another session's push still denies" {
-    run_prompt 'please push this' 's1'
-    [ "$status" -eq 0 ]
-    run_pretool 'git push origin main' 's2'
-    [ "$status" -eq 0 ]
-    [[ "$(deny_reason)" == *"opt-in"* ]]
-}
-
-@test "outbound-guard: prompt wording is case-insensitive and covers publish/PR phrasing" {
-    run_prompt 'PUBLISH the release' 's1'
-    [ "$status" -eq 0 ]
-    run_pretool 'gh pr create --fill' 's1'
+@test "outbound-guard: git push is allowed when GITHUB_TOKEN is set" {
+    export GITHUB_TOKEN="fake-gh-token-value"
+    run_pretool 'git push origin main'
     [ "$status" -eq 0 ]
     [ -z "$output" ]
+}
 
-    run_prompt 'no relevant wording here' 's1'
+@test "outbound-guard: git push is allowed when 'gh auth token' succeeds with a non-empty token (no GH_TOKEN, no ssh key)" {
+    stub_gh_authenticated
+    run_pretool 'git push origin main'
     [ "$status" -eq 0 ]
+    [ -z "$output" ]
+}
 
-    run_prompt 'please open a pull request for this' 's1'
+@test "outbound-guard: git push is allowed when a private ssh key exists in ~/.ssh (no GH_TOKEN, gh auth token fails)" {
+    stub_ssh_key
+    run_pretool 'git push origin main'
     [ "$status" -eq 0 ]
-    run_pretool 'gh pr create --fill' 's1'
+    [ -z "$output" ]
+}
+
+@test "outbound-guard: gh pr create is allowed when GH_TOKEN is set" {
+    export GH_TOKEN="fake-gh-token-value"
+    run_pretool 'gh pr create --fill'
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+}
+
+@test "outbound-guard: bd dolt push is allowed when GH_TOKEN is set" {
+    export GH_TOKEN="fake-gh-token-value"
+    run_pretool 'bd dolt push'
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+}
+
+@test "outbound-guard: push denial/allow does not depend on session_id -- same result with no session_id key at all" {
+    run_pretool_no_sid 'git push origin main'
+    [ "$status" -eq 0 ]
+    [[ "$(deny_reason)" == *"no GitHub authentication"* ]]
+
+    export GH_TOKEN="fake-gh-token-value"
+    run_pretool_no_sid 'git push origin main'
     [ "$status" -eq 0 ]
     [ -z "$output" ]
 }
@@ -191,7 +227,7 @@ deny_reason() {
 # ── fail-open contract ───────────────────────────────────────────────────────
 
 @test "outbound-guard: a non-Bash tool payload passes through with empty output" {
-    run_pretool 'rm -rf /tmp/x' 's1' 'Read'
+    run_pretool 'rm -rf /tmp/x' 'Read'
     [ "$status" -eq 0 ]
     [ -z "$output" ]
 }
@@ -220,26 +256,6 @@ deny_reason() {
     [[ "$(deny_reason)" == *"no Snowflake access"* ]]
 }
 
-@test "outbound-guard: PreToolUse payload with no session_id key fails open for a push command (only the marker rule needs a session_id)" {
-    run_pretool_no_sid 'git push origin main'
-    [ "$status" -eq 0 ]
-    [ -z "$output" ]
-}
-
-@test "outbound-guard --prompt: malformed stdin exits 0 and sets no marker" {
-    run bash -c 'printf "not json at all" | "$0" --prompt' "$GUARD"
-    [ "$status" -eq 0 ]
-    [ -z "$output" ]
-    [ ! -d "$OUTBOUND_GUARD_STATE_DIR" ]
-}
-
-@test "outbound-guard --prompt: payload with no session_id exits 0 and writes nothing" {
-    run bash -c 'jq -n --arg p "please push" "{prompt:\$p}" | "$0" --prompt' "$GUARD"
-    [ "$status" -eq 0 ]
-    [ -z "$output" ]
-    [ ! -d "$OUTBOUND_GUARD_STATE_DIR" ]
-}
-
 # ── wiring: config, Dockerfile, plugin regen ────────────────────────────────
 
 @test "outbound-guard: wired on PreToolUse (Bash) in config/claude-settings.json via the guarded idiom" {
@@ -247,8 +263,8 @@ deny_reason() {
     [ "$status" -eq 0 ]
 }
 
-@test "outbound-guard: wired on UserPromptSubmit (--prompt mode) in config/claude-settings.json via the guarded idiom" {
-    run jq -e '[.hooks.UserPromptSubmit[] | .hooks[] | select(.command | contains("outbound-guard --prompt")) | select(.command | contains("command -v outbound-guard"))] | length > 0' /workspace/config/claude-settings.json
+@test "outbound-guard: the UserPromptSubmit (--prompt mode) hook entry is removed from config/claude-settings.json" {
+    run jq -e '[.hooks.UserPromptSubmit[]? | .hooks[]? | select(.command | contains("outbound-guard"))] | length == 0' /workspace/config/claude-settings.json
     [ "$status" -eq 0 ]
 }
 
@@ -271,4 +287,9 @@ deny_reason() {
 
 @test "outbound-guard: scripts/outbound-guard.sh is executable" {
     [ -x /workspace/scripts/outbound-guard.sh ]
+}
+
+@test "outbound-guard: no PROMPT_RE, --prompt mode, or marker-file machinery remains in the script" {
+    run grep -nE 'PROMPT_RE|marker_file|OUTBOUND_GUARD_STATE_DIR|--prompt' /workspace/scripts/outbound-guard.sh
+    [ "$status" -ne 0 ]
 }
