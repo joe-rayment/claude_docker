@@ -94,12 +94,12 @@ fi
 key="$(printf '%s' "$key" | tr -d '[:space:]')"
 
 if ! [[ "$key" =~ $KEY_FORMAT_RE ]]; then
-    echo "That doesn't look like an OpenRouter key (expected sk-or-v1-...). Nothing written." >&2
+    echo "openrouter-auth: that does not look like an OpenRouter key (expected sk-or-v1-...) -- nothing written." >&2
     exit 1
 fi
 
 if ! printf '%s' "$key" | eval "$OPENROUTER_AUTH_VALIDATE_CMD"; then
-    echo "OpenRouter did not accept that key. Nothing written." >&2
+    echo "openrouter-auth: OpenRouter did not accept that key -- nothing written." >&2
     exit 1
 fi
 
@@ -116,7 +116,8 @@ rm -f -- "$OPENROUTER_AUTH_KEY_FILE"
     printf '%s\n' "$key" > "$OPENROUTER_AUTH_KEY_FILE"
 )
 chmod 600 -- "$OPENROUTER_AUTH_KEY_FILE"
-echo "Key saved to $OPENROUTER_AUTH_KEY_FILE (mode 600)."
+key_file_abs="$(cd -- "$key_dir" && pwd)/$(basename -- "$OPENROUTER_AUTH_KEY_FILE")"
+echo "Key saved to $key_file_abs (mode 600)."
 
 mkdir -p -- "$RUN_DIR"
 
@@ -154,5 +155,7 @@ else
 fi
 
 echo
+echo "Key file: $key_file_abs"
+echo "Guard port: $CLAUDE_ORCA_GUARD_PORT"
 echo "Done. Run this next:"
 echo "  /tier worker openrouter:z-ai/glm-5.3-flash"
