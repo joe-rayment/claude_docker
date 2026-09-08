@@ -157,11 +157,21 @@ write_state() {
 # write_role <role> <backend> <agent> <model> <pinned:true|false>
 # Patches ONE role into an existing tier.json, mirroring the model back into
 # the v1 .worker/.recon key so every reader (including a v1-era one) agrees.
+# A spec that names its own model outright (openrouter:/codex:/gemini:/an
+# explicit claude:<id>) needs no bound top to make sense of, so an absent
+# tier.json is not an error here -- it starts from {} and picks up a .top
+# the next time a plain `/tier <top>` runs. (derived_role_model, above,
+# still refuses a spec that DOES need a top -- that check runs before this
+# function is ever called, so this relaxation never masks it.)
 write_role() {
-    [ -n "$STATE_FILE" ] && [ -f "$STATE_FILE" ] || { echo "tier-set: no tier bound yet -- run /tier <top> (e.g. /tier opus) before rebinding a role; nothing bound" >&2; return 1; }
+    [ -n "$STATE_FILE" ] || { echo "tier-set: cannot determine the project's tier state file (not inside a bootstrapped project; set CLAUDE_ORCA_ROOT or TIER_STATE_FILE) -- nothing bound" >&2; return 1; }
+    mkdir -p "$(dirname "$STATE_FILE")" 2>/dev/null
     local tmp base
-    base="$(cat "$STATE_FILE" 2>/dev/null)"
-    printf '%s' "$base" | jq -e . >/dev/null 2>&1 || { echo "tier-set: $STATE_FILE is not valid JSON -- run /tier <top> to rebind it; nothing bound" >&2; return 1; }
+    base='{}'
+    if [ -f "$STATE_FILE" ]; then
+        base="$(cat "$STATE_FILE" 2>/dev/null)"
+        printf '%s' "$base" | jq -e . >/dev/null 2>&1 || { echo "tier-set: $STATE_FILE is not valid JSON -- run /tier <top> to rebind it; nothing bound" >&2; return 1; }
+    fi
     tmp=$(mktemp "$STATE_FILE.XXXXXX") || return 1
     if printf '%s' "$base" | jq --arg r "$1" --arg b "$2" --arg a "$3" --arg m "$4" --argjson p "$5" \
           --arg u "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
@@ -244,6 +254,35 @@ if [ $# -eq 1 ] && [ "$1" = "overdrive" ]; then
     exit 0
 fi
 
+# --- auth: tier-set auth <provider> -----------------------------------------
+#
+# Opens a focused Orca tab running scripts/openrouter-auth.sh so sign-in
+# happens without leaving the session (plan .claude/plans/openrouter-auth.md
+# "Auth happens in a tab"). An unreachable Orca runtime is not an error --
+# there is a manual fallback -- so this always exits 0 once the provider
+# name itself checks out.
+if [ "${1:-}" = "auth" ]; then
+    provider="${2:-}"
+    if [ "$provider" != "openrouter" ]; then
+        echo "tier-set: usage: tier-set auth openrouter" >&2
+        exit 1
+    fi
+    # shellcheck source=lib/orca-orch.sh
+    . "$SCRIPT_DIR/lib/orca-orch.sh"
+    HELPER="$SCRIPT_DIR/openrouter-auth.sh"
+    root="$(orch_root 2>/dev/null)" || root="$PWD"
+    if out="$(orca_call terminal create --worktree "path:$root" \
+                --title "OpenRouter sign-in" --command "$HELPER" \
+                --focus --json)"; then
+        echo "tier-set: opened an Orca tab \"OpenRouter sign-in\" — complete sign-in there."
+        exit 0
+    fi
+    err="$(orca_error "$out" 2>/dev/null)"; [ -n "$err" ] || err="Orca runtime unreachable"
+    echo "tier-set: could not open an Orca tab ($err) -- run this by hand in any terminal instead:" >&2
+    echo "  $HELPER"
+    exit 0
+fi
+
 # --- one role: tier-set <worker|recon|checker> <spec> -----------------------
 
 # derived_role_model <role> -- the ladder's model for that role, from the
@@ -281,12 +320,12 @@ case "${1:-}" in
         fi
         spec=$2
         [ $# -gt 2 ] && echo "tier: extra args ignored (dropped: ${*:3})" >&2
-        B=subagent; A=claude; M=""; PIN=false
+        B=subagent; A=claude; M=""; PIN=false; IS_OPENROUTER=false
         case "$spec" in
             openrouter:*)
                 rest="${spec#openrouter:}"
                 [ -n "$rest" ] || { echo "tier-set: 'openrouter:' needs a <vendor/model>, e.g. openrouter:qwen/qwen3-coder -- nothing bound" >&2; exit 1; }
-                B=orca; A=opencode; M="openrouter/$rest"; PIN=true ;;
+                B=orca; A=opencode; M="openrouter/$rest"; PIN=true; IS_OPENROUTER=true ;;
             claude:*)
                 rest="${spec#claude:}"
                 B=orca; A=claude
@@ -308,6 +347,10 @@ case "${1:-}" in
         valid_model_ref "$M" || { echo "tier-set: unknown or unsafe model reference for '$role': '$spec' -- nothing bound" >&2; exit 1; }
         write_role "$role" "$B" "$A" "$M" "$PIN" || exit 1
         echo "tier role bound  $role = $(tier_role_label "$B" "$A" "$M")"
+        if [ "$IS_OPENROUTER" = "true" ] && ! tier_openrouter_ready; then
+            echo "→ not authenticated yet -- this binding is saved but cannot run until OpenRouter is set up in this folder."
+            echo "→ run  /tier auth openrouter  to open a sign-in tab now."
+        fi
         if [ "$B" = "orca" ]; then
             echo "→ $role slices now go through  orca-dispatch  (a supervised Orca worker terminal); the Agent tool stays available as the fallback."
         else

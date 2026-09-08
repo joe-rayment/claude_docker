@@ -157,3 +157,45 @@ tier_orca_reachable() {
         jq -e '((.result.runtime.reachable // .runtime.reachable) == true)' \
         >/dev/null 2>&1
 }
+
+# tier_openrouter_guard_token_file -- <root>/.claude-dev/run/
+# openrouter-guard.token, written by entrypoint.sh at boot and by
+# scripts/openrouter-auth.sh mid-session when it starts a guard. Resolved
+# the same way the rest of this file resolves a root: run_dir() when
+# paths.sh is sourced alongside this file (the normal case -- tier-set.sh
+# sources both), else CLAUDE_ORCA_ROOT directly (a caller -- e.g. the test
+# suite -- that sources only tier-roles.sh). Exit 1, no output, if neither
+# resolves.
+tier_openrouter_guard_token_file() {
+    local r
+    if command -v run_dir >/dev/null 2>&1; then
+        r="$(run_dir 2>/dev/null)" || r=""
+        if [ -n "$r" ]; then
+            printf '%s/openrouter-guard.token\n' "$r"
+            return 0
+        fi
+    fi
+    [ -n "${CLAUDE_ORCA_ROOT:-}" ] || return 1
+    printf '%s/.claude-dev/run/openrouter-guard.token\n' "$CLAUDE_ORCA_ROOT"
+}
+
+# tier_openrouter_ready -- can an OpenRouter worker actually run right now?
+# True (0) when OPENROUTER_API_KEY is already set (an agent terminal
+# launched with the credential), or when the guard's token file is
+# non-empty AND something answers on its port. A token file with no
+# listener behind it is NOT readiness -- the guard that minted it may have
+# died, or the file is stale -- which is what distinguishes this from
+# tier_openrouter_key_present above: that one only checks the key file the
+# Mac side writes and knows nothing about whether a guard is actually up.
+# False (1) otherwise.
+#   CLAUDE_ORCA_GUARD_PORT   the guard's loopback port (default 4141 -- the
+#                            same knob entrypoint.sh's guard startup and
+#                            orca-orch.sh's orca_opencode_command use)
+tier_openrouter_ready() {
+    [ -n "${OPENROUTER_API_KEY:-}" ] && return 0
+    local f port
+    f="$(tier_openrouter_guard_token_file 2>/dev/null)" || return 1
+    [ -n "$f" ] && [ -s "$f" ] || return 1
+    port="${CLAUDE_ORCA_GUARD_PORT:-4141}"
+    ( exec 3<>"/dev/tcp/127.0.0.1/$port" ) 2>/dev/null
+}
