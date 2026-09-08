@@ -116,7 +116,23 @@ Everything below this is reference.
   own port, so each is its own origin with its own permission. In Chrome open
   `chrome://settings/content/siteDetails?site=http://127.0.0.1:<port>`, set
   **Clipboard** to Allow, reload the tab, and click into the terminal before
-  pasting. Text paste never needs it; only images do.
+  pasting. Text paste does not need this permission — see the next entry.
+- **Cmd+V does nothing in a terminal**, so the Claude Code login code
+  cannot be pasted back. This was every folder on an image built before
+  2026-09-08. Orca Web owns the terminal's paste key: its handler calls
+  `preventDefault()` and reads the clipboard through
+  `navigator.clipboard.readText()`, which Chrome gates behind the same
+  per-site **Clipboard** permission and which Firefox and Safari never
+  grant to a web page at all. When that read is denied Orca reports only
+  "Paste failed.", and the browser's own paste event — which needs no
+  permission, and which the terminal already listens for — never fires,
+  because the keypress was consumed. The image now hides `readText` on the
+  served page (`scripts/container/patch-orca-web-theme.py`), which selects
+  the fallback Orca already ships for web clients without clipboard read:
+  the native paste event gets through, in any browser, with nothing to
+  allow. Copy was never affected. On a folder still running an older image,
+  either start it again on a current image or set **Clipboard** to Allow
+  for its origin as above.
 - **A folder registered before the `/workspace` move.** Orca's state
   remembers the repo at its old path. Tear the folder down and register it
   again — `./claude-dev --teardown`, then the bootstrap one-liner. Beads

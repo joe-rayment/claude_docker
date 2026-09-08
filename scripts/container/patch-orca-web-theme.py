@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-patch-orca-web-theme.py -- make Orca Web open dark (claude-orca-qa2.18).
+patch-orca-web-theme.py -- make Orca Web open dark, and let its
+terminal accept a paste (claude-orca-qa2.18).
 
 Why this exists: Orca Web 1.4.197 keeps its theme in the BROWSER, in the
 localStorage record `orca.web.settings.v1`, and its default there is
@@ -27,12 +28,34 @@ byte size, so no header offset moves and no repack tool is needed:
   * the asar header's SHA256 for the file is rewritten to the new
     content's hash (same length, so the header does not move either).
 
-Idempotent: re-running with the same theme is a no-op; a different theme
-replaces the seed. Run as root at image build (setup.sh --phase template)
-and optionally again at boot with the folder's CLAUDE_ORCA_THEME.
+The same rewrite injects a second inline <script>, for paste. Orca's web
+client owns the terminal's paste keybinding (Mod+V / Ctrl+V): its keydown
+handler calls preventDefault() and reads the clipboard through
+`navigator.clipboard.readText()`, which needs Chrome's `clipboard-read`
+permission. On the served origin that permission sits in state "prompt"
+and the read rejects with NotAllowedError, which Orca reports as "Paste
+failed."; Firefox and Safari never grant it to web content at all. So no
+auth code can be pasted into the terminal -- which is how Claude Code
+signs in.
+
+Orca already ships the fallback, gated on `isWebClient &&
+!clipboardReadTextAvailable`, where `clipboardReadTextAvailable` is
+`typeof navigator.clipboard?.readText == "function"`. When that holds it
+does NOT preventDefault, so the browser's native `paste` event -- which
+needs no permission, and which xterm.js already listens for on its helper
+textarea -- delivers the text. The seed makes the predicate true on the
+served page by hiding `readText` on the clipboard object. Copy is
+unaffected: it goes through `writeText`, which is auto-granted, with an
+execCommand("copy") fallback behind it.
+
+Idempotent: re-running with the same theme and the shim present is a
+no-op; a different theme replaces the theme seed and keeps the shim.
+Run as root at image build (setup.sh --phase template) and optionally
+again at boot with the folder's CLAUDE_ORCA_THEME.
 
     patch-orca-web-theme.py [--asar PATH] [--theme dark|light|system]
-    patch-orca-web-theme.py --check  [--asar PATH] [--theme T]   # 0 if seeded T
+    patch-orca-web-theme.py --check  [--asar PATH] [--theme T]   # 0 if seeded
+                                                                 # T + shim
     patch-orca-web-theme.py --print  [--asar PATH]               # dump the html
 """
 
@@ -51,8 +74,23 @@ SETTINGS_KEY = "orca.web.settings.v1"
 MARKER_KEY = "orca.claudeOrca.themeSeeded.v1"
 
 SCRIPT_RE = re.compile(
-    r'<script data-claude-orca-theme="[a-z]*">.*?</script>\n?', re.S)
+    r'[ \t]*<script data-claude-orca-theme="[a-z]*">.*?</script>\n?', re.S)
+CLIPBOARD_RE = re.compile(
+    r'[ \t]*<script data-claude-orca-clipboard="[^"]*">.*?</script>\n?', re.S)
 PRELOAD_RE = re.compile(r'[ \t]*<link rel="modulepreload"[^>]*>\n')
+
+# Hiding readText also empties the custom context-menu "Paste" item, which
+# calls the same readClipboardText: it returns "" instead of throwing. That
+# item is equally broken today -- the permission is denied, so it pastes
+# nothing either way -- so this is not a regression, and the keyboard
+# binding is the supported route.
+CLIPBOARD_SCRIPT = (
+    '    <script data-claude-orca-clipboard="1">'
+    'try{var c=navigator.clipboard;'
+    'if(c&&typeof c.readText==="function"){'
+    'Object.defineProperty(c,"readText",{value:void 0,configurable:true})}}'
+    'catch(e){}</script>\n'
+)
 
 
 def seed_script(theme):
@@ -71,25 +109,30 @@ def seeded_theme(html):
     return m.group(1) if m else None
 
 
+def clipboard_seeded(html):
+    return CLIPBOARD_RE.search(html) is not None
+
+
 def rewrite_html(html, theme):
-    """Return html with the seed for `theme`, at exactly len(html) bytes."""
+    """Return html with both seeds, at exactly len(html) bytes."""
     size = len(html.encode("utf-8"))
-    # Strip an earlier seed and its padding so re-theming starts clean.
+    # Strip earlier seeds and their padding so re-theming starts clean.
     html = SCRIPT_RE.sub("", html)
+    html = CLIPBOARD_RE.sub("", html)
     html = re.sub(r" +\n  </head>", "\n  </head>", html)
 
     anchor = html.find("    <script type=\"module\"")
     if anchor < 0:
         raise SystemExit("web-index.html has no module script tag; "
                          "unexpected Orca Web layout")
-    html = html[:anchor] + seed_script(theme) + html[anchor:]
+    html = html[:anchor] + seed_script(theme) + CLIPBOARD_SCRIPT + html[anchor:]
 
     # Free bytes from the END of the modulepreload hint list, only as many
-    # as the seed needs.
+    # as the two seeds need.
     while len(html.encode("utf-8")) > size:
         hints = list(PRELOAD_RE.finditer(html))
         if not hints:
-            raise SystemExit("web-index.html has no room for the theme seed")
+            raise SystemExit("web-index.html has no room for the seeds")
         last = hints[-1]
         html = html[:last.start()] + html[last.end():]
 
@@ -156,15 +199,26 @@ def main(argv=None):
             return 0
 
         current = seeded_theme(old)
+        clip = clipboard_seeded(old)
         if args.check:
-            ok = current == args.theme
-            print("[patch-orca-web] %s: web-index.html seeds theme %s"
-                  % ("ok" if ok else "FAIL", current or "(none)"))
+            theme_ok = current == args.theme
+            ok = theme_ok and clip
+            missing = []
+            if not theme_ok:
+                missing.append("theme %s (has %s)"
+                               % (args.theme, current or "none"))
+            if not clip:
+                missing.append("the clipboard shim")
+            print("[patch-orca-web] %s: web-index.html seeds theme %s, "
+                  "clipboard shim %s%s"
+                  % ("ok" if ok else "FAIL", current or "(none)",
+                     "present" if clip else "MISSING",
+                     "" if ok else " -- missing: " + " and ".join(missing)))
             return 0 if ok else 1
 
-        if current == args.theme:
-            print("[patch-orca-web] already seeds theme %s (%s)"
-                  % (args.theme, args.asar))
+        if current == args.theme and clip:
+            print("[patch-orca-web] already seeds theme %s + clipboard shim "
+                  "(%s)" % (args.theme, args.asar))
             return 0
 
         new = rewrite_html(old, args.theme)
@@ -201,8 +255,8 @@ def main(argv=None):
             f.write(new_raw)
         f.flush()
 
-    print("[patch-orca-web] web-index.html now seeds theme %s (%s)"
-          % (args.theme, args.asar))
+    print("[patch-orca-web] web-index.html now seeds theme %s + the "
+          "clipboard shim (%s)" % (args.theme, args.asar))
     return 0
 
 

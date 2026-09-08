@@ -1,6 +1,7 @@
 #!/usr/bin/env bats
 #
-# Orca Web opens dark (claude-orca-qa2.18).
+# Orca Web opens dark, and its terminal accepts a paste
+# (claude-orca-qa2.18).
 #
 # Orca Web 1.4.197 reads its theme from the browser's localStorage record
 # `orca.web.settings.v1` (default "system"), never from the runtime's
@@ -8,6 +9,13 @@
 # page. scripts/container/patch-orca-web-theme.py rewrites the served
 # web-index.html INSIDE app.asar, in place and at its original byte size,
 # with an inline script that seeds that record once per configured theme.
+#
+# The same rewrite injects a second inline script for paste: Orca's web
+# client preventDefault()s Mod+V and reads the clipboard through the
+# permission-gated navigator.clipboard.readText(), which the served origin
+# is never granted, so pasting an auth code fails. Hiding readText selects
+# Orca's own fallback (isWebClient && !clipboardReadTextAvailable), which
+# lets the native paste event xterm listens for through. Copy is unaffected.
 #
 # tests/fixtures/orca-web-index.html is the real 1.4.197 file; the archive
 # around it is built here, small, with the same duplicate the real one has
@@ -114,6 +122,14 @@ setup() {
     grep -q 'm="orca.claudeOrca.themeSeeded.v1"' "$BATS_TEST_TMPDIR/served.html"
     grep -q 't="dark"' "$BATS_TEST_TMPDIR/served.html"
     grep -q 's.theme=t' "$BATS_TEST_TMPDIR/served.html"
+
+    # The clipboard shim: readText hidden so Orca takes its native-paste path.
+    grep -q '<script data-claude-orca-clipboard="1">' "$BATS_TEST_TMPDIR/served.html"
+    grep -q 'navigator.clipboard' "$BATS_TEST_TMPDIR/served.html"
+    grep -q 'Object.defineProperty(c,"readText",{value:void 0,configurable:true})' \
+        "$BATS_TEST_TMPDIR/served.html"
+    [ "$(grep -n 'data-claude-orca-clipboard' "$BATS_TEST_TMPDIR/served.html" | cut -d: -f1)" \
+        -lt "$(grep -n 'type="module"' "$BATS_TEST_TMPDIR/served.html" | cut -d: -f1)" ]
     # It runs before the bundle, which is what reads localStorage.
     [ "$(grep -n 'data-claude-orca-theme' "$BATS_TEST_TMPDIR/served.html" | cut -d: -f1)" \
         -lt "$(grep -n 'type="module"' "$BATS_TEST_TMPDIR/served.html" | cut -d: -f1)" ]
@@ -133,6 +149,29 @@ setup() {
     [ "$status" -eq 1 ]
 }
 
+@test "--check fails on an unpatched archive and names what is missing" {
+    run python3 "$PATCHER" --asar "$ASAR" --check --theme dark
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"FAIL"* ]]
+    [[ "$output" == *"theme dark"* ]]
+    [[ "$output" == *"clipboard shim"* ]]
+
+    python3 "$PATCHER" --asar "$ASAR" --theme dark >/dev/null
+    run python3 "$PATCHER" --asar "$ASAR" --check --theme dark
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"ok"* ]]
+    [[ "$output" == *"clipboard shim present"* ]]
+
+    # --check reads, never writes: it must work without write access, and
+    # must not touch a byte.
+    cp "$ASAR" "$BATS_TEST_TMPDIR/before-check.asar"
+    chmod a-w "$ASAR"
+    run python3 "$PATCHER" --asar "$ASAR" --check --theme dark
+    [ "$status" -eq 0 ]
+    chmod u+w "$ASAR"
+    cmp -s "$ASAR" "$BATS_TEST_TMPDIR/before-check.asar"
+}
+
 @test "patch-orca-web-theme is a no-op the second time and re-seeds when the theme changes" {
     python3 "$PATCHER" --asar "$ASAR" --theme dark >/dev/null
     cp "$ASAR" "$BATS_TEST_TMPDIR/once.asar"
@@ -148,6 +187,8 @@ setup() {
     [ "$(wc -c <"$BATS_TEST_TMPDIR/served.html")" = "$(wc -c <"$FIXTURE")" ]
     [ "$(grep -c 'data-claude-orca-theme=' "$BATS_TEST_TMPDIR/served.html")" = "1" ]
     grep -q 't="light"' "$BATS_TEST_TMPDIR/served.html"
+    # Re-theming keeps the clipboard shim, and keeps exactly one of it.
+    [ "$(grep -c 'data-claude-orca-clipboard=' "$BATS_TEST_TMPDIR/served.html")" = "1" ]
     asar_hash_ok "$ASAR" out/web/web-index.html
     python3 "$PATCHER" --asar "$ASAR" --check --theme light
 
@@ -161,6 +202,7 @@ setup() {
     [ "$(wc -c <"$FIXTURE")" = "3975" ]
     grep -q '<title>Orca Web</title>' "$FIXTURE"
     ! grep -q 'data-claude-orca-theme' "$FIXTURE"
+    ! grep -q 'data-claude-orca-clipboard' "$FIXTURE"
 }
 
 @test "setup.sh seeds the theme into /opt/Orca's app.asar in the template phase and checks it" {
@@ -181,5 +223,13 @@ setup() {
     [ "$(wc -c <"$real")" = "$(wc -c </opt/Orca/resources/app.asar)" ]
     asar_hash_ok "$real" out/web/web-index.html
     python3 "$PATCHER" --asar "$real" --print | grep -q 'data-claude-orca-theme="dark"'
+    python3 "$PATCHER" --asar "$real" --print | grep -q 'data-claude-orca-clipboard="1"'
     python3 "$PATCHER" --asar "$real" --check --theme dark
+
+    # A second run changes nothing at all.
+    cp "$real" "$BATS_TEST_TMPDIR/real-once.asar"
+    run python3 "$PATCHER" --asar "$real" --theme dark
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"already seeds"* ]]
+    cmp -s "$real" "$BATS_TEST_TMPDIR/real-once.asar"
 }
