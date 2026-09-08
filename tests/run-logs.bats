@@ -59,7 +59,7 @@ STAMP='^[0-9][0-9]:[0-9][0-9]:[0-9][0-9] '
 
     # docker-cli-contract.bats reads the run argv back out of this file.
     grep -qE "${STAMP}docker run .*--name claude-orca-" "$log"
-    grep -qE "${STAMP}docker pull " "$log"
+    grep -qE "${STAMP}docker build " "$log"
 }
 
 @test "container.log does not carry the one-per-second container-state polls" {

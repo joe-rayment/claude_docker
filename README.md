@@ -47,13 +47,15 @@ carries on:
 The only thing it ever asks you for is your **admin password**, which macOS
 needs to install those.
 
-The container's image comes one of two ways, and you do not choose: if your
-`gh` token carries `read:packages`, the prebuilt image is pulled — once per
-Mac, shared by every folder afterwards — and a folder starts in seconds. If
-it does not, the folder runs the public `ubuntu:24.04` base image and
-installs the toolchain inside the container the first time it starts —
-several minutes, once, with `./claude-dev logs` showing the progress. Either
-way the same command is all you run.
+The container's image is built on your machine, from this template, the
+first time a folder registers — once per Mac, cached by Docker's own layer
+cache, so every folder after the first is a cache hit measured in seconds,
+and a folder starts in seconds too. If a build cannot run at all (no
+Dockerfile in reach) or fails outright, the folder runs the public
+`ubuntu:24.04` base image instead and installs the toolchain inside the
+container the first time it starts — several minutes, once, with
+`./claude-dev logs` showing the progress. Either way the same command is
+all you run.
 
 ## Quickstart
 
@@ -66,8 +68,8 @@ gh api repos/joe-rayment/claude_orca/contents/bootstrap.sh -H "Accept: applicati
 That installs any of the dependencies above you are missing, makes sure
 Docker is running, clones this template into
 `.claude-dev/template`, writes the
-`./claude-dev` launcher stub, seeds `.claude-dev/claude-orca.json`, pulls the
-pinned image, starts the folder's container, and opens Orca in your default
+`./claude-dev` launcher stub, seeds `.claude-dev/claude-orca.json`, builds
+the image, starts the folder's container, and opens Orca in your default
 browser. Re-running is safe. To isolate another folder, run the same
 one-liner from inside it.
 
@@ -95,13 +97,14 @@ Everything below this is reference.
   ```
 
   The bootstrap does this for you; it only reports when it cannot.
-- **`No prebuilt image: the VM installs its toolchain on first start`** — not
-  an error. The prebuilt image is private, so pulling it needs a `gh` token
-  carrying `read:packages`; without one, the folder runs the public
-  `ubuntu:24.04` base image instead and installs everything inside the
-  container the first time it starts. That takes several minutes, once, and
-  `./claude-dev logs` shows the progress. Every later start is fast, and
-  nothing else about the folder differs.
+- **`No image: the VM installs its toolchain on first start`** — not an
+  error. The image is built locally the first time a folder registers; when
+  that build cannot run or fails, the folder runs the public `ubuntu:24.04`
+  base image instead and installs everything inside the container the first
+  time it starts. That takes several minutes, once, and `./claude-dev logs`
+  shows the progress (and, on a failed build, `docker build`'s own last
+  lines). Every later start is fast, and nothing else about the folder
+  differs.
 - **Orca never publishes a URL.** `./claude-dev logs` follows the
   container's output, and `.claude-dev/run/orca-serve.log` inside the folder
   has Orca's own. `./claude-dev --doctor` says which of the six steps is the
@@ -152,7 +155,7 @@ of them is about *this* folder:
 ./claude-dev verify           # is this folder set up the way the template promises?
 ./claude-dev --how-to-run     # print the URL and the two commands again
 ./claude-dev --doctor         # CLI, daemon, image, container, port, web url
-./claude-dev --update         # pull the template and the image, recreate
+./claude-dev --update         # update the template, rebuild the image, recreate
 ./claude-dev --teardown       # snapshot beads, remove this folder's install
 ```
 
@@ -178,17 +181,17 @@ registration restores it.
 | any extra mounts you name, always read-only | — |
 
 The image carries the whole install — apt state and the toolchain both — as
-one Docker layer per tool, so a folder that pulled it is ready the moment its
-container starts. Docker caches those layers per machine, which is what makes
-the second folder on a Mac free; the folder itself holds only your project,
-your agent home and your config. Version pins live in
+one Docker layer per tool, so a folder whose build succeeded is ready the
+moment its container starts. Docker caches those layers per machine, which
+is what makes the second folder on a Mac free; the folder itself holds only
+your project, your agent home and your config. Version pins live in
 `scripts/container/setup.sh`.
 
-The exception is the runtime path. Without `read:packages` a folder runs
-plain `ubuntu:24.04`, where there is nothing baked to reuse: it installs the
-toolchain into `<project>/.claude-dev/toolchain` on its first start (several
-minutes, progress in `.claude-dev/run/setup.log`) and mounts that back on
-every later start.
+The exception is the runtime path. When the local build cannot run at all,
+or fails, a folder runs plain `ubuntu:24.04`, where there is nothing baked
+to reuse: it installs the toolchain into `<project>/.claude-dev/toolchain`
+on its first start (several minutes, progress in `.claude-dev/run/setup.log`)
+and mounts that back on every later start.
 
 Orca's user-data dir is the one thing that cannot live in the folder: it
 holds the unix sockets Orca chmods and hard-links on startup, and a macOS
@@ -355,9 +358,13 @@ Deeper documentation lives in [knowledge-base/](knowledge-base/README.md).
 
 ## The image
 
-`ghcr.io/joe-rayment/claude_orca`, pinned by the `IMAGE_TAG` file at the
-root of this template, so a folder that only ever runs `./claude-dev
---update` moves to a new image with the pull.
+Built locally, on the machine that runs it, by `acquire_image` in
+`scripts/launcher.sh` — `docker build` against the folder's own template
+clone, once per Mac, cached by Docker's own layer cache after that. There
+is no registry in this path: no package, no token, no scope, and no CI
+between a commit and the machine that needs it. The tag comes from the
+`IMAGE_TAG` file at the root of this template, so a folder that only ever
+runs `./claude-dev --update` moves to a new image with the rebuild.
 
 - `Dockerfile` — Ubuntu 24.04. It only copies and calls
   `scripts/container/setup.sh`, which carries every pin (Orca Linux,
@@ -368,14 +375,14 @@ root of this template, so a folder that only ever runs `./claude-dev
   the `agent` user, config-syncs, starts `orca-ide --serve`, and writes the
   browser URL to `<project>/.claude-dev/run/orca-web-url.txt` (mode 600 —
   it carries a pairing code) plus the port to `run/port`.
-- `scripts/container/smoke.sh` — run inside the freshly built image by CI;
-  starts the entrypoint against a throwaway project and fails the build
-  unless Orca serves and the URL answers.
-- `.github/workflows/image.yml` — builds the image, smoke-tests it, drives
-  the real `./claude-dev` launcher against it on a live Docker daemon (the
-  `e2e` steps: a throwaway project folder, a real container, and a real HTTP
-  request to the URL Orca published), and only then publishes both
-  architectures.
+- `scripts/container/smoke.sh` — starts the entrypoint against a throwaway
+  project and fails unless Orca serves and the URL answers; run by hand
+  against a freshly built image, or on the public base image to prove the
+  runtime-install path (see `tests/mac-e2e.sh`).
+- `tests/mac-e2e.sh` — the real bootstrap, a real build, a real container
+  on a real Docker daemon, run on demand on a Mac (there is no CI to run it
+  for you); its summary table is what a host-side change's commit or bead
+  has to carry as evidence.
 
 ## Tests
 

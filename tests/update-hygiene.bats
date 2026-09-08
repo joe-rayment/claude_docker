@@ -2,22 +2,21 @@
 #
 # `./claude-dev --update` says what it moved, and cleans up after itself.
 #
-# The complaint this answers: an update pulled `latest` every time and said
-# nothing, so a registry tag that had NOT been republished was
-# indistinguishable from one that had -- the pull printed the same thing
-# either way. The local image id is the only witness, and it is now
-# reported in the same shape as the template line above it.
+# The complaint this answers: a rebuild that only rewrote the repo copy and
+# one that replaced every layer looked alike from out here, and said
+# nothing either way. The local image id is the only witness, and it is
+# now reported in the same shape as the template line above it.
 #
-# The other half is leftovers. A pull leaves the previous manifest on disk
+# The other half is leftovers. A build leaves the previous manifest on disk
 # untagged (several GB), and a recreated container inherits the previous
 # one's run/ results -- a pairing URL that pairs with nothing most of all.
 # run/ holds results and state/ holds authority (CLAUDE.md), so only run/
 # is cleared, and only images of OUR repo that are untagged and not the one
-# just pulled are removed.
+# just built are removed.
 
 load helpers/setup
 
-REPO="ghcr.io/joe-rayment/claude_orca"
+REPO="claude-orca"
 
 # A 64-hex image id whose first 7 characters are $1 repeated -- what the
 # docker stub reports for the image the pull just recorded.
@@ -28,26 +27,28 @@ stub_id() {
 }
 
 @test "update reports the image id it moved to, and says so when it did not move" {
+    export CLAUDE_ORCA_TEST_IMAGE_ID="$(stub_id a)"
     mkdir -p "$PROJECT_DIR"
     primary="$(abspath "$PROJECT_DIR")"
     run make_project_v3 "$primary"
     [ "$status" -eq 0 ]
 
-    # Registration pulled id aaaa...; the registry republishes as bbbb...
+    # Registration built id aaaa...; the rebuild produces bbbb...
     export CLAUDE_ORCA_TEST_IMAGE_ID="$(stub_id b)"
     run bash -c "cd '$primary' && ./claude-dev --update"
     [ "$status" -eq 0 ]
     [[ "$output" == *"  image: aaaaaaa -> bbbbbbb"* ]]
     [[ "$output" != *"already up to date (bbbbbbb)"* ]]
 
-    # The same tag pulled again, unchanged: the line that was missing.
+    # The same tag built again, unchanged: the line that was missing.
     run bash -c "cd '$primary' && ./claude-dev --update"
     [ "$status" -eq 0 ]
     [[ "$output" == *"  image: already up to date (bbbbbbb)"* ]]
     [[ "$output" != *"bbbbbbb -> "* ]]
 }
 
-@test "update removes our repo's untagged old images, never a tagged one, never another repo's, never the one just pulled" {
+@test "update removes our repo's untagged old images, never a tagged one, never another repo's, never the one just built" {
+    export CLAUDE_ORCA_TEST_IMAGE_ID="$(stub_id a)"
     mkdir -p "$PROJECT_DIR"
     primary="$(abspath "$PROJECT_DIR")"
     run make_project_v3 "$primary"
@@ -57,7 +58,7 @@ stub_id() {
     cat > "$CONTAINER_STUB_STATE/images-list" <<LIST
 $REPO <none> sha256:$(stub_id c)
 $REPO v9 sha256:$(stub_id d)
-ghcr.io/someone/else <none> sha256:$(stub_id e)
+someone/else-image <none> sha256:$(stub_id e)
 $REPO <none> sha256:$(stub_id b)
 LIST
 
@@ -69,7 +70,7 @@ LIST
     grep -qx "rmi ccccccc" "$CONTAINER_STUB_LOG"
     ! grep -q "^rmi ddddddd" "$CONTAINER_STUB_LOG"   # tagged: someone's
     ! grep -q "^rmi eeeeeee" "$CONTAINER_STUB_LOG"   # another repo
-    ! grep -q "^rmi bbbbbbb" "$CONTAINER_STUB_LOG"   # the one just pulled
+    ! grep -q "^rmi bbbbbbb" "$CONTAINER_STUB_LOG"   # the one just built
 }
 
 # `docker rmi` refuses an image another container still references. That is

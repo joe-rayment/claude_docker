@@ -351,6 +351,25 @@ case "$cmd" in
             "${CLAUDE_ORCA_TEST_IMAGE_ID:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}" \
             > "$state/image-id"
         exit 0 ;;
+    build)
+        # `docker build --tag REF CTX`. CLAUDE_ORCA_TEST_BUILD_FAIL fails it
+        # the way a real build fails: on stderr, non-zero, and the image is
+        # left exactly as it was -- a failed build never overwrites what a
+        # machine already had.
+        ref=""; prev=""
+        for a in "$@"; do
+            case "$prev" in --tag) ref="$a" ;; esac
+            prev="$a"
+        done
+        if [ "${CLAUDE_ORCA_TEST_BUILD_FAIL:-0}" = "1" ]; then
+            echo "failed to solve: process \"/bin/sh -c apt-get update\" did not complete successfully" >&2
+            exit 1
+        fi
+        [ -n "$ref" ] && printf '%s\n' "$ref" > "$state/image"
+        printf 'sha256:%s\n' \
+            "${CLAUDE_ORCA_TEST_IMAGE_ID:-cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc}" \
+            > "$state/image-id"
+        exit 0 ;;
     images)
         # `docker images --format ...`: whatever the test put in
         # $state/images-list, one image per line, and nothing otherwise.

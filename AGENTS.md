@@ -139,11 +139,15 @@ bats tests/docs.bats     # one file
 The default run skips the dozen-odd files that stand up real processes or
 churn through big fixtures -- the slow set was picked by timing every file,
 and `run-tests.sh` names it in `SLOW_FILES` and prints how many it skipped.
-CI does not run this suite at all: `.github/workflows/image.yml` builds and
-publishes the image on every push to main and nothing gates that, because a
-red test must never stop a fix from reaching the machine that needs it. The
-image's own smoke and e2e checks are still in that workflow and are run on
-demand -- dispatch it by hand with `run_tests: true`.
+There is no CI in this repo: `.github/workflows/image.yml` used to build and
+publish the image on every push to main and run its own smoke and e2e
+checks, but once the image stopped being pulled from a registry and started
+being built on the machine that runs it, there was nothing left for a
+shared workflow to gate -- a red test must never stop a fix from reaching
+the machine that needs it, and neither should a build nobody but that
+machine can act on. `scripts/container/smoke.sh` (the image's own check) and
+`tests/mac-e2e.sh` (the host-side launcher against a real daemon) are both
+run by hand now, on demand, against a real Mac.
 
 Tests are bats-core, and they run on Linux as well as macOS: the suite stubs
 the host tooling (`docker`, `open`, `uname`, `gh`) and exercises the
@@ -151,12 +155,11 @@ scripts' logic rather than the Docker daemon itself. The in-container half
 is exercised natively — this box is the same Ubuntu arm64 the image is built
 on — but containers still cannot run here: Docker on this box dies with
 `failed to register layer: unshare: operation not permitted`, no images
-cached, user namespaces denied. So `.github/workflows/image.yml` is where the
-image is built, smoke-tested and published, and — now that the runtime is
-Docker rather than Apple's `container` — it is also where the host-side
-launcher is driven end to end against a real daemon (the `e2e` steps: a
-throwaway folder, a real container, a real HTTP request to the URL Orca
-published). That check was impossible while the runtime ran only on macOS.
+cached, user namespaces denied. So proving the image itself, and the
+host-side launcher against a real daemon (a throwaway folder, a real
+container, a real HTTP request to the URL Orca published), is
+`tests/mac-e2e.sh`'s job -- see "Definition of done for host-side changes"
+below.
 
 ## Architecture Overview
 
@@ -168,7 +171,8 @@ becomes the agent's home directory. There is no central install and nothing
 on the Mac runs an agent.
 
 The boundary is the container's. `claude-dev` runs one Docker container per
-folder from `ghcr.io/joe-rayment/claude_orca` (pinned by the `IMAGE_TAG` file),
+folder from an image built on that machine (`claude-orca`, pinned by the
+`IMAGE_TAG` file; `CLAUDE_ORCA_IMAGE_REPO`/`CLAUDE_ORCA_IMAGE` override it),
 mounting the project at **`/workspace/<name>`** and `.claude-dev/home` as
 `/home/agent`, publishing Orca's port on `127.0.0.1` only. The project used
 to be mounted at its own Mac path so that paths meant the same thing on both
@@ -189,8 +193,9 @@ real Mac, 15.5 of them downloading 1.3 GB at 2.5 MB/s, once per folder,
 shared with no other folder — the job Docker's layer cache does for every
 folder at once. (It also made the macOS CI job impossible: colima's virtiofs
 refuses the `chown` into a bind mount.) A folder still carries a toolchain on
-the **runtime path** — plain `ubuntu:24.04`, where a token without
-`read:packages` lands — because there is no baked anything to reuse there.
+the **runtime path** — plain `ubuntu:24.04`, where a folder lands when the
+local `docker build` cannot run or fails — because there is no baked
+anything to reuse there.
 `setup.sh --check` is what says the image is the filesystem it promised.
 Inside,
 `scripts/container/entrypoint.sh` runs as PID 1, drops to the `agent` user,
@@ -219,9 +224,9 @@ config-sync owns those files.
 
 ## Definition of done for host-side changes
 
-A change to `bootstrap.sh`, `scripts/launcher.sh`, the `Dockerfile`,
-`.github/workflows/image.yml` or anything under `scripts/container/` is
-done only when `tests/mac-e2e.sh` has been run on a Mac against that
+A change to `bootstrap.sh`, `scripts/launcher.sh`, the `Dockerfile`, or
+anything under `scripts/container/` is done only when `tests/mac-e2e.sh`
+has been run on a Mac against that
 change, and its summary table is pasted into the commit message or the
 bead. A green bats suite is not evidence for the Mac path: the suite
 stubs `docker`, `open`, `gh` and `uname`, so it proves the launcher's

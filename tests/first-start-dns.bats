@@ -5,18 +5,19 @@
 # failure resolving 'ports.ubuntu.com'" for every line, setup.sh died on
 # "E: Unable to locate package fonts-liberation", the container exited --
 # and the Mac side kept printing "installing toolchain: ..." for its full
-# 1800 s timeout. Four fixes, one contract:
+# 1800 s timeout. Four fixes landed at the time, one contract:
 #   1. the entrypoint repairs the VM's resolv.conf before anything uses the
 #      network (scripts/container/entrypoint.sh, ensure_dns);
 #   2. setup.sh names DNS, not a package, when apt cannot resolve;
 #   3. the launcher passes --dns on `docker run`, stops waiting the
 #      moment the container is gone, and shows the install log's tail;
-#   4. bootstrap asks for the read:packages scope that avoids the runtime
-#      path altogether.
+#   4. bootstrap asked for the read:packages scope that avoided the
+#      runtime path altogether -- gone now that the image is built on
+#      this machine rather than pulled, so its cases went with it.
 #
 # The entrypoint and setup.sh cases run natively (this box is the same
-# Ubuntu the image is built on); the launcher and bootstrap cases run
-# against the Mac-tooling stubs from helpers/setup.
+# Ubuntu the image is built on); the launcher cases run against the
+# Mac-tooling stubs from helpers/setup.
 
 load helpers/setup
 
@@ -273,91 +274,3 @@ cd '$primary' && ./claude-dev"
     [[ "$output" == *"E: Unable to locate package fonts-liberation"* ]]
 }
 
-# bats has no /dev/tty; `script` lends the bootstrap a pty so its
-# terminal-only branches (the sign-in, the scope refresh) actually run.
-run_bootstrap_tty() {
-    export STUB_UNAME_S=Darwin STUB_UNAME_M=arm64
-    run script -qec "bash '$REPO_ROOT/bootstrap.sh' '$1'" /dev/null
-}
-
-@test "bootstrap asks for read:packages" {
-    command -v script >/dev/null 2>&1
-
-    # No login yet: the sign-in it runs asks for the scope up front.
-    mkdir -p "$PROJECT_DIR"
-    git -C "$PROJECT_DIR" init --quiet -b main >/dev/null 2>&1
-    export STUB_GH_UNAUTH=1
-    run_bootstrap_tty "$PROJECT_DIR"
-    grep -q "^gh auth login .*--scopes read:packages" "$STUB_LOG"
-    unset STUB_GH_UNAUTH
-
-    # Logged in with gh's stock scopes: a refresh for read:packages, and a
-    # line saying why, before the folder is set up.
-    : > "$STUB_LOG"
-    export CLAUDE_ORCA_TEST_GH_SCOPES="repo, read:org, gist, workflow"
-    run_bootstrap_tty "$PROJECT_DIR"
-    [ "$status" -eq 0 ]
-    grep -q "^gh auth refresh .*-s read:packages" "$STUB_LOG"
-    grep -q "^gh auth refresh .*-h github.com" "$STUB_LOG"
-    [[ "$output" == *"read:packages"* ]]
-    [[ "$output" == *"prebuilt image"* ]]
-
-    # Already carrying the scope: nothing to ask for.
-    : > "$STUB_LOG"
-    export CLAUDE_ORCA_TEST_GH_SCOPES="repo, read:org, workflow, read:packages"
-    mkdir -p "$BATS_TEST_TMPDIR/project2"
-    git -C "$BATS_TEST_TMPDIR/project2" init --quiet -b main >/dev/null 2>&1
-    run_bootstrap_tty "$BATS_TEST_TMPDIR/project2"
-    [ "$status" -eq 0 ]
-    ! grep -q "^gh auth refresh" "$STUB_LOG"
-}
-
-# The reason the user of 2026-09-06 never got the prebuilt image at all:
-# their token is a fine-grained PAT, `gh api -i user` returns no
-# X-Oauth-Scopes header for it, and the launcher read "no header" as "no
-# read:packages" -- skipping a pull that would have worked, on every folder.
-@test "a token with no X-Oauth-Scopes header still tries the pull" {
-    export STUB_GH_NO_SCOPE_HEADER=1
-    mkdir -p "$PROJECT_DIR"
-    primary="$(abspath "$PROJECT_DIR")"
-    run make_project_v3 "$primary"
-    [ "$status" -eq 0 ]
-
-    grep -q "^login " "$CONTAINER_STUB_LOG"
-    grep -q "^pull ghcr.io/joe-rayment/claude_orca:" "$CONTAINER_STUB_LOG"
-    [ "$(cat "$primary/.claude-dev/run/image-source")" = "pulled" ]
-    [[ "$output" != *"No prebuilt image"* ]]
-    runline="$(grep "^run " "$CONTAINER_STUB_LOG" | head -1)"
-    [[ "$runline" == *"ghcr.io/joe-rayment/claude_orca:"* ]]
-    [[ "$runline" != *"ubuntu:24.04"* ]]
-}
-
-# qa2.8's finding stays: a classic token whose header says it lacks
-# read:packages can only be refused, so the pull is not even attempted.
-@test "a classic token that really lacks read:packages still skips the pull" {
-    export CLAUDE_ORCA_TEST_GH_SCOPES="repo, read:org, gist, workflow"
-    mkdir -p "$PROJECT_DIR"
-    primary="$(abspath "$PROJECT_DIR")"
-    run make_project_v3 "$primary"
-    [ "$status" -eq 0 ]
-
-    ! grep -q "^pull " "$CONTAINER_STUB_LOG"
-    ! grep -q "^login " "$CONTAINER_STUB_LOG"
-    [ "$(cat "$primary/.claude-dev/run/image-source")" = "runtime" ]
-    [[ "$output" == *"No prebuilt image"* ]]
-}
-
-# And the bootstrap must not nag that user: `gh auth refresh` cannot add a
-# scope to a fine-grained PAT, so with no header it stays quiet.
-@test "bootstrap does not ask a token with no X-Oauth-Scopes header for read:packages" {
-    command -v script >/dev/null 2>&1
-    export STUB_GH_NO_SCOPE_HEADER=1
-    mkdir -p "$PROJECT_DIR"
-    git -C "$PROJECT_DIR" init --quiet -b main >/dev/null 2>&1
-    run_bootstrap_tty "$PROJECT_DIR"
-    [ "$status" -eq 0 ]
-    ! grep -q "^gh auth refresh" "$STUB_LOG"
-    [[ "$output" != *"gh auth refresh"* ]]
-    # And the folder it set up took the pull path, not the runtime one.
-    [ "$(cat "$PROJECT_DIR/.claude-dev/run/image-source")" = "pulled" ]
-}

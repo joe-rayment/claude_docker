@@ -28,7 +28,7 @@ TEST_DIR="$REPO_ROOT/tests"
 # Measured on this box (bats per file, seconds): orca-dispatch 44,
 # orca-run 44, code-map 37, first-start-dns 33, container-entrypoint 32,
 # prime-hook 31, container-image 30, bootstrap 29, fresh-project 19,
-# bd-guard 18, launcher-v3-pull 16, toolchain-cache 14, update-hygiene 11.
+# bd-guard 18, launcher-v3-build 16, toolchain-cache 14, update-hygiene 11.
 # Everything else is under 9s and most of it under 1s. e2e-local is quick
 # but starts a real local run, so it goes here too.
 SLOW_FILES="
@@ -40,7 +40,7 @@ container-image.bats
 e2e-local.bats
 first-start-dns.bats
 fresh-project.bats
-launcher-v3-pull.bats
+launcher-v3-build.bats
 orca-dispatch.bats
 orca-run.bats
 prime-hook.bats

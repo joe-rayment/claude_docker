@@ -138,20 +138,14 @@ path_without_docker() {
     [ ! -e "$primary/attachments" ]
     [ ! -e "$primary/.beads" ]
 
-    # The registry login: username in argv, token on stdin and nowhere else.
-    login="$(ctr_line "login ")"
-    [[ "$login" == *"ghcr.io"* ]]
-    [[ "$login" == *"joe-rayment"* ]]
-    [[ "$login" == *"--password-stdin"* ]]
-    [[ "$login" != *"$STUB_TOKEN"* ]]
-    [ "$(cat "$CONTAINER_STUB_STATE/registry-password")" = "$STUB_TOKEN" ]
-
-    # The image ref is pinned by the template's own IMAGE_TAG file.
+    # The image ref is pinned by the template's own IMAGE_TAG file, and
+    # is built locally -- there is no registry left in this path to log
+    # in to.
     [ -f "$REPO_ROOT/IMAGE_TAG" ]
     tag="$(cat "$primary/.claude-dev/template/IMAGE_TAG")"
     [ -n "$tag" ]
-    grep -qF "pull ghcr.io/joe-rayment/claude_orca:$tag" "$CONTAINER_STUB_LOG"
-    ! grep -q "^build " "$CONTAINER_STUB_LOG"
+    grep -qF "build --tag claude-orca:$tag" "$CONTAINER_STUB_LOG"
+    ! grep -q "^pull " "$CONTAINER_STUB_LOG"
 }
 
 @test "register passes the terminal palette to the container as CLAUDE_ORCA_TERMINAL_THEME -- Homebrew by default, claude-orca.json's terminalTheme when set" {
@@ -210,7 +204,7 @@ path_without_docker() {
     [[ "$line" == *"-e ORCA_PORT=$port"* ]]
     [[ "$line" == *"-e HOST_UID=$(id -u)"* ]]
     [[ "$line" == *"-e GH_TOKEN=$STUB_TOKEN"* ]]
-    [[ "$line" == *"ghcr.io/joe-rayment/claude_orca:"* ]]
+    [[ "$line" == *"claude-orca:"* ]]
 
     # The entrypoint's side of the contract, faked by the stub: the URL
     # file appears and the launcher waits for it, then opens it.
@@ -281,7 +275,7 @@ path_without_docker() {
     [[ "$output" == *"docker CLI"* ]]
     [[ "$output" == *"docker daemon"* ]]
     [[ "$output" == *"image"* ]]
-    [[ "$output" == *"ghcr.io/joe-rayment/claude_orca:"* ]]
+    [[ "$output" == *"claude-orca:"* ]]
     [[ "$output" == *"$name"* ]]
     [[ "$output" == *"running"* ]]
     [[ "$output" == *"port"* ]]

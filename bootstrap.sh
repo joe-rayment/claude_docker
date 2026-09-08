@@ -175,10 +175,10 @@ fi
 if ! gh auth status >/dev/null 2>&1; then
     if ( : </dev/tty ) 2>/dev/null; then
         step "Signing in to GitHub (gh auth login)"
-        # read:packages: the prebuilt image is a private GHCR package, and a
-        # token without that scope is denied its manifest -- which sends
-        # the folder down the slow runtime-install path instead.
-        gh auth login --web --git-protocol https --scopes read:packages </dev/tty || true
+        # Stock scopes: gh is here for the clone and for the token the
+        # container's own gh uses. The image is built on this machine, so
+        # nothing in this path needs read:packages any more.
+        gh auth login --web --git-protocol https </dev/tty || true
     fi
 fi
 
@@ -191,55 +191,17 @@ if ! gh auth status >/dev/null 2>&1; then
     exit 1
 fi
 
-# The token's OAuth scopes, read the way scripts/launcher.sh's gh_has_scope
-# reads them: the X-Oauth-Scopes header of an authenticated API call,
-# lowercased, comma-matched. `gh auth status` prints them too, but its
-# wording moves between gh versions and the header does not. Same three
-# outcomes as the launcher's: 0 the header lists the scope, 1 the header is
-# present and does not, 2 no header at all -- a fine-grained PAT or App
-# token, whose scopes are unknown rather than missing and which `gh auth
-# refresh` cannot change anyway.
-gh_token_has_scope() {
-    local header="" scopes=""
-    header="$(gh api -i user 2>/dev/null \
-        | tr -d '\r' \
-        | tr '[:upper:]' '[:lower:]' \
-        | sed -n 's/^x-oauth-scopes:/&/p' \
-        | head -1)" || header=""
-    [ -n "$header" ] || return 2
-    scopes="$(printf '%s\n' "$header" \
-        | sed 's/^x-oauth-scopes:[[:space:]]*//' \
-        | tr -d '[:space:]')"
-    case ",$scopes," in
-        *",$1,"*) return 0 ;;
-    esac
-    return 1
-}
-
-# An existing classic login usually predates this template and carries
-# gh's stock scopes only. Ask for read:packages now, while there is a
-# terminal to answer in; when the refresh fails or there is no terminal,
-# the folder still works -- it just installs its toolchain inside the VM
-# instead. Only when the header SAYS the scope is missing: a token with no
-# header is left alone, and the launcher simply attempts the pull.
-SCOPE_RC=0
-gh_token_has_scope read:packages || SCOPE_RC=$?
-if [ "$SCOPE_RC" -eq 1 ] && ( : </dev/tty ) 2>/dev/null; then
-    step "Adding the read:packages scope to the GitHub token (gh auth refresh)"
-    echo "    With it the folder pulls the prebuilt image instead of installing the toolchain inside the VM for several minutes."
-    gh auth refresh -h github.com -s read:packages </dev/tty || true
-fi
 
 # WHAT THE PREFLIGHT DECIDED, in one block, before anything is installed.
 #
 # Four days of diagnosis in September 2026 turned on questions the output
-# could not answer: which gh account, what kind of token, whether it
-# carried read:packages, which docker. Each of them decides whether this
-# folder pulls the prebuilt image or spends several minutes installing a
-# toolchain inside the container, and none of them was written down --
-# so a pasted log could not say which path a folder had taken.
+# could not answer: which gh account, what kind of token, which docker.
+# The token no longer decides which image a folder runs -- the image is
+# built here from the template clone -- but which account and which docker
+# still decide whether the clone and the build work at all, and neither
+# was written down, so a pasted log could not say what a folder had.
 preflight_facts() {
-    local token kind account scopes rc=0
+    local token kind account
     echo "==> Preflight"
     if [ "$UNAME_S" = "Darwin" ]; then
         echo "    os          macOS $(sw_vers -productVersion 2>/dev/null || echo '?') ($(uname -m))"
@@ -257,17 +219,6 @@ preflight_facts() {
         *)                       kind="unrecognised" ;;
     esac
     echo "    account     ${account:-<not signed in>} ($kind)"
-    # The same three outcomes gh_token_has_scope answers with, said in
-    # words: a fine-grained PAT sends no scopes header at all, so its
-    # scopes are UNKNOWN rather than missing -- and treating the two the
-    # same is what sent every folder down the slow path on 2026-09-06.
-    gh_token_has_scope read:packages || rc=$?
-    case "$rc" in
-        0) scopes="yes -- the prebuilt image will be pulled" ;;
-        1) scopes="no -- this folder will install its toolchain inside the container" ;;
-        *) scopes="unknown (this token sends no scopes header) -- the pull is attempted anyway" ;;
-    esac
-    echo "    read:packages $scopes"
     echo "    docker      $(docker --version 2>/dev/null | head -1)"
 }
 

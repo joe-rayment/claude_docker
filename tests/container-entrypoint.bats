@@ -1,9 +1,11 @@
 #!/usr/bin/env bats
 #
 # v3 S1 acceptance contract (claude-orca-qa2.1) -- FROZEN from RED-AT
-# onward. The VM half of v3: the container image, the in-VM entrypoint
-# that brings Orca up headless in serve mode, and the CI workflow that
-# builds and pushes the image.
+# onward. The VM half of v3: the container image and the in-VM entrypoint
+# that brings Orca up headless in serve mode. There is no CI workflow any
+# more -- the image is built locally by acquire_image the first time a
+# folder registers, so the pins below are all that is left to assert
+# statically; whether the image itself works is proven by running it.
 #
 # This box cannot run containers (no mount namespaces), so the entrypoint
 # is exercised NATIVELY here: case 1 points ORCA_BIN at the real extracted
@@ -23,7 +25,6 @@ DOCKERFILE="$REPO_ROOT/Dockerfile"
 # it can be run for real (scripts/container/verify-rootfs.sh), and the
 # version pins moved with it.
 SETUP="$REPO_ROOT/scripts/container/setup.sh"
-IMAGE_WORKFLOW="$REPO_ROOT/.github/workflows/image.yml"
 
 # The extracted AppImage (squashfs-root/orca-ide). Overridable so the same
 # contract runs wherever the extraction lives, but never optional.
@@ -406,11 +407,10 @@ STUB
     [ ! -f "$proj2/.claude-dev/run/orca-web-url.txt" ]
 }
 
-@test "Dockerfile, setup.sh, smoke.sh and image.yml exist, setup.sh pins Orca 1.4.197 and the Claude Code version from install-claude.sh, and image.yml pushes to ghcr.io/joe-rayment/claude_orca" {
+@test "Dockerfile, setup.sh and smoke.sh exist, and setup.sh pins Orca 1.4.197 and the Claude Code version from install-claude.sh" {
     [ -f "$DOCKERFILE" ]
     [ -x "$SETUP" ]
     [ -x "$SMOKE" ]
-    [ -f "$IMAGE_WORKFLOW" ]
     [ -x "$ENTRYPOINT" ]
 
     # The Orca release the image installs, pinned -- never 'latest'.
@@ -432,14 +432,6 @@ STUB
 
     # The image runs the entrypoint under tini.
     run grep -q 'scripts/container/entrypoint.sh' "$DOCKERFILE"
-    [ "$status" -eq 0 ]
-
-    # CI publishes to the project's GHCR repo.
-    run grep -q 'ghcr.io/joe-rayment/claude_orca' "$IMAGE_WORKFLOW"
-    [ "$status" -eq 0 ]
-    run grep -q 'packages: write' "$IMAGE_WORKFLOW"
-    [ "$status" -eq 0 ]
-    run grep -q 'smoke.sh' "$IMAGE_WORKFLOW"
     [ "$status" -eq 0 ]
 }
 

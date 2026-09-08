@@ -4,16 +4,17 @@
 #
 # WHY THIS EXISTS. Everything else in tests/ drives stubs: helpers/setup.bash
 # puts a fake `docker`, `open`, `gh` and `uname` on PATH, so the 752-case
-# bats suite proves the launcher's LOGIC and nothing about a Mac. No CI
-# workflow runs that suite at all, and the one job that does drive a real
-# daemon on macOS (image.yml's macos-docker-e2e, via colima) has never
-# passed. The result, through the first week of September 2026: changes to
-# the Mac side were reported as fixed without anyone having run them, four
-# days in a row, and the only person who ever actually ran the product was
-# its owner.
+# bats suite proves the launcher's LOGIC and nothing about a Mac. There is
+# no CI in this repo any more (.github/workflows/image.yml, the one job
+# that ever drove a real daemon on macOS, via colima, is gone -- it never
+# passed anyway), so nothing runs this suite, stubbed or not, without a
+# human asking for it. The result, through the first week of September
+# 2026: changes to the Mac side were reported as fixed without anyone
+# having run them, four days in a row, and the only person who ever
+# actually ran the product was its owner.
 #
 # So this script runs the real thing: the real bootstrap.sh, into a real
-# throwaway folder, pulling or reusing a real image, starting a real
+# throwaway folder, building or reusing a real image, starting a real
 # container on the real Docker daemon, and asking Orca for a real HTTP
 # response -- then it asks the container what it looks like from the
 # inside, recreates it, and tears it down. Every check is a row in a table
@@ -103,7 +104,7 @@ note() { printf '\n== %s\n' "$*"; printf '\n===== %s\n' "$*" >> "$RUN_LOG"; }
 if [ "$(uname -s)" != "Darwin" ]; then
     echo "mac-e2e: this is the MAC check and this box is $(uname -s)." >&2
     echo "  There is nothing to substitute: a Linux run proves the Linux path," >&2
-    echo "  which .github/workflows/image.yml already covers." >&2
+    echo "  which the stubbed bats suite already covers." >&2
     exit 2
 fi
 

@@ -19,7 +19,7 @@
 #   claude-dev key openrouter     Store this folder's OpenRouter key
 #   claude-dev --how-to-run       Print the URL and the two commands
 #   claude-dev --doctor           CLI, service, image, container, port, web url
-#   claude-dev --update           Pull the template and the image, recreate
+#   claude-dev --update           Pull the template, rebuild the image, recreate
 #   claude-dev --teardown         Snapshot beads, remove this folder's install
 #   claude-dev --help             Show this help
 #
@@ -261,10 +261,13 @@ snapshot_beads() {
 # the VM, so the Mac side is only ever starting one, publishing its port,
 # and opening the URL it printed.
 
-IMAGE_REPO="${CLAUDE_ORCA_IMAGE_REPO:-ghcr.io/joe-rayment/claude_orca}"
+# A local image name, because the image is built on this machine and
+# published nowhere. It carried a ghcr.io/ prefix while it was pulled
+# from a private package -- see acquire_image for why that path is gone.
+IMAGE_REPO="${CLAUDE_ORCA_IMAGE_REPO:-claude-orca}"
 
-# The pinned tag lives in one file at the template root, so a folder that
-# only ever runs `claude-dev --update` moves to the new image with the pull.
+# The tag lives in one file at the template root, so a folder that only
+# ever runs `claude-dev --update` moves to the new image with the rebuild.
 image_tag() {
     local f tag=""
     for f in "$TEMPLATE_ROOT/IMAGE_TAG" "$HOST_DIR/template/IMAGE_TAG"; do
@@ -277,9 +280,9 @@ image_tag() {
     printf '%s\n' "$tag"
 }
 
-# CLAUDE_ORCA_IMAGE names a whole ref and wins over the IMAGE_TAG file: CI
-# builds the image locally and points the launcher at it, so the runtime the
-# workflow exercises is the one the Mac runs.
+# CLAUDE_ORCA_IMAGE names a whole ref and wins over the IMAGE_TAG file: it
+# points the launcher at an image someone else already built, which is how
+# a hand-built or test image is driven through the real launcher.
 image_ref() {
     if [ -n "${CLAUDE_ORCA_IMAGE:-}" ]; then
         printf '%s\n' "$CLAUDE_ORCA_IMAGE"
@@ -287,7 +290,6 @@ image_ref() {
     fi
     printf '%s:%s\n' "$IMAGE_REPO" "$(image_tag)"
 }
-image_registry() { printf '%s\n' "${IMAGE_REPO%%/*}"; }
 container_name() { printf 'claude-orca-%s\n' "$(derive_project_name "$1")"; }
 
 # Every runtime invocation goes through ctr(), so there is exactly one
@@ -546,12 +548,12 @@ ctr_local() {
     d="$(ctr_local_dir)"
     case "${1:-} ${2:-}" in
         # No image and no daemon to speak to, so these succeed as no-ops.
-        "image pull"|"image ls"|"image list"|"image inspect") return 0 ;;
+        "image pull"|"image build"|"image ls"|"image list"|"image inspect") return 0 ;;
         "registry login"|"registry logout")                   return 0 ;;
         "system start"|"system status"|"system stop")         return 0 ;;
     esac
     case "${1:-}" in
-        pull|login|logout|info) return 0 ;;
+        pull|build|login|logout|info) return 0 ;;
     esac
     case "${1:-}" in
         run)     shift; ctr_local_run "$@"; return $? ;;
@@ -592,52 +594,18 @@ ctr() {
     ctr_docker "$@"
 }
 
-# qa2.8: a stock gh OAuth token (repo, read:org, gist, workflow) can log in
-# to ghcr.io and still be denied the manifest, so the pull is worth
-# attempting only when the token actually carries read:packages. The scopes
-# come from the X-Oauth-Scopes response header of any authenticated API
-# call: `gh auth status` prints them too, but its wording moves between gh
-# versions, while the header does not. Header name matched
-# case-insensitively (lowercased under HTTP/2), value comma-separated.
-# Never prompts and never runs `gh auth refresh` -- that is interactive.
+# The fallback when the build itself cannot run: the folder runs the
+# PUBLIC base image with the mounted template's own entrypoint as its
+# command, and setup.sh installs the toolchain inside it on that first
+# start. Slow, but a working folder.
 #
-# Three outcomes, not two: the header exists only for classic OAuth tokens.
-# A fine-grained PAT (github_pat_...) or a GitHub App token never sends it,
-# so for those the scopes are UNKNOWN, not empty -- and a user on such a
-# token (the real Mac run of 2026-09-06) was being sent down the runtime
-# install path on every folder for a pull that would have worked.
-#   0  the header is present and lists the scope
-#   1  the header is present and does not list it (the qa2.8 finding: a
-#      classic token that GHCR will refuse)
-#   2  no X-Oauth-Scopes header at all: unknown, worth one pull attempt
-gh_has_scope() {
-    local want="$1" header="" scopes=""
-    command -v gh >/dev/null 2>&1 || return 1
-    header="$(gh api -i user 2>/dev/null \
-        | tr -d '\r' \
-        | tr '[:upper:]' '[:lower:]' \
-        | sed -n 's/^x-oauth-scopes:/&/p' \
-        | head -1)" || header=""
-    [ -n "$header" ] || return 2
-    scopes="$(printf '%s\n' "$header" \
-        | sed 's/^x-oauth-scopes:[[:space:]]*//' \
-        | tr -d '[:space:]')"
-    case ",$scopes," in
-        *",$want,"*) return 0 ;;
-    esac
-    return 1
-}
-
-# startup v4 (claude-orca-qa2.10): when the prebuilt image is out of reach
-# the folder runs the PUBLIC base image instead, with the mounted
-# template's own entrypoint as its command -- setup.sh then installs the
-# toolchain inside the VM on that first start. No image build on the
-# Mac: an image build is the one step this repo can never test here, and
-# the builder VM was where registration kept dying.
+# This used to say an image build was "the one step this repo can never
+# test here", which was true of the box and beside the point for the Mac:
+# it kept the build in CI, and CI is where delivery then stopped.
 BASE_IMAGE="${CLAUDE_ORCA_BASE_IMAGE:-docker.io/library/ubuntu:24.04}"
-RUNTIME_INSTALL_NOTE="No prebuilt image: the VM installs its toolchain on first start (several minutes); progress: ./claude-dev logs"
+RUNTIME_INSTALL_NOTE="No image: the VM installs its toolchain on first start (several minutes); progress: ./claude-dev logs"
 
-# Which of the two images this folder runs -- 'pulled' or 'runtime' --
+# Which of the two images this folder runs -- 'built' or 'runtime' --
 # written by acquire_image and read back by container_create and the
 # doctor, because the choice has to survive between commands.
 record_image_source() {
@@ -652,72 +620,40 @@ image_source() {
     fi
 }
 
-# The image is on GHCR, which needs a login even for a public package when
-# pulled by tag from a private-by-default account. The token goes in on
-# stdin: never in argv, never in the container log.
-registry_login() {
-    local registry token user
-    registry="$(image_registry)"
-    token="$(gh auth token 2>/dev/null || true)"
-    user="$(gh api user --jq .login 2>/dev/null || true)"
-    [ -n "$token" ] || return 0
-    if printf '%s' "$token" \
-            | ctr registry login "$registry" --username "${user:-token}" --password-stdin \
-              >/dev/null 2>&1; then
-        echo "Signed in to $registry as ${user:-the gh token}"
-    else
-        echo "Warning: 'docker login $registry' failed -- the pull may fail too" >&2
-    fi
-}
 
-# One `docker pull`, keeping what it printed: with this registry the
-# reason a pull was refused IS the diagnosis, so the caller reads PULL_OUT
-# rather than guessing from the exit status.
-PULL_OUT=""
-# How often the pull says something, and how long it may say nothing
-# before this points at the possibility that it is wedged.
-# 180s, not 60: without a TTY `docker pull` prints one line per layer
-# EVENT, not a progress bar, so a big layer is legitimately quiet for
-# minutes. Three minutes of nothing is the point where "slow" and "stuck"
-# stop being distinguishable from out here.
-PULL_TICK="${CLAUDE_ORCA_PULL_TICK:-10}"
-PULL_STALL="${CLAUDE_ORCA_PULL_STALL:-180}"
+# One `docker build`, with the sound turned on. A build says a great deal
+# and then goes quiet for minutes on a big layer, so silence is reported
+# with the elapsed time rather than left to look like progress -- the same
+# shape the setup.log wait uses. The caller reads BUILD_OUT because what
+# the builder printed IS the diagnosis when it fails.
+BUILD_OUT=""
+BUILD_TICK="${CLAUDE_ORCA_BUILD_TICK:-10}"
+BUILD_STALL="${CLAUDE_ORCA_BUILD_STALL:-180}"
 
-# A pull with the sound turned on. `==> Pulling ...` used to be the last
-# thing a person saw until the pull returned, however long that took and
-# whether or not it was still doing anything -- and on 2026-09-07 it took
-# 20 minutes, because two pulls of the same image were wedged with no
-# network activity at all and nothing said so. The setup.log wait already
-# solved this shape: run the work in the background and show its last line
-# every few seconds. Silence is now itself reported, with the elapsed
-# time, so a stuck pull looks stuck instead of looking slow.
-try_pull() {
-    local ref="$1" log rc=0 pid waited=0 quiet=0 last="" line="" said_how=0
-    log="${CTR_RUN_DIR:-${TMPDIR:-/tmp}}/pull.log"
-    : > "$log" 2>/dev/null || log="${TMPDIR:-/tmp}/claude-orca-pull.log"
-    ctr image pull "$ref" > "$log" 2>&1 &
+try_build() {
+    local ref="$1" ctx="$2" log rc=0 pid waited=0 quiet=0 last="" line="" said_how=0
+    log="${CTR_RUN_DIR:-${TMPDIR:-/tmp}}/build.log"
+    : > "$log" 2>/dev/null || log="${TMPDIR:-/tmp}/claude-orca-build.log"
+    ctr build --tag "$ref" "$ctx" > "$log" 2>&1 &
     pid=$!
     while kill -0 "$pid" 2>/dev/null; do
         sleep 1
         waited=$((waited + 1))
-        [ "$((waited % PULL_TICK))" -eq 0 ] || continue
+        [ "$((waited % BUILD_TICK))" -eq 0 ] || continue
         line="$(tail -1 "$log" 2>/dev/null)"
         if [ -n "$line" ] && [ "$line" != "$last" ]; then
-            echo "  pulling (${waited}s): $line" >&2
+            echo "  building (${waited}s): $line" >&2
             last="$line"
             quiet=0
         else
-            quiet=$((quiet + PULL_TICK))
-            if [ "$quiet" -ge "$PULL_STALL" ]; then
-                echo "  the pull has said nothing for ${quiet}s (${waited}s in); it may be stuck." >&2
-                # The how-to once, then just the clock: a warning that
-                # repeats in full every three minutes is its own noise.
+            quiet=$((quiet + BUILD_TICK))
+            if [ "$quiet" -ge "$BUILD_STALL" ]; then
+                echo "  the build has said nothing for ${quiet}s (${waited}s in)." >&2
                 if [ "$said_how" -eq 0 ]; then
                     if [ -n "$last" ]; then
                         echo "    last it said: $last" >&2
                     fi
-                    echo "    a wedged pull shows no network activity: check with" >&2
-                    echo "      lsof -nP -iTCP -sTCP:ESTABLISHED | grep -i docker" >&2
+                    echo "    the whole log is at $log" >&2
                     echo "    ^C is safe -- bootstrap and ./claude-dev are both idempotent." >&2
                     said_how=1
                 fi
@@ -726,64 +662,68 @@ try_pull() {
         fi
     done
     wait "$pid" || rc=$?
-    PULL_OUT="$(cat "$log" 2>/dev/null)"
+    BUILD_OUT="$(cat "$log" 2>/dev/null)"
     return "$rc"
 }
 
-# Which image this folder is going to run, decided once per register or
-# update. The prebuilt one when the token carries read:packages and GHCR
-# hands it over; the public base image, installed into at first start,
-# every other time. Both outcomes are a working folder, so this never
-# fails -- there is nothing left for it to fail at.
+# The image this folder runs, built HERE from the template clone the folder
+# already carries. There is no registry in this path: no package, no token,
+# no scope, no CI publish between a commit and the machine that needs it.
+#
+# WHY THIS IS A BUILD AND NOT A PULL. It was a pull until 2026-09-08, from
+# a private GHCR package, and every link in that chain broke in the same
+# week: the workflow that published the image failed twelve runs running,
+# so `latest` was two days stale; the Mac's fine-grained PAT is refused the
+# manifest of a private package outright (403), so the pull fell back to
+# whatever copy the daemon already held; and the folder recorded "pulled"
+# either way, so nothing downstream could tell a fresh image from an old
+# one. A change could be committed, green and live in the folder's own
+# clone and still not be in the container. `docker build` has none of those
+# failure modes and one property the pull never had: its cache is keyed on
+# the build inputs, so it is always in sync with the template on disk.
+#
+# The cost is one download of ~1.3 GB of pinned tools per MACHINE, not per
+# folder -- the distinction the 2026-09-07 toolchain-in-the-folder
+# experiment got wrong at ~18 minutes a folder. Every later folder, and
+# every rebuild that only moves the repo copy, is a cache hit measured in
+# seconds.
+#
+# Never fatal: a build that cannot run leaves the folder on the public base
+# image with the toolchain installed inside it on first start, which is
+# slow but works.
 acquire_image() {
-    local dir="$1" ref="$2" scope_rc=0
-    # The local backend runs no image at all, so there is nothing to log in
-    # for, pull, or fall back from.
+    local dir="$1" ref="$2" ctx=""
+    # The local backend runs no image at all, so there is nothing to build.
     if [ "$CTR_RUNTIME" = "local" ]; then
         echo "==> Local runtime: no image to acquire"
-        record_image_source "$dir" pulled
+        record_image_source "$dir" built
         return 0
     fi
-    # An image the daemon already holds is the whole answer: CI builds one
-    # locally and points CLAUDE_ORCA_IMAGE at it, and so does anyone who has
-    # the image but no working registry access. Consulting GHCR from there
-    # can only fail and drop a perfectly good folder onto the slow runtime
-    # path, so this returns before the scope check, the login and the pull.
+    # CLAUDE_ORCA_IMAGE names an image someone else built and the daemon
+    # already holds -- CI's path, and anyone testing a hand-built image.
     if [ -n "${CLAUDE_ORCA_IMAGE:-}" ] && ctr image inspect "$ref" >/dev/null 2>&1; then
         echo "==> Using the local image $ref (CLAUDE_ORCA_IMAGE)"
-        record_image_source "$dir" pulled
+        record_image_source "$dir" built
         return 0
     fi
-    # qa2.8: a classic token whose header lacks read:packages can only ever
-    # be denied the manifest, so skip the login and the pull entirely rather
-    # than make the user watch both fail. A token with no scopes header at
-    # all (fine-grained PAT, App token) gets the one attempt: a refused pull
-    # is handled below and costs a round trip, while skipping it costs a
-    # 30-minute in-VM install every time.
-    gh_has_scope read:packages || scope_rc=$?
-    if [ "$scope_rc" -eq 0 ] || [ "$scope_rc" -eq 2 ]; then
-        registry_login
-        echo "==> Pulling $ref"
-        if try_pull "$ref"; then
-            record_image_source "$dir" pulled
+    ctx="$HOST_DIR/template"
+    if [ -f "$ctx/Dockerfile" ]; then
+        echo "==> Building $ref from $ctx"
+        echo "    The first build on this machine downloads ~1.3 GB of pinned tools; folders after it are cache hits."
+        if try_build "$ref" "$ctx"; then
+            record_image_source "$dir" built
             return 0
         fi
-        # With this registry the reason a pull was refused IS the
-        # diagnosis, so its own last line is what the user sees.
-        printf '%s\n' "$PULL_OUT" | tail -1 >&2
+        echo "The build failed; its last lines:" >&2
+        printf '%s\n' "$BUILD_OUT" | tail -5 >&2
+    else
+        echo "No Dockerfile at $ctx -- nothing to build here." >&2
     fi
-    # A refused pull says nothing about whether the image is HERE. The
-    # token on a Mac changes under a folder's feet -- on 2026-09-08 this
-    # one went from a classic OAuth token carrying read:packages to a
-    # fine-grained PAT, which GHCR denies the private package outright --
-    # and without this check every folder from then on installed a
-    # toolchain for minutes on a machine whose daemon already held the
-    # image. Say that it may be older than the template, because nothing
-    # here can refresh it.
+    # A failed build says nothing about whether the image is already HERE.
     if ctr image inspect "$ref" >/dev/null 2>&1; then
-        echo "Using the copy of $ref already on this machine (the registry refused the pull)."
-        echo "  It may be older than this template; 'docker pull $ref' with a token that carries read:packages refreshes it."
-        record_image_source "$dir" pulled
+        echo "Using the copy of $ref already on this machine (this build did not replace it)."
+        echo "  It may be older than this template; './claude-dev --update' rebuilds it."
+        record_image_source "$dir" built
         return 0
     fi
     echo "$RUNTIME_INSTALL_NOTE"
@@ -791,11 +731,10 @@ acquire_image() {
 }
 
 # What `--update` actually moved, in the same shape as the template line
-# above it: the registry's `latest` can be republished, or not, and a pull
-# that says "Status: Downloaded" for an image that never changed looks
-# exactly like one that did. The local image id is the only thing that
-# settles it. Reporting only -- an id that cannot be read prints nothing
-# and is never fatal.
+# above it: a rebuild that was entirely cache hits and one that replaced
+# every layer both just print steps. The local image id is the only
+# thing that settles it. Reporting only -- an id that cannot be read
+# prints nothing and is never fatal.
 image_id_short() {
     local id=""
     [ "$CTR_RUNTIME" = "local" ] && return 0
@@ -1002,10 +941,10 @@ container_state() {
 # starting a VM, everything after is a browser talking to Orca.
 # How long to wait for that handshake, and the one question that decides
 # it: is this start going to INSTALL something? The image answers it. A
-# folder that pulled the prebuilt image has the whole toolchain the
+# folder running this template's image has the whole toolchain the
 # moment the container starts and serves in seconds; a folder on the
-# runtime path (plain ubuntu:24.04, where a token without read:packages
-# lands) installs apt on every start and the payload on the first, and
+# runtime path (plain ubuntu:24.04, where a failed build lands)
+# installs apt on every start and the payload on the first, and
 # needs minutes.
 #
 # A folder's own cache is deliberately NOT part of this. Keying the short
@@ -1140,13 +1079,13 @@ state_volume() { printf '%s-orca-state\n' "$1"; }
 
 # --- the folder's toolchain cache, on the runtime path only -------------
 #
-# The prebuilt image carries the whole toolchain, so a folder that pulls
-# it mounts nothing here: a folder directory over /usr/local would HIDE
+# The built image carries the whole toolchain, so a folder that runs it
+# mounts nothing here: a folder directory over /usr/local would HIDE
 # the payload the image just shipped and hand that folder a fifteen-minute
 # install it does not need.
 #
 # The runtime path is the exception and the reason this still exists. A
-# token that cannot pull the private image runs plain ubuntu:24.04, where
+# folder whose image could not be built runs plain ubuntu:24.04, where
 # there is no baked anything; setup.sh installs the payload at first start
 # into <project>/.claude-dev/toolchain, mounted here over the three paths
 # those tools live at, so at least the recreate after it is fast.
@@ -1488,13 +1427,13 @@ cmd_doctor_v3() {
         if ctr image inspect "$ref" >/dev/null 2>&1; then
             doctor_row ok "image" "$ref"
         else
-            doctor_row missing "image" "$ref (pull it: ./claude-dev --update)"
+            doctor_row missing "image" "$ref (build it: ./claude-dev --update)"
             rc=2
         fi
     fi
 
-    # pulled or runtime -- which one it is says whether this folder is
-    # running the prebuilt image or installing its toolchain in the VM.
+    # built or runtime -- which one it is says whether this folder is
+    # running this template's image or installing its toolchain in the VM.
     if [ -n "$src" ]; then
         doctor_row ok "image source" "$src"
     else
@@ -1693,12 +1632,12 @@ cmd_update_v3() {
     echo "==> Relinking $HOST_DIR/bin"
     "$SCRIPT_DIR/link-bin.sh" "$HOST_DIR"
 
-    # The same decision as registration: an update whose pull works moves
-    # the folder onto the fresh prebuilt image, and one whose pull cannot
+    # The same decision as registration: an update whose build works moves
+    # the folder onto the freshly built image, and one whose build cannot
     # moves it onto the base image and its runtime install.
     ref="$(image_ref)"
-    # A republished `latest` and a stale one pull identically -- the id is
-    # the only thing that says whether this folder actually moved.
+    # A rebuild that changed nothing and one that changed everything look
+    # alike from out here -- the id says whether this folder moved.
     img_before="$(image_id_short "$ref")"
     acquire_image "$dir" "$ref" || return 1
     img_after="$(image_id_short "$ref")"
@@ -1710,9 +1649,12 @@ cmd_update_v3() {
         else
             echo "  image: $img_before -> $img_after"
         fi
-        # Only when the pull is what put it there: on the runtime path
-        # there is no version of ours to collect.
-        if [ "$(image_source "$dir")" = "pulled" ]; then
+        # Only when an image of ours is what this folder runs: on the
+        # runtime path there is no version of ours to collect. This read
+        # "pulled" until the build replaced the pull, which record_image_
+        # source no longer writes -- so the gate was never true and every
+        # superseded image stayed on disk.
+        if [ "$(image_source "$dir")" = "built" ]; then
             prune_old_images "$ref" "$img_after"
         fi
     fi
@@ -1812,7 +1754,7 @@ Usage:
                                 echoed) for the delegate routes
   claude-dev --how-to-run       Print the URL and the two commands
   claude-dev --doctor           CLI, service, image, container, port, web url
-  claude-dev --update           Pull the template and the image, recreate
+  claude-dev --update           Pull the template, rebuild the image, recreate
   claude-dev --teardown [--purge-beads]
                                 Snapshot beads, then remove this folder's install
   claude-dev --help             Show this help

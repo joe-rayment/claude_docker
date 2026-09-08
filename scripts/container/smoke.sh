@@ -17,7 +17,7 @@
 #       docker.io/library/ubuntu:24.04 \
 #       bash /opt/claude-orca-mount/scripts/container/smoke.sh
 #
-# (see .github/workflows/image.yml for both invocations)
+# (both invocations are run by hand -- there is no CI in this repo)
 #
 # So nothing here may assume /opt/claude-orca exists or that the toolchain
 # is installed yet: it creates its own throwaway git project, puts the

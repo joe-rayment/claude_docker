@@ -15,14 +15,16 @@
 #
 # These greps are static by design, and they are no longer the only check:
 # scripts/container/verify-rootfs.sh runs setup.sh for real inside an
-# extracted Ubuntu 24.04 rootfs. Whether the IMAGE works is still CI's job
-# -- .github/workflows/image.yml runs scripts/container/smoke.sh in it.
+# extracted Ubuntu 24.04 rootfs. Whether the IMAGE works, there is no CI
+# to say any more -- the image is built on the machine that runs it, by
+# `acquire_image` in scripts/launcher.sh, from the folder's own template
+# clone, so scripts/container/smoke.sh is run by hand (see tests/mac-e2e.sh)
+# rather than gated on a workflow.
 
 REPO_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)"
 DOCKERFILE="$REPO_ROOT/Dockerfile"
 SETUP="$REPO_ROOT/scripts/container/setup.sh"
 SMOKE="$REPO_ROOT/scripts/container/smoke.sh"
-IMAGE_YML="$REPO_ROOT/.github/workflows/image.yml"
 
 # The Orca phase alone: from its function header to the closing brace at
 # column 0. Scoping the positive assertions this way keeps them from being
@@ -185,33 +187,20 @@ setup_steps() {
     fi
 }
 
-# startup v4 (claude-orca-qa2.10): the Mac side has no `container build`
-# any more. A folder whose gh token cannot pull the prebuilt image runs
-# plain docker.io/library/ubuntu:24.04 with the mounted template's
-# entrypoint, and setup.sh installs the toolchain inside the VM on that
-# first start. Nothing on this box can run that -- so CI proves it, in a
-# container, on the public base image, with the checkout mounted the same
-# way `container run` mounts the project.
-@test "image.yml smoke-tests the runtime-install path on plain ubuntu:24.04" {
-    local yml
-    [ -f "$IMAGE_YML" ]
-    yml="$(cat "$IMAGE_YML")"
-
-    # The step, named for what it proves, running the PUBLIC base image
-    # rather than the image this workflow just built.
-    [[ "$yml" == *"Smoke test (runtime install on plain ubuntu:24.04)"* ]]
-    [[ "$yml" == *"docker.io/library/ubuntu:24.04"* ]]
-    [[ "$yml" == *'-v "$PWD:/opt/claude-orca-mount"'* ]]
-    [[ "$yml" == *"CLAUDE_ORCA_SMOKE=1"* ]]
-    [[ "$yml" == *"bash /opt/claude-orca-mount/scripts/container/smoke.sh"* ]]
-
-    # And the existing gate on the prebuilt image is still there.
-    [[ "$yml" == *"/opt/claude-orca/scripts/container/smoke.sh"* ]]
-
-    # smoke.sh's half: on a base image /opt/claude-orca does not exist, so
-    # the entrypoint resolves the template out of the project -- which is
-    # where smoke.sh has to put the checkout it was run from. And the base
-    # image has no git or curl yet, so it installs the base phase first.
+# startup v4 (claude-orca-qa2.10), and still true now that the image is
+# built locally rather than pulled: a folder whose `docker build` cannot
+# run (or fails) runs plain docker.io/library/ubuntu:24.04 with the
+# mounted template's entrypoint, and setup.sh installs the toolchain
+# inside the VM on that first start. Nothing on this box can run a
+# container to prove that path -- there is no CI to do it either now --
+# so smoke.sh is run by hand, against a real daemon, from tests/mac-e2e.sh.
+# This case stays static: it asserts the shape smoke.sh needs to satisfy
+# that path, not that a container actually came up.
+@test "smoke.sh can prove the runtime-install path on plain ubuntu:24.04" {
+    # On a base image /opt/claude-orca does not exist, so the entrypoint
+    # resolves the template out of the project -- which is where smoke.sh
+    # has to put the checkout it was run from. And the base image has no
+    # git or curl yet, so it installs the base phase first.
     local smoke
     [ -f "$SMOKE" ]
     run bash -n "$SMOKE"

@@ -22,11 +22,11 @@
 # one automated check of the Mac path could never pass.
 #
 # So the toolchain is baked again, and the folder carries a cache only on
-# the runtime path -- plain ubuntu:24.04, where a token that cannot pull
-# the private image lands and where there is no baked anything to reuse.
-# One pull per Mac, layer-cached and shared by every folder; a pin bump
-# re-pulls the layers below it and no more, which is what the per-phase
-# RUN ordering in the Dockerfile is for.
+# the runtime path -- plain ubuntu:24.04, which is what a folder runs when
+# the local build fails and there is no baked anything to reuse. One build
+# per Mac, layer-cached and shared by every folder; a pin bump rebuilds the
+# layers below it and no more, which is what the per-phase RUN ordering in
+# the Dockerfile is for.
 #
 # The phase partition itself is unchanged and still load-bearing: --image
 # and --toolchain are how the Dockerfile bakes in two halves, and how a
@@ -35,7 +35,7 @@
 # These cases are the static half: the partition, the Dockerfile, the
 # mounts and the wait. The half that needs a real container -- that the
 # shape after setup.sh is the shape the image promised -- is in
-# .github/workflows/image.yml and tests/mac-e2e.sh, which have a daemon.
+# tests/mac-e2e.sh, which has a daemon.
 #
 # Assertions are functions, never a bare `[[ ]]`: under macOS bash 3.2 a
 # failing `[[ ]]` does not fail its test (see run-tests.sh).
@@ -133,7 +133,7 @@ lacks() {
         || { echo "COPY . /opt/claude-orca is at line $copy_at, above a toolchain RUN at $last_phase_at"; return 1; }
 }
 
-@test "a folder on the prebuilt image mounts no toolchain cache, and grows no toolchain directory" {
+@test "a folder on the built image mounts no toolchain cache, and grows no toolchain directory" {
     # The image carries the payload now. Mounting a folder directory over
     # /usr/local would hide it and hand the folder a 15-minute install it
     # does not need.
@@ -142,24 +142,25 @@ lacks() {
     primary="$(abspath "$PROJECT_DIR")"
     run make_project_v3 "$primary"
     [ "$status" -eq 0 ]
-    [ "$(cat "$primary/.claude-dev/run/image-source")" = "pulled" ]
+    [ "$(cat "$primary/.claude-dev/run/image-source")" = "built" ]
 
     line="$(grep '^run ' "$CONTAINER_STUB_LOG" | head -1)"
     [ -n "$line" ]
     lacks "$line" "toolchain"
 
     [ ! -d "$primary/.claude-dev/toolchain" ] \
-        || { echo "a pulled folder grew a toolchain directory"; return 1; }
+        || { echo "a folder on the built image grew a toolchain directory"; return 1; }
 }
 
 @test "a folder on the runtime path mounts the cache it installs into, and the launcher makes it first" {
-    # No prebuilt image within reach: plain ubuntu:24.04, and setup.sh
-    # installs the payload at first start -- into the folder, mounted over
+    # No image within reach -- the build could not run and the daemon
+    # holds no copy -- so the folder runs plain ubuntu:24.04 and setup.sh
+    # installs the payload at first start, into the folder, mounted over
     # the three paths those tools live at, so a recreate reuses it.
     mkdir -p "$PROJECT_DIR"
     local primary line d
     primary="$(abspath "$PROJECT_DIR")"
-    export CLAUDE_ORCA_TEST_PULL_FAIL=1
+    export CLAUDE_ORCA_TEST_BUILD_FAIL=1
     run make_project_v3 "$primary"
     [ "$status" -eq 0 ]
     [ "$(cat "$primary/.claude-dev/run/image-source")" = "runtime" ]
@@ -324,68 +325,69 @@ lacks() {
     contains "$body" "chown_agent_tree"
 }
 
-@test "a pull that says nothing is reported as such, with the clock and a way out" {
-    # `==> Pulling ...` and then nothing was the whole of the output while
+@test "a build that says nothing is reported as such, with the clock and a way out" {
+    # `==> Building ...` and then nothing was the whole of the output while
     # two wedged pulls of the same image sat with no network activity for
-    # 20 minutes on 2026-09-07. The setup.log wait had already solved this
-    # shape; the pull had not.
+    # 20 minutes on 2026-09-07 -- the same shape a wedged build can take
+    # now that the image is built rather than pulled. The setup.log wait
+    # had already solved this shape; the builder had not.
     local fns out
-    fns="$(sed -n '/^PULL_TICK=/,/^}$/p' "${BATS_TEST_DIRNAME}/../scripts/launcher.sh" \
-        | sed -n '/^try_pull()/,/^}$/p')"
+    fns="$(sed -n '/^BUILD_OUT=/,/^}$/p' "${BATS_TEST_DIRNAME}/../scripts/launcher.sh" \
+        | sed -n '/^try_build()/,/^}$/p')"
     [ -n "$fns" ]
 
-    # A pull that speaks once and then wedges, which is what a stuck one
+    # A build that speaks once and then wedges, which is what a stuck one
     # looks like from out here.
     out="$(CTR_RUN_DIR="$BATS_TEST_TMPDIR" bash -c "
 set -uo pipefail
-ctr() { printf 'latest: Pulling from joe-rayment/claude_orca\n'; sleep 6; }
+ctr() { printf 'Step 1/12 : FROM ubuntu:24.04\n'; sleep 6; }
 $fns
-PULL_TICK=1; PULL_STALL=2
-try_pull ghcr.io/joe-rayment/claude_orca:latest" 2>&1)"
+BUILD_TICK=1; BUILD_STALL=2
+try_build claude-orca:latest /tmp/ctx" 2>&1)"
 
-    contains "$out" "pulling (1s): latest: Pulling from joe-rayment/claude_orca"
-    contains "$out" "it may be stuck"
+    contains "$out" "building (1s): Step 1/12 : FROM ubuntu:24.04"
+    contains "$out" "the build has said nothing for"
     contains "$out" "^C is safe"
 
     # The how-to once, the clock as often as it likes.
     [ "$(printf '%s\n' "$out" | grep -c '\^C is safe')" = "1" ]
-    [ "$(printf '%s\n' "$out" | grep -c 'it may be stuck')" -ge 2 ]
+    [ "$(printf '%s\n' "$out" | grep -c 'the build has said nothing for')" -ge 2 ]
 }
 
-@test "a pull that works still returns its output for the failure diagnosis" {
+@test "a build that works still returns its output for the failure diagnosis" {
     local fns probe out
-    fns="$(sed -n '/^PULL_TICK=/,/^}$/p' "${BATS_TEST_DIRNAME}/../scripts/launcher.sh" \
-        | sed -n '/^try_pull()/,/^}$/p')"
+    fns="$(sed -n '/^BUILD_OUT=/,/^}$/p' "${BATS_TEST_DIRNAME}/../scripts/launcher.sh" \
+        | sed -n '/^try_build()/,/^}$/p')"
     [ -n "$fns" ]
     probe="$BATS_TEST_TMPDIR/probe.sh"
 
-    # Failure: the last line of the pull's own output is the diagnosis the
-    # caller prints, so try_pull has to keep carrying it in PULL_OUT.
+    # Failure: the last line of the build's own output is the diagnosis the
+    # caller prints, so try_build has to keep carrying it in BUILD_OUT.
     {
         printf '%s\n' 'set -uo pipefail'
-        printf '%s\n' 'ctr() { printf "Error response from daemon: denied\n"; return 1; }'
+        printf '%s\n' 'ctr() { printf "failed to solve: process did not complete successfully\n"; return 1; }'
         printf '%s\n' "$fns"
-        printf '%s\n' 'PULL_TICK=1; PULL_STALL=999'
-        printf '%s\n' 'if try_pull ghcr.io/joe-rayment/claude_orca:latest; then'
+        printf '%s\n' 'BUILD_TICK=1; BUILD_STALL=999'
+        printf '%s\n' 'if try_build claude-orca:latest /tmp/ctx; then'
         printf '%s\n' '    echo "rc=0"'
         printf '%s\n' 'else'
         printf '%s\n' '    echo "rc=$?"'
-        printf '%s\n' '    printf "last=%s\n" "$(printf "%s\n" "$PULL_OUT" | tail -1)"'
+        printf '%s\n' '    printf "last=%s\n" "$(printf "%s\n" "$BUILD_OUT" | tail -1)"'
         printf '%s\n' 'fi'
     } > "$probe"
     out="$(CTR_RUN_DIR="$BATS_TEST_TMPDIR" bash "$probe" 2>&1)"
     contains "$out" "rc=1"
-    contains "$out" "last=Error response from daemon: denied"
+    contains "$out" "last=failed to solve: process did not complete successfully"
 
-    # Success: rc 0, and nothing extra on a pull too quick to tick.
+    # Success: rc 0, and nothing extra on a build too quick to tick.
     {
         printf '%s\n' 'set -uo pipefail'
-        printf '%s\n' 'ctr() { printf "Status: Downloaded newer image\n"; return 0; }'
+        printf '%s\n' 'ctr() { printf "Successfully tagged claude-orca:latest\n"; return 0; }'
         printf '%s\n' "$fns"
-        printf '%s\n' 'PULL_TICK=1; PULL_STALL=999'
-        printf '%s\n' 'try_pull x && echo "rc=0"'
+        printf '%s\n' 'BUILD_TICK=1; BUILD_STALL=999'
+        printf '%s\n' 'try_build x /tmp/ctx && echo "rc=0"'
     } > "$probe"
     out="$(CTR_RUN_DIR="$BATS_TEST_TMPDIR" bash "$probe" 2>&1)"
     contains "$out" "rc=0"
-    lacks "$out" "may be stuck"
+    lacks "$out" "said nothing"
 }

@@ -399,25 +399,26 @@ shadow_path_without() {
 
 @test "the preflight prints the facts it decided on, so a pasted log says which path the folder took" {
     # Four days of diagnosis in September 2026 turned on questions a log
-    # could not answer: which gh account, what kind of token, did it carry
-    # read:packages, which docker. Every one decides whether the folder
-    # pulls the prebuilt image or installs a toolchain for several
-    # minutes, and none of them was written down.
+    # could not answer: which gh account, what kind of token, which
+    # docker. The token no longer decides which image a folder runs --
+    # the image is built here from the template clone -- but which
+    # account and which docker still decide whether the clone and the
+    # build work at all, and neither was written down.
     mac_env
     mkdir -p "$PROJECT_DIR"
     run make_project_v3 "$PROJECT_DIR"
     [ "$status" -eq 0 ]
 
     local want
-    for want in "macOS" "git " "gh " "docker " "read:packages"; do
+    for want in "macOS" "git " "gh " "docker "; do
         case "$output" in
             *"$want"*) ;;
             *) printf 'the preflight facts do not mention %s:\n%s\n' "$want" "$output"; return 1 ;;
         esac
     done
     # The account and the token kind, which is what made the 2026-09-06
-    # incident unreadable: a fine-grained PAT sends no scopes header at
-    # all, so "no read:packages" and "scopes unknown" look the same.
+    # incident unreadable: a fine-grained PAT and a classic OAuth token
+    # read alike everywhere except here.
     case "$output" in
         *"classic"*|*"fine-grained"*) ;;
         *) printf 'the preflight does not say what kind of token this is:\n%s\n' "$output"; return 1 ;;
