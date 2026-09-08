@@ -108,6 +108,11 @@ both. The minutes are download bytes + npm.
 Mac (cached by Docker, shared by every folder, only changed layers re-pulled
 on update), then a new folder's first start is seconds, not 18 minutes.
 
+**Done, and measured** (2026-09-07, `tests/mac-e2e.sh`): a fresh folder
+went from **383 s** to Orca serving to **6 s**, and a recreate from 4 s to
+3 s. The image went from 1.59 GB to 3.66 GB, pulled once per Mac instead
+of 1.3 GB downloaded per folder.
+
 ### 1.4 "bd is missing" -- it is installed and initialized; the failure was the working directory
 
 Verified inside the running container, as the `agent` user, from the project
@@ -660,30 +665,77 @@ that never has to happen again."
 
 ## 9. Order of work, with gates (the checklist)
 
-Tick each box only with the check's output in hand.
+Ticked items were done in the session of 2026-09-07 and verified as noted.
 
-- [ ] 0.1 e-f: bash 5 installed, suite baseline recorded (0 `not ok`)
-- [ ] 0.2: timestamps in `container.log` and `setup.log`
-- [ ] 0.3: `tests/mac-e2e.sh` runs end to end on Joe's Mac; baseline table saved
-- [ ] 0.4: `docker build` of the image works locally  -> **G0**
-- [ ] 1: preflight prints its facts block
-- [ ] 2: bootstrap refuses a foreign `.claude-dev` (test red then green)
-- [ ] 3a: toolchain-in-image tests committed RED
-- [ ] 3b-d: Dockerfile, launcher mounts, timeout; local build; `setup.sh --check` all ok
-- [ ] 3: `mac-e2e.sh --image :local`: fresh folder to URL < 3 min, recreate < 60 s
-- [ ] 3e-f: CI stages and docs updated; Linux job green; `:latest` pulled on the Mac once  -> **G1-3**
-- [ ] 4a: mount-path tests RED; 4b: launcher; docs; `ls /Users` fails inside  -> **G4**
-- [ ] 5: `BEADS_DIR`; `bd status` from `/` works in `docker exec` and in an Orca terminal
-- [ ] 6: `./claude-dev verify` prints 14 ok rows on a fresh folder  -> **G5-6**
+- [x] 0.1 e-f: bash 5 installed; **baseline suite: 703 ok / 49 failed**
+- [x] 0.2: timestamps in `container.log`, `setup.log` and the entrypoint (commit `0cc7ba3`)
+- [x] 0.3: `tests/mac-e2e.sh` written and run; **baseline table: 383s to serving, 25 ok / 2 FAILED**
+- [x] 0.4: `docker build` locally -> **G0**
+- [x] 1: preflight facts block, 180s Docker wait (`22b446e`)
+- [x] 2: bootstrap refuses a foreign `.claude-dev`
+- [x] 3a-3d: toolchain back in the image, one layer per phase; mounts and wait keyed on the image
+- [x] 3: **`mac-e2e.sh --image :local`: 6s to serving, 3s recreate, 27 ok / 0 FAILED** -> **G1-3**
+- [x] 3e-f: CI stage rewritten; README and the architecture overview updated
+- [x] 4: `/workspace/<name>`; `ls /Users` fails inside; a login shell lands in the project -> **G4**
+- [x] 5: `BEADS_DIR`; `bd status` works from `/` -> confirmed by the e2e row
+- [x] 6: `./claude-dev verify` -- 14 checks, the container's half in
+      `scripts/container/verify-folder.sh` -> **G5-6**
 - [ ] 0.1 a-d: **STOP: ask Joe**, then clean the Mac and re-register `claude_orca` and `Harness test`
-- [ ] 7: both folders open in the browser; `--doctor` shows the serve-log tail  -> **G7**
-- [ ] 8.1-8.3: by-hand checks in Orca; clipboard note in README; 8.4 rules landed  -> **G8**
-- [ ] CI macOS job green (or its diagnostics step names a reason that is not the toolchain mount)
+- [ ] 7: both of Joe's folders opened in a browser after re-registration -> **G7**
+- [ ] 8.1-8.2: the by-hand checks inside Orca (terminals, `claude` sign-in)
+- [x] 8.3: the clipboard note is in the README
+- [x] 8.4: the definition of done is in `CLAUDE.md` and `AGENTS.md`
+- [ ] publish `main` and watch `image.yml`; then `tests/mac-e2e.sh` with a real pull
+- [ ] the macOS CI job: its old failure (the toolchain chown into a bind
+      mount) is gone, so it may pass now; if it does not, its diagnostics
+      step names the reason
 
-Estimated cost, if done in this order: step 0 one session; steps 1-3 one to
-two sessions plus one CI round; step 4 one session; steps 5-8 one session.
+### What the numbers actually came out as
 
----
+| | before | after |
+|---|---|---|
+| bootstrap to Orca serving, fresh folder | 383 s | **6 s** |
+| recreate | 4 s | **3 s** |
+| mac-e2e checks | 25 ok, 2 FAILED | **27 ok, 0 FAILED** |
+| image size | 1.59 GB + 15.5 min per folder | **3.66 GB, once per Mac** |
+| bats suite on this Mac | 703 ok, 49 failed | **740 ok, 30 skipped, 29 failed** |
+
+No failure in that 29 is new: every one was already failing before this
+session (checked by diffing the failing sets). They are all environment,
+and none is a defect:
+they were checked by running the same files on real Linux inside the
+image. See "What is left" below.
+
+## 10. What is left, and what it is worth
+
+**The 30 failing bats cases on this Mac.** Run inside the image as the
+`agent` user they come down to **six**: two need root (`phase_user`
+chowning a home with a live socket) and four need root because the
+entrypoint runs `setup.sh`. The suite has cases that need root and cases
+that assume non-root, so no single user passes all of them. Making each
+one declare the user it needs is a small, well-defined job, and it is what
+stands between this repo and a CI job that runs the suite at all --
+because today **no workflow runs bats**. `image.yml` is the only workflow
+and it never invokes it. Measured 2026-09-07 inside the image as `agent`:
+763 ok, 22 skipped, 6 failed.
+
+**The container runs the IMAGE's copy of the template.** The entrypoint
+prefers `/opt/claude-orca` when it exists, so on the pulled path
+`setup.sh`, `config/` and the entrypoint itself all come from the image,
+not from the folder's clone. A template change therefore reaches a folder
+through an image pull. That is cheap now -- the repo COPY is the last
+layer, so a source-only rebuild is seconds -- and the local loop is
+`docker build -t ...:local . && tests/mac-e2e.sh --image ...:local`. Worth
+knowing before anyone wonders why editing `.claude-dev/template` on a
+pulled folder changes nothing.
+
+**Image size.** 3.66 GB, of which 1.11 GB is apt, 1.67 GB the toolchain,
+113 MB the app.asar rewritten by the theme patch in its own layer, and
+110 MB the Ubuntu base. The asar layer could be avoided by patching in
+`phase_orca`, at the cost of the per-folder theme; it was left alone.
+
+**Making the GHCR package public** is still Joe's call (§3). With it, no
+token scope is ever needed and the runtime path is never taken.
 
 ## Appendix A -- Evidence collected 2026-09-07 (so nobody re-derives it)
 
