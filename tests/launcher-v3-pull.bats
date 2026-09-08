@@ -282,3 +282,42 @@ wait_for_web_url '$quiet' 2>&1 >/dev/null"
     [[ "$output" == *"Toolchain install log:"* ]]
     [[ "$output" == *"setup.log"* ]]
 }
+
+@test "a refused pull falls back to the image already on this machine before it falls back to installing" {
+    # The token on a Mac can change under a folder's feet. On 2026-09-08
+    # this one went from a classic OAuth token with read:packages to a
+    # fine-grained PAT, which GHCR denies the private package outright --
+    # so every folder from then on took the runtime path and installed a
+    # toolchain for minutes, on a machine that already had the image sitting
+    # in its daemon. A pull being refused says nothing about whether the
+    # image is here.
+    mkdir -p "$PROJECT_DIR"
+    primary="$(abspath "$PROJECT_DIR")"
+
+    # The daemon has the image; the registry says no.
+    printf '%s\n' "ghcr.io/joe-rayment/claude_orca:latest" > "$CONTAINER_STUB_STATE/image"
+    export CLAUDE_ORCA_TEST_PULL_FAIL=1
+
+    run make_project_v3 "$primary"
+    [ "$status" -eq 0 ]
+
+    [ "$(cat "$primary/.claude-dev/run/image-source")" = "pulled" ]
+    [[ "$output" == *"already on this machine"* ]]
+
+    # ... and it runs that image, not the base one.
+    runline="$(grep '^run ' "$CONTAINER_STUB_LOG" | head -1)"
+    [[ "$runline" == *"ghcr.io/joe-rayment/claude_orca:"* ]]
+    [[ "$runline" != *"ubuntu:24.04"* ]]
+}
+
+@test "a refused pull with no local image still falls back to installing in the container" {
+    mkdir -p "$PROJECT_DIR"
+    primary="$(abspath "$PROJECT_DIR")"
+
+    rm -f "$CONTAINER_STUB_STATE/image"
+    export CLAUDE_ORCA_TEST_PULL_FAIL=1
+
+    run make_project_v3 "$primary"
+    [ "$status" -eq 0 ]
+    [ "$(cat "$primary/.claude-dev/run/image-source")" = "runtime" ]
+}

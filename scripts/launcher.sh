@@ -772,6 +772,20 @@ acquire_image() {
         # diagnosis, so its own last line is what the user sees.
         printf '%s\n' "$PULL_OUT" | tail -1 >&2
     fi
+    # A refused pull says nothing about whether the image is HERE. The
+    # token on a Mac changes under a folder's feet -- on 2026-09-08 this
+    # one went from a classic OAuth token carrying read:packages to a
+    # fine-grained PAT, which GHCR denies the private package outright --
+    # and without this check every folder from then on installed a
+    # toolchain for minutes on a machine whose daemon already held the
+    # image. Say that it may be older than the template, because nothing
+    # here can refresh it.
+    if ctr image inspect "$ref" >/dev/null 2>&1; then
+        echo "Using the copy of $ref already on this machine (the registry refused the pull)."
+        echo "  It may be older than this template; 'docker pull $ref' with a token that carries read:packages refreshes it."
+        record_image_source "$dir" pulled
+        return 0
+    fi
     echo "$RUNTIME_INSTALL_NOTE"
     record_image_source "$dir" runtime
 }
