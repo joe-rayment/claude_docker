@@ -49,10 +49,6 @@
           },
           {
             "type": "command",
-            "command": "command -v outbound-guard >/dev/null 2>&1 && exec outbound-guard --prompt; exit 0"
-          },
-          {
-            "type": "command",
             "command": "command -v cost-mirror >/dev/null 2>&1 && exec cost-mirror; [ -x \"$HOME/.claude/hooks/cost-mirror\" ] && exec \"$HOME/.claude/hooks/cost-mirror\"; exit 0"
           },
           {

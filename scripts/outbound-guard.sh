@@ -1,38 +1,28 @@
 #!/usr/bin/env bash
-# outbound-guard — mechanically enforces "push and deploy are the user's
-# actions" (config/claude-user-memory.md), the same pattern as bd-guard: one
-# hook, one sentence of prose, instead of a paragraph the prior alone keeps
-# failing to hold (beads_claude_docker-y2qe).
+# outbound-guard — mechanically enforces "push and deploy are gated on
+# GitHub auth" (config/claude-user-memory.md), the same pattern as bd-guard:
+# one hook, one sentence of prose, instead of a paragraph the prior alone
+# keeps failing to hold (beads_claude_docker-y2qe, re-gated on auth by
+# beads_claude_docker-t1ym).
 #
-# Two modes, two hook events:
-#
-#   PreToolUse (matcher Bash; hook JSON on stdin)
-#     - deny any command containing a bare `snow`/`snowsql` invocation, or a
-#       `snowflake.cli` module invocation (`python -m snowflake.cli …`,
-#       `python3 -m snowflake.cli …`, or the dotted module path appearing
-#       any other way) — word-boundary, anywhere in the line, including
-#       after &&/;/|. Evaluated BEFORE the session_id gate below and
-#       therefore truly unconditional: it fires for any valid-JSON payload
-#       naming tool_name "Bash" with a command, session_id or not. No
-#       override: no Snowflake credentials exist here and never will.
-#     - deny `git push`, `gh pr create`, `gh repo create`, `bd dolt push`
-#       unless a per-session marker says the CURRENT prompt asked for it —
-#       this rule alone needs a session_id (to look up the marker), so a
-#       payload missing one fails OPEN for a push command specifically,
-#       same as every other incomplete-payload case.
-#
-#   outbound-guard --prompt (UserPromptSubmit; hook JSON on stdin)
-#     - sets the marker for session_id when the prompt's own wording asks
-#       for a push/publish/PR (case-insensitive); clears it otherwise. This
-#       is the ONLY place the marker is written, so a prompt that doesn't
-#       ask for a push clears any marker a PRIOR prompt in the same session
-#       left set — "push only when asked, in that moment," never a standing
-#       grant.
-#
-# State: one flag file per session under $OUTBOUND_GUARD_STATE_DIR (default
-# $HOME/.claude/cache/outbound-guard), named <sanitized-session-id>.push —
-# presence means "this prompt asked for a push"; same sanitize/state-dir
-# pattern as scripts/lane.sh.
+# PreToolUse (matcher Bash; hook JSON on stdin)
+#   - deny any command containing a bare `snow`/`snowsql` invocation, or a
+#     `snowflake.cli` module invocation (`python -m snowflake.cli …`,
+#     `python3 -m snowflake.cli …`, or the dotted module path appearing any
+#     other way) — word-boundary, anywhere in the line, including after
+#     &&/;/|. Evaluated BEFORE anything else and therefore truly
+#     unconditional: it fires for any valid-JSON payload naming tool_name
+#     "Bash" with a command, regardless of GitHub auth state. No override:
+#     no Snowflake credentials exist here and never will.
+#   - deny `git push`, `gh pr create`, `gh repo create`, `bd dolt push` ONLY
+#     when GitHub auth is positively absent. Auth counts as present if ANY
+#     of: GH_TOKEN or GITHUB_TOKEN is non-empty; `gh auth token` exits 0
+#     with non-empty output (no network call — unlike `gh auth status`, this
+#     reads local config only); or a private key exists in ~/.ssh (id_*).
+#     This check runs only after the push regex has matched, so it never
+#     touches the per-Bash-call hot path for ordinary commands. Push/deploy
+#     is otherwise unrestricted: no prompt wording, no per-session marker —
+#     commit and push freely whenever auth is present.
 #
 # Word-boundary matching deliberately avoids GNU grep's `\b` extension (same
 # reasoning as scripts/bd-guard.sh's own header comment: explicit character
@@ -55,18 +45,13 @@
 # is what blocks.
 #
 # MUST fail open, like every hook here: malformed/empty stdin or a non-Bash
-# tool all exit 0 with no output. A payload with no session_id fails open
-# too, but ONLY for the push/marker rule (which needs a session_id to look
-# up its marker) — the snow/snowsql/module deny is evaluated first and does
-# not depend on session_id at all. jq is a hard dependency of this image
+# tool all exit 0 with no output. jq is a hard dependency of this image
 # (Dockerfile-installed unconditionally); its absence still fails open
 # rather than erroring.
 
 set -u
 
 command -v jq >/dev/null 2>&1 || exit 0
-
-STATE_DIR="${OUTBOUND_GUARD_STATE_DIR:-${HOME:-}/.claude/cache/outbound-guard}"
 
 # Word-boundary alternation for a standalone snow/snowsql CLI invocation.
 # Longer alternative first is not required for correctness (see header
@@ -84,18 +69,23 @@ SNOW_MODULE_RE='(^|[^A-Za-z0-9_-])snowflake\.cli([^A-Za-z0-9_-]|$)'
 # git push / gh pr create / gh repo create / bd dolt push, same boundary style.
 PUSH_RE='(^|[^A-Za-z0-9_-])(git[[:space:]]+push|gh[[:space:]]+pr[[:space:]]+create|gh[[:space:]]+repo[[:space:]]+create|bd[[:space:]]+dolt[[:space:]]+push)([^A-Za-z0-9_-]|$)'
 
-# Push/publish/pull-request wording a prompt uses to ask for an outbound
-# action, case-insensitive. Deliberately narrow phrases, not a bare
-# "publish"/"push" substring check inside unrelated words (see the
-# individual alternatives — each is itself a real word/phrase).
-PROMPT_RE='(push|publish|pull[[:space:]]+request|open[[:space:]]+a[[:space:]]+pr|create[[:space:]]+a[[:space:]]+pr)'
+# github_auth_present — no network call. Checked only after PUSH_RE has
+# already matched, so this never runs on the per-Bash-call hot path.
+github_auth_present() {
+    [ -n "${GH_TOKEN:-}" ] && return 0
+    [ -n "${GITHUB_TOKEN:-}" ] && return 0
 
-sanitize_id() {
-    printf '%s' "$1" | tr -cd 'A-Za-z0-9._-'
-}
+    if command -v gh >/dev/null 2>&1; then
+        local tok
+        tok=$(gh auth token 2>/dev/null) && [ -n "$tok" ] && return 0
+    fi
 
-marker_file() {
-    printf '%s/%s.push' "$STATE_DIR" "$1"
+    local f
+    for f in "${HOME:-}"/.ssh/id_*; do
+        [ -f "$f" ] && return 0
+    done
+
+    return 1
 }
 
 # deny <reason> — emit the PreToolUse hookSpecificOutput deny JSON and exit.
@@ -114,31 +104,6 @@ deny() {
     exit 0
 }
 
-# ── --prompt (UserPromptSubmit hook; JSON on stdin) ─────────────────────────
-
-if [ "${1:-}" = "--prompt" ]; then
-    [ -t 0 ] && exit 0
-    payload=$(cat 2>/dev/null) || exit 0
-    [ -n "$payload" ] || exit 0
-
-    has_sid=$(printf '%s' "$payload" | jq -r 'has("session_id")' 2>/dev/null) || exit 0
-    [ "$has_sid" = "true" ] || exit 0
-    sid=$(printf '%s' "$payload" | jq -r '.session_id // empty' 2>/dev/null) || exit 0
-    sid=$(sanitize_id "$sid")
-    [ -n "$sid" ] || exit 0
-
-    prompt=$(printf '%s' "$payload" | jq -r 'if has("prompt") then (.prompt // "") else "" end' 2>/dev/null) || exit 0
-
-    mkdir -p "$STATE_DIR" 2>/dev/null || exit 0
-    f=$(marker_file "$sid")
-    if printf '%s' "$prompt" | grep -qiE "$PROMPT_RE"; then
-        printf '1\n' > "$f" 2>/dev/null
-    else
-        rm -f "$f" 2>/dev/null
-    fi
-    exit 0
-fi
-
 # ── PreToolUse (matcher Bash; JSON on stdin) ────────────────────────────────
 
 [ -t 0 ] && exit 0
@@ -155,25 +120,15 @@ cmd=$(printf '%s' "$payload" | jq -r '.tool_input.command? // empty' 2>/dev/null
 # defensive step scripts/bd-guard.sh takes before its own rules run).
 cmd_norm=$(printf '%s' "$cmd" | tr '\t' ' ')
 
-# snow/snowsql/snowflake.cli: unconditional — evaluated before the
-# session_id gate below, so it fires regardless of whether this payload
-# carries a session_id. No override, no marker involved.
+# snow/snowsql/snowflake.cli: unconditional — evaluated before the auth
+# check below, so it fires regardless of GitHub auth state. No override.
 if printf '%s' "$cmd_norm" | grep -Eq "$SNOW_RE" || printf '%s' "$cmd_norm" | grep -Eq "$SNOW_MODULE_RE"; then
     deny "outbound-guard: no Snowflake access from this container — never install or run snow/snowsql; mock Snowflake and run everything else locally."
 fi
 
-# Everything past this point (push/deploy) needs a session_id to look up
-# its marker — fail open on a payload missing one, same posture as every
-# other incomplete-input case, but scoped to this rule only.
-has_sid=$(printf '%s' "$payload" | jq -r 'has("session_id")' 2>/dev/null) || exit 0
-[ "$has_sid" = "true" ] || exit 0
-sid=$(printf '%s' "$payload" | jq -r '.session_id // empty' 2>/dev/null) || exit 0
-sid=$(sanitize_id "$sid")
-[ -n "$sid" ] || exit 0
-
 if printf '%s' "$cmd_norm" | grep -Eq "$PUSH_RE"; then
-    if [ ! -f "$(marker_file "$sid")" ]; then
-        deny "outbound-guard: push/deploy is opt-in — the prompt has to ask for it; commit locally instead."
+    if ! github_auth_present; then
+        deny "outbound-guard: no GitHub authentication in this container — commit locally; run 'gh auth login' or set GH_TOKEN to unblock this."
     fi
 fi
 
