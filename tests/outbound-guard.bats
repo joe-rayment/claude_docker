@@ -6,9 +6,12 @@
 #                               deny git push / gh pr create / gh repo create /
 #                               bd dolt push ONLY when GitHub auth is
 #                               positively absent -- GH_TOKEN/GITHUB_TOKEN
-#                               unset, `gh auth token` fails or is empty, and
-#                               no ~/.ssh/id_* private key. No prompt wording,
-#                               no session marker, no network call involved.
+#                               unset, `gh api user` fails (the validity
+#                               probe as of beads_claude_docker-iih3; see
+#                               tests/outbound-guard-gh-status.bats for its
+#                               timeout/cache behavior), and no ~/.ssh/id_*
+#                               private key. No prompt wording, no session
+#                               marker.
 # Like every hook in this repo it MUST fail open: malformed/empty stdin, a
 # non-Bash tool -- all silent exit 0, never a block.
 
@@ -23,8 +26,9 @@ setup() {
     mkdir -p "$HOME"
 
     # Stub PATH `gh` that fails by default (no output, exit 1) -- simulates
-    # no-network "auth absent" for `gh auth token`. stub_gh_authenticated
-    # overwrites this for the tests that need an authenticated gh.
+    # "auth absent" (including for `gh api user`, the validity probe).
+    # stub_gh_authenticated overwrites this for the tests that need an
+    # authenticated gh.
     STUB_BIN="$BATS_TEST_TMPDIR/bin"
     mkdir -p "$STUB_BIN"
     cat > "$STUB_BIN/gh" <<'STUBEOF'
@@ -42,6 +46,14 @@ stub_gh_authenticated() {
 #!/usr/bin/env bash
 if [ "$1" = "auth" ] && [ "$2" = "token" ]; then
     echo "fake-gh-token-value"
+    exit 0
+fi
+# `gh api user` is the validity probe github_auth_present() actually calls
+# (beads_claude_docker-iih3 -- neither `gh auth token` nor `gh auth
+# status` alone proved reliable: both can exit 0 for a token GitHub has
+# since invalidated). Succeeding here is what makes this stub a genuinely
+# authenticated gh.
+if [ "$1" = "api" ] && [ "$2" = "user" ]; then
     exit 0
 fi
 exit 1
@@ -147,7 +159,7 @@ deny_reason() {
     [ -z "$output" ]
 }
 
-@test "outbound-guard: git push is allowed when 'gh auth token' succeeds with a non-empty token (no GH_TOKEN, no ssh key)" {
+@test "outbound-guard: git push is allowed when gh is genuinely authenticated per 'gh api user' (no GH_TOKEN, no ssh key)" {
     stub_gh_authenticated
     run_pretool 'git push origin main'
     [ "$status" -eq 0 ]

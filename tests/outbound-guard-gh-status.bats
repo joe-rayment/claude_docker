@@ -1,15 +1,23 @@
 #!/usr/bin/env bats
 # outbound-guard-gh-status.bats — beads_claude_docker-iih3: github_auth_present()
-# must validate the gh token via `gh auth status` (bounded by a timeout,
-# cached per-HOME with a short TTL), not just find one via `gh auth token`.
-# Discovered by actually pushing after beads_claude_docker-t1ym landed: a
-# STALE/EXPIRED token is still returned by `gh auth token`, so the old guard
-# allowed exactly the no-auth push it exists to prevent.
+# must validate the gh token via a real GitHub API round trip (`gh api
+# user`), bounded by a timeout and cached per-HOME with a short TTL, not
+# just find one via `gh auth token`.
+#
+# History: `gh auth token` happily prints a STALE/EXPIRED token, so the
+# original guard (beads_claude_docker-t1ym) allowed exactly the no-auth
+# push it exists to prevent. The first fix for this bead switched to `gh
+# auth status` -- but that ALSO exits 0 for a genuinely invalid token in
+# this container (confirmed live: it only validates the on-disk config
+# shape, it does not ask GitHub). `gh api user` is the only one of the
+# three that actually asks GitHub whether the token still works.
 #
 # tests/outbound-guard.bats holds the base guard contract (snow deny,
 # GH_TOKEN/GITHUB_TOKEN, ssh key, fail-open, wiring) and is FROZEN by this
-# bead's acceptance contract -- it is not touched here. This file covers only
-# the new gh-auth-status validation/timeout/cache behavior.
+# bead's acceptance contract; its stub_gh_authenticated fixture was updated
+# there (with the contract owner's authorization) to model `gh api user`
+# succeeding -- see that file's own comment for what changed and why. This
+# file covers only the gh-auth validation/timeout/cache behavior itself.
 
 GUARD=${OUTBOUND_GUARD_BIN:-/workspace/scripts/outbound-guard.sh}
 
@@ -37,10 +45,12 @@ gh_call_count() {
     wc -l < "$COUNTER" | tr -d ' '
 }
 
-# stub_gh_stale: `gh auth token` prints a token (present locally) but `gh
-# auth status` fails -- the exact scenario that broke t1ym's guard: a token
-# exists on disk but GitHub has invalidated it.
-stub_gh_stale() {
+# stub_gh_invalid_token: `gh auth token` prints a token and `gh auth
+# status` even reports success (mirrors this exact container's real
+# behavior with an expired token), but `gh api user` -- the only call that
+# actually reaches GitHub -- fails. This is the case that slipped through
+# the first (auth-status-based) version of this fix.
+stub_gh_invalid_token() {
     cat > "$STUB_BIN/gh" <<'STUBEOF'
 #!/usr/bin/env bash
 echo "$*" >> "$COUNTER"
@@ -49,6 +59,9 @@ if [ "$1" = "auth" ] && [ "$2" = "token" ]; then
     exit 0
 fi
 if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
+    exit 0
+fi
+if [ "$1" = "api" ] && [ "$2" = "user" ]; then
     exit 1
 fi
 exit 1
@@ -56,7 +69,7 @@ STUBEOF
     chmod +x "$STUB_BIN/gh"
 }
 
-# stub_gh_valid: both `gh auth token` and `gh auth status` succeed.
+# stub_gh_valid: `gh api user` succeeds (a genuinely authenticated gh).
 stub_gh_valid() {
     cat > "$STUB_BIN/gh" <<'STUBEOF'
 #!/usr/bin/env bash
@@ -68,18 +81,21 @@ fi
 if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
     exit 0
 fi
+if [ "$1" = "api" ] && [ "$2" = "user" ]; then
+    exit 0
+fi
 exit 1
 STUBEOF
     chmod +x "$STUB_BIN/gh"
 }
 
-# stub_gh_hangs: `gh auth status` sleeps far longer than the guard's timeout
+# stub_gh_hangs: `gh api user` sleeps far longer than the guard's timeout
 # -- proves a slow/wedged gh cannot wedge the hook.
 stub_gh_hangs() {
     cat > "$STUB_BIN/gh" <<'STUBEOF'
 #!/usr/bin/env bash
 echo "$*" >> "$COUNTER"
-if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
+if [ "$1" = "api" ] && [ "$2" = "user" ]; then
     sleep 30
     exit 0
 fi
@@ -104,14 +120,14 @@ run_pretool() {
     run bash -c 'jq -n --arg c "$1" "{tool_name:\"Bash\", session_id:\"s1\", tool_input:{command:\$c}}" | "$0"' "$GUARD" "$cmd"
 }
 
-@test "outbound-guard: a token present via 'gh auth token' but invalid per 'gh auth status' DENIES the push" {
-    stub_gh_stale
+@test "outbound-guard: 'gh auth status' succeeding but 'gh api user' failing DENIES the push (the case that slipped past auth-status-only validation)" {
+    stub_gh_invalid_token
     run_pretool 'git push origin main'
     [ "$status" -eq 0 ]
     [[ "$output" == *"no GitHub authentication"* ]]
 }
 
-@test "outbound-guard: 'gh auth token' and 'gh auth status' both succeeding ALLOWS the push" {
+@test "outbound-guard: 'gh api user' succeeding ALLOWS the push" {
     stub_gh_valid
     run_pretool 'git push origin main'
     [ "$status" -eq 0 ]
@@ -136,7 +152,7 @@ run_pretool() {
     [ "$(gh_call_count)" -eq 0 ]
 }
 
-@test "outbound-guard: a hanging 'gh auth status' is bounded by a timeout and does not hang the hook" {
+@test "outbound-guard: a hanging 'gh api user' is bounded by a timeout and does not hang the hook" {
     stub_gh_hangs
     start=$(date +%s)
     run_pretool 'git push origin main'

@@ -17,17 +17,23 @@
 #   - deny `git push`, `gh pr create`, `gh repo create`, `bd dolt push` ONLY
 #     when GitHub auth is positively absent. Auth counts as present if ANY
 #     of: GH_TOKEN or GITHUB_TOKEN is non-empty (trusted directly, gh is
-#     never invoked); gh is on PATH and `gh auth status` exits 0 (a network
-#     call, bounded by `timeout` and cached per-HOME with a short TTL — see
-#     gh_auth_status_ok below); or a private key exists in ~/.ssh (id_*).
-#     `gh auth token` alone is NOT trusted (beads_claude_docker-iih3): it
-#     happily prints a token that GitHub has since invalidated, which let
-#     the old check pass and the subsequent `git push` fail with "Invalid
-#     username or token". This check runs only after the push regex has
-#     matched, so the network call never touches the per-Bash-call hot path
-#     for ordinary commands. Push/deploy is otherwise unrestricted: no
-#     prompt wording, no per-session marker — commit and push freely
-#     whenever auth is present.
+#     never invoked); gh is on PATH and `gh api user` exits 0 (a real API
+#     round trip, bounded by `timeout` and cached per-HOME with a short TTL
+#     — see gh_auth_valid below); or a private key exists in ~/.ssh (id_*).
+#     Neither `gh auth token` nor `gh auth status` is trusted
+#     (beads_claude_docker-iih3): `gh auth token` happily prints a token
+#     that GitHub has since invalidated, and `gh auth status` ALSO exits 0
+#     for a stale/expired token in this container (confirmed live: with the
+#     invalid token here, `gh auth status` exits 0 while `gh api user`
+#     exits 1) — it validates the on-disk config shape, not that GitHub
+#     still honors the token. `gh api user` is the only one of the three
+#     that actually asks GitHub. Do NOT go back to string-matching `gh auth
+#     status`'s human-facing diagnostic ("invalid", "Failed to log in") —
+#     that text is not a stable contract and will rot. This check runs only
+#     after the push regex has matched, so the network call never touches
+#     the per-Bash-call hot path for ordinary commands. Push/deploy is
+#     otherwise unrestricted: no prompt wording, no per-session marker —
+#     commit and push freely whenever auth is present.
 #
 # Word-boundary matching deliberately avoids GNU grep's `\b` extension (same
 # reasoning as scripts/bd-guard.sh's own header comment: explicit character
@@ -74,15 +80,15 @@ SNOW_MODULE_RE='(^|[^A-Za-z0-9_-])snowflake\.cli([^A-Za-z0-9_-]|$)'
 # git push / gh pr create / gh repo create / bd dolt push, same boundary style.
 PUSH_RE='(^|[^A-Za-z0-9_-])(git[[:space:]]+push|gh[[:space:]]+pr[[:space:]]+create|gh[[:space:]]+repo[[:space:]]+create|bd[[:space:]]+dolt[[:space:]]+push)([^A-Za-z0-9_-]|$)'
 
-# Cache dir for the gh-auth-status check, one level under the same
+# Cache dir for the gh-auth validity check, one level under the same
 # ~/.claude/cache convention scripts/lane.sh and scripts/session-title.sh
 # use (per-HOME, so it isolates cleanly per container/user and per bats
 # test HOME). Override exists only for tests/tooling; there is no reason to
 # set it in normal use.
 CACHE_DIR="${OUTBOUND_GUARD_CACHE_DIR:-${HOME:-}/.claude/cache/outbound-guard}"
-GH_AUTH_CACHE_FILE="$CACHE_DIR/gh-auth-status"
+GH_AUTH_CACHE_FILE="$CACHE_DIR/gh-auth-valid"
 
-# TTL for a cached `gh auth status` result, in seconds. 300s (5 minutes) is
+# TTL for a cached `gh api user` result, in seconds. 300s (5 minutes) is
 # long enough that a session doing several pushes in a row pays the network
 # round trip once, short enough that a token revoked mid-session (rare, but
 # it's exactly the failure this bead exists to catch) is re-checked well
@@ -90,21 +96,24 @@ GH_AUTH_CACHE_FILE="$CACHE_DIR/gh-auth-status"
 # the rest of the container's life.
 GH_AUTH_CACHE_TTL=300
 
-# Hard bound on the `gh auth status` network call itself, in seconds. This
+# Hard bound on the `gh api user` network call itself, in seconds. This
 # check runs only after PUSH_RE has already matched (an actual push
 # attempt, not the per-Bash-call hot path), so paying up to 5s here is
 # cheap relative to a push; it is also short enough that a hung/unreachable
 # gh cannot noticeably wedge the user's push.
 GH_AUTH_TIMEOUT=5
 
-# gh_auth_status_ok — cached, timeout-bounded validity check via `gh auth
-# status` (unlike `gh auth token`, this is a real network call to GitHub,
-# which is exactly why it catches a stale/revoked token that `gh auth
-# token` would still happily print). Returns 0 if a fresh-enough cached
-# result (or a new call) says the token is valid, 1 otherwise. A cache miss
-# or timeout still writes the result, so a hung gh doesn't get retried on
-# every subsequent push within the TTL either.
-gh_auth_status_ok() {
+# gh_auth_valid — cached, timeout-bounded validity check via `gh api user`.
+# This is a real GitHub API round trip, deliberately NOT `gh auth token`
+# (prints a stale token unchanged) and NOT `gh auth status` either: both
+# were tried and both exited 0 for a genuinely invalid/expired token in
+# this exact container (beads_claude_docker-iih3) -- `gh auth status`
+# only validates the on-disk config shape, it does not ask GitHub whether
+# the token still works. `gh api user` does. Returns 0 if a fresh-enough
+# cached result (or a new call) says the token is valid, 1 otherwise. A
+# cache miss or timeout still writes the result, so a hung gh doesn't get
+# retried on every subsequent push within the TTL either.
+gh_auth_valid() {
     local now cached_at cached_result result
 
     now=$(date +%s 2>/dev/null) || return 1
@@ -126,7 +135,7 @@ gh_auth_status_ok() {
     fi
 
     if command -v timeout >/dev/null 2>&1; then
-        timeout "${GH_AUTH_TIMEOUT}s" gh auth status >/dev/null 2>&1
+        timeout "${GH_AUTH_TIMEOUT}s" gh api user >/dev/null 2>&1
         result=$?
     else
         # No `timeout` binary available: skip the network call entirely
@@ -143,14 +152,14 @@ gh_auth_status_ok() {
 }
 
 # github_auth_present — checked only after PUSH_RE has already matched, so
-# the network call inside gh_auth_status_ok never runs on the per-Bash-call
+# the network call inside gh_auth_valid never runs on the per-Bash-call
 # hot path.
 github_auth_present() {
     [ -n "${GH_TOKEN:-}" ] && return 0
     [ -n "${GITHUB_TOKEN:-}" ] && return 0
 
     if command -v gh >/dev/null 2>&1; then
-        gh_auth_status_ok && return 0
+        gh_auth_valid && return 0
     fi
 
     # A PRIVATE key only. The id_* glob also matches id_rsa.pub, and a
