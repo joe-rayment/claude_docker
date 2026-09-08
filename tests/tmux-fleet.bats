@@ -583,6 +583,10 @@ start_scratch_tmux_at() {
     # name is present in the rendered status line.
     REPO="$(new_scratch_repo statusbar-repo)"
     start_scratch_tmux_at "$REPO"
+    # new-session -s base names the SESSION; window 0 is still named after
+    # the shell tmux started in it, so name it explicitly -- the assertions
+    # below are about the status line's window row, not window auto-naming.
+    tmux -L "$TMUX_SOCK" rename-window -t base:0 base
     tmux -L "$TMUX_SOCK" new-window -n w-one -c "$REPO"
     tmux -L "$TMUX_SOCK" new-window -n w-two -c "$REPO"
     select_window_pane base
