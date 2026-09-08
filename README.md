@@ -215,6 +215,7 @@ every update:
   "cpus": 4,
   "memory": "8g",
   "theme": "dark",
+  "terminalTheme": "Homebrew",
   "dns": "1.1.1.1",
   "extraMounts": ["/Users/you/reference-repo:/Users/you/reference-repo"]
 }
@@ -231,6 +232,30 @@ every update:
   still there on the Mac. That seed happens **once**: after Orca has run,
   whatever you change in its settings pane is what sticks, and this key stops
   mattering.
+- **`terminalTheme`** — the terminal palette, by the name of one of Orca's
+  own builtins; `Homebrew` (green on black — the phosphor-monitor look) is
+  the default. It reaches the container as `CLAUDE_ORCA_TERMINAL_THEME` and
+  lands on two paths that do deliberately different amounts.
+
+  Orca resolves the name in the **browser**, out of `localStorage`, which the
+  served `web-index.html` seeds — the full palette, all sixteen ANSI slots
+  and the ground. That half only reaches a folder running an image built
+  after the palette changed, which is exactly how it went unnoticed for two
+  days: the folder's pull came back `403`, the launcher ran the local image
+  anyway, and its older patcher skipped the seed.
+
+  So the shipped `.zshrc` sets the colour again at every shell start, from
+  the escapes xterm.js honours — but **only the default foreground and the
+  cursor** (OSC 10 and 12), never the sixteen slots and never the background.
+  That half needs no image, no browser state and no root. It stops where it
+  does on evidence: repainting the whole palette live, on 2026-09-08, made
+  Claude Code's chat input and status bar disappear, because the greys they
+  are drawn in had been remapped onto the ground. Unstyled output goes green;
+  every colour another program picked on purpose survives.
+
+  Set the key to a name the shell's table does not carry and the shell leaves
+  the terminal alone, which is the right thing when the browser seed is going
+  to resolve that name itself.
 - **`dns`** — the resolver the container is started with, `1.1.1.1` by
   default. Set it to `auto` to pass no `--dns` flag at all and leave Docker's
   own choice alone. It exists because a container that starts with a resolver

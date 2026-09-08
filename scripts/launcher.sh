@@ -1186,6 +1186,14 @@ container_create() {
     # beads prefix it inits with.
     theme="$(json_get "$dir" '.theme')"
     [ -n "$theme" ] || theme="dark"
+    # ... and `terminalTheme` picks the terminal PALETTE by name -- an Orca
+    # builtin, "Homebrew" (green on black) by default. It reaches the folder
+    # twice over on purpose: the entrypoint seeds the name for Orca's own
+    # renderer, and the shipped .zshrc paints the same colours with OSC
+    # escapes, which is the half that does not need the browser to have been
+    # seeded or the image to have been rebuilt.
+    terminal_theme="$(json_get "$dir" '.terminalTheme')"
+    [ -n "$terminal_theme" ] || terminal_theme="Homebrew"
     mkdir -p "$dir/.claude-dev/run" "$dir/.claude-dev/home"
     # Never open a stale pairing URL from a previous container. (An
     # update, which is where a container is deliberately replaced, clears
@@ -1214,6 +1222,7 @@ container_create() {
         -e "HOST_UID=$(id -u)" \
         -e "GH_TOKEN=$token" \
         -e "CLAUDE_ORCA_THEME=$theme" \
+        -e "CLAUDE_ORCA_TERMINAL_THEME=$terminal_theme" \
         -e "CLAUDE_ORCA_PROJECT_NAME=$(derive_project_name "$dir")" \
         -e "CLAUDE_ORCA_GIT_NAME=$(git_identity_name)" \
         -e "CLAUDE_ORCA_GIT_EMAIL=$(git_identity_email)"

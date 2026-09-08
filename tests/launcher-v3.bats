@@ -154,6 +154,27 @@ path_without_docker() {
     ! grep -q "^build " "$CONTAINER_STUB_LOG"
 }
 
+@test "register passes the terminal palette to the container as CLAUDE_ORCA_TERMINAL_THEME -- Homebrew by default, claude-orca.json's terminalTheme when set" {
+    mkdir -p "$PROJECT_DIR"
+    primary="$(abspath "$PROJECT_DIR")"
+    run make_project_v3 "$primary"
+    [ "$status" -eq 0 ]
+
+    line="$(ctr_line "run ")"
+    [[ "$line" == *"-e CLAUDE_ORCA_TERMINAL_THEME=Homebrew"* ]]
+
+    name="claude-orca-$(basename "$primary")"
+    json="$primary/.claude-dev/claude-orca.json"
+    jq '.terminalTheme = "Snazzy"' "$json" > "$json.tmp" && mv "$json.tmp" "$json"
+    rm -f "$CONTAINER_STUB_STATE/containers/$name"
+    : > "$CONTAINER_STUB_LOG"
+    run bash -c "cd '$primary' && ./claude-dev"
+    [ "$status" -eq 0 ]
+
+    line="$(ctr_line "run ")"
+    [[ "$line" == *"-e CLAUDE_ORCA_TERMINAL_THEME=Snazzy"* ]]
+}
+
 @test "open runs the container with the project at /workspace/<name> and the home at /home/agent, the port published on 127.0.0.1, PROJECT_DIR/ORCA_PORT/HOST_UID/GH_TOKEN/BEADS_DIR in the environment, waits for run/orca-web-url.txt and opens it" {
     mkdir -p "$PROJECT_DIR"
     primary="$(abspath "$PROJECT_DIR")"

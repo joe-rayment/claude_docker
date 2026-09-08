@@ -206,6 +206,29 @@ setup() {
     python3 "$PATCHER" --asar "$ASAR" --check --theme dark
 }
 
+@test "the shipped .zshrc turns the default foreground and cursor green and repaints nothing else, and leaves the terminal alone for a name only Orca resolves" {
+    command -v script >/dev/null 2>&1 || skip "script is not installed"
+    command -v zsh >/dev/null 2>&1 || skip "zsh is not installed"
+
+    run script -qec "zsh -c 'source $REPO_ROOT/config/.zshrc'" /dev/null
+    [ "$status" -eq 0 ]
+    [[ "$output" == *']10;#00ff00'* ]]
+    [[ "$output" == *']12;#00ff00'* ]]
+
+    # The sixteen ANSI slots and the ground stay as the person set them.
+    # Repainting those is what made Claude Code's chat input and status bar
+    # disappear on 2026-09-08 -- their greys had been remapped onto the
+    # background -- so the rc must never emit OSC 4 or OSC 11.
+    [[ "$output" != *']4;'* ]]
+    [[ "$output" != *']11;'* ]]
+
+    run env CLAUDE_ORCA_TERMINAL_THEME=Snazzy \
+        script -qec "zsh -c 'source $REPO_ROOT/config/.zshrc'" /dev/null
+    [ "$status" -eq 0 ]
+    [[ "$output" != *']10;'* ]]
+    [[ "$output" != *']12;'* ]]
+}
+
 @test "the fixture is Orca Web 1.4.197's served page, unpatched" {
     [ "$(wc -c <"$FIXTURE")" = "3975" ]
     grep -q '<title>Orca Web</title>' "$FIXTURE"
