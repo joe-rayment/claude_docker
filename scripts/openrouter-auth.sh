@@ -69,8 +69,6 @@ except Exception:
 '
 }
 
-OPENROUTER_AUTH_VALIDATE_CMD="${OPENROUTER_AUTH_VALIDATE_CMD:-openrouter_auth_default_validate}"
-
 port_open() {
     (exec 3<>"/dev/tcp/127.0.0.1/$1") >/dev/null 2>&1
 }
@@ -98,7 +96,18 @@ if ! [[ "$key" =~ $KEY_FORMAT_RE ]]; then
     exit 1
 fi
 
-if ! printf '%s' "$key" | eval "$OPENROUTER_AUTH_VALIDATE_CMD"; then
+# No eval: the override knob names a command to exec directly, never shell
+# text to interpret -- this script handles a live credential and takes no
+# chances with an environment variable as code.
+if [ -n "${OPENROUTER_AUTH_VALIDATE_CMD:-}" ]; then
+    validated=0
+    printf '%s' "$key" | "$OPENROUTER_AUTH_VALIDATE_CMD" || validated=1
+else
+    validated=0
+    printf '%s' "$key" | openrouter_auth_default_validate || validated=1
+fi
+
+if [ "$validated" -ne 0 ]; then
     echo "openrouter-auth: OpenRouter did not accept that key -- nothing written." >&2
     exit 1
 fi
