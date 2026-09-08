@@ -192,3 +192,26 @@ run_pretool() {
     [[ "$output" == *"no GitHub authentication"* ]]
     [ "$(gh_call_count)" -ge 1 ]
 }
+
+@test "outbound-guard: a denial is never cached -- fixing the token takes effect on the very next push, with no TTL wait" {
+    # The failure this pins: caching the NEGATIVE would keep denying for the
+    # whole TTL after the user runs `gh auth login`, telling them to do the
+    # thing they just did (beads_claude_docker-iih3).
+    stub_gh_invalid_token
+    run_pretool 'git push origin main'
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"no GitHub authentication"* ]]
+
+    # Second denied push re-probes rather than serving a cached "absent".
+    before="$(gh_call_count)"
+    run_pretool 'git push origin main'
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"no GitHub authentication"* ]]
+    [ "$(gh_call_count)" -gt "$before" ]
+
+    # Token fixed. No sleep, no TTL expiry -- the next push is allowed.
+    stub_gh_valid
+    run_pretool 'git push origin main'
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+}

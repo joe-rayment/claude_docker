@@ -118,10 +118,12 @@ GH_AUTH_TIMEOUT=5
 # were tried and both exited 0 for a genuinely invalid/expired token in
 # this exact container (beads_claude_docker-iih3) -- `gh auth status`
 # only validates the on-disk config shape, it does not ask GitHub whether
-# the token still works. `gh api user` does. Returns 0 if a fresh-enough
-# cached result (or a new call) says the token is valid, 1 otherwise. A
-# cache miss or timeout still writes the result, so a hung gh doesn't get
-# retried on every subsequent push within the TTL either.
+# the token still works. `gh api user` does.
+#
+# Only the POSITIVE result is cached (see the write below for why); a
+# denied push always re-probes, so returns 0 for a fresh cache hit or a
+# fresh call that succeeds, 1 for anything else -- including a failed
+# call, which deliberately does NOT get written to the cache.
 gh_auth_valid() {
     local now cached_at cached_result cached_probe result
 
@@ -136,10 +138,14 @@ gh_auth_valid() {
         case "$cached_at" in
             ''|*[!0-9]*) ;; # not a plain integer -- treat as no usable cache
             *)
+                # Only a POSITIVE result is ever cached (see the write
+                # below), so a fresh entry from the current probe always
+                # means "valid". A stale or foreign-probe entry falls
+                # through and re-probes.
                 if [ "$cached_probe" = "$GH_AUTH_PROBE_ID" ] \
+                    && [ "$cached_result" = "0" ] \
                     && [ $((now - cached_at)) -lt "$GH_AUTH_CACHE_TTL" ]; then
-                    [ "$cached_result" = "0" ] && return 0
-                    return 1
+                    return 0
                 fi
                 ;;
         esac
@@ -155,7 +161,13 @@ gh_auth_valid() {
         return 1
     fi
 
-    if mkdir -p "$CACHE_DIR" 2>/dev/null; then
+    # Cache the positive ONLY. Caching a failure would keep denying for
+    # the whole TTL after the user runs `gh auth login` -- telling them to
+    # do the thing they just did. A failing `gh api user` is a fast auth
+    # rejection, not a slow one, and the network-down case is already
+    # bounded by $GH_AUTH_TIMEOUT, so re-probing a denied push is cheap
+    # and makes recovery immediate (beads_claude_docker-iih3).
+    if [ "$result" -eq 0 ] && mkdir -p "$CACHE_DIR" 2>/dev/null; then
         printf '%s %s %s\n' "$now" "$result" "$GH_AUTH_PROBE_ID" > "$GH_AUTH_CACHE_FILE" 2>/dev/null
     fi
 
