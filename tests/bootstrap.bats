@@ -394,3 +394,73 @@ shadow_path_without() {
     # And the clone is clean, so the pull had a tree it could move.
     [ -z "$(git -C "$tmpl" status --porcelain --untracked-files=no)" ]
 }
+
+# --- recovery plan steps 1 and 2 ----------------------------------------
+
+@test "the preflight prints the facts it decided on, so a pasted log says which path the folder took" {
+    # Four days of diagnosis in September 2026 turned on questions a log
+    # could not answer: which gh account, what kind of token, did it carry
+    # read:packages, which docker. Every one decides whether the folder
+    # pulls the prebuilt image or installs a toolchain for several
+    # minutes, and none of them was written down.
+    mac_env
+    mkdir -p "$PROJECT_DIR"
+    run make_project_v3 "$PROJECT_DIR"
+    [ "$status" -eq 0 ]
+
+    local want
+    for want in "macOS" "git " "gh " "docker " "read:packages"; do
+        case "$output" in
+            *"$want"*) ;;
+            *) printf 'the preflight facts do not mention %s:\n%s\n' "$want" "$output"; return 1 ;;
+        esac
+    done
+    # The account and the token kind, which is what made the 2026-09-06
+    # incident unreadable: a fine-grained PAT sends no scopes header at
+    # all, so "no read:packages" and "scopes unknown" look the same.
+    case "$output" in
+        *"classic"*|*"fine-grained"*) ;;
+        *) printf 'the preflight does not say what kind of token this is:\n%s\n' "$output"; return 1 ;;
+    esac
+}
+
+@test "bootstrap refuses a .claude-dev left by an older layout instead of installing on top of it" {
+    # The owner's own repo carried one: .claude-dev was a git clone of the
+    # PREVIOUS template (claude_docker, docker-compose era) with the v4
+    # layout written into it as untracked files -- two generations in one
+    # directory, and every diagnosis after that had to guess which
+    # generation a file belonged to.
+    mac_env
+    mkdir -p "$PROJECT_DIR/.claude-dev"
+    git -C "$PROJECT_DIR" init --quiet -b main >/dev/null 2>&1
+    git -C "$PROJECT_DIR/.claude-dev" init --quiet -b main >/dev/null 2>&1
+    printf 'services:\n' > "$PROJECT_DIR/.claude-dev/docker-compose.yml"
+
+    run bash "$REPO_ROOT/bootstrap.sh" "$PROJECT_DIR"
+    [ "$status" -ne 0 ]
+    case "$output" in
+        *"older claude_orca"*|*"older layout"*) ;;
+        *) printf 'the refusal does not name the cause:\n%s\n' "$output"; return 1 ;;
+    esac
+    # It has to say the exact command, because bootstrap is piped into
+    # bash and cannot ask a question.
+    case "$output" in
+        *"mv "*) ;;
+        *) printf 'the refusal does not name the way out:\n%s\n' "$output"; return 1 ;;
+    esac
+    # And it must not have started installing over the top.
+    [ ! -e "$PROJECT_DIR/.claude-dev/template" ]
+    [ ! -e "$PROJECT_DIR/claude-dev" ]
+}
+
+@test "a .claude-dev this template wrote is not mistaken for a foreign one" {
+    mac_env
+    mkdir -p "$PROJECT_DIR"
+    run make_project_v3 "$PROJECT_DIR"
+    [ "$status" -eq 0 ]
+    # Second run: the folder now has template/, bin/ and claude-orca.json,
+    # and the guard must let it straight through.
+    run make_project_v3 "$PROJECT_DIR"
+    [ "$status" -eq 0 ]
+    [ -d "$PROJECT_DIR/.claude-dev/template" ]
+}
