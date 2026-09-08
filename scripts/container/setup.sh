@@ -378,6 +378,12 @@ phase_opencode() {
     install -m 0755 "$src" "$pkg/bin/opencode.exe"
     if [ -n "$tmp" ]; then rm -rf "$tmp"; fi
 
+    # npm keeps every tarball it downloaded under $HOME/.npm, and in an
+    # image build that cache is 264 MB of dead weight riding in the same
+    # layer as the package it produced. Nothing reads it again: the pin is
+    # in this file, and a re-install is a rebuild.
+    npm cache clean --force >/dev/null 2>&1 || true
+
     if [ -r /proc/self/cmdline ]; then
         opencode --version
     else

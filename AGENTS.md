@@ -207,6 +207,28 @@ cost-mirror…) runs from there. `/tier` state lives in
 `PreToolUse` hook rather than written into agent frontmatter, because
 config-sync owns those files.
 
+## Definition of done for host-side changes
+
+A change to `bootstrap.sh`, `scripts/launcher.sh`, the `Dockerfile`,
+`.github/workflows/image.yml` or anything under `scripts/container/` is
+done only when `tests/mac-e2e.sh` has been run on a Mac against that
+change, and its summary table is pasted into the commit message or the
+bead. A green bats suite is not evidence for the Mac path: the suite
+stubs `docker`, `open`, `gh` and `uname`, so it proves the launcher's
+logic and nothing about a Mac. If no Mac is available, the change is
+UNVERIFIED and the commit subject has to say so.
+
+Two things follow from that, and both were learned the expensive way in
+the first week of September 2026:
+
+- **`mac-e2e.sh` clones HEAD**, because bootstrap does. Commit before you
+  run it, or you are testing the commit before the one you just made.
+- **A measurement beats a plausible argument.** The toolchain was moved
+  out of the image on a sound-looking argument about bind mounts and cost
+  ~15 minutes per folder; the first real build of the image that carries
+  it was 7.84 GB because nobody had read `docker history`. Both were
+  found by running the thing once.
+
 ## Conventions & Patterns
 
 - **bash 3.2 on the Mac side.** macOS ships 3.2.57, so `bootstrap.sh` and

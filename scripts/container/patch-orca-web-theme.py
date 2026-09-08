@@ -137,7 +137,12 @@ def main(argv=None):
               file=sys.stderr)
         args.theme = "dark"
 
-    with open(args.asar, "r+b") as f:
+    # Read-only for the two modes that only read. setup.sh --check says
+    # it "installs nothing, needs no root", and opening the archive r+b
+    # made that false: every non-root caller got PermissionError on a
+    # root-owned app.asar and read it as the theme not being seeded.
+    mode = "rb" if (args.check or args.print) else "r+b"
+    with open(args.asar, mode) as f:
         header_size, raw, header = read_header(f)
         entry = html_entry(header)
         data_start = 8 + header_size
