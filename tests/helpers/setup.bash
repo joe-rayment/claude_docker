@@ -317,6 +317,21 @@ mkdir -p "$state/containers" "$state/volumes"
 case "$1 ${2:-}" in
     "image inspect"|"image ls"|"image list")
         [ -f "$state/image" ] || exit 1
+        # `docker image inspect REF --format '{{.Id}}'`: the local image
+        # id, which is what says whether a pull actually moved this
+        # folder. CLAUDE_ORCA_TEST_IMAGE_ID picks it; the pull below is
+        # what records it, so a test changes the variable between runs.
+        for a in "$@"; do
+            case "$a" in
+                --format|-f|--format=*)
+                    if [ -f "$state/image-id" ]; then
+                        cat "$state/image-id"
+                    else
+                        echo "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+                    fi
+                    exit 0 ;;
+            esac
+        done
         cat "$state/image"
         exit 0 ;;
 esac
@@ -331,7 +346,25 @@ case "$cmd" in
         exit 0 ;;
     pull)
         [ "${CLAUDE_ORCA_TEST_PULL_FAIL:-0}" = "1" ] && { echo "pull failed" >&2; exit 1; }
-        printf '%s\n' "$1" > "$state/image"; exit 0 ;;
+        printf '%s\n' "$1" > "$state/image"
+        printf 'sha256:%s\n' \
+            "${CLAUDE_ORCA_TEST_IMAGE_ID:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}" \
+            > "$state/image-id"
+        exit 0 ;;
+    images)
+        # `docker images --format ...`: whatever the test put in
+        # $state/images-list, one image per line, and nothing otherwise.
+        [ -f "$state/images-list" ] && cat "$state/images-list"
+        exit 0 ;;
+    rmi)
+        # A real `docker rmi` refuses an image another container still
+        # references; CLAUDE_ORCA_TEST_RMI_FAIL is that refusal.
+        if [ "${CLAUDE_ORCA_TEST_RMI_FAIL:-0}" = "1" ]; then
+            echo "Error response from daemon: conflict: unable to delete" >&2
+            exit 1
+        fi
+        printf '%s\n' "$1" >> "$state/removed-images"
+        exit 0 ;;
     login)
         # The password must arrive on stdin -- never in argv.
         cat > "$state/registry-password"

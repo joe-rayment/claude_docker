@@ -790,6 +790,68 @@ acquire_image() {
     record_image_source "$dir" runtime
 }
 
+# What `--update` actually moved, in the same shape as the template line
+# above it: the registry's `latest` can be republished, or not, and a pull
+# that says "Status: Downloaded" for an image that never changed looks
+# exactly like one that did. The local image id is the only thing that
+# settles it. Reporting only -- an id that cannot be read prints nothing
+# and is never fatal.
+image_id_short() {
+    local id=""
+    [ "$CTR_RUNTIME" = "local" ] && return 0
+    id="$(ctr image inspect "$1" --format '{{.Id}}' 2>/dev/null | head -1)" || id=""
+    id="$(printf '%s' "$id" | tr -d '[:space:]')"
+    id="${id#sha256:}"
+    [ -n "$id" ] || return 0
+    printf '%s\n' "${id:0:7}"
+}
+
+# The previous version of this image, which a pull leaves behind untagged:
+# its layers stay on disk, several GB of them, and nothing ever collects
+# them. Only ours (the repo half of image_ref), only <none>-tagged, never
+# the one just acquired. `docker rmi` legitimately refuses an image some
+# other container still references, so every failure here is skipped
+# rather than reported: an update must not fail over disk it could not
+# free.
+prune_old_images() {
+    local ref="$1" keep="$2" repo="" repository="" tag="" id="" freed=0 ids=""
+    [ "$CTR_RUNTIME" = "local" ] && return 0
+    repo="${ref%:*}"
+    while read -r repository tag id; do
+        [ -n "$id" ] || continue
+        [ "$repository" = "$repo" ] || continue
+        [ "$tag" = "<none>" ] || continue
+        id="${id#sha256:}"
+        id="${id:0:7}"
+        [ "$id" = "$keep" ] && continue
+        ctr rmi "$id" >/dev/null 2>&1 || continue
+        freed=$((freed + 1))
+        if [ -z "$ids" ]; then ids="$id"; else ids="$ids, $id"; fi
+    done <<PRUNE
+$(ctr images --format '{{.Repository}} {{.Tag}} {{.ID}}' 2>/dev/null || true)
+PRUNE
+    [ "$freed" -gt 0 ] || return 0
+    if [ "$freed" -eq 1 ]; then
+        echo "  removed 1 old image version ($ids)"
+    else
+        echo "  removed $freed old image versions ($ids)"
+    fi
+}
+
+# run/ holds RESULTS (CLAUDE.md: state/ holds authority), and every one of
+# them belongs to the container that wrote it: the pairing URL most of all
+# -- opening a previous session's URL is opening nothing. So a folder that
+# is about to get a new container starts from none of them. state/,
+# claude-orca.json, the home, .beads and run/image-source are authority or
+# input and are never touched here.
+clear_run_results() {
+    local run="$1/.claude-dev/run"
+    rm -f "$run/orca-web-url.txt" \
+          "$run/port" \
+          "$run/orca-serve.log" \
+          "$run/setup.log" 2>/dev/null || true
+}
+
 orca_json() { printf '%s\n' "$1/.claude-dev/claude-orca.json"; }
 
 # qa2.7: the OpenRouter key the delegate routes need inside the VM. It
@@ -1125,7 +1187,9 @@ container_create() {
     theme="$(json_get "$dir" '.theme')"
     [ -n "$theme" ] || theme="dark"
     mkdir -p "$dir/.claude-dev/run" "$dir/.claude-dev/home"
-    # Never open a stale pairing URL from a previous container.
+    # Never open a stale pairing URL from a previous container. (An
+    # update, which is where a container is deliberately replaced, clears
+    # the rest of the previous one's results too -- clear_run_results.)
     rm -f "$dir/.claude-dev/run/orca-web-url.txt"
 
     # The toolchain cache, made before the run so docker mounts real
@@ -1584,6 +1648,7 @@ VERIFY
 
 cmd_update_v3() {
     local dir="${1:-$PROJECT_SELF}" tmpl before after ref name state
+    local img_before="" img_after=""
     tmpl="$HOST_DIR/template"
     if [ ! -d "$tmpl/.git" ]; then
         echo "Error: no template clone at $tmpl -- re-run the bootstrap one-liner." >&2
@@ -1622,7 +1687,26 @@ cmd_update_v3() {
     # The same decision as registration: an update whose pull works moves
     # the folder onto the fresh prebuilt image, and one whose pull cannot
     # moves it onto the base image and its runtime install.
-    acquire_image "$dir" "$(image_ref)" || return 1
+    ref="$(image_ref)"
+    # A republished `latest` and a stale one pull identically -- the id is
+    # the only thing that says whether this folder actually moved.
+    img_before="$(image_id_short "$ref")"
+    acquire_image "$dir" "$ref" || return 1
+    img_after="$(image_id_short "$ref")"
+    if [ -n "$img_after" ]; then
+        if [ -z "$img_before" ]; then
+            echo "  image: $img_after (new)"
+        elif [ "$img_before" = "$img_after" ]; then
+            echo "  image: already up to date ($img_after)"
+        else
+            echo "  image: $img_before -> $img_after"
+        fi
+        # Only when the pull is what put it there: on the runtime path
+        # there is no version of ours to collect.
+        if [ "$(image_source "$dir")" = "pulled" ]; then
+            prune_old_images "$ref" "$img_after"
+        fi
+    fi
 
     # Recreate rather than restart: a new image only takes effect in a new
     # container, and everything that matters is in the mounted folder --
@@ -1635,6 +1719,10 @@ cmd_update_v3() {
         ctr stop "$name" >/dev/null 2>&1 || true
         ctr rm "$name" >/dev/null 2>&1 || true
     fi
+    # The container that wrote run/ is gone, so its results go with it:
+    # cmd_open_v3 below chooses the port again and the new container
+    # writes its own URL and logs.
+    clear_run_results "$dir"
     cmd_open_v3 "$dir"
 }
 
