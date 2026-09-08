@@ -1,0 +1,140 @@
+#!/usr/bin/env bats
+#
+# seed-project.sh -- the project seeding, out of the boot's critical path.
+#
+# It used to live inside the entrypoint, which is PID 1: every line of it
+# sat on the path that has to bring Orca up, and it ran before there was a
+# terminal to watch it in. Orca's own `scripts.setup` (from orca.yaml, run
+# in a terminal when a workspace is created) is the right home for it, so
+# the body moved into one script with two callers -- Orca's hook, and the
+# entrypoint as a floor, because a folder must never depend on a hook
+# having fired to have a tracker in it.
+#
+# Assertions are `[ ]` and functions, never a bare `[[ ]]` (run-tests.sh).
+
+load helpers/setup
+
+SEED="${BATS_TEST_DIRNAME}/../scripts/container/seed-project.sh"
+
+seed() { PROJECT_DIR="$1" bash "$SEED"; }
+
+fresh_project() {
+    local d="$BATS_TEST_TMPDIR/${1:-proj}"
+    mkdir -p "$d"
+    git -C "$d" init --quiet -b main >/dev/null 2>&1
+    printf '%s\n' "$d"
+}
+
+@test "it seeds the gitignore block, attachments and orca.yaml, and says what it did" {
+    local d
+    d="$(fresh_project)"
+    run seed "$d"
+    [ "$status" -eq 0 ]
+
+    grep -qF '# claude_orca' "$d/.gitignore"
+    grep -qxF '.claude-dev/' "$d/.gitignore"
+    grep -qxF 'attachments/' "$d/.gitignore"
+    [ -d "$d/attachments" ]
+    [ -f "$d/orca.yaml" ]
+    grep -q 'scripts:' "$d/orca.yaml"
+    grep -q 'setup:' "$d/orca.yaml"
+    grep -q 'seed-project.sh' "$d/orca.yaml"
+}
+
+@test "running it twice changes nothing the second time" {
+    local d before after
+    d="$(fresh_project)"
+    seed "$d" >/dev/null
+    before="$(find "$d" -type f -not -path '*/.git/*' -exec shasum {} + | sort | shasum)"
+    seed "$d" >/dev/null
+    after="$(find "$d" -type f -not -path '*/.git/*' -exec shasum {} + | sort | shasum)"
+    [ "$before" = "$after" ]
+}
+
+@test "an orca.yaml the project already has is never overwritten" {
+    local d
+    d="$(fresh_project)"
+    printf 'scripts:\n  setup: make bootstrap\n' > "$d/orca.yaml"
+    seed "$d" >/dev/null
+    grep -qF 'make bootstrap' "$d/orca.yaml"
+    run grep -c 'seed-project.sh' "$d/orca.yaml"
+    [ "$output" = "0" ]
+}
+
+@test "a beads snapshot is restored, and an existing issues.jsonl is left alone" {
+    local d
+    d="$(fresh_project)"
+    mkdir -p "$d/.claude-dev-snapshots/20260101-000000"
+    printf '{"id":"from-snapshot"}\n' > "$d/.claude-dev-snapshots/20260101-000000/issues.jsonl"
+
+    seed "$d" >/dev/null
+    grep -qF 'from-snapshot' "$d/.beads/issues.jsonl"
+
+    # ... and a second run must not overwrite what is now there.
+    printf '{"id":"live"}\n' > "$d/.beads/issues.jsonl"
+    seed "$d" >/dev/null
+    grep -qF 'live' "$d/.beads/issues.jsonl"
+}
+
+@test "it exits 0 and says so when there is no bd on PATH" {
+    local d shadow
+    d="$(fresh_project)"
+    shadow="$BATS_TEST_TMPDIR/nobd"
+    mkdir -p "$shadow"
+    # helpers/setup.bash sets CLAUDE_ORCA_SKIP_BEADS for the whole suite,
+    # and that short-circuits before the bd lookup this case is about.
+    run env -u CLAUDE_ORCA_SKIP_BEADS PATH="$shadow:/usr/bin:/bin" PROJECT_DIR="$d" bash "$SEED"
+    [ "$status" -eq 0 ]
+    case "$output" in
+        *"not on PATH"*) ;;
+        *) echo "expected it to name the missing bd: $output"; return 1 ;;
+    esac
+}
+
+@test "with no project at all it exits 0 rather than failing its caller" {
+    run env -u PROJECT_DIR -u CLAUDE_ORCA_ROOT bash -c "cd / && bash '$SEED'"
+    [ "$status" -eq 0 ]
+}
+
+@test "run from inside a project with no PROJECT_DIR, it finds the folder by walking up" {
+    local d
+    d="$(fresh_project)"
+    mkdir -p "$d/.claude-dev" "$d/deep/deeper"
+    run env -u PROJECT_DIR -u CLAUDE_ORCA_ROOT bash -c "cd '$d/deep/deeper' && bash '$SEED'"
+    [ "$status" -eq 0 ]
+    [ -f "$d/orca.yaml" ]
+}
+
+@test "the entrypoint calls it, and never dies when it fails" {
+    local body
+    body="$(cat "${BATS_TEST_DIRNAME}/../scripts/container/entrypoint.sh")"
+    case "$body" in
+        *seed-project.sh*) ;;
+        *) echo "the entrypoint does not call seed-project.sh"; return 1 ;;
+    esac
+    # The call site must not be able to take PID 1 down with it.
+    run grep -nE 'seed-project\.sh.*\|\| *(true|warn)|seed_project_floor' \
+        "${BATS_TEST_DIRNAME}/../scripts/container/entrypoint.sh"
+    [ "$status" -eq 0 ]
+
+    # And the four seedings it replaced are gone from the entrypoint.
+    run grep -cE '^(seed_gitignore|restore_beads_snapshot)\(\)' \
+        "${BATS_TEST_DIRNAME}/../scripts/container/entrypoint.sh"
+    [ "$output" = "0" ]
+}
+
+@test "CLAUDE_ORCA_SKIP_BEADS=1 is honoured here, since this is where the tracker is made now" {
+    local d
+    d="$(fresh_project skipbeads)"
+    run env PROJECT_DIR="$d" CLAUDE_ORCA_SKIP_BEADS=1 bash "$SEED"
+    [ "$status" -eq 0 ]
+    [ ! -e "$d/.beads" ]
+
+    # ... and a snapshot is still restored, because that is not the same
+    # thing as creating a tracker: it is not losing what a teardown saved.
+    mkdir -p "$d/.claude-dev-snapshots/20260101-000000"
+    printf '{"id":"kept"}\n' > "$d/.claude-dev-snapshots/20260101-000000/issues.jsonl"
+    run env PROJECT_DIR="$d" CLAUDE_ORCA_SKIP_BEADS=1 bash "$SEED"
+    [ "$status" -eq 0 ]
+    grep -qF 'kept' "$d/.beads/issues.jsonl"
+}

@@ -340,41 +340,37 @@ fi
 # because the snapshot restore is what that init must not clobber.
 # Everything here is idempotent: a folder is started many times.
 
-# Same entries and marker as launcher.sh's seed_gitignore: only the missing
-# lines are appended, under one marker, and nothing existing is touched.
-seed_gitignore() {
-    gitignore="$PROJECT_DIR/.gitignore"
-    touch "$gitignore" 2>/dev/null || return 0
-    if ! grep -qF "# claude_orca" "$gitignore"; then
-        {
-            echo ""
-            echo "# claude_orca"
-        } >> "$gitignore"
+# The project's own seeding -- .gitignore, attachments/, the beads
+# snapshot, `bd init`, and the orca.yaml that lets Orca do this itself --
+# is scripts/container/seed-project.sh, and it runs from there rather than
+# from here.
+#
+# It is not this process's work. This process is PID 1: the one that has
+# to bring Orca up, and anything on that path is a way for a folder to
+# fail to start. Orca's own `scripts.setup` runs in a terminal when a
+# workspace is created, which is watchable, committed with the project and
+# editable without an image rebuild -- so that is where it belongs.
+#
+# This call is the FLOOR, not the mechanism: a folder must never depend on
+# a hook having fired to have a tracker in it, and on 2026-09-08 Orca's
+# setup script could not be made to fire from the CLI at all. Best effort,
+# and its failure is a warning.
+seed_project_floor() {
+    seed_script="$TEMPLATE_ROOT/scripts/container/seed-project.sh"
+    [ -f "$seed_script" ] || seed_script="$SCRIPT_DIR/seed-project.sh"
+    if [ ! -f "$seed_script" ]; then
+        warn "no seed-project.sh next to this entrypoint; the folder is unseeded"
+        return 0
     fi
-    for pattern in '.claude-dev/' '.claude-dev-snapshots/' '/claude-dev' \
-                   'Orca.app/' '.mcp.json' 'attachments/' '.claude/logs/'; do
-        grep -qxF "$pattern" "$gitignore" || echo "$pattern" >> "$gitignore"
-    done
-}
-
-# The other half of the launcher's beads round trip, and the reason it is
-# safe to run unprompted: only ever when the project has no issues.jsonl of
-# its own, so there is nothing here to lose. The Dolt DB rebuilds from the
-# JSONL, which is why only these two files travel.
-restore_beads_snapshot() {
-    snap_root="$PROJECT_DIR/.claude-dev-snapshots"
-    [ -d "$snap_root" ] || return 0
-    [ -f "$PROJECT_DIR/.beads/issues.jsonl" ] && return 0
-    latest="$(ls -1 "$snap_root" 2>/dev/null | sort -r | head -1)"
-    [ -n "$latest" ] || return 0
-    [ -f "$snap_root/$latest/issues.jsonl" ] || return 0
-
-    mkdir -p "$PROJECT_DIR/.beads"
-    cp "$snap_root/$latest/issues.jsonl" "$PROJECT_DIR/.beads/issues.jsonl"
-    if [ -f "$snap_root/$latest/metadata.json" ]; then
-        cp "$snap_root/$latest/metadata.json" "$PROJECT_DIR/.beads/metadata.json"
+    if run_as_agent env PROJECT_DIR="$PROJECT_DIR" \
+            CLAUDE_ORCA_PROJECT_NAME="${CLAUDE_ORCA_PROJECT_NAME:-}" \
+            CLAUDE_ORCA_SKIP_BEADS="${CLAUDE_ORCA_SKIP_BEADS:-0}" \
+            bash "$seed_script"; then
+        :
+    else
+        warn "seed-project.sh did not finish cleanly; the folder may be missing its tracker or gitignore block (continuing)"
     fi
-    log "restored beads snapshot $latest from $snap_root/$latest (the Dolt DB rebuilds from the JSONL)"
+    return 0
 }
 
 # A fresh .claude-dev/home has no git identity, so every commit inside the
@@ -456,11 +452,9 @@ seed_claude_first_run() {
     fi
 }
 
-seed_gitignore
-mkdir -p "$PROJECT_DIR/attachments"
-restore_beads_snapshot
 seed_git_identity
 seed_claude_first_run
+seed_project_floor
 
 # Written as root when we are root: hand them to the agent, who is the one
 # that edits them from here on.
@@ -599,28 +593,9 @@ if [ "$PRIVDROP" = "1" ]; then
     chown_agent_tree "$USER_DATA_DIR"
 fi
 
-# --- beads, once (claude-orca-qa2.5) ------------------------------------
-#
-# v3 does the tracker init in here rather than in `claude-dev register` on
-# the Mac: bd lives in the image, not on the host, so this is the first
-# place that can run it. Opt out with CLAUDE_ORCA_SKIP_BEADS=1.
-
-if [ "${CLAUDE_ORCA_SKIP_BEADS:-0}" = "1" ]; then
-    log "CLAUDE_ORCA_SKIP_BEADS=1; skipping bd init"
-elif ! command -v bd >/dev/null 2>&1; then
-    log "bd not on PATH; skipping bd init"
-elif [ -e "$PROJECT_DIR/.beads" ]; then
-    log "beads already initialized in $PROJECT_DIR; leaving it alone"
-else
-    bd_prefix="${CLAUDE_ORCA_PROJECT_NAME:-}"
-    [ -n "$bd_prefix" ] || bd_prefix="$(basename "$PROJECT_DIR")"
-    if ( cd "$PROJECT_DIR" && run_as_agent bd init --prefix "$bd_prefix" ) \
-            >/dev/null 2>&1; then
-        log "beads initialized in $PROJECT_DIR (prefix $bd_prefix)"
-    else
-        warn "bd init failed in $PROJECT_DIR (continuing)"
-    fi
-fi
+# beads is seed-project.sh's now (see seed_project_floor above), which
+# runs it whether Orca's setup hook fired or not. CLAUDE_ORCA_SKIP_BEADS
+# is still honoured -- by that script.
 
 # --- start Orca serve ---------------------------------------------------
 
@@ -629,16 +604,35 @@ fi
 : > "$SERVE_LOG"
 [ "$PRIVDROP" = "1" ] && chown "$AGENT_UID:$AGENT_GID" "$SERVE_LOG" 2>/dev/null
 
+# Orca spawns its OWN Xvfb when it cannot find a display. The lock and
+# socket that leaves behind live in the container's writable layer, which
+# a `docker restart` keeps -- so a restarted folder can find :99 already
+# claimed by a server that is not there any more. Seen on 2026-09-08: one
+# restart in three died with "Missing X server or $DISPLAY" and a
+# segfault, and this process exiting takes the whole container with it.
+#
+# Clearing the stale state costs nothing (nothing else in this container
+# is using a display: this is PID 1, at boot, before anything is started).
+clear_stale_display() {
+    rm -f /tmp/.X[0-9]*-lock 2>/dev/null || true
+    rm -rf /tmp/.X11-unix 2>/dev/null || true
+}
+
+start_orca_serve() {
+    clear_stale_display
+    agent_exec "$ORCA_BIN" \
+        --no-sandbox \
+        --disable-gpu \
+        --user-data-dir="$USER_DATA_DIR" \
+        --serve \
+        --port "$ORCA_PORT" \
+        --project-root "$PROJECT_DIR" \
+        >>"$SERVE_LOG" 2>&1 &
+    SERVE_PID=$!
+}
+
 log "starting Orca serve on port $ORCA_PORT (log: $SERVE_LOG)"
-agent_exec "$ORCA_BIN" \
-    --no-sandbox \
-    --disable-gpu \
-    --user-data-dir="$USER_DATA_DIR" \
-    --serve \
-    --port "$ORCA_PORT" \
-    --project-root "$PROJECT_DIR" \
-    >>"$SERVE_LOG" 2>&1 &
-SERVE_PID=$!
+start_orca_serve
 
 stop_serve() {
     kill -TERM "$SERVE_PID" 2>/dev/null
@@ -655,8 +649,21 @@ while [ "$waited" -lt "$WEBURL_TIMEOUT" ]; do
         "$SERVE_LOG" 2>/dev/null | tail -1)"
     [ -n "$web_url" ] && break
     if ! kill -0 "$SERVE_PID" 2>/dev/null; then
-        warn "orca serve exited before announcing a Web client URL -- see $SERVE_LOG"
         wait "$SERVE_PID"
+        # One retry, once. Orca's own start is not perfectly reliable --
+        # the display race above is one way it dies within a second of
+        # being asked -- and a folder that will not open until a person
+        # types the command again is a folder that looks broken. A second
+        # failure is real and is reported as one.
+        if [ "${SERVE_RETRIED:-0}" = "0" ]; then
+            SERVE_RETRIED=1
+            warn "orca serve exited before announcing a Web client URL; clearing its display state and trying once more"
+            printf '\n--- retry after an early exit ---\n' >> "$SERVE_LOG"
+            start_orca_serve
+            waited=0
+            continue
+        fi
+        warn "orca serve exited before announcing a Web client URL, twice -- see $SERVE_LOG"
         exit 1
     fi
     sleep 1
