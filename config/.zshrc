@@ -2,6 +2,23 @@
 usr_local_dir="/usr/local"
 export PATH="$HOME/.local/bin:$HOME/bin:$usr_local_dir/bin:$PATH"
 
+# The template's own CLIs. The rulebook tells the agent to type `lane`,
+# `tier-set`, `orca-dispatch`, `bd-guard` and the rest by name, and the
+# hooks already run them by absolute path from here -- without this the
+# names resolve to nothing and the first line of every session fails.
+# The folder's clone wins; the image's copy is the fallback for a folder
+# on the runtime path, where /opt/claude-orca-host does not exist.
+for _co_bin in "${CLAUDE_ORCA_HOST_DIR:-/opt/claude-orca-host}/template/bin" /opt/claude-orca/bin; do
+  if [ -d "$_co_bin" ]; then
+    case ":$PATH:" in
+      *":$_co_bin:"*) ;;
+      *) export PATH="$_co_bin:$PATH" ;;
+    esac
+    break
+  fi
+done
+unset _co_bin
+
 # Preferred editor
 export EDITOR='hx'
 export VISUAL='hx'

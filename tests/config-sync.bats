@@ -204,3 +204,43 @@ JSON
     [ "$status" -eq 0 ]
     [ -f "$primary/.claude-dev/home/.claude/settings.json" ]
 }
+
+# The rulebook (config/claude-user-memory.md) tells the agent to TYPE
+# `lane`, `tier-set`, `orca-dispatch` and friends, and the hook entries in
+# config/claude-settings.json run those same files by absolute path out of
+# the template's bin/. Nothing else put that directory on PATH, so every
+# one of those names resolved to nothing inside a real container and the
+# first line of every session ("lane standard …") died with
+# "command not found". This pins the shipped .zshrc as the thing that
+# closes that gap, and pins the folder's own clone winning over the
+# image's baked copy.
+@test "the shipped .zshrc puts the template's bin/ on PATH so the rulebook's CLIs are typeable" {
+    command -v zsh >/dev/null 2>&1 || skip "zsh not installed"
+
+    make_project "$PROJECT_DIR"
+    primary="$(abspath "$PROJECT_DIR")"
+    rm -f "$PROJECT_DIR/.claude-dev/run/config-hash"
+
+    run CONFIG_SYNC --project "$primary" --host "$ORCA_HOST"
+    [ "$status" -eq 0 ]
+
+    zshrc="$primary/.claude-dev/home/.zshrc"
+    [ -f "$zshrc" ]
+
+    run env HOME="$primary/.claude-dev/home" CLAUDE_ORCA_HOST_DIR="$ORCA_HOST" \
+        zsh -c ". \"\$HOME/.zshrc\" >/dev/null 2>&1; printf '%s\n' \"\$PATH\""
+    [ "$status" -eq 0 ]
+
+    # The folder's own clone, not the image's baked /opt/claude-orca/bin.
+    case ":$output:" in
+        *":$ORCA_HOST/template/bin:"*) ;;
+        *) printf 'template bin/ absent from PATH: %s\n' "$output"; return 1 ;;
+    esac
+
+    # …and every CLI the rulebook names by bare word is actually there.
+    for cli in lane tier-set orca-dispatch orca-wait orca-reply delegate; do
+        [ -x "$ORCA_HOST/template/bin/$cli" ] || {
+            printf 'missing template bin/%s\n' "$cli"; return 1
+        }
+    done
+}
