@@ -11,10 +11,20 @@ This file provides instructions and context for AI coding agents working on this
 ## Build & Test
 
 ```bash
-./run-tests.sh           # the whole suite
-bats tests/*.bats        # the same thing, directly
+./run-tests.sh           # the fast subset -- the everyday run, ~2 minutes
+./run-tests.sh --all     # every file, ~8 minutes (CLAUDE_ORCA_TEST_ALL=1 does the same)
+bats tests/*.bats        # the whole suite, directly
 bats tests/docs.bats     # one file
 ```
+
+The default run skips the dozen-odd files that stand up real processes or
+churn through big fixtures -- the slow set was picked by timing every file,
+and `run-tests.sh` names it in `SLOW_FILES` and prints how many it skipped.
+CI does not run this suite at all: `.github/workflows/image.yml` builds and
+publishes the image on every push to main and nothing gates that, because a
+red test must never stop a fix from reaching the machine that needs it. The
+image's own smoke and e2e checks are still in that workflow and are run on
+demand -- dispatch it by hand with `run_tests: true`.
 
 Tests are bats-core, and they run on Linux as well as macOS: the suite stubs
 the host tooling (`docker`, `open`, `uname`, `gh`) and exercises the
