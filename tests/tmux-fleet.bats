@@ -262,6 +262,10 @@ start_scratch_tmux_at() {
     [[ "$output" == *"Jump"* ]]
     [[ "$output" == *"Review"* ]]
     [[ "$output" == *"Remove merged"* ]]
+    # "no other" in the title had no assertion behind it, so nothing proved
+    # the removed Sidebar item was actually gone (beads_claude_docker-hka8).
+    [[ "$output" != *"Sidebar"* ]]
+    [[ "$output" != *"fleet-menu sidebar"* ]]
 }
 
 @test "fleet-menu: list-keys shows prefix bindings for N H R J V M mapped to fleet-menu commands" {
