@@ -88,6 +88,15 @@ PUSH_RE='(^|[^A-Za-z0-9_-])(git[[:space:]]+push|gh[[:space:]]+pr[[:space:]]+crea
 CACHE_DIR="${OUTBOUND_GUARD_CACHE_DIR:-${HOME:-}/.claude/cache/outbound-guard}"
 GH_AUTH_CACHE_FILE="$CACHE_DIR/gh-auth-valid"
 
+# Identifies which probe a cache entry was written by. This guard has
+# already changed its validity probe once (gh auth status -> gh api user,
+# beads_claude_docker-iih3, after gh auth status turned out to exit 0 for a
+# genuinely invalid token) purely by renaming the cache file, which is
+# fragile -- easy to forget on the next change. Stamping the probe into the
+# cache CONTENT means a stale entry from a previous scheme is detected and
+# ignored even if a future change reuses the same file name.
+GH_AUTH_PROBE_ID="gh-api-user-v1"
+
 # TTL for a cached `gh api user` result, in seconds. 300s (5 minutes) is
 # long enough that a session doing several pushes in a row pays the network
 # round trip once, short enough that a token revoked mid-session (rare, but
@@ -114,19 +123,21 @@ GH_AUTH_TIMEOUT=5
 # cache miss or timeout still writes the result, so a hung gh doesn't get
 # retried on every subsequent push within the TTL either.
 gh_auth_valid() {
-    local now cached_at cached_result result
+    local now cached_at cached_result cached_probe result
 
     now=$(date +%s 2>/dev/null) || return 1
 
     if [ -f "$GH_AUTH_CACHE_FILE" ]; then
-        # cache format: "<epoch-seconds-of-check> <0-or-1>"
+        # cache format: "<epoch-seconds-of-check> <0-or-1> <probe-id>"
         cached_at=""
         cached_result=""
-        read -r cached_at cached_result < "$GH_AUTH_CACHE_FILE" 2>/dev/null
+        cached_probe=""
+        read -r cached_at cached_result cached_probe < "$GH_AUTH_CACHE_FILE" 2>/dev/null
         case "$cached_at" in
             ''|*[!0-9]*) ;; # not a plain integer -- treat as no usable cache
             *)
-                if [ $((now - cached_at)) -lt "$GH_AUTH_CACHE_TTL" ]; then
+                if [ "$cached_probe" = "$GH_AUTH_PROBE_ID" ] \
+                    && [ $((now - cached_at)) -lt "$GH_AUTH_CACHE_TTL" ]; then
                     [ "$cached_result" = "0" ] && return 0
                     return 1
                 fi
@@ -145,7 +156,7 @@ gh_auth_valid() {
     fi
 
     if mkdir -p "$CACHE_DIR" 2>/dev/null; then
-        printf '%s %s\n' "$now" "$result" > "$GH_AUTH_CACHE_FILE" 2>/dev/null
+        printf '%s %s %s\n' "$now" "$result" "$GH_AUTH_PROBE_ID" > "$GH_AUTH_CACHE_FILE" 2>/dev/null
     fi
 
     [ "$result" -eq 0 ]

@@ -176,3 +176,19 @@ run_pretool() {
     [ -z "$output" ]
     [ "$(gh_call_count)" -eq "$first_count" ]
 }
+
+@test "outbound-guard: a fresh-but-foreign-probe cache entry is not honored -- an upgrade to a stricter probe cannot be masked by a stale cached ALLOW" {
+    # Seeds a cache entry in the exact old format/probe-id this bead's own
+    # first (gh-auth-status-based) pass would have written, claiming
+    # "present" (result 0) and well within the TTL. If the cache keyed only
+    # off freshness this would wrongly short-circuit to ALLOW even though
+    # the real gh here is invalid per the current probe.
+    stub_gh_invalid_token
+    mkdir -p "$HOME/.claude/cache/outbound-guard"
+    printf '%s 0 gh-auth-status-v0\n' "$(date +%s)" > "$HOME/.claude/cache/outbound-guard/gh-auth-valid"
+
+    run_pretool 'git push origin main'
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"no GitHub authentication"* ]]
+    [ "$(gh_call_count)" -ge 1 ]
+}
