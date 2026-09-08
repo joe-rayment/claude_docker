@@ -1017,3 +1017,31 @@ export_guard_test_env() {  # export_guard_test_env <project> <user-data-dir>
     stop_entrypoint
     pkill -f -- "$TMP/upstream.py" 2>/dev/null || true
 }
+
+@test "entrypoint config-syncs from the folder's own template clone, not the image's frozen copy" {
+    [ -x "$ENTRYPOINT" ]
+
+    local proj="$TMP/project"
+    make_project "$proj"
+
+    # A folder clone carrying a config/ the image's copy could not have:
+    # the marker command is what proves which source config-sync read.
+    local tcfg="$proj/.claude-dev/template/config"
+    mkdir -p "$tcfg/claude-commands"
+    printf '{"hooks":{}}\n'        > "$tcfg/claude-settings.json"
+    printf 'folder memory\n'       > "$tcfg/claude-user-memory.md"
+    printf '#!/bin/sh\necho hi\n'  > "$tcfg/statusline.sh"
+    printf 'folder-clone-marker\n' > "$tcfg/claude-commands/marker.md"
+
+    run env HOME="$proj/.claude-dev/home" PROJECT_DIR="$proj" \
+        ORCA_BIN="$TMP/bin/no-such-orca" CLAUDE_ORCA_SKIP_SETUP=1 \
+        CLAUDE_ORCA_SKIP_BEADS=1 CLAUDE_ORCA_ENTRYPOINT_NO_PRIVDROP=1 \
+        bash "$ENTRYPOINT"
+
+    # On a prebuilt image /opt/claude-orca exists and used to win here; the
+    # folder's clone is the source now, whichever box this runs on.
+    [[ "$output" == *"config synced from $proj/.claude-dev/template/config"* ]]
+    [ -f "$proj/.claude-dev/home/.claude/commands/marker.md" ]
+    run cat "$proj/.claude-dev/home/.claude/CLAUDE.md"
+    [ "$output" = "folder memory" ]
+}

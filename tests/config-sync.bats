@@ -244,3 +244,39 @@ JSON
         }
     done
 }
+
+# 2026-09-08: the image's baked /opt/claude-orca copy of config/ is frozen
+# at image build time, so on the prebuilt path the CLIs the rulebook names
+# by bare word resolved to whatever the repo said the day the image was
+# published -- `/tier auth openrouter` was committed, live in the folder,
+# and still "unknown verb" in the session. The folder's clone comes first
+# now, on PATH as well as in the sync source.
+@test "the shipped .zshrc prefers the folder's template bin/ over the image's baked copy" {
+    command -v zsh >/dev/null 2>&1 || skip "zsh not installed"
+
+    make_project "$PROJECT_DIR"
+    primary="$(abspath "$PROJECT_DIR")"
+    rm -f "$PROJECT_DIR/.claude-dev/run/config-hash"
+
+    run CONFIG_SYNC --project "$primary" --host "$ORCA_HOST"
+    [ "$status" -eq 0 ]
+
+    # Two candidates, the way a prebuilt image really presents them: the
+    # folder's own clone (ORCA_HOST is <project>/.claude-dev here) and a
+    # separate host dir standing in for /opt/claude-orca-host.
+    folder_bin="$primary/.claude-dev/template/bin"
+    image_host="$BATS_TEST_TMPDIR/image-host"
+    mkdir -p "$folder_bin" "$image_host/template/bin"
+
+    run env HOME="$primary/.claude-dev/home" PROJECT_DIR="$primary" \
+        CLAUDE_ORCA_HOST_DIR="$image_host" \
+        zsh -c ". \"\$HOME/.zshrc\" >/dev/null 2>&1; printf '%s\n' \"\$PATH\""
+    [ "$status" -eq 0 ]
+
+    # The .zshrc prepends exactly one template bin/, so the head of PATH is
+    # the whole assertion: the folder's, never the image's.
+    [ "${output%%:*}" = "$folder_bin" ] || {
+        printf 'PATH head is %s, want %s\n' "${output%%:*}" "$folder_bin"
+        return 1
+    }
+}

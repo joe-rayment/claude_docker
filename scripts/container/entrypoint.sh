@@ -317,8 +317,21 @@ mkdir -p "$USER_DATA_DIR"
 # config-sync takes the dir ABOVE the template ($HOST/template/config), so
 # the mounted clone is passed as its own parent and the image's copy through
 # /opt/claude-orca-host/template, the symlink setup.sh's template phase made.
+#
+# The folder's own clone is tried FIRST and on purpose, which is where this
+# differs from TEMPLATE_ROOT above: the image's copy of config/ is frozen at
+# image build time, so on the prebuilt path every hook, agent, command and
+# skill the session runs was whatever the repo said the day the image was
+# published -- an edit committed in the folder reached the agent only after
+# a rebuild and a pull. (Found 2026-09-08: /tier's OpenRouter help text and
+# its `auth openrouter` verb were committed, synced from the image anyway,
+# and simply were not there.) setup.sh still comes from TEMPLATE_ROOT: the
+# image's install logic describes the image, and only config/ is the folder's
+# to say.
 sync_host=""
-if [ "$(basename "$TEMPLATE_ROOT")" = "template" ] && [ -d "$TEMPLATE_ROOT/config" ]; then
+if [ -d "$PROJECT_DIR/.claude-dev/template/config" ]; then
+    sync_host="$PROJECT_DIR/.claude-dev"
+elif [ "$(basename "$TEMPLATE_ROOT")" = "template" ] && [ -d "$TEMPLATE_ROOT/config" ]; then
     sync_host="$(dirname "$TEMPLATE_ROOT")"
 elif [ -d "$HOST_DIR/template/config" ]; then
     sync_host="$HOST_DIR"
