@@ -115,13 +115,21 @@ setup() {
     asar_file "$ASAR" out/web/assets/tail.js | cmp -s - <(asar_file "$BATS_TEST_TMPDIR/pristine.asar" out/web/assets/tail.js)
     asar_file "$ASAR" out/renderer/web-index.html | cmp -s - "$FIXTURE"
 
-    # The seed: the client's own localStorage key, the theme, and a
-    # once-per-theme marker so a later choice in Settings sticks.
-    grep -q '<script data-claude-orca-theme="dark">' "$BATS_TEST_TMPDIR/served.html"
+    # The seed: the client's own localStorage key, the theme, the terminal
+    # palette, and a marker carrying both so a later choice in Settings sticks.
+    grep -q '<script data-claude-orca-theme="dark"' "$BATS_TEST_TMPDIR/served.html"
+    grep -q 'data-claude-orca-terminal-theme="Homebrew"' "$BATS_TEST_TMPDIR/served.html"
     grep -q 'k="orca.web.settings.v1"' "$BATS_TEST_TMPDIR/served.html"
     grep -q 'm="orca.claudeOrca.themeSeeded.v1"' "$BATS_TEST_TMPDIR/served.html"
     grep -q 't="dark"' "$BATS_TEST_TMPDIR/served.html"
+    grep -q 'u="Homebrew"' "$BATS_TEST_TMPDIR/served.html"
     grep -q 's.theme=t' "$BATS_TEST_TMPDIR/served.html"
+
+    # Green on black in BOTH slots: Orca reads terminalThemeLight only when
+    # the page is light and the separate-light-theme toggle is on, and this
+    # must not depend on either.
+    grep -q 's.terminalThemeDark=u' "$BATS_TEST_TMPDIR/served.html"
+    grep -q 's.terminalThemeLight=u' "$BATS_TEST_TMPDIR/served.html"
 
     # The clipboard shim: readText hidden so Orca takes its native-paste path.
     grep -q '<script data-claude-orca-clipboard="1">' "$BATS_TEST_TMPDIR/served.html"
@@ -232,4 +240,39 @@ setup() {
     [ "$status" -eq 0 ]
     [[ "$output" == *"already seeds"* ]]
     cmp -s "$real" "$BATS_TEST_TMPDIR/real-once.asar"
+}
+
+# The green phosphor terminal. Orca ships a builtin palette called
+# "Homebrew" -- black ground, #00ff00 text and cursor -- so the seed writes
+# a NAME Orca already resolves rather than colours of our own that would
+# drift from its xterm theme shape. It is the template's default; the flag
+# picks any other palette Orca knows.
+@test "the terminal palette defaults to Homebrew, re-seeds when it changes, and --check catches a mismatch" {
+    python3 "$PATCHER" --asar "$ASAR" --theme dark >/dev/null
+    asar_file "$ASAR" out/web/web-index.html >"$BATS_TEST_TMPDIR/served.html"
+    grep -q 'u="Homebrew"' "$BATS_TEST_TMPDIR/served.html"
+    python3 "$PATCHER" --asar "$ASAR" --check --theme dark
+
+    # The marker carries BOTH values, so a different palette re-seeds even
+    # though the page theme did not move.
+    grep -q 'v=t+"|"+u' "$BATS_TEST_TMPDIR/served.html"
+    run python3 "$PATCHER" --asar "$ASAR" --check --theme dark --terminal-theme Snazzy
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"terminal theme Snazzy (has Homebrew)"* ]]
+
+    run python3 "$PATCHER" --asar "$ASAR" --theme dark --terminal-theme Snazzy
+    [ "$status" -eq 0 ]
+    [ "$(wc -c <"$ASAR")" = "$(wc -c <"$BATS_TEST_TMPDIR/pristine.asar")" ]
+    asar_file "$ASAR" out/web/web-index.html >"$BATS_TEST_TMPDIR/served.html"
+    [ "$(wc -c <"$BATS_TEST_TMPDIR/served.html")" = "$(wc -c <"$FIXTURE")" ]
+    [ "$(grep -c 'data-claude-orca-terminal-theme=' "$BATS_TEST_TMPDIR/served.html")" = "1" ]
+    [ "$(grep -c 'data-claude-orca-clipboard=' "$BATS_TEST_TMPDIR/served.html")" = "1" ]
+    grep -q 'u="Snazzy"' "$BATS_TEST_TMPDIR/served.html"
+    asar_hash_ok "$ASAR" out/web/web-index.html
+
+    # A name that would break out of the JS string literal is refused, and
+    # the shipped default is used instead of seeding garbage.
+    run python3 "$PATCHER" --asar "$ASAR" --theme dark --terminal-theme 'a";alert(1);var z="'
+    [ "$status" -eq 0 ]
+    python3 "$PATCHER" --asar "$ASAR" --check --theme dark --terminal-theme Homebrew
 }

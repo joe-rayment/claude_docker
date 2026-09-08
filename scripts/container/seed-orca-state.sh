@@ -79,6 +79,7 @@ warn() { printf '[seed-orca] %s\n' "$*" >&2; }
 USER_DATA_DIR=""
 PROJECT_DIR=""
 THEME=""
+TERM_THEME=""
 OR_TOKEN=""
 OR_BASE_URL=""
 
@@ -87,6 +88,7 @@ while [ "$#" -gt 0 ]; do
         --user-data-dir) USER_DATA_DIR="${2:-}"; shift 2 ;;
         --project)       PROJECT_DIR="${2:-}"; shift 2 ;;
         --theme)         THEME="${2:-}"; shift 2 ;;
+        --terminal-theme) TERM_THEME="${2:-}"; shift 2 ;;
         --openrouter-token)    OR_TOKEN="${2:-}"; shift 2 ;;
         --openrouter-base-url) OR_BASE_URL="${2:-}"; shift 2 ;;
         *) warn "unknown argument: $1"; exit 2 ;;
@@ -103,6 +105,18 @@ case "$THEME" in
     dark|light|system) ;;
     "") THEME="dark" ;;
     *)  warn "unknown theme '$THEME'; using dark"; THEME="dark" ;;
+esac
+
+# The terminal PALETTE, by name. "Homebrew" is Orca's own builtin
+# green-on-black -- the old phosphor monitor -- and is what this template
+# ships. An unknown name is Orca's to reject (it falls back to its own
+# default); a name carrying a quote would break the JSON, so refuse that here.
+[ -n "$TERM_THEME" ] || TERM_THEME="${CLAUDE_ORCA_TERMINAL_THEME:-}"
+[ -n "$TERM_THEME" ] || TERM_THEME="Homebrew"
+case "$TERM_THEME" in
+    *[!A-Za-z0-9\ ._-]*)
+        warn "unusable terminal theme '$TERM_THEME'; using Homebrew"
+        TERM_THEME="Homebrew" ;;
 esac
 
 # --- where Orca's global state lives -------------------------------------
@@ -148,6 +162,7 @@ e_project="$(json_escape "$PROJECT_DIR")"
 e_worktree="$(json_escape "$worktree_base")"
 e_display="$(json_escape "$display_name")"
 e_repo_id="$(json_escape "$repo_id")"
+e_term_theme="$(json_escape "$TERM_THEME")"
 
 # The guard's credentials, on the two agent ids that talk to OpenRouter.
 # Both or neither: half of a base URL is worse than none.
@@ -200,6 +215,8 @@ cat > "$tmp" <<JSON
   "projects": [],
   "settings": {
     "theme": "$THEME",
+    "terminalThemeDark": "$e_term_theme",
+    "terminalThemeLight": "$e_term_theme",
     "agentDefaultEnv": {
 $agent_env
     },
@@ -227,5 +244,5 @@ mv "$tmp" "$DATA_FILE" || { warn "cannot install $DATA_FILE"; rm -f "$tmp"; exit
 or_note="no OpenRouter guard env"
 [ -n "$OR_TOKEN" ] && [ -n "$OR_BASE_URL" ] \
     && or_note="OpenRouter guard env on opencode+codex -> $OR_BASE_URL"
-log "seeded $DATA_FILE (theme $THEME, worktree base $worktree_base, $or_note)"
+log "seeded $DATA_FILE (theme $THEME, terminal $TERM_THEME, worktree base $worktree_base, $or_note)"
 exit 0

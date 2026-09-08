@@ -590,8 +590,9 @@ patch_orca_web_theme() {
     # archive: a future Orca whose web-index.html has a different shape
     # must leave the folder booting in light mode, not refuse to start.
     if ! python3 "$patcher" --asar /opt/Orca/resources/app.asar \
-        --theme "${CLAUDE_ORCA_THEME:-dark}"; then
-        warn "orca web theme: could not seed ${CLAUDE_ORCA_THEME:-dark} (Orca starts in its own default)"
+        --theme "${CLAUDE_ORCA_THEME:-dark}" \
+        --terminal-theme "${CLAUDE_ORCA_TERMINAL_THEME:-Homebrew}"; then
+        warn "orca web theme: could not seed ${CLAUDE_ORCA_THEME:-dark}/${CLAUDE_ORCA_TERMINAL_THEME:-Homebrew} (Orca starts in its own default)"
     fi
     return 0
 }
@@ -696,10 +697,12 @@ run_checks() {
     v="$(web_theme_patcher)"
     if [ -n "$v" ] && [ -f /opt/Orca/resources/app.asar ] \
         && python3 "$v" --check --asar /opt/Orca/resources/app.asar \
-            --theme "${CLAUDE_ORCA_THEME:-dark}" >/dev/null 2>&1; then
-        ck_ok "orca web theme seeded ${CLAUDE_ORCA_THEME:-dark} in app.asar"
+            --theme "${CLAUDE_ORCA_THEME:-dark}" \
+        --terminal-theme "${CLAUDE_ORCA_TERMINAL_THEME:-Homebrew}" \
+        >/dev/null 2>&1; then
+        ck_ok "orca web theme seeded ${CLAUDE_ORCA_THEME:-dark} + terminal ${CLAUDE_ORCA_TERMINAL_THEME:-Homebrew} in app.asar"
     else
-        ck_fail "orca web theme: app.asar does not seed ${CLAUDE_ORCA_THEME:-dark} (patch-orca-web-theme.py)"
+        ck_fail "orca web theme: app.asar does not seed ${CLAUDE_ORCA_THEME:-dark} + terminal ${CLAUDE_ORCA_TERMINAL_THEME:-Homebrew} (patch-orca-web-theme.py)"
     fi
 
     v="$(id -u agent 2>/dev/null || true)"

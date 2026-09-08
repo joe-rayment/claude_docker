@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-patch-orca-web-theme.py -- make Orca Web open dark, and let its
-terminal accept a paste (claude-orca-qa2.18).
+patch-orca-web-theme.py -- make Orca Web open dark with a green
+phosphor terminal, and let that terminal accept a paste
+(claude-orca-qa2.18).
 
 Why this exists: Orca Web 1.4.197 keeps its theme in the BROWSER, in the
 localStorage record `orca.web.settings.v1`, and its default there is
@@ -53,9 +54,18 @@ no-op; a different theme replaces the theme seed and keeps the shim.
 Run as root at image build (setup.sh --phase template) and optionally
 again at boot with the folder's CLAUDE_ORCA_THEME.
 
+The same seed also sets the TERMINAL palette, by name, into the same
+localStorage record -- `terminalThemeDark` and `terminalThemeLight`. The
+default is Orca's own builtin "Homebrew": black ground, #00ff00 text and
+cursor, i.e. the old green-monitor look. Orca resolves the name itself,
+so nothing here hard-codes a colour or has to track its xterm theme
+shape; `--terminal-theme` picks any other palette Orca knows.
+
     patch-orca-web-theme.py [--asar PATH] [--theme dark|light|system]
+                            [--terminal-theme NAME]
     patch-orca-web-theme.py --check  [--asar PATH] [--theme T]   # 0 if seeded
-                                                                 # T + shim
+                                                                 # T + palette
+                                                                 # + shim
     patch-orca-web-theme.py --print  [--asar PATH]               # dump the html
 """
 
@@ -70,11 +80,23 @@ DEFAULT_ASAR = "/opt/Orca/resources/app.asar"
 HTML_PATH = ("out", "web", "web-index.html")
 THEMES = ("dark", "light", "system")
 
+# Orca ships a terminal palette called "Homebrew" -- black ground,
+# #00ff00 text and cursor -- which is the old phosphor-monitor look this
+# template wants by default. It is one of Orca's own builtin themes
+# (out/shared/terminal-custom-themes.js), so this seeds a NAME Orca
+# already resolves rather than shipping colours of our own that would
+# drift from its xterm theme shape.
+DEFAULT_TERMINAL_THEME = "Homebrew"
+# The name goes into an HTML attribute and a JS string literal, so keep
+# it to characters that need no escaping in either.
+TERMINAL_THEME_RE = re.compile(r"^[A-Za-z0-9 ._-]{1,64}$")
+
 SETTINGS_KEY = "orca.web.settings.v1"
 MARKER_KEY = "orca.claudeOrca.themeSeeded.v1"
 
 SCRIPT_RE = re.compile(
-    r'[ \t]*<script data-claude-orca-theme="[a-z]*">.*?</script>\n?', re.S)
+    r'[ \t]*<script data-claude-orca-theme="[a-z]*"[^>]*>.*?</script>\n?',
+    re.S)
 CLIPBOARD_RE = re.compile(
     r'[ \t]*<script data-claude-orca-clipboard="[^"]*">.*?</script>\n?', re.S)
 PRELOAD_RE = re.compile(r'[ \t]*<link rel="modulepreload"[^>]*>\n')
@@ -93,19 +115,37 @@ CLIPBOARD_SCRIPT = (
 )
 
 
-def seed_script(theme):
+def seed_script(theme, terminal_theme):
+    """The one-time seed: page theme plus the terminal palette.
+
+    Both terminal slots are set. Orca picks terminalThemeLight only when the
+    page is light AND terminalUseSeparateLightTheme is on, so writing one
+    value to both is what makes the terminal green either way -- without
+    touching the separate-light-theme toggle the person may have set.
+
+    The marker carries BOTH values, so changing either one re-seeds once
+    while a person who picked their own theme in Settings still keeps it.
+    """
     js = (
-        'try{var k="%s",m="%s",t="%s";'
-        'if(localStorage.getItem(m)!==t){'
+        'try{var k="%s",m="%s",t="%s",u="%s",v=t+"|"+u;'
+        'if(localStorage.getItem(m)!==v){'
         'var s=JSON.parse(localStorage.getItem(k)||"{}");'
-        's.theme=t;localStorage.setItem(k,JSON.stringify(s));'
-        'localStorage.setItem(m,t)}}catch(e){}'
-    ) % (SETTINGS_KEY, MARKER_KEY, theme)
-    return '    <script data-claude-orca-theme="%s">%s</script>\n' % (theme, js)
+        's.theme=t;s.terminalThemeDark=u;s.terminalThemeLight=u;'
+        'localStorage.setItem(k,JSON.stringify(s));'
+        'localStorage.setItem(m,v)}}catch(e){}'
+    ) % (SETTINGS_KEY, MARKER_KEY, theme, terminal_theme)
+    return ('    <script data-claude-orca-theme="%s" '
+            'data-claude-orca-terminal-theme="%s">%s</script>\n'
+            % (theme, terminal_theme, js))
 
 
 def seeded_theme(html):
-    m = re.search(r'<script data-claude-orca-theme="([a-z]*)">', html)
+    m = re.search(r'<script data-claude-orca-theme="([a-z]*)"', html)
+    return m.group(1) if m else None
+
+
+def seeded_terminal_theme(html):
+    m = re.search(r'data-claude-orca-terminal-theme="([^"]*)"', html)
     return m.group(1) if m else None
 
 
@@ -113,7 +153,7 @@ def clipboard_seeded(html):
     return CLIPBOARD_RE.search(html) is not None
 
 
-def rewrite_html(html, theme):
+def rewrite_html(html, theme, terminal_theme):
     """Return html with both seeds, at exactly len(html) bytes."""
     size = len(html.encode("utf-8"))
     # Strip earlier seeds and their padding so re-theming starts clean.
@@ -125,7 +165,8 @@ def rewrite_html(html, theme):
     if anchor < 0:
         raise SystemExit("web-index.html has no module script tag; "
                          "unexpected Orca Web layout")
-    html = html[:anchor] + seed_script(theme) + CLIPBOARD_SCRIPT + html[anchor:]
+    html = (html[:anchor] + seed_script(theme, terminal_theme)
+            + CLIPBOARD_SCRIPT + html[anchor:])
 
     # Free bytes from the END of the modulepreload hint list, only as many
     # as the two seeds need.
@@ -169,6 +210,10 @@ def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--asar", default=DEFAULT_ASAR)
     ap.add_argument("--theme", default="dark")
+    ap.add_argument("--terminal-theme", default=DEFAULT_TERMINAL_THEME,
+                    help="name of an Orca terminal palette "
+                         "(default %s -- green on black)"
+                         % DEFAULT_TERMINAL_THEME)
     ap.add_argument("--check", action="store_true",
                     help="exit 0 if the archive already seeds --theme")
     ap.add_argument("--print", action="store_true",
@@ -179,6 +224,14 @@ def main(argv=None):
         print("[patch-orca-web] unknown theme %r; using dark" % args.theme,
               file=sys.stderr)
         args.theme = "dark"
+
+    # An unresolvable name is Orca's problem, not ours -- it falls back to its
+    # own default palette. A name carrying a quote would break the seed
+    # script itself, so that one is refused here.
+    if not TERMINAL_THEME_RE.match(args.terminal_theme or ""):
+        print("[patch-orca-web] unusable terminal theme %r; using %s"
+              % (args.terminal_theme, DEFAULT_TERMINAL_THEME), file=sys.stderr)
+        args.terminal_theme = DEFAULT_TERMINAL_THEME
 
     # Read-only for the two modes that only read. setup.sh --check says
     # it "installs nothing, needs no root", and opening the archive r+b
@@ -199,29 +252,37 @@ def main(argv=None):
             return 0
 
         current = seeded_theme(old)
+        current_term = seeded_terminal_theme(old)
         clip = clipboard_seeded(old)
         if args.check:
             theme_ok = current == args.theme
-            ok = theme_ok and clip
+            term_ok = current_term == args.terminal_theme
+            ok = theme_ok and term_ok and clip
             missing = []
             if not theme_ok:
                 missing.append("theme %s (has %s)"
                                % (args.theme, current or "none"))
+            if not term_ok:
+                missing.append("terminal theme %s (has %s)"
+                               % (args.terminal_theme, current_term or "none"))
             if not clip:
                 missing.append("the clipboard shim")
             print("[patch-orca-web] %s: web-index.html seeds theme %s, "
-                  "clipboard shim %s%s"
+                  "terminal theme %s, clipboard shim %s%s"
                   % ("ok" if ok else "FAIL", current or "(none)",
+                     current_term or "(none)",
                      "present" if clip else "MISSING",
                      "" if ok else " -- missing: " + " and ".join(missing)))
             return 0 if ok else 1
 
-        if current == args.theme and clip:
-            print("[patch-orca-web] already seeds theme %s + clipboard shim "
-                  "(%s)" % (args.theme, args.asar))
+        if current == args.theme and current_term == args.terminal_theme \
+                and clip:
+            print("[patch-orca-web] already seeds theme %s + terminal theme "
+                  "%s + clipboard shim (%s)"
+                  % (args.theme, args.terminal_theme, args.asar))
             return 0
 
-        new = rewrite_html(old, args.theme)
+        new = rewrite_html(old, args.theme, args.terminal_theme)
         new_b = new.encode("utf-8")
         assert len(new_b) == size
 
@@ -255,8 +316,9 @@ def main(argv=None):
             f.write(new_raw)
         f.flush()
 
-    print("[patch-orca-web] web-index.html now seeds theme %s + the "
-          "clipboard shim (%s)" % (args.theme, args.asar))
+    print("[patch-orca-web] web-index.html now seeds theme %s + terminal "
+          "theme %s + the clipboard shim (%s)"
+          % (args.theme, args.terminal_theme, args.asar))
     return 0
 
 

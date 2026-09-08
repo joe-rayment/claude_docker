@@ -27,6 +27,8 @@
 #   HOST_UID      the Mac uid owning the bind mount; `agent` is re-mapped
 #                 to it so files written inside look right outside.
 #   GH_TOKEN      passed through to the agent environment untouched.
+#   CLAUDE_ORCA_TERMINAL_THEME  name of an Orca terminal palette; the
+#                             template default is Homebrew (green on black)
 #   CLAUDE_ORCA_THEME         dark|light|system for the seeded Orca
 #                 settings (default dark); the Mac side passes
 #                 claude-orca.json's `theme` through.
@@ -583,6 +585,7 @@ if run_as_agent bash "$SCRIPT_DIR/seed-orca-state.sh" \
         --user-data-dir "$USER_DATA_DIR" \
         --project "$PROJECT_DIR" \
         --theme "${CLAUDE_ORCA_THEME:-}" \
+        --terminal-theme "${CLAUDE_ORCA_TERMINAL_THEME:-}" \
         --openrouter-token "${OPENROUTER_API_KEY:-}" \
         --openrouter-base-url "${OPENROUTER_BASE_URL:-}"; then
     :
