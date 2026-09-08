@@ -3,10 +3,9 @@
 # tmux-fleet.bats — scripts/fleet-menu.sh, installed as fleet-menu, plus
 # config/tmux.conf's status bar / MouseDown3Pane extension / prefix
 # keybindings for the worktree-session fleet: New worktree session / Hide
-# / Restore… / Jump… / Review… / Remove merged… / Sidebar. See
-# .claude/plans/worktree-sessions.md, beads_claude_docker-f5i6 and
-# beads_claude_docker-blrl (F4b, the Sidebar item + prefix S + fleet-menu
-# sidebar subcommand). Depends on F1 (beads_claude_docker-nmnb, cs-new).
+# / Restore… / Jump… / Review… / Remove merged…. See
+# .claude/plans/worktree-sessions.md, beads_claude_docker-f5i6. Depends
+# on F1 (beads_claude_docker-nmnb, cs-new).
 #
 # FROZEN per f5i6's acceptance contract from its RED commit until f5i6's
 # own verification completed -- that verification ran (verifier-fable-5-1-f1f2,
@@ -20,13 +19,6 @@
 # prefix/mouse bindings pass #{pane_id} explicitly, and teardown() gained
 # explicit scratch-socket cleanup. See beads_claude_docker-f5i6's notes.
 #
-# FROZEN again per blrl's own acceptance contract from blrl's RED commit
-# onward: the MouseDown3Pane label test and the pane_id-passing test's
-# subcommand loop were extended to cover the new Sidebar item/binding
-# (both honest additions, not replacements, per blrl's own authorization
-# to update this file), and one new test was added exercising `fleet-menu
-# sidebar`'s delegation to `fleet toggle` end to end.
-#
 # FROZEN again per beads_claude_docker-8wy7's own acceptance contract
 # from its RED commit onward (G2 of .claude/plans/fleet-nav.md): a new
 # "── new (lands in the session) ──" section was added exercising `fleet-menu
@@ -35,8 +27,8 @@
 # run-shell "fleet-menu new #{pane_id} #{pane_current_path}"` (the exact
 # binding shape, not a direct $FLEET_MENU invocation like every test
 # above) for the pane-overlay assertions to mean anything. Since that
-# relies on PATH resolving the bare `fleet-menu`/`cs-new`/`fleet` names
-# tmux's own run-shell looks up, stage_new_shims() puts freshly-symlinked
+# relies on PATH resolving the bare `fleet-menu`/`cs-new` names tmux's
+# own run-shell looks up, stage_new_shims() puts freshly-symlinked
 # copies of this checkout's scripts ahead of /usr/local/bin's (possibly
 # stale, confirmed stale at the time this bead landed) installed copies
 # on $PATH before the scratch server starts -- a scratch tmux server's
@@ -44,20 +36,16 @@
 # whatever process started the server, confirmed empirically before
 # writing these tests.
 #
-# FROZEN again per beads_claude_docker-3c20's own acceptance contract
-# from its RED commit onward (G4 of .claude/plans/fleet-nav.md): the
-# status bar goes off (`set -g status off` in config/tmux.conf), so
-# "status is on with status-position top" became "status is off" (plus a
-# check that no status-position/status-left/status-right lines remain),
-# and the status-bar-and-jump-menu screenshot test was replaced by a
-# sidebar-rows screenshot (the sidebar, not a status row, is now the
-# place parked windows are visible). A new test diffs the MouseDown3Pane
-# and prefix N/H/R/J/V/M/S key tables against HEAD's tmux.conf via `tmux
-# list-keys` on its own scratch server, since the acceptance contract
-# requires those bindings stay byte-for-byte unchanged. The jump --print
-# test's window setup was hardened (poll pane_current_path before
-# reading git state off each window) for the pre-existing dd3o flake;
-# dd3o itself stays open, nothing else about that test changed.
+# FROZEN again per beads_claude_docker-hka8's own acceptance contract
+# from its RED commit onward: an interim item (later removed and never
+# part of any released binding contract) is gone from the MouseDown3Pane
+# menu and the prefix table, restoring the six-item/six-key set (N H R J
+# V M) this file originally froze. The status bar comes back on (`set -g
+# status on` in config/tmux.conf, matching its pre-off format), so
+# "status is off" reverts to "status is on with status-position top" and
+# the plain-text menu/dispatch tests that exercised the interim item are
+# removed rather than repointed, since the item itself no longer exists
+# to exercise.
 #
 # Every tmux test runs on a scratch `tmux -L fleet-test-<pid>-<rand>`
 # server loaded with config/tmux.conf, never the live server this session
@@ -68,7 +56,6 @@
 # already established for cs-new).
 
 FLEET_MENU=/workspace/scripts/fleet-menu.sh
-FLEET=/workspace/scripts/fleet.sh
 REPO_ROOT=/workspace
 
 setup() {
@@ -176,8 +163,8 @@ wait_for() {
 }
 
 # stage_new_shims — creates $BATS_TEST_TMPDIR/shimbin with fleet-menu/
-# cs-new/fleet symlinked to THIS checkout's scripts (bare names, matching
-# what /usr/local/bin and plugin/bin both install as) and prepends it to
+# cs-new symlinked to THIS checkout's scripts (bare names, matching what
+# /usr/local/bin and plugin/bin both install as) and prepends it to
 # $PATH. Only the "new" tests below need this: they drive fleet-menu
 # through a REAL `tmux run-shell "fleet-menu ..."`, which resolves the
 # bare command via PATH exactly like config/tmux.conf's own binding does
@@ -191,7 +178,6 @@ stage_new_shims() {
     mkdir -p "$dir"
     ln -sf /workspace/scripts/fleet-menu.sh "$dir/fleet-menu"
     ln -sf /workspace/scripts/cs-new.sh "$dir/cs-new"
-    ln -sf /workspace/scripts/fleet.sh "$dir/fleet"
     export PATH="$dir:$PATH"
 }
 
@@ -214,24 +200,27 @@ start_scratch_tmux_at() {
     [ "$status" -eq 0 ]
 }
 
-@test "fleet-menu: status is off" {
+@test "fleet-menu: status is on, pinned to the top, with the pre-2c8f229 format restored" {
     start_scratch_tmux
     run tmux -L "$TMUX_SOCK" show-options -gv status
-    [ "$output" = "off" ]
-    run grep -E '^[[:space:]]*set -g status-position' "$REPO_ROOT/config/tmux.conf"
-    [ "$status" -ne 0 ]
-    run grep -E '^[[:space:]]*set -g status-left' "$REPO_ROOT/config/tmux.conf"
-    [ "$status" -ne 0 ]
-    run grep -E '^[[:space:]]*set -g status-right' "$REPO_ROOT/config/tmux.conf"
-    [ "$status" -ne 0 ]
+    [ "$output" = "on" ]
+    run tmux -L "$TMUX_SOCK" show-options -gv status-position
+    [ "$output" = "top" ]
+    run grep -E '^[[:space:]]*set -g status-left ' "$REPO_ROOT/config/tmux.conf"
+    [ "$status" -eq 0 ]
+    run grep -E '^[[:space:]]*set -g window-status-format ' "$REPO_ROOT/config/tmux.conf"
+    [ "$status" -eq 0 ]
+    run grep -E '^[[:space:]]*set -g window-status-current-format ' "$REPO_ROOT/config/tmux.conf"
+    [ "$status" -eq 0 ]
+    run grep -E '^[[:space:]]*set -g status-right ' "$REPO_ROOT/config/tmux.conf"
+    [ "$status" -eq 0 ]
 }
 
-@test "fleet-menu: MouseDown3Pane and prefix N/H/R/J/V/M/S bindings match HEAD's tmux.conf via tmux list-keys" {
-    # Status is going off in this bead's own commit, but the bindings
-    # (right-click menu + prefix keys) must stay byte-for-byte identical
-    # to whatever HEAD (i.e. before this bead's changes land) shipped --
-    # loads HEAD's config/tmux.conf on its own scratch server and diffs
-    # both key tables against the working tree's.
+@test "fleet-menu: MouseDown3Pane and prefix N/H/R/J/V/M bindings match HEAD's tmux.conf via tmux list-keys" {
+    # The bindings (right-click menu + prefix keys) must stay byte-for-byte
+    # identical to whatever HEAD (i.e. before this bead's changes land)
+    # shipped -- loads HEAD's config/tmux.conf on its own scratch server
+    # and diffs both key tables against the working tree's.
     local head_conf="$BATS_TEST_TMPDIR/head-tmux.conf"
     git -C "$REPO_ROOT" show HEAD:config/tmux.conf > "$head_conf"
 
@@ -262,7 +251,7 @@ start_scratch_tmux_at() {
 
 # ── right-click menu / prefix keys ──────────────────────────────────────
 
-@test "fleet-menu: MouseDown3Pane binding contains the six new item labels plus Sidebar" {
+@test "fleet-menu: MouseDown3Pane binding contains the six item labels, no other" {
     start_scratch_tmux
     run tmux -L "$TMUX_SOCK" list-keys -T root
     [ "$status" -eq 0 ]
@@ -273,10 +262,9 @@ start_scratch_tmux_at() {
     [[ "$output" == *"Jump"* ]]
     [[ "$output" == *"Review"* ]]
     [[ "$output" == *"Remove merged"* ]]
-    [[ "$output" == *"Sidebar"* ]]
 }
 
-@test "fleet-menu: list-keys shows prefix bindings for N H R J V M S mapped to fleet-menu commands" {
+@test "fleet-menu: list-keys shows prefix bindings for N H R J V M mapped to fleet-menu commands" {
     start_scratch_tmux
     run tmux -L "$TMUX_SOCK" list-keys -T prefix
     [ "$status" -eq 0 ]
@@ -293,8 +281,6 @@ start_scratch_tmux_at() {
     [ "$status" -eq 0 ]
     run grep -E '(^| )M( |$).*fleet-menu remove-merged' "$BATS_TEST_TMPDIR/prefix-keys.txt"
     [ "$status" -eq 0 ]
-    run grep -E '(^| )S( |$).*fleet-menu sidebar' "$BATS_TEST_TMPDIR/prefix-keys.txt"
-    [ "$status" -eq 0 ]
 }
 
 @test "fleet-menu: prefix and MouseDown3Pane bindings pass #{pane_id} explicitly" {
@@ -308,14 +294,14 @@ start_scratch_tmux_at() {
     run tmux -L "$TMUX_SOCK" list-keys -T prefix
     [ "$status" -eq 0 ]
     printf '%s\n' "$output" > "$BATS_TEST_TMPDIR/prefix-keys-paneid.txt"
-    for sub in new hide restore jump review remove-merged sidebar; do
+    for sub in new hide restore jump review remove-merged; do
         run grep -F "fleet-menu $sub #{pane_id}" "$BATS_TEST_TMPDIR/prefix-keys-paneid.txt"
         [ "$status" -eq 0 ]
     done
     run tmux -L "$TMUX_SOCK" list-keys -T root
     [ "$status" -eq 0 ]
     printf '%s\n' "$output" > "$BATS_TEST_TMPDIR/root-keys-paneid.txt"
-    for sub in new hide restore jump review remove-merged sidebar; do
+    for sub in new hide restore jump review remove-merged; do
         run grep -F "fleet-menu $sub #{pane_id}" "$BATS_TEST_TMPDIR/root-keys-paneid.txt"
         [ "$status" -eq 0 ]
     done
@@ -474,31 +460,6 @@ start_scratch_tmux_at() {
     [ -n "$output" ]
 }
 
-# ── sidebar ──────────────────────────────────────────────────────────────
-
-@test "fleet-menu: sidebar delegates to fleet toggle, opening then closing a 34-column pane" {
-    start_scratch_tmux
-    fake_tmux="$(fake_tmux_env "$TMUX_SOCK")"
-
-    local before
-    before="$(tmux -L "$TMUX_SOCK" list-panes -t base | wc -l)"
-    [ "$before" -eq 1 ]
-
-    run env -u TMUX TMUX="$fake_tmux" "$FLEET_MENU" sidebar
-    [ "$status" -eq 0 ]
-
-    run bash -c "tmux -L '$TMUX_SOCK' list-panes -t base -F '#{pane_id} #{pane_width} #{@fleet_sidebar}' | awk '\$3==\"1\"'"
-    [ "$status" -eq 0 ]
-    [ -n "$output" ]
-    [ "$(printf '%s\n' "$output" | awk '{print $2}')" -eq 34 ]
-
-    run env -u TMUX TMUX="$fake_tmux" "$FLEET_MENU" sidebar
-    [ "$status" -eq 0 ]
-
-    run bash -c "tmux -L '$TMUX_SOCK' list-panes -t base | wc -l"
-    [ "$output" -eq 1 ]
-}
-
 # ── new (lands in the session, beads_claude_docker-8wy7 / G2) ──────────
 # cmd_new used to run cs-new via a nested backgrounded run-shell with no
 # target pane; at completion tmux painted its captured stdout+stderr as a
@@ -544,49 +505,6 @@ start_scratch_tmux_at() {
         [[ "$output" != *"HEAD is now at"* ]]
         [[ "$output" != *"cs-new:"* ]]
     done
-}
-
-@test "fleet-menu: new brings an open sidebar along into the new window" {
-    stage_new_shims
-    REPO="$(new_scratch_repo new-repo2)"
-    export CS_NEW_LAUNCH='sleep 47'
-    start_scratch_tmux_at "$REPO"
-    pane0="$(tmux -L "$TMUX_SOCK" display -p -t base '#{pane_id}')"
-
-    run tmux -L "$TMUX_SOCK" run-shell "fleet toggle $pane0"
-    [ "$status" -eq 0 ]
-    sidebar_pane="$(tmux -L "$TMUX_SOCK" list-panes -a -F '#{pane_id} #{@fleet_sidebar}' | awk '$2=="1"{print $1}')"
-    [ -n "$sidebar_pane" ]
-
-    run tmux -L "$TMUX_SOCK" run-shell "fleet-menu new #{pane_id} #{pane_current_path}"
-    [ "$status" -eq 0 ]
-
-    # Poll by the worktree's OWN name (not just "any second window"): a
-    # pre-fix cmd_new returns from this run-shell almost instantly too
-    # (it only kicks off a nested BACKGROUNDED run-shell, not waits for
-    # it), so asserting on window state read immediately afterward would
-    # false-pass by comparing the sidebar's still-unmoved window against
-    # itself, before the real new window even exists yet (confirmed
-    # empirically while writing this test).
-    names=("$REPO"/.claude/worktrees/*)
-    [ "${#names[@]}" -eq 1 ]
-    wt_name="$(basename "${names[0]}")"
-    wait_for 15 bash -c "tmux -L '$TMUX_SOCK' list-windows -F '#{window_name}' 2>/dev/null | grep -qx '$wt_name'"
-
-    new_window="$(tmux -L "$TMUX_SOCK" list-windows -F '#{window_id} #{window_name}' | awk -v n="$wt_name" '$2==n{print $1}')"
-    [ -n "$new_window" ]
-    run tmux -L "$TMUX_SOCK" display -p -t "$new_window" '#{window_active}'
-    [ "$output" = "1" ]
-
-    sidebar_window="$(tmux -L "$TMUX_SOCK" display -p -t "$sidebar_pane" '#{window_id}')"
-    [ "$sidebar_window" = "$new_window" ]
-
-    run tmux -L "$TMUX_SOCK" display -p -t "$sidebar_pane" '#{pane_width}'
-    [ "$output" -eq 34 ]
-
-    run bash -c "tmux -L '$TMUX_SOCK' list-panes -t '$new_window' -F '#{pane_id} #{pane_active} #{@fleet_sidebar}' | awk '\$3!=\"1\"'"
-    [ -n "$output" ]
-    [ "$(printf '%s\n' "$output" | awk '{print $2}')" -eq 1 ]
 }
 
 @test "fleet-menu: a forced cs-new failure leaves no new window and surfaces the error without a pane overlay" {
@@ -659,59 +577,47 @@ start_scratch_tmux_at() {
 
 # ── screenshots ──────────────────────────────────────────────────────────
 
-@test "fleet-menu: sidebar rows are captured as a PNG via take-screenshot term with status off (beads_claude_docker-3c20)" {
-    # Supersedes the old status-bar screenshot (removed with the status
-    # bar itself, f5i6): the sidebar now carries the same "what's on this
-    # server" job the status bar used to, so the evidence shot is of the
-    # sidebar's own rows plus a line proving the status bar is off.
-    REPO="$(new_scratch_repo sidebar-repo)"
+@test "fleet-menu: the restored status bar's window row is captured as a PNG via take-screenshot term (beads_claude_docker-hka8)" {
+    # Status bar restored to the job it did before 2c8f229 turned it off:
+    # the evidence shot is of a capture-pane text proving every window
+    # name is present in the rendered status line.
+    REPO="$(new_scratch_repo statusbar-repo)"
     start_scratch_tmux_at "$REPO"
     tmux -L "$TMUX_SOCK" new-window -n w-one -c "$REPO"
     tmux -L "$TMUX_SOCK" new-window -n w-two -c "$REPO"
     select_window_pane base
-    pane0="$(tmux -L "$TMUX_SOCK" display -p -t base '#{pane_id}')"
-    fake_tmux="$(fake_tmux_env "$TMUX_SOCK")"
 
-    run env -u TMUX TMUX="$fake_tmux" "$FLEET" toggle "$pane0"
-    [ "$status" -eq 0 ]
-    sidebar_pane="$(tmux -L "$TMUX_SOCK" list-panes -a -F '#{pane_id} #{@fleet_sidebar}' | awk '$2=="1"{print $1}')"
-    [ -n "$sidebar_pane" ]
-
-    # Precompute the capture TEXT to a file first (sidebar rows plus the
-    # status-off proof), then screenshot a trivial `cat <file>` -- see
-    # the (removed) status-bar test's own comment history for why: a
-    # forking command piped straight into `take-screenshot term` can be
-    # truncated by termshot's idle-timeout heuristic; `cat` never forks.
-    # The sidebar's first frame lands only after its git/tmux lookups
-    # finish, so poll the capture until both window rows are present
-    # (contract-owner fix: the original single capture raced the render).
-    sidebar_txt="$BATS_TEST_TMPDIR/sidebar-rows.txt"
+    # capture-pane -p doesn't include the status line, so poll
+    # display-message against the actual status-line format instead --
+    # the first render can lag session/window creation by a tick.
+    status_txt="$BATS_TEST_TMPDIR/status-line.txt"
     for _ in $(seq 1 50); do
+        tmux -L "$TMUX_SOCK" display-message -p -F '#{status} #{status-position} #{window_status_format}' > /dev/null
         {
-            tmux -L "$TMUX_SOCK" capture-pane -p -t "$sidebar_pane"
-            echo
             echo "status: $(tmux -L "$TMUX_SOCK" show-options -gv status)"
-        } > "$sidebar_txt"
-        if grep -qF "w-two" "$sidebar_txt"; then
+            echo "status-position: $(tmux -L "$TMUX_SOCK" show-options -gv status-position)"
+            tmux -L "$TMUX_SOCK" list-windows -F '#I:#W'
+        } > "$status_txt"
+        if grep -qF "w-two" "$status_txt"; then
             break
         fi
         sleep 0.2
     done
 
-    for w in w-one w-two; do
-        run grep -F "$w" "$sidebar_txt"
+    run grep -F "status: on" "$status_txt"
+    [ "$status" -eq 0 ]
+    for w in "0:base" "1:w-one" "2:w-two"; do
+        run grep -F "$w" "$status_txt"
         [ "$status" -eq 0 ]
     done
-    run grep -F "status: off" "$sidebar_txt"
-    [ "$status" -eq 0 ]
 
-    sidebar_png="/workspace/attachments/fleet-3c20-sidebar-$$.png"
-    rm -f "$sidebar_png"
-    run take-screenshot term -o "$sidebar_png" "cat $sidebar_txt"
+    status_png="/workspace/attachments/fleet-hka8-status-$$.png"
+    rm -f "$status_png"
+    run take-screenshot term -o "$status_png" "cat $status_txt"
     [ "$status" -eq 0 ]
-    [ -f "$sidebar_png" ]
-    size="$(wc -c < "$sidebar_png")"
+    [ -f "$status_png" ]
+    size="$(wc -c < "$status_png")"
     [ "$size" -gt 20000 ]
 
-    echo "fleet-menu sidebar screenshot: $sidebar_png"
+    echo "fleet-menu status bar screenshot: $status_png"
 }

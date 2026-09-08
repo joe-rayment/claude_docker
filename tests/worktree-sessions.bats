@@ -337,17 +337,17 @@ wait_for() {
     [ "${#names[@]}" -eq 1 ]
 }
 
-# ── folder-trust seeding + fleet follow (beads_claude_docker-8wy7, G2 of
+# ── folder-trust seeding (beads_claude_docker-8wy7, G2 of
 # .claude/plans/fleet-nav.md) ────────────────────────────────────────────
 # A freshly created (or --open'd) worktree used to land on Claude Code's
 # own folder-trust dialog, whose default answer ("No, exit") closed the
 # window straight away, because trust in $HOME/.claude.json is keyed by
 # exact path and isn't inherited by .claude/worktrees/<name> from the
 # trusted root. Fix: cs-new copies the root's own trust entry to the
-# worktree's own entry, best-effort, before launching either way; and,
-# inside tmux, calls 'fleet follow' once the new window exists so an open
-# sidebar joins it immediately. FROZEN alongside the rest of this file
-# per 8wy7's own acceptance contract from its RED commit onward.
+# worktree's own entry, best-effort, before launching either way. FROZEN
+# alongside the rest of this file per 8wy7's own acceptance contract from
+# its RED commit onward; the since-removed 'fleet follow' call this
+# section originally also covered is gone (beads_claude_docker-hka8).
 
 # write_claude_json <path> <text> — writes <text> to <path> at mode 644,
 # matching how Claude Code itself leaves the file (JSON.stringify(...,
@@ -420,33 +420,3 @@ write_claude_json() {
     diff "$HOMEDIR/.claude.json" "$BATS_TEST_TMPDIR/orig4.json"
 }
 
-@test "cs-new: inside tmux, calls 'fleet follow' so an open sidebar joins the new window" {
-    REPO="$(new_scratch_repo trust-repo5)"
-    start_scratch_tmux
-    fake_tmux="$(fake_tmux_env "$TMUX_SOCK")"
-
-    run env -u TMUX TMUX="$fake_tmux" /workspace/scripts/fleet.sh toggle
-    [ "$status" -eq 0 ]
-    sidebar_pane="$(tmux -L "$TMUX_SOCK" list-panes -a -F '#{pane_id} #{@fleet_sidebar}' | awk '$2=="1"{print $1}')"
-    [ -n "$sidebar_pane" ]
-
-    ( cd "$REPO" && env -u TMUX TMUX="$fake_tmux" CS_NEW_LAUNCH='sleep 47' "$CS_NEW" follow-wt ) >"$BATS_TEST_TMPDIR/out-follow.log" 2>&1 &
-    CS_NEW_PID=$!
-    register_cleanup "$REPO" "$REPO/.claude/worktrees/follow-wt" "follow-wt"
-    wait_for 50 bash -c "tmux -L '$TMUX_SOCK' list-windows -F '#{window_name}' 2>/dev/null | grep -qx follow-wt"
-
-    # Deliberately a SHORT poll (well under fleet --watch's own
-    # REFRESH_INTERVAL_S=3 tick) rather than 50 tries like the wait above:
-    # the sidebar pane is itself running 'fleet --watch', whose own
-    # per-tick do_follow() would eventually move it into the new window
-    # all by itself given enough wall-clock time, which would make this
-    # test pass even without cs-new's own explicit 'fleet follow' call
-    # (confirmed empirically -- a 50-try/0.2s poll here passed against a
-    # cs-new build with no fleet-follow call at all). Polling for under a
-    # tick's worth of time isolates cs-new's own (synchronous, no-sleep)
-    # call as the only thing that can make this succeed this fast.
-    wait_for 10 bash -c "tmux -L '$TMUX_SOCK' display -p -t '$sidebar_pane' '#{window_name}' 2>/dev/null | grep -qx follow-wt"
-
-    run tmux -L "$TMUX_SOCK" display -p -t "$sidebar_pane" '#{window_name}'
-    [ "$output" = "follow-wt" ]
-}
