@@ -208,12 +208,15 @@ fi
 
 # git push: gated on gh_connected, not the marker below. No session_id
 # needed at all — there's no marker to look up for this verb — so this
-# runs before, and independently of, the session_id gate further down.
+# runs before, and independently of, the session_id gate further down. A
+# connected push falls through instead of exiting here, so a compound
+# command like `git push && gh pr create` still reaches MARKER_RE below
+# (claude-orca-cc5) — MARKER_RE doesn't match a lone `git push`, so that
+# case still ends in a clean allow at the bottom of the script.
 if printf '%s' "$cmd_norm" | grep -Eq "$GIT_PUSH_RE"; then
     if ! gh_connected; then
         deny "outbound-guard: no GitHub connection (gh auth status failed) — a push would fail; run 'gh auth login' or commit locally."
     fi
-    exit 0
 fi
 
 # Everything past this point (gh pr/repo create, bd dolt push) needs a
