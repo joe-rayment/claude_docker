@@ -1,9 +1,13 @@
 #!/usr/bin/env bats
-# outbound-guard.bats — the two mechanical outbound-network rules a prose
-# instruction alone couldn't hold (beads_claude_docker-y2qe):
+# outbound-guard.bats — the mechanical outbound-network rules a prose
+# instruction alone couldn't hold (beads_claude_docker-y2qe, claude-orca-diz):
 #   PreToolUse (matcher Bash)   deny any snow/snowsql invocation, always;
-#                               deny git push / gh pr create / gh repo create /
-#                               bd dolt push unless the current prompt asked
+#                               deny `git push` unless `gh auth status`
+#                               reports a live GitHub connection;
+#                               deny `gh pr create` / `gh repo create` /
+#                               `bd dolt push` unless the current prompt
+#                               asked (the marker gate, unchanged for these
+#                               three verbs)
 #   UserPromptSubmit            outbound-guard --prompt: set/clear the
 #                               per-session "this prompt asked for a push"
 #                               marker from the prompt's own wording
@@ -13,6 +17,7 @@
 REPO=${OUTBOUND_GUARD_REPO:-"$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)"}
 GUARD=${OUTBOUND_GUARD_BIN:-"$REPO/scripts/outbound-guard.sh"}
 SETTINGS="$REPO/config/claude-settings.json"
+MEMORY="$REPO/config/claude-user-memory.md"
 
 setup() {
     export TMPDIR="$BATS_TEST_TMPDIR"
@@ -39,6 +44,35 @@ run_prompt() {
 
 deny_reason() {
     printf '%s' "$output" | jq -r '.hookSpecificOutput.permissionDecisionReason'
+}
+
+# stub_gh <dir> <exit_code> [sleep_secs] — write a `gh` script at <dir>/gh
+# that (if GH_CALLED_MARKER is exported) appends to that path every time
+# it runs, then sleeps and exits with <exit_code>. Callers put <dir> at
+# the front of PATH so the guard's own `gh auth status` call sees it.
+stub_gh() {
+    local dir="$1" code="$2" sleep_s="${3:-0}"
+    mkdir -p "$dir"
+    cat > "$dir/gh" <<STUB
+#!/usr/bin/env bash
+[ -n "\${GH_CALLED_MARKER:-}" ] && printf '1' >> "\$GH_CALLED_MARKER"
+sleep $sleep_s
+exit $code
+STUB
+    chmod +x "$dir/gh"
+}
+
+# make_no_gh_path <dir> — populate <dir> with symlinks to every binary
+# outbound-guard.sh needs EXCEPT gh, so `command -v gh` genuinely fails
+# without losing jq/bash/grep/etc. Built with explicit `command -v` calls
+# run from bash (not this file's own shell) so nothing shadows them.
+make_no_gh_path() {
+    local dir="$1" b p
+    mkdir -p "$dir"
+    for b in bash env jq cat tr mkdir rm grep dirname readlink timeout basename sed; do
+        p=$(command -v "$b" 2>/dev/null) || continue
+        ln -sf "$p" "$dir/$b"
+    done
 }
 
 # ── snow / snowsql: unconditional deny ──────────────────────────────────────
@@ -78,59 +112,145 @@ deny_reason() {
     [[ "$(deny_reason)" == *"no Snowflake access"* ]]
 }
 
-# ── push/deploy: denied unless the current prompt's marker is set ──────────
-
-@test "outbound-guard: 'git push origin main' is denied with no marker" {
-    run_pretool 'git push origin main'
+@test "the warehouse CLI stays denied even when gh is connected" {
+    stub_gh "$BATS_TEST_TMPDIR/bin" 0
+    local old_path="$PATH"
+    PATH="$BATS_TEST_TMPDIR/bin:$PATH"
+    run_pretool 'snow sql -q "select 1"'
+    PATH="$old_path"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.hookSpecificOutput.permissionDecision == "deny"'
-    [[ "$(deny_reason)" == *"opt-in"* ]]
+    [[ "$(deny_reason)" == *"no Snowflake access"* ]]
 }
 
-@test "outbound-guard: 'gh pr create --fill' is denied with no marker" {
+# ── git push: gated on a live GitHub connection, not a marker ──────────────
+
+@test "git push is allowed when gh reports a GitHub connection" {
+    stub_gh "$BATS_TEST_TMPDIR/bin" 0
+    local old_path="$PATH"
+    PATH="$BATS_TEST_TMPDIR/bin:$PATH"
+    run_pretool 'git push origin main'
+    PATH="$old_path"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+}
+
+@test "git push is denied when gh reports no GitHub connection" {
+    stub_gh "$BATS_TEST_TMPDIR/bin" 1
+    local old_path="$PATH"
+    PATH="$BATS_TEST_TMPDIR/bin:$PATH"
+    run_pretool 'git push origin main'
+    PATH="$old_path"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.hookSpecificOutput.permissionDecision == "deny"'
+    [[ "$(deny_reason)" == *"GitHub connection"* ]]
+}
+
+@test "git push is denied when gh is not on PATH" {
+    make_no_gh_path "$BATS_TEST_TMPDIR/bin"
+    local old_path="$PATH"
+    PATH="$BATS_TEST_TMPDIR/bin"
+    run_pretool 'git push origin main'
+    PATH="$old_path"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.hookSpecificOutput.permissionDecision == "deny"'
+    [[ "$(deny_reason)" == *"GitHub connection"* ]]
+}
+
+@test "git push is denied when the connection check times out" {
+    stub_gh "$BATS_TEST_TMPDIR/bin" 0 3
+    export OUTBOUND_GUARD_GH_TIMEOUT=1
+    local old_path="$PATH"
+    PATH="$BATS_TEST_TMPDIR/bin:$PATH"
+    run_pretool 'git push origin main'
+    PATH="$old_path"
+    unset OUTBOUND_GUARD_GH_TIMEOUT
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.hookSpecificOutput.permissionDecision == "deny"'
+    [[ "$(deny_reason)" == *"GitHub connection"* ]]
+}
+
+@test "the git push deny message names the connection and not the prompt" {
+    stub_gh "$BATS_TEST_TMPDIR/bin" 1
+    local old_path="$PATH"
+    PATH="$BATS_TEST_TMPDIR/bin:$PATH"
+    run_pretool 'git push origin main'
+    PATH="$old_path"
+    [[ "$(deny_reason)" == *"GitHub connection"* ]]
+    [[ "$(deny_reason)" != *"prompt"* ]]
+    [[ "$(deny_reason)" != *"opt-in"* ]]
+}
+
+@test "the connection check is not run for a non-outbound command" {
+    stub_gh "$BATS_TEST_TMPDIR/bin" 0
+    local marker="$BATS_TEST_TMPDIR/gh-called"
+    export GH_CALLED_MARKER="$marker"
+    local old_path="$PATH"
+    PATH="$BATS_TEST_TMPDIR/bin:$PATH"
+    run_pretool 'git commit -m x'
+    PATH="$old_path"
+    unset GH_CALLED_MARKER
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+    [ ! -e "$marker" ]
+}
+
+@test "git push with no session_id still fails open" {
+    stub_gh "$BATS_TEST_TMPDIR/bin" 0
+    local old_path="$PATH"
+    PATH="$BATS_TEST_TMPDIR/bin:$PATH"
+    run_pretool_no_sid 'git push origin main'
+    PATH="$old_path"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+}
+
+# ── gh pr create / gh repo create / bd dolt push: still marker-gated ───────
+
+@test "gh pr create still requires the prompt marker" {
     run_pretool 'gh pr create --fill'
     [ "$status" -eq 0 ]
     [[ "$(deny_reason)" == *"opt-in"* ]]
+
+    run_prompt 'please open a pull request for this' 's1'
+    [ "$status" -eq 0 ]
+    run_pretool 'gh pr create --fill' 's1'
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
 }
 
-@test "outbound-guard: 'gh repo create' is denied with no marker" {
+@test "gh repo create still requires the prompt marker" {
     run_pretool 'gh repo create foo --public'
     [ "$status" -eq 0 ]
     [[ "$(deny_reason)" == *"opt-in"* ]]
+
+    run_prompt 'please publish this as a new repo' 's1'
+    [ "$status" -eq 0 ]
+    run_pretool 'gh repo create foo --public' 's1'
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
 }
 
-@test "outbound-guard: 'bd dolt push' is denied with no marker" {
+@test "bd dolt push still requires the prompt marker" {
     run_pretool 'bd dolt push'
     [ "$status" -eq 0 ]
     [[ "$(deny_reason)" == *"opt-in"* ]]
+
+    run_prompt 'please push the dolt database' 's1'
+    [ "$status" -eq 0 ]
+    run_pretool 'bd dolt push' 's1'
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
 }
 
 # ── marker lifecycle: set by a prompt that asked, cleared by one that didn't ─
+# (git push is exempt now -- these three verbs are the only ones still
+# reading the marker.)
 
-@test "outbound-guard: git push is allowed only for the prompt that asked for it" {
-    run_pretool 'git push origin main' 's1'
-    [ "$status" -eq 0 ]
-    [[ "$(deny_reason)" == *"opt-in"* ]]
-
-    run_prompt 'please push this to origin' 's1'
-    [ "$status" -eq 0 ]
-
-    run_pretool 'git push origin main' 's1'
-    [ "$status" -eq 0 ]
-    [ -z "$output" ]
-
-    run_prompt 'fix the typo in the README' 's1'
-    [ "$status" -eq 0 ]
-
-    run_pretool 'git push origin main' 's1'
-    [ "$status" -eq 0 ]
-    [[ "$(deny_reason)" == *"opt-in"* ]]
-}
-
-@test "outbound-guard: the marker is per session -- another session's push still denies" {
+@test "outbound-guard: the marker is per session -- another session's marker-gated command still denies" {
     run_prompt 'please push this' 's1'
     [ "$status" -eq 0 ]
-    run_pretool 'git push origin main' 's2'
+    run_pretool 'gh pr create --fill' 's2'
     [ "$status" -eq 0 ]
     [[ "$(deny_reason)" == *"opt-in"* ]]
 }
@@ -222,8 +342,8 @@ deny_reason() {
     [[ "$(deny_reason)" == *"no Snowflake access"* ]]
 }
 
-@test "outbound-guard: PreToolUse payload with no session_id key fails open for a push command (only the marker rule needs a session_id)" {
-    run_pretool_no_sid 'git push origin main'
+@test "outbound-guard: PreToolUse payload with no session_id key fails open for a marker-gated command (only the marker rule needs a session_id)" {
+    run_pretool_no_sid 'gh pr create --fill'
     [ "$status" -eq 0 ]
     [ -z "$output" ]
 }
@@ -272,3 +392,15 @@ deny_reason() {
 @test "outbound-guard: scripts/outbound-guard.sh is executable" {
     [ -x "$REPO/scripts/outbound-guard.sh" ]
 }
+
+# ── rulebook prose matches the mechanism ────────────────────────────────────
+
+@test "the rulebook paragraph describes the connection gate" {
+    run grep -A3 "^## Push and deploy are the user" "$MEMORY"
+    [ "$status" -eq 0 ]
+    local para="$output"
+    [[ "$para" == *"git push"* ]]
+    [[ "$para" == *"GitHub connection"* ]]
+    [[ "$para" != *'`git push`, `gh pr create`, `bd dolt push`, and every deploy run only when the current prompt asks'* ]]
+}
+
