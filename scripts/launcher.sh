@@ -19,7 +19,8 @@
 #   claude-dev key openrouter     Store this folder's OpenRouter key
 #   claude-dev --how-to-run       Print the URL and the two commands
 #   claude-dev --doctor           CLI, service, image, container, port, web url
-#   claude-dev --update           Pull the template, rebuild the image, recreate
+#   claude-dev --update           Pull the template, rebuild the image, re-sync
+#                                 the config, recreate
 #   claude-dev --teardown         Snapshot beads, remove this folder's install
 #   claude-dev --help             Show this help
 #
@@ -1228,6 +1229,57 @@ EXTRA
     fi
 }
 
+# --- config resync ------------------------------------------------------
+#
+# The image's entrypoint is what normally config-syncs a folder, and on
+# 2026-09-08 that turned out to be a delivery path with a hole in it. The
+# entrypoint change that makes the folder's own template clone beat the
+# image's frozen config/ ships INSIDE the image, so a folder still running
+# an older image syncs BACKWARDS -- it overwrites the agent's config dir
+# (claude_config_dir(), under the folder's home) with whatever
+# config/ said the day that image was built. Both changes that went
+# missing that day (green terminal text, /tier's GLM help) were committed,
+# were present in the folder's clone, and simply were not in the config
+# dir the session actually reads.
+# What hid it was the pull: `docker pull` came back 403 on the private
+# package, the folder ran its stale local image anyway, and image-source
+# still read "pulled", so nothing downstream could tell.
+#
+# So the host side asks for the sync too, from the one copy that cannot be
+# stale -- the folder's own .claude-dev/template -- over `docker exec`,
+# once the container is up. config-sync is checksum-gated and idempotent:
+# when the entrypoint already did it right this is a single no-op exec,
+# and when it did not, this is the repair. That makes the config path
+# independent of the image's age, which is the whole point.
+#
+# It runs AFTER the web URL is published, on purpose. The entrypoint syncs
+# before it starts `orca-ide --serve`, so waiting on the URL is what keeps
+# two syncs from racing over the same config dir -- both of them `rm -rf`
+# and repopulate .claude/commands, and a torn config dir is worse than a
+# stale one.
+#
+# `-u agent` rather than a uid: the entrypoint re-maps agent to HOST_UID,
+# so the name is the only stable way to land as the user that owns the
+# home. Never fatal -- a folder that is up and serving is not worth
+# failing over a config refresh -- and it says which of the two happened.
+resync_config() {
+    local dir="$1" name="$2" guest before after
+    guest="$(guest_project_dir "$dir")"
+    before="$(cat "$dir/.claude-dev/run/config-hash" 2>/dev/null || true)"
+    if ! ctr exec -u agent "$name" \
+            bash "$guest/.claude-dev/template/scripts/config-sync.sh" \
+            --project "$guest" --host "$guest/.claude-dev" >/dev/null 2>&1; then
+        echo "  config: could not re-sync from the folder's template (continuing)" >&2
+        return 0
+    fi
+    after="$(cat "$dir/.claude-dev/run/config-hash" 2>/dev/null || true)"
+    if [ "$before" = "$after" ]; then
+        echo "  config: already current"
+    else
+        echo "  config: re-synced from the folder's template"
+    fi
+}
+
 cmd_open_v3() {
     local dir="${1:-$PROJECT_SELF}" name port state url rc=0 t0 t1
     [ -d "$dir" ] || { echo "Error: directory does not exist: $dir" >&2; return 1; }
@@ -1293,6 +1345,7 @@ cmd_open_v3() {
 
     # The one number a person actually wants after typing ./claude-dev.
     echo "Orca is up ($((t1 - t0))s)"
+    resync_config "$dir" "$name"
     open_url "$url"
     print_run_it_block_v3 "$dir" "$url"
 }
@@ -1754,7 +1807,8 @@ Usage:
                                 echoed) for the delegate routes
   claude-dev --how-to-run       Print the URL and the two commands
   claude-dev --doctor           CLI, service, image, container, port, web url
-  claude-dev --update           Pull the template, rebuild the image, recreate
+  claude-dev --update           Pull the template, rebuild the image, re-sync
+                                the config, recreate
   claude-dev --teardown [--purge-beads]
                                 Snapshot beads, then remove this folder's install
   claude-dev --help             Show this help

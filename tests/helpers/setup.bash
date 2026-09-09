@@ -495,6 +495,13 @@ case "$cmd" in
         # makes one row fail, which is the case the launcher's exit code
         # is about.
         case "$*" in
+            *config-sync.sh*)
+                # The host-side config resync (launcher's resync_config).
+                # CLAUDE_ORCA_TEST_RESYNC_FAIL is the case where the exec
+                # cannot run at all -- an image with no agent user, a
+                # container that went away -- which must warn, not fail.
+                [ "${CLAUDE_ORCA_TEST_RESYNC_FAIL:-0}" = "1" ] && exit 1
+                exit 0 ;;
             *verify-folder.sh*)
                 # An image older than the checklist has no such script:
                 # the exec fails and nothing comes back.
