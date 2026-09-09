@@ -292,33 +292,6 @@ the same slice runs as an in-process executor instead, so nothing depends on
 Orca being up. The playbook is
 [knowledge-base/TIERED_ORCHESTRATION.md](knowledge-base/TIERED_ORCHESTRATION.md).
 
-## The index card
-
-A pane beside the Claude Code terminal holds one card — `NOW`, `WHY`, `DONE`,
-`NEXT`, `SNAG` — and nothing else. It is replaced rather than appended, so the
-pane never scrolls and there is never a second card to scroll back to.
-
-It is written by Haiku, not by the model you are talking to, and that is the
-point: a long answer that buries its conclusion still produces a five-line
-card that does not.
-
-`/card` toggles the panel; `/card on`, `/card off` and `/card status` are
-explicit. Off is remembered for the folder, so a folder you turned it off in
-stays quiet until you say `/card on`. Otherwise it opens itself when a session
-starts.
-
-How it works, in case it ever needs fixing: Orca has no plugin or custom-pane
-API, so the panel is a terminal pane —
-`orca terminal split --terminal <handle> --direction vertical`. The session
-finds its own handle from `ORCA_PANE_KEY`, which Orca sets in every terminal
-as `<tabId>:<leafId>`. The `Stop` hook hands `card-hook` the transcript path
-out of the hook payload; `card-hook` reads it and detaches, so the turn never
-waits on the ~45s the summary takes. State lives with the folder's other
-run-time results: `.claude-dev/run/card.state`, `card.pane` and `card.md`.
-
-Every piece fails open. No Orca, no model, no transcript, no `jq` — each one
-means no card, never a session that will not start.
-
 ## The workers: OpenRouter models on a route
 
 A bead names a route, Claude writes the brief and dispatches the slice
