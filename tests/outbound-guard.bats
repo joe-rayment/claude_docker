@@ -404,3 +404,61 @@ make_no_gh_path() {
     [[ "$para" != *'`git push`, `gh pr create`, `bd dolt push`, and every deploy run only when the current prompt asks'* ]]
 }
 
+# ── compound `git push && <marker verb>` must still hit the marker gate ────
+# (claude-orca-cc5: the git-push branch used to end in a bare `exit 0`, so a
+# command that also matched MARKER_RE never reached that check.)
+
+@test "a connected git push compounded with gh pr create still requires the prompt marker" {
+    stub_gh "$BATS_TEST_TMPDIR/bin" 0
+    local old_path="$PATH"
+    PATH="$BATS_TEST_TMPDIR/bin:$PATH"
+    run_pretool 'git push origin main && gh pr create --fill'
+    PATH="$old_path"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.hookSpecificOutput.permissionDecision == "deny"'
+    [[ "$(deny_reason)" == *"opt-in"* ]]
+}
+
+@test "a connected git push compounded with gh repo create still requires the prompt marker" {
+    stub_gh "$BATS_TEST_TMPDIR/bin" 0
+    local old_path="$PATH"
+    PATH="$BATS_TEST_TMPDIR/bin:$PATH"
+    run_pretool 'git push origin main && gh repo create foo --public'
+    PATH="$old_path"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.hookSpecificOutput.permissionDecision == "deny"'
+    [[ "$(deny_reason)" == *"opt-in"* ]]
+}
+
+@test "a connected git push compounded with bd dolt push still requires the prompt marker" {
+    stub_gh "$BATS_TEST_TMPDIR/bin" 0
+    local old_path="$PATH"
+    PATH="$BATS_TEST_TMPDIR/bin:$PATH"
+    run_pretool 'git push origin main && bd dolt push'
+    PATH="$old_path"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.hookSpecificOutput.permissionDecision == "deny"'
+    [[ "$(deny_reason)" == *"opt-in"* ]]
+}
+
+@test "a connected git push on its own is still allowed with no marker" {
+    stub_gh "$BATS_TEST_TMPDIR/bin" 0
+    local old_path="$PATH"
+    PATH="$BATS_TEST_TMPDIR/bin:$PATH"
+    run_pretool 'git push origin main'
+    PATH="$old_path"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+}
+
+@test "a disconnected git push compounded with gh pr create is denied for the connection" {
+    stub_gh "$BATS_TEST_TMPDIR/bin" 1
+    local old_path="$PATH"
+    PATH="$BATS_TEST_TMPDIR/bin:$PATH"
+    run_pretool 'git push origin main && gh pr create --fill'
+    PATH="$old_path"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.hookSpecificOutput.permissionDecision == "deny"'
+    [[ "$(deny_reason)" == *"GitHub connection"* ]]
+}
+
