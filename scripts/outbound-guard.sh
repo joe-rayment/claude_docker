@@ -16,10 +16,17 @@
 #       unconditional: it fires for any valid-JSON payload naming
 #       tool_name "Bash" with a command, session_id or not. No override: no
 #       Snowflake credentials exist here and never will.
-#     - deny `git push`, `gh pr create`, `gh repo create`, `bd dolt push`
-#       unless a per-session marker says the CURRENT prompt asked for it —
-#       this rule alone needs a session_id (to look up the marker), so a
-#       payload missing one fails OPEN for a push command specifically,
+#     - deny `git push` unless there is a live GitHub connection (`gh auth
+#       status` exits 0, within OUTBOUND_GUARD_GH_TIMEOUT seconds, default
+#       10) — connected -> allow; gh absent, not connected, or the check
+#       timing out -> deny. This check runs ONLY when the command matches
+#       `git push`, so an ordinary Bash call never pays for the ~0.4s `gh`
+#       invocation, and it needs no session_id at all: there's no marker
+#       to look up for this verb any more.
+#     - deny `gh pr create`, `gh repo create`, `bd dolt push` unless a
+#       per-session marker says the CURRENT prompt asked for it — this
+#       rule alone needs a session_id (to look up the marker), so a
+#       payload missing one fails OPEN for these commands specifically,
 #       same as every other incomplete-payload case.
 #
 #   outbound-guard --prompt (UserPromptSubmit; hook JSON on stdin)
@@ -58,10 +65,11 @@
 #
 # MUST fail open, like every hook here: malformed/empty stdin or a non-Bash
 # tool all exit 0 with no output. A payload with no session_id fails open
-# too, but ONLY for the push/marker rule (which needs a session_id to look
-# up its marker) — the vendor-CLI deny is evaluated first and does not
-# depend on session_id at all. jq is a hard dependency of this template;
-# its absence still fails open rather than erroring.
+# for the marker-gated verbs (gh pr create, gh repo create, bd dolt push),
+# which need one to look up their marker — the vendor-CLI deny and the git
+# push connection check are evaluated first and need no session_id at all.
+# jq is a hard dependency of this template; its absence still fails open
+# rather than erroring.
 
 set -u
 
@@ -102,8 +110,12 @@ SNOW_RE='(^|[^A-Za-z0-9_-])('"${_sno}"'wsql|'"${_sno}"'w)([^A-Za-z0-9_-]|$)'
 # own, without modeling `-m`/interpreter names.
 SNOW_MODULE_RE='(^|[^A-Za-z0-9_-])'"${_sno}"'wflake\.cli([^A-Za-z0-9_-]|$)'
 
-# git push / gh pr create / gh repo create / bd dolt push, same boundary style.
-PUSH_RE='(^|[^A-Za-z0-9_-])(git[[:space:]]+push|gh[[:space:]]+pr[[:space:]]+create|gh[[:space:]]+repo[[:space:]]+create|bd[[:space:]]+dolt[[:space:]]+push)([^A-Za-z0-9_-]|$)'
+# git push -- gated on a live GitHub connection, not the marker below.
+GIT_PUSH_RE='(^|[^A-Za-z0-9_-])git[[:space:]]+push([^A-Za-z0-9_-]|$)'
+
+# gh pr create / gh repo create / bd dolt push -- still marker-gated, same
+# boundary style as GIT_PUSH_RE above.
+MARKER_RE='(^|[^A-Za-z0-9_-])(gh[[:space:]]+pr[[:space:]]+create|gh[[:space:]]+repo[[:space:]]+create|bd[[:space:]]+dolt[[:space:]]+push)([^A-Za-z0-9_-]|$)'
 
 # Push/publish/pull-request wording a prompt uses to ask for an outbound
 # action, case-insensitive. Deliberately narrow phrases, not a bare
@@ -117,6 +129,17 @@ sanitize_id() {
 
 marker_file() {
     printf '%s/%s.push' "$STATE_DIR" "$1"
+}
+
+# gh_connected — true iff `gh` is on PATH and reports a live GitHub
+# connection within OUTBOUND_GUARD_GH_TIMEOUT seconds (default 10). gh
+# absent, `gh auth status` failing, or the timeout firing (exit 124) all
+# read the same way here: not connected, since a push would hang or fail
+# too. Only called for a command that already matched GIT_PUSH_RE, so an
+# ordinary Bash call never pays for the ~0.4s `gh auth status` call.
+gh_connected() {
+    command -v gh >/dev/null 2>&1 || return 1
+    timeout "${OUTBOUND_GUARD_GH_TIMEOUT:-10}" gh auth status >/dev/null 2>&1
 }
 
 # deny <reason> — emit the PreToolUse hookSpecificOutput deny JSON and exit.
@@ -183,16 +206,27 @@ if printf '%s' "$cmd_norm" | grep -Eq "$SNOW_RE" || printf '%s' "$cmd_norm" | gr
     deny "outbound-guard: no Snowflake access from this sandbox — never install or run its CLI; mock Snowflake and run everything else locally."
 fi
 
-# Everything past this point (push/deploy) needs a session_id to look up
-# its marker — fail open on a payload missing one, same posture as every
-# other incomplete-input case, but scoped to this rule only.
+# git push: gated on gh_connected, not the marker below. No session_id
+# needed at all — there's no marker to look up for this verb — so this
+# runs before, and independently of, the session_id gate further down.
+if printf '%s' "$cmd_norm" | grep -Eq "$GIT_PUSH_RE"; then
+    if ! gh_connected; then
+        deny "outbound-guard: no GitHub connection (gh auth status failed) — a push would fail; run 'gh auth login' or commit locally."
+    fi
+    exit 0
+fi
+
+# Everything past this point (gh pr/repo create, bd dolt push) needs a
+# session_id to look up its marker — fail open on a payload missing one,
+# same posture as every other incomplete-input case, but scoped to this
+# rule only.
 has_sid=$(printf '%s' "$payload" | jq -r 'has("session_id")' 2>/dev/null) || exit 0
 [ "$has_sid" = "true" ] || exit 0
 sid=$(printf '%s' "$payload" | jq -r '.session_id // empty' 2>/dev/null) || exit 0
 sid=$(sanitize_id "$sid")
 [ -n "$sid" ] || exit 0
 
-if printf '%s' "$cmd_norm" | grep -Eq "$PUSH_RE"; then
+if printf '%s' "$cmd_norm" | grep -Eq "$MARKER_RE"; then
     if [ ! -f "$(marker_file "$sid")" ]; then
         deny "outbound-guard: push/deploy is opt-in — the prompt has to ask for it; commit locally instead."
     fi
