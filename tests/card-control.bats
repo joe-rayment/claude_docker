@@ -1,16 +1,16 @@
 #!/usr/bin/env bats
 #
 # card-control.bats -- scripts/card.sh (bin/card): on|off|toggle|status|
-# autostart, anchored to the terminal it runs in (claude-orca-ao7.1, design
+# autostart, opening its own CARD tab (claude-orca-ao7.1, design
 # claude-orca-ao7). FROZEN from this file's RED-AT commit onward per the
 # bead's acceptance contract -- if a case here turns out wrong, stop and
 # report; do not edit it.
 #
 # CLASS: unit. The `orca` CLI is stubbed as a script on PATH in setup(), so
 # no Orca runtime is ever contacted: every assertion below reads either the
-# stub's own invocation log ($STUB_LOG, one line per call: `terminal split
-# --terminal ... --command ...`) or the state files card.sh itself writes
-# (card.state, card.pane) under a throwaway $PROJECT_DIR.
+# stub's own invocation log ($STUB_LOG, one line per call: `terminal create
+# --worktree ... --title CARD --command ...`) or the state files card.sh
+# itself writes (card.state, card.tab) under a throwaway $PROJECT_DIR.
 
 bats_require_minimum_version 1.5.0
 
@@ -30,11 +30,13 @@ write_terminals_fixture() {
 }
 
 # A working orca stub: logs every invocation to $CARD_STUB_DIR/log (one
-# line, "terminal split --terminal ... --json" etc.) and answers `terminal
-# list --json` from $CARD_STUB_DIR/terminals.json, `terminal split` by
+# line, "terminal create --worktree ... --json" etc.) and answers `terminal
+# list --json` from $CARD_STUB_DIR/terminals.json, `terminal create` by
 # minting a new handle (term_card_new_<n>, one per call) and appending it
 # to that same fixture so a later `terminal list` finds it live, and
-# `terminal rename` / `terminal close` with a bare {"ok":true}.
+# `terminal switch` / `terminal close` with a bare {"ok":true}. The create
+# result carries no background warning, so the reveal-then-restore switches
+# are never issued by this stub.
 write_working_orca_stub() {
     cat > "$1" <<'STUBEOF'
 #!/usr/bin/env bash
@@ -46,8 +48,8 @@ case "${1:-} ${2:-}" in
     "terminal list")
         cat "$TERMS"
         ;;
-    "terminal split")
-        count_file="$CARD_STUB_DIR/split_count"
+    "terminal create")
+        count_file="$CARD_STUB_DIR/create_count"
         n=0
         [ -f "$count_file" ] && n="$(cat "$count_file")"
         n=$((n + 1))
@@ -56,9 +58,51 @@ case "${1:-} ${2:-}" in
         jq --arg h "$new_handle" \
             '.result.terminals += [{"handle":$h,"leafId":"leaf-card","tabId":"tab-card","title":"CARD"}]' \
             "$TERMS" > "$TERMS.tmp" && mv "$TERMS.tmp" "$TERMS"
-        printf '{"ok":true,"result":{"split":{"handle":"%s"}}}\n' "$new_handle"
+        printf '{"ok":true,"result":{"terminal":{"handle":"%s","title":"CARD","surface":"foreground"}}}\n' "$new_handle"
         ;;
-    "terminal rename")
+    "terminal switch")
+        printf '{"ok":true}\n'
+        ;;
+    "terminal close")
+        printf '{"ok":true}\n'
+        ;;
+    *)
+        printf '{"ok":true,"result":{}}\n'
+        ;;
+esac
+exit 0
+STUBEOF
+    chmod +x "$1"
+}
+
+# A working orca stub whose `terminal create` lands as a BACKGROUND handle,
+# the way a real create can when the UI cannot adopt it -- running, but not
+# discoverable until something calls `terminal switch`. Everything else
+# behaves like write_working_orca_stub.
+write_background_orca_stub() {
+    cat > "$1" <<'STUBEOF'
+#!/usr/bin/env bash
+set -u
+LOG="$CARD_STUB_DIR/log"
+TERMS="$CARD_STUB_DIR/terminals.json"
+printf '%s\n' "$*" >> "$LOG"
+case "${1:-} ${2:-}" in
+    "terminal list")
+        cat "$TERMS"
+        ;;
+    "terminal create")
+        count_file="$CARD_STUB_DIR/create_count"
+        n=0
+        [ -f "$count_file" ] && n="$(cat "$count_file")"
+        n=$((n + 1))
+        printf '%s' "$n" > "$count_file"
+        new_handle="term_card_new_${n}"
+        jq --arg h "$new_handle" \
+            '.result.terminals += [{"handle":$h,"leafId":"leaf-card","tabId":"tab-card","title":"CARD"}]' \
+            "$TERMS" > "$TERMS.tmp" && mv "$TERMS.tmp" "$TERMS"
+        printf '{"ok":true,"result":{"terminal":{"handle":"%s","title":"CARD","surface":"background","warning":"created but could not make it discoverable"}}}\n' "$new_handle"
+        ;;
+    "terminal switch")
         printf '{"ok":true}\n'
         ;;
     "terminal close")
@@ -89,7 +133,8 @@ setup() {
     mkdir -p "$PROJECT_DIR"
     RUN_DIR="$PROJECT_DIR/.claude-dev/run"
     STATE_FILE="$RUN_DIR/card.state"
-    PANE_FILE="$RUN_DIR/card.pane"
+    TAB_FILE="$RUN_DIR/card.tab"
+    LEGACY_PANE_FILE="$RUN_DIR/card.pane"
 
     STUB_BIN="$BATS_TEST_TMPDIR/stubbin"
     mkdir -p "$STUB_BIN"
@@ -107,52 +152,89 @@ setup() {
     export ORCA_PANE_KEY="tab-x:leaf-self"
 }
 
-# ── resolving this terminal's own handle ─────────────────────────────────────
-
-@test "card resolves its own terminal handle from the leaf id in ORCA_PANE_KEY" {
-    run bash "$CARD" on
-    [ "$status" -eq 0 ]
-    split_line="$(grep '^terminal split' "$STUB_LOG")"
-    [[ "$split_line" == *"--terminal term_self"* ]]
-    [[ "$split_line" != *"--terminal term_other"* ]]
-}
-
 # ── on ────────────────────────────────────────────────────────────────────
 
-@test "card on splits that terminal, renames the pane CARD, and records the handle and the on state" {
+@test "card on creates a CARD tab in this project's worktree and records the handle and the on state" {
     run bash "$CARD" on
     [ "$status" -eq 0 ]
-    split_line="$(grep '^terminal split' "$STUB_LOG")"
-    [[ "$split_line" == *"--terminal term_self"* ]]
-    [[ "$split_line" == *"card-view.sh"* ]]
-    rename_line="$(grep '^terminal rename' "$STUB_LOG")"
-    [[ "$rename_line" == *"--title CARD"* ]]
-    [[ "$rename_line" == *"term_card_new_1"* ]]
-    [ "$(cat "$PANE_FILE")" = "term_card_new_1" ]
+    create_line="$(grep '^terminal create' "$STUB_LOG")"
+    [[ "$create_line" == *"--worktree path:$PROJECT_DIR"* ]]
+    [[ "$create_line" == *"--title CARD"* ]]
+    [[ "$create_line" == *"card-view.sh"* ]]
+    [ "$(cat "$TAB_FILE")" = "term_card_new_1" ]
     [ "$(cat "$STATE_FILE")" = "on" ]
 }
 
-@test "card on is idempotent: a second call while the recorded pane is live splits nothing" {
+@test "card on is idempotent: a second call while the recorded tab is live creates nothing" {
     run bash "$CARD" on
     [ "$status" -eq 0 ]
     run bash "$CARD" on
     [ "$status" -eq 0 ]
-    splits="$(grep -c '^terminal split' "$STUB_LOG" || true)"
-    [ "$splits" -eq 1 ]
-    [ "$(cat "$PANE_FILE")" = "term_card_new_1" ]
+    creates="$(grep -c '^terminal create' "$STUB_LOG" || true)"
+    [ "$creates" -eq 1 ]
+    [ "$(cat "$TAB_FILE")" = "term_card_new_1" ]
     [ "$(cat "$STATE_FILE")" = "on" ]
+}
+
+@test "card on reveals a background create then hands focus back to this terminal" {
+    write_background_orca_stub "$STUB_BIN/orca"
+    export ORCA_TERMINAL_HANDLE="term_self"
+
+    run bash "$CARD" on
+    [ "$status" -eq 0 ]
+
+    switch_lines="$(grep '^terminal switch' "$STUB_LOG" || true)"
+    [ "$(printf '%s\n' "$switch_lines" | grep -c .)" -eq 2 ]
+    first_switch="$(printf '%s\n' "$switch_lines" | sed -n 1p)"
+    second_switch="$(printf '%s\n' "$switch_lines" | sed -n 2p)"
+    [[ "$first_switch" == *"--terminal term_card_new_1"* ]]
+    [[ "$second_switch" == *"--terminal term_self"* ]]
+    [ "$(cat "$TAB_FILE")" = "term_card_new_1" ]
+}
+
+@test "card on issues no switch when the create result names no background surface" {
+    run bash "$CARD" on
+    [ "$status" -eq 0 ]
+    switches="$(grep -c '^terminal switch' "$STUB_LOG" || true)"
+    [ "$switches" -eq 0 ]
+}
+
+@test "card on closes and forgets a pre-existing legacy split pane before opening its tab" {
+    mkdir -p "$RUN_DIR"
+    printf 'term_old_split' > "$LEGACY_PANE_FILE"
+
+    run bash "$CARD" on
+    [ "$status" -eq 0 ]
+
+    close_line="$(grep '^terminal close' "$STUB_LOG")"
+    [[ "$close_line" == *"--terminal term_old_split"* ]]
+    [ ! -f "$LEGACY_PANE_FILE" ]
+    [ "$(cat "$TAB_FILE")" = "term_card_new_1" ]
 }
 
 # ── off ───────────────────────────────────────────────────────────────────
 
-@test "card off closes the recorded pane and records the off state" {
+@test "card off closes the recorded tab and records the off state" {
     run bash "$CARD" on
     [ "$status" -eq 0 ]
-    pane="$(cat "$PANE_FILE")"
+    tab="$(cat "$TAB_FILE")"
     run bash "$CARD" off
     [ "$status" -eq 0 ]
     close_line="$(grep '^terminal close' "$STUB_LOG")"
-    [[ "$close_line" == *"--terminal $pane"* ]]
+    [[ "$close_line" == *"--terminal $tab"* ]]
+    [ "$(cat "$STATE_FILE")" = "off" ]
+}
+
+@test "card off closes and forgets a pre-existing legacy split pane too" {
+    mkdir -p "$RUN_DIR"
+    printf 'term_old_split' > "$LEGACY_PANE_FILE"
+
+    run bash "$CARD" off
+    [ "$status" -eq 0 ]
+
+    close_line="$(grep '^terminal close' "$STUB_LOG")"
+    [[ "$close_line" == *"--terminal term_old_split"* ]]
+    [ ! -f "$LEGACY_PANE_FILE" ]
     [ "$(cat "$STATE_FILE")" = "off" ]
 }
 
@@ -163,43 +245,38 @@ setup() {
     run bash "$CARD" toggle
     [ "$status" -eq 0 ]
     [ "$(cat "$STATE_FILE")" = "off" ]
-    splits="$(grep -c '^terminal split' "$STUB_LOG" || true)"
-    [ "$splits" -eq 0 ]
+    creates="$(grep -c '^terminal create' "$STUB_LOG" || true)"
+    [ "$creates" -eq 0 ]
 
     run bash "$CARD" toggle
     [ "$status" -eq 0 ]
     [ "$(cat "$STATE_FILE")" = "on" ]
-    splits="$(grep -c '^terminal split' "$STUB_LOG" || true)"
-    [ "$splits" -eq 1 ]
+    creates="$(grep -c '^terminal create' "$STUB_LOG" || true)"
+    [ "$creates" -eq 1 ]
 }
 
 # ── autostart ─────────────────────────────────────────────────────────────
 
-@test "card autostart opens a pane when the state is on or unset and stays quiet when it is off" {
+@test "card autostart opens a tab when the state is on or unset and stays quiet when it is off" {
     [ ! -f "$STATE_FILE" ]
     run bash "$CARD" autostart
     [ "$status" -eq 0 ]
-    splits="$(grep -c '^terminal split' "$STUB_LOG" || true)"
-    [ "$splits" -eq 1 ]
-    [ -f "$PANE_FILE" ]
+    creates="$(grep -c '^terminal create' "$STUB_LOG" || true)"
+    [ "$creates" -eq 1 ]
+    [ -f "$TAB_FILE" ]
 
     mkdir -p "$RUN_DIR"
     printf 'off' > "$STATE_FILE"
     run bash "$CARD" autostart
     [ "$status" -eq 0 ]
     [ -z "$output" ]
-    splits="$(grep -c '^terminal split' "$STUB_LOG" || true)"
-    [ "$splits" -eq 1 ]
+    creates="$(grep -c '^terminal create' "$STUB_LOG" || true)"
+    [ "$creates" -eq 1 ]
 }
 
 # ── fails open ────────────────────────────────────────────────────────────
 
-@test "card exits 0 with one explanatory line when there is no ORCA_PANE_KEY, no orca CLI, or an unreachable runtime" {
-    run env -u ORCA_PANE_KEY bash "$CARD" on
-    [ "$status" -eq 0 ]
-    [ -n "$output" ]
-    [ "$(printf '%s\n' "$output" | wc -l)" -eq 1 ]
-
+@test "card exits 0 with one explanatory line when there is no orca CLI or an unreachable runtime" {
     run env PATH="/usr/bin:/bin" ORCA_PANE_KEY="tab-x:leaf-self" bash "$CARD" on
     [ "$status" -eq 0 ]
     [ -n "$output" ]

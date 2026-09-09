@@ -23,13 +23,17 @@ set -uo pipefail
 CARD_FILE="${CARD_FILE:-${PROJECT_DIR:-/workspace/claude-orca}/.claude-dev/run/card.md}"
 
 resized=1
-orig_stty=""
-if [ -t 1 ]; then
-    orig_stty="$(stty -g 2>/dev/null || true)"
-    # A raw newline is one row here, not a row-plus-carriage-return: leaves
-    # every clipped line exactly as wide as it was drawn.
-    stty -onlcr 2>/dev/null || true
-fi
+
+# NO `stty -onlcr` HERE, and that is the fix for the panel being unreadable
+# (2026-09-08). It was set on the way in, with the reasoning that "a raw
+# newline is one row here, not a row-plus-carriage-return". That is exactly
+# what it does -- and every line this script draws ends in a plain \n, so
+# with onlcr off each line began in the column where the previous one
+# ended. The card came out as a staircase drifting right, one step per row,
+# with the box border tearing across it. onlcr affects the carriage return
+# and nothing about width, so it never bought the thing its comment claimed.
+# Verified by reading the live pty back with `orca terminal read` before and
+# after.
 
 label() { printf '\033[38;5;244m%s\033[0m' "$1"; }
 
@@ -92,7 +96,6 @@ trap on_winch WINCH
 printf '\033[?1049h\033[?25l' 2>/dev/null   # alternate buffer, no cursor
 restore() {
     printf '\033[?25h\033[?1049l' 2>/dev/null
-    [ -n "$orig_stty" ] && stty "$orig_stty" 2>/dev/null
     exit 0
 }
 trap restore INT TERM EXIT

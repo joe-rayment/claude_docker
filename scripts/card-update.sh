@@ -94,11 +94,17 @@ PY
 [ -n "$material" ] || exit 0
 
 read -r -d '' PROMPT <<'P'
-You are writing ONE INDEX CARD about a coding session, for someone glancing at
-a side panel. It must fit on a card: at most 12 lines, no line over 68
-characters, no scrolling, no markdown headers, no preamble, no sign-off.
+You are writing ONE INDEX CARD about a coding session, for the person running
+it, in a tab they glance at. Your job is to say what is actually going on.
 
-Exactly this shape, and nothing else:
+The session you are summarising is driven by a model that writes at length:
+long preambles, caveats, restated plans, three paragraphs where one clause
+would do. The card exists BECAUSE of that. Read past it. A wall of
+explanation whose point is "the build was stale" is one line: the build was
+stale. Never mirror the transcript's own length or its tone back at it.
+
+At most 12 lines, no line over 68 characters, no scrolling, no markdown
+headers, no preamble, no sign-off. Exactly this shape, and nothing else:
 
 NOW: <one line: what is being worked on this minute>
 WHY: <one line: what the person actually asked for>
@@ -106,17 +112,40 @@ DONE: <up to 3 lines, one fact each, past tense, concrete>
 NEXT: <one line, or "-" if unclear>
 SNAG: <one line, or "-" if nothing is wrong>
 
-Rules: plain words. Name files, commands and numbers rather than describing
-them. Never say "the assistant" or "the user" -- say what happened. If the
-transcript is mostly one long explanation, say what it concluded in one line;
-do not summarise the explaining.
+Rules: plain words. Name files, commands, numbers and error strings rather
+than describing them -- "run-tests.sh --all: 11 failures, all pre-existing"
+beats "the test suite was analysed". Never say "the assistant" or "the user".
+Prefer what CHANGED over what was discussed: a decision reached, a file
+edited, a command that failed. If a whole turn was explaining, give the
+conclusion and drop the explanation. If the session is stuck, SNAG is the
+most important line on the card -- say what is blocking and nothing else.
 
 Transcript tail follows.
 P
 
+# --disallowed-tools is not a nicety. Seen live on 2026-09-08: a run whose
+# material was thin did not fail -- it went and ran `git status`, then wrote
+# "I need the session transcript... Can you either: 1. Paste the session
+# transcript" onto the card, where it sat until the next turn. The card
+# model answers from the prompt it was given or it answers nothing.
 card="$(printf '%s\n\n%s\n' "$PROMPT" "$material" \
-    | timeout "$CARD_TIMEOUT" claude -p --model "$CARD_MODEL" 2>/dev/null)"
+    | timeout "$CARD_TIMEOUT" claude -p --model "$CARD_MODEL" \
+        --disallowed-tools Bash Read Write Edit Glob Grep WebFetch WebSearch Task \
+        2>/dev/null)"
 [ -n "$card" ] || exit 0
+
+# Small models like to hand back a fenced block however plainly the prompt
+# says not to. Strip one leading and one trailing fence rather than argue
+# with it in the prompt.
+card="$(printf '%s\n' "$card" | sed -e '1{/^[[:space:]]*```/d;}' -e '${/^[[:space:]]*```[[:space:]]*$/d;}')"
+[ -n "$card" ] || exit 0
+
+# A card that is answering rather than reporting is a failed run, not a
+# card: keep the previous one instead of putting a chat reply on screen.
+case "$card" in
+    NOW:*|*"NOW:"*) : ;;
+    *) exit 0 ;;
+esac
 
 mkdir -p "$(dirname "$CARD_FILE")" 2>/dev/null || exit 0
 tmp="$CARD_FILE.tmp.$$"

@@ -162,8 +162,14 @@ strip_ansi() {
     [ "$(printf '%s\n' "$plain" | grep -c '┌')" -eq 1 ]
     [ "$(printf '%s\n' "$plain" | grep -c '└')" -eq 1 ]
 
-    # Every visible line clipped to the pane width.
+    # Every visible line clipped to the pane width. The trailing carriage
+    # return comes off first: the pty translates each \n to \r\n, so it is
+    # in every captured line and it is not a column. (card-view.sh used to
+    # set `stty -onlcr`, which is why this once measured clean -- and why
+    # the panel drew as a staircase, since without the CR every line began
+    # where the last one ended.)
     while IFS= read -r line; do
+        line="${line%$'\r'}"
         len="${#line}"
         [ "$len" -le 30 ]
     done <<< "$plain"
