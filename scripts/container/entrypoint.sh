@@ -135,8 +135,18 @@ mkdir -p "$RUN_DIR" "$PROJECT_DIR/.claude-dev/home"
 # bind-mounted with the project -- which is also the copy this very script
 # was read from. Everything template-shaped (setup.sh, config/) comes from
 # the same root, so the two paths never mix.
+#
+# The baked copy loses the tiebreak: it is frozen at image build, while the
+# folder's clone is what `--update` moves forward, so a folder that has
+# already pulled a scripts/container/* fix into its own clone should not
+# keep running the stale one baked months earlier. config-sync already
+# prefers the folder's clone for config/ (see below) for the same reason --
+# this makes setup.sh and seed-project.sh follow the same root instead of
+# splitting template-shaped things across two.
 
-if [ -d /opt/claude-orca ]; then
+if [ -x "$PROJECT_DIR/.claude-dev/template/scripts/container/setup.sh" ]; then
+    TEMPLATE_ROOT="$PROJECT_DIR/.claude-dev/template"
+elif [ -d /opt/claude-orca ]; then
     TEMPLATE_ROOT="/opt/claude-orca"
 else
     TEMPLATE_ROOT="$PROJECT_DIR/.claude-dev/template"
@@ -318,16 +328,22 @@ mkdir -p "$USER_DATA_DIR"
 # the mounted clone is passed as its own parent and the image's copy through
 # /opt/claude-orca-host/template, the symlink setup.sh's template phase made.
 #
-# The folder's own clone is tried FIRST and on purpose, which is where this
-# differs from TEMPLATE_ROOT above: the image's copy of config/ is frozen at
-# image build time, so on the prebuilt path every hook, agent, command and
-# skill the session runs was whatever the repo said the day the image was
-# published -- an edit committed in the folder reached the agent only after
-# a rebuild and a pull. (Found 2026-09-08: /tier's OpenRouter help text and
-# its `auth openrouter` verb were committed, synced from the image anyway,
-# and simply were not there.) setup.sh still comes from TEMPLATE_ROOT: the
-# image's install logic describes the image, and only config/ is the folder's
-# to say.
+# The folder's own clone is tried FIRST and on purpose, for the same reason
+# TEMPLATE_ROOT above now tries it first too: the image's copy of config/ is
+# frozen at image build time, so on the prebuilt path every hook, agent,
+# command and skill the session runs was whatever the repo said the day the
+# image was published -- an edit committed in the folder reached the agent
+# only after a rebuild and a pull. (Found 2026-09-08: /tier's OpenRouter
+# help text and its `auth openrouter` verb were committed, synced from the
+# image anyway, and simply were not there.) setup.sh used to stay on
+# TEMPLATE_ROOT regardless -- the image's install logic describes the
+# image, config/ was the only thing the folder got to say -- until that same
+# gap cost a scripts/container/* fix too: the Orca Web clipboard-paste shim
+# (patch-orca-web-theme.py) sat committed for two days and reached no
+# running folder, because every container still booted the baked entrypoint
+# pointed at the baked setup.sh. config/ and setup.sh now come from the same
+# root, so a fix to either reaches a folder on its next recreate, with no
+# rebuild in between.
 sync_host=""
 if [ -d "$PROJECT_DIR/.claude-dev/template/config" ]; then
     sync_host="$PROJECT_DIR/.claude-dev"

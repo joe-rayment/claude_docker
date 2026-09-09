@@ -717,6 +717,34 @@ STUB
     [ "$status" -eq 0 ]
 }
 
+@test "entrypoint prefers the folder's own template when it carries an executable setup.sh, even over a baked /opt/claude-orca" {
+    [ -x "$ENTRYPOINT" ]
+
+    local proj="$TMP/project"
+    make_project "$proj"
+
+    # No setup.sh in the folder's clone yet: whichever root this box would
+    # have picked before (see the test above) still wins.
+    if [ -d /opt/claude-orca ]; then
+        run env HOME="$proj/.claude-dev/home" PROJECT_DIR="$proj" \
+            ORCA_BIN="$TMP/bin/no-such-orca" CLAUDE_ORCA_SKIP_SETUP=1 \
+            CLAUDE_ORCA_SKIP_BEADS=1 CLAUDE_ORCA_ENTRYPOINT_NO_PRIVDROP=1 \
+            bash "$ENTRYPOINT"
+        [[ "$output" == *"template root: /opt/claude-orca"* ]]
+    fi
+
+    # An executable setup.sh in the folder's own clone -- what `--update`
+    # leaves behind -- outranks the baked copy even when /opt/claude-orca
+    # is still there, so a scripts/container/* fix reaches a folder on the
+    # next recreate with no image rebuild.
+    write_setup_stub "$proj/.claude-dev/template/scripts/container/setup.sh"
+    run env HOME="$proj/.claude-dev/home" PROJECT_DIR="$proj" \
+        ORCA_BIN="$TMP/bin/no-such-orca" CLAUDE_ORCA_SKIP_SETUP=1 \
+        CLAUDE_ORCA_SKIP_BEADS=1 CLAUDE_ORCA_ENTRYPOINT_NO_PRIVDROP=1 \
+        bash "$ENTRYPOINT"
+    [[ "$output" == *"template root: $proj/.claude-dev/template"* ]]
+}
+
 # --- the OpenRouter guard, wired in (claude-orca-qa2.21) ------------------
 #
 # The user's hard rule is that their data never routes to China, and the only

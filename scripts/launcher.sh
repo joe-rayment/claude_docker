@@ -1167,6 +1167,19 @@ container_create() {
         -e "CLAUDE_ORCA_GIT_NAME=$(git_identity_name)" \
         -e "CLAUDE_ORCA_GIT_EMAIL=$(git_identity_email)"
 
+    # Deliver a scripts/container/* fix without an image rebuild: the
+    # entrypoint already baked into today's image reads
+    # SETUP="${CLAUDE_ORCA_SETUP:-$TEMPLATE_ROOT/scripts/container/setup.sh}",
+    # so pointing that var at the folder's own template clone breaks the
+    # gate on the next recreate alone -- no rebuild needed. Guarded on the
+    # host path existing so a folder whose template clone predates setup.sh
+    # falls through to the baked default instead of naming a file that
+    # is not there.
+    if [ -f "$dir/.claude-dev/template/scripts/container/setup.sh" ]; then
+        set -- "$@" -e \
+            "CLAUDE_ORCA_SETUP=$guest/.claude-dev/template/scripts/container/setup.sh"
+    fi
+
     if [ "$src" = "runtime" ]; then
         for mount in $TOOLCHAIN_MOUNTS; do
             set -- "$@" --volume \

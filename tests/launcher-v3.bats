@@ -218,6 +218,34 @@ path_without_docker() {
     [[ "$output" == *"./claude-dev shell"* ]]
 }
 
+@test "the container gets CLAUDE_ORCA_SETUP pointing at the folder's own template clone when it carries scripts/container/setup.sh, and none at all when it does not" {
+    mkdir -p "$PROJECT_DIR"
+    primary="$(abspath "$PROJECT_DIR")"
+    run make_project_v3 "$primary"
+    [ "$status" -eq 0 ]
+
+    guest="/workspace/$(basename "$primary")"
+    line="$(ctr_line "run ")"
+    # bootstrap.sh's clone is the real repo, so the folder's own template
+    # has scripts/container/setup.sh from the first run -- pointing the
+    # baked entrypoint's CLAUDE_ORCA_SETUP fallback at it is what delivers
+    # a scripts/container/* fix with no image rebuild.
+    [[ "$line" == *"-e CLAUDE_ORCA_SETUP=$guest/.claude-dev/template/scripts/container/setup.sh"* ]]
+
+    # Take it away -- an older template clone, from before this file
+    # existed -- and the launcher must not name a file that is not there;
+    # the image's own baked default runs instead.
+    rm -f "$primary/.claude-dev/template/scripts/container/setup.sh"
+    name="claude-orca-$(basename "$primary")"
+    rm -f "$CONTAINER_STUB_STATE/containers/$name"
+    : > "$CONTAINER_STUB_LOG"
+    run bash -c "cd '$primary' && ./claude-dev"
+    [ "$status" -eq 0 ]
+
+    line="$(ctr_line "run ")"
+    [[ "$line" != *"CLAUDE_ORCA_SETUP"* ]]
+}
+
 @test "open on an existing container starts it when stopped and only opens the URL when running; stop, shell and logs call docker with the project name" {
     mkdir -p "$PROJECT_DIR"
     primary="$(abspath "$PROJECT_DIR")"

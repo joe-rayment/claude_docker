@@ -112,14 +112,19 @@ Everything below this is reference.
 - **The port is taken.** The port is chosen once, at registration, and kept
   in `claude-orca.json`. Change the number there and run
   `./claude-dev --update` to recreate the container on it.
-- **Pasting an image into a terminal fails** with `Failed to execute 'read'
-  on 'Clipboard': Read permission denied`. That is the browser, not the
-  container: Orca Web reads images with the Clipboard API, which every
-  Chromium browser gates behind a per-site permission. Each folder has its
-  own port, so each is its own origin with its own permission. In Chrome open
+- **Pasting into a terminal reports `Image paste failed: … Read permission
+  denied`, even when what you pasted was plain text.** That is the browser,
+  not the container: Orca Web's paste handler tries `readClipboardText`
+  first, and when Chrome's per-site Clipboard permission is not granted
+  that call rejects silently, leaving the text empty and falling through to
+  the image branch -- whose failure is the only one it ever reports, so a
+  text paste shows an image error. Each folder has its own port, so each is
+  its own origin with its own permission. In Chrome open
   `chrome://settings/content/siteDetails?site=http://127.0.0.1:<port>`, set
   **Clipboard** to Allow, reload the tab, and click into the terminal before
-  pasting. Text paste does not need this permission — see the next entry.
+  pasting -- or run on an image whose served page carries the clipboard
+  shim described in the next entry, which sidesteps the permission
+  entirely.
 - **Cmd+V does nothing in a terminal**, so the Claude Code login code
   cannot be pasted back. This was every folder on an image built before
   2026-09-08. Orca Web owns the terminal's paste key: its handler calls
