@@ -33,11 +33,18 @@ CARD_PATTERN='(^|[^a-z])card([^a-z]|$)'
     run grep -iE "$CARD_PATTERN" "$tmp"
     [ "$status" -eq 0 ]
 
-    run grep -rniE "$CARD_PATTERN" \
-        --exclude-dir=.git \
-        --exclude=no-card.bats \
-        --exclude-dir=orca-skills \
-        "$REPO_ROOT/scripts" "$REPO_ROOT/bin" "$REPO_ROOT/config" "$REPO_ROOT/tests"
+    # git ls-files, not a raw recursive grep: tests/.cache/ is a gitignored
+    # scratch/vendor dir (e.g. it can carry a stray node_modules/zod, whose
+    # generic "Card" type-parameter name is not our feature) and has no
+    # business in a source grep gate.
+    cd "$REPO_ROOT"
+    files=()
+    while IFS= read -r f; do
+        files+=("$f")
+    done < <(git ls-files -- scripts bin config tests \
+        | grep -v '^config/orca-skills/' \
+        | grep -v '^tests/no-card\.bats$')
+    run grep -niE "$CARD_PATTERN" "${files[@]}"
     [ "$status" -eq 1 ]
     [ -z "$output" ]
 }
@@ -52,9 +59,9 @@ CARD_PATTERN='(^|[^a-z])card([^a-z]|$)'
     run jq -e . "$SETTINGS"
     [ "$status" -eq 0 ]
 
-    run jq -e '.hooks | to_entries[] | .value[] | .hooks | length == 0' "$SETTINGS"
+    run jq -e '[.hooks[][].hooks | length] | any(. == 0)' "$SETTINGS"
     [ "$status" -eq 1 ]
-    [ -z "$output" ]
+    [ "$output" = "false" ]
 }
 
 @test "the Stop hook still runs export-logs, and Orca's own managed entries survive" {
