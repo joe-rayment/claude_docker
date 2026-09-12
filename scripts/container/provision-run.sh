@@ -25,8 +25,13 @@
 #     step here (70-openrouter-guard) verifies it is answering and
 #     restarts it if it is not, which is the part that can safely wait.
 #
+# Usage: provision-run.sh [<step> ...]   (no arguments: every step)
+#
 # CONTRACT
-#   * every executable file in provision.d runs, in filename order;
+#   * every executable file in provision.d runs, in filename order -- or,
+#     given names, exactly those, which is what `provision run <step>`
+#     (S5, claude-orca-dbu.5) uses to repair one step without re-running
+#     the six that were fine;
 #   * each writes run/provision/<step>.log and run/provision/<step>.status,
 #     truncated per run -- a folder started fifty times must not hand a
 #     person fifty copies of the same failure;
@@ -107,12 +112,44 @@ run_bounded() {
     fi
 }
 
-log "provisioning $PROJECT_DIR from $STEPS_DIR"
+# Which steps this run is about. With no arguments, all of them, in
+# filename order -- the boot. With names, exactly those, which is the
+# repair path: `provision run <step>` (S5, claude-orca-dbu.5) re-runs the
+# one step that failed rather than the seven that did not. Either way the
+# work goes through the loop below, so a step re-run by hand gets the same
+# log, status, timeout and key routing the boot gives it.
+#
+# ${@+"$@"} rather than "$@": bash 3.2 under `set -u` treats an empty $@ as
+# unbound, and the Mac may one day read this.
+if [ "$#" -gt 0 ]; then
+    for want in "$@"; do
+        case "$want" in
+            */*|.|..) warn "not a step name: $want"; exit 2 ;;
+        esac
+        if [ ! -x "$STEPS_DIR/$want" ]; then
+            warn "no such step: $want (looked in $STEPS_DIR)"
+            exit 2
+        fi
+    done
+    n="$#"
+    while [ "$n" -gt 0 ]; do
+        want="$1"; shift
+        set -- ${@+"$@"} "$STEPS_DIR/$want"
+        n=$((n - 1))
+    done
+    log "re-running $# step(s) of $PROJECT_DIR from $STEPS_DIR"
+else
+    set --
+    for step in "$STEPS_DIR"/*; do
+        [ -f "$step" ] || continue
+        [ -x "$step" ] || continue
+        set -- ${@+"$@"} "$step"
+    done
+    log "provisioning $PROJECT_DIR from $STEPS_DIR"
+fi
 
 ran=0
-for step in "$STEPS_DIR"/*; do
-    [ -f "$step" ] || continue
-    [ -x "$step" ] || continue
+for step in ${@+"$@"}; do
     name="$(basename "$step")"
     step_log="$PROVISION_DIR/$name.log"
     step_status="$PROVISION_DIR/$name.status"
@@ -142,5 +179,5 @@ for step in "$STEPS_DIR"/*; do
     fi
 done
 
-log "provisioning done: $ran step(s), statuses in $PROVISION_DIR"
+log "done: $ran step(s), statuses in $PROVISION_DIR"
 exit 0
