@@ -53,6 +53,12 @@ contains() {
     local primary
     primary="$(abspath "$PROJECT_DIR")"
     make_project_v3 "$primary" >/dev/null
+    # make_project_v3 registers as a Mac (S2), so this folder is ui=desktop
+    # -- and the docker stub's own registration hand-off never gets a real
+    # pairing offer to run on, so the folder's own conduit profile is never
+    # actually created by it. A folder this "clean" is one that HAS been
+    # opened for real at least once, which is what creates that profile.
+    mkdir -p "$primary/.claude-dev/state/orca-profile"
 
     run bash -c "cd '$primary' && ./claude-dev verify"
     [ "$status" -eq 0 ]
@@ -150,6 +156,10 @@ contains() {
     export STUB_UNAME_M=arm64
     write_stub_orca "$CLAUDE_ORCA_APP/Contents/Resources/bin/orca"
     make_project_v3 "$primary" >/dev/null
+    # As above: the registration hand-off never gets a real pairing offer
+    # from the docker stub, so it never creates the profile itself -- a
+    # folder that has been opened for real at least once has.
+    mkdir -p "$primary/.claude-dev/state/orca-profile"
 
     # The ordinary case first: the folder's own conduit profile holds no
     # local project at all.

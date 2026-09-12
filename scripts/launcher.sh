@@ -1335,17 +1335,71 @@ orca_json_env_id() {
     printf '%s\n' "$v"
 }
 
+# --- the conduit profile (claude-orca-qhq) --------------------------------
+#
+# Orca.app can open LOCAL workspaces (agents run on the Mac, no container
+# around them) and 1.4.197 has no knob to refuse them. The detection at
+# hand-off (claude-orca-4x7) was not enough, so the app is never launched
+# on the user's own Orca profile again: it gets a profile the launcher owns
+# outright, one per folder, that holds only this folder's environment. The
+# user's own Orca profile is never touched.
+
+# state/, not run/: the profile is authority the Mac side owns, the same
+# footing as the container's own state, and ./claude-dev --teardown removes
+# it exactly as it removes everything else under state/.
+orca_profile_dir() { printf '%s/.claude-dev/state/orca-profile\n' "$1"; }
+
+orca_profile_ensure() {
+    local dir="$1" profile
+    profile="$(orca_profile_dir "$dir")"
+    mkdir -p "$profile"
+    chmod 700 "$profile"
+    printf '%s\n' "$profile"
+}
+
+# The conduit's own promise: it starts every session with zero local
+# projects. `orca-data.json`'s `.repos` is where the app persists them --
+# the CLI's own `repo list --json` reads the same store back -- and there
+# is no `orca repo rm`, so this writes the store directly. Quiet whenever
+# there is nothing to clear or no jq to clear it with (jq is required
+# elsewhere already; missing here just means this run cannot self-heal a
+# leak it also cannot detect any other way).
+orca_profile_clear_repos() {
+    local profile="$1" f tmp
+    f="$profile/orca-data.json"
+    [ -f "$f" ] || return 0
+    command -v jq >/dev/null 2>&1 || return 0
+    case "$(jq -c '.repos // []' "$f" 2>/dev/null || echo '[]')" in
+        '[]') return 0 ;;
+    esac
+    tmp="$f.tmp.$$"
+    if jq '.repos = []' "$f" > "$tmp" 2>/dev/null; then
+        mv "$tmp" "$f"
+    else
+        rm -f "$tmp"
+    fi
+}
+
+# One status check against the folder's own profile -- the shape an
+# earlier ./claude-dev left running behind it, in which case this run
+# never launches a second instance.
+orca_profile_reachable() {
+    local cli="$1" profile="$2" out=""
+    out="$(ORCA_USER_DATA_PATH="$profile" "$cli" status --json 2>/dev/null || true)"
+    orca_json_reachable "$out"
+}
+
 # Poll until the app's runtime answers, <= CLAUDE_ORCA_ORCA_WAIT seconds
 # (60, the plan's number). The exit code says nothing, so the JSON is read
 # every time.
 orca_wait_reachable() {
-    local cli="$1" limit waited=0 out=""
+    local cli="$1" profile="$2" limit waited=0 out=""
     limit="${CLAUDE_ORCA_ORCA_WAIT:-60}"
     case "$limit" in
         ''|*[!0-9]*) limit=60 ;;
     esac
     while :; do
-        out="$("$cli" status --json 2>/dev/null || true)"
+        out="$(ORCA_USER_DATA_PATH="$profile" "$cli" status --json 2>/dev/null || true)"
         if orca_json_reachable "$out"; then
             return 0
         fi
@@ -1362,7 +1416,7 @@ orca_wait_reachable() {
 # whether or not the environment saved, because the block that follows
 # says which -- and 1 when the caller should open the browser instead.
 orca_hand_off() {
-    local dir="$1" app="" cli="" pair="" name="" appver="" imgver="" out="" id=""
+    local dir="$1" app="" cli="" pair="" name="" appver="" imgver="" out="" id="" profile=""
 
     app="$(desktop_app)" || {
         echo "  no Orca.app on this Mac -- opening Orca Web instead ($ORCA_DOWNLOAD_URL)" >&2
@@ -1376,6 +1430,12 @@ orca_hand_off() {
         echo "  $app ships no orca CLI -- opening Orca Web instead" >&2
         return 1
     }
+
+    # The launcher's own profile for this folder, never the user's own
+    # Orca -- and it starts this session, as every session, with zero
+    # local projects (claude-orca-qhq).
+    profile="$(orca_profile_ensure "$dir")"
+    orca_profile_clear_repos "$profile"
 
     appver="$(orca_app_version "$app")"
     imgver="$(image_orca_version)"
@@ -1392,9 +1452,14 @@ orca_hand_off() {
     rm -f "$(orca_env_file "$dir")"
 
     if [ "${CLAUDE_ORCA_OPEN:-1}" != "0" ]; then
-        open -a "$app" || echo "  Could not launch $app" >&2
+        if orca_profile_reachable "$cli" "$profile"; then
+            : # an earlier ./claude-dev left this folder's conduit running
+        else
+            open -n -a "$app" --args --user-data-dir="$profile" \
+                || echo "  Could not launch $app" >&2
+        fi
     fi
-    if ! orca_wait_reachable "$cli"; then
+    if ! orca_wait_reachable "$cli" "$profile"; then
         echo "  Orca.app did not answer in ${CLAUDE_ORCA_ORCA_WAIT:-60}s -- opening Orca Web instead" >&2
         return 1
     fi
@@ -1405,9 +1470,9 @@ orca_hand_off() {
     # answers ok:false and is the no-op it looks like. (The bead says
     # "rm if the name exists"; doing it unconditionally is the same answer
     # without having to guess the shape of `environment list --json`.)
-    "$cli" environment rm --environment "$name" --json >/dev/null 2>&1 || true
+    ORCA_USER_DATA_PATH="$profile" "$cli" environment rm --environment "$name" --json >/dev/null 2>&1 || true
 
-    out="$("$cli" environment add --name "$name" --pairing-code "$pair" --json 2>/dev/null || true)"
+    out="$(ORCA_USER_DATA_PATH="$profile" "$cli" environment add --name "$name" --pairing-code "$pair" --json 2>/dev/null || true)"
     if orca_json_ok "$out"; then
         id="$(orca_json_env_id "$out")"
         printf '{"name":"%s","id":"%s"}\n' "$name" "$id" > "$(orca_env_file "$dir")"
@@ -1426,19 +1491,24 @@ orca_hand_off() {
 }
 
 # Teardown's half: the app is left holding a saved environment whose
-# runtime is about to stop existing. Quiet and best effort -- no app, no
-# CLI or an environment that was never saved are all "nothing to remove".
+# runtime is about to stop existing, and the profile it ran that
+# environment on has no reason to survive the folder either -- the user's
+# own Orca profile was never the one holding it. Quiet and best effort --
+# no app, no CLI or an environment that was never saved are all "nothing
+# to remove".
 orca_env_forget() {
-    local dir="$1" app="" cli=""
-    app="$(desktop_app)" || return 0
-    cli="$(orca_cli "$app")" || return 0
-    "$cli" environment rm --environment "$(orca_env_name "$dir")" --json >/dev/null 2>&1 || true
+    local dir="$1" app="" cli="" profile
+    profile="$(orca_profile_dir "$dir")"
+    app="$(desktop_app)" || { rm -rf "$profile"; return 0; }
+    cli="$(orca_cli "$app")" || { rm -rf "$profile"; return 0; }
+    ORCA_USER_DATA_PATH="$profile" "$cli" environment rm --environment "$(orca_env_name "$dir")" --json >/dev/null 2>&1 || true
     rm -f "$(orca_env_file "$dir")"
+    rm -rf "$profile"
 }
 
-# The paths the Mac's OWN Orca tracks as local repos. `repo list` with no
-# --environment is that list; there is no --host flag in 1.4.197 (bead
-# claude-orca-8uo.1, correcting the plan).
+# The paths a `repo list --json` answer names. `repo list` with no
+# --environment is the local list; there is no --host flag in 1.4.197
+# (bead claude-orca-8uo.1, correcting the plan).
 orca_json_repo_paths() {
     local json="$1"
     if command -v jq >/dev/null 2>&1; then
@@ -1448,27 +1518,15 @@ orca_json_repo_paths() {
     fi
 }
 
-# Is this folder one of them -- itself, a folder inside it, or a folder
-# that contains it? Any of the three is a workspace the desktop app can
-# open with no container around it.
-orca_lists_local_repo() {
-    local json="$1" dir="$2" host="${CLAUDE_ORCA_HOST_PROJECT_DIR:-}" p=""
+# Is there ANY repo in it? Once the app only ever runs on a profile the
+# launcher owns and only ever adds one environment to it, a local repo
+# showing up there at all -- whatever path it names -- is a leak: nothing
+# else ever puts one there but the app's own "+ Add project", which
+# 1.4.197 has no knob to disable (claude-orca-qhq).
+orca_lists_any_repo() {
+    local json="$1" p=""
     while IFS= read -r p; do
-        [ -n "$p" ] || continue
-        case "$dir" in
-            "$p"|"$p"/*) return 0 ;;
-        esac
-        case "$p" in
-            "$dir"/*) return 0 ;;
-        esac
-        if [ -n "$host" ]; then
-            case "$host" in
-                "$p"|"$p"/*) return 0 ;;
-            esac
-            case "$p" in
-                "$host"/*) return 0 ;;
-            esac
-        fi
+        [ -n "$p" ] && return 0
     done <<REPOS
 $(orca_json_repo_paths "$json")
 REPOS
@@ -1522,23 +1580,25 @@ RUNIT
 }
 
 # The one warning cmd_verify's "local repos" doctor row could give but the
-# hand-off never did: the same folder can ALSO be a LOCAL project in the
-# Mac's own Orca (badge "Local Mac"), and agents opened there run on the
-# Mac with no container around them. A detection, not a prevention -- the
-# CLI has no `orca repo rm`, so the fix is naming where to do it by hand.
-# Quiet whenever there is no app or no CLI to ask (same gate as cmd_verify's
+# hand-off never did: this folder's OWN conduit profile can ALSO hold a
+# LOCAL project (the app's own "+ Add project", which 1.4.197 has no knob
+# to disable), and agents opened there run on the Mac with no container
+# around them. A detection, not a prevention -- the CLI has no
+# `orca repo rm`, so the fix is naming where it gets cleared. Quiet
+# whenever there is no app or no CLI to ask (same gate as cmd_verify's
 # "n/a" row): a folder on Linux, or a Mac with no Orca.app, has nothing to
 # warn about.
 orca_local_leak_note() {
-    local dir="$1" app cli
+    local dir="$1" app cli profile
     app="$(find_orca_app 2>/dev/null)" || return 0
     cli="$(orca_cli "$app" 2>/dev/null)" || return 0
-    orca_lists_local_repo "$("$cli" repo list --json 2>/dev/null || true)" "$dir" || return 0
+    profile="$(orca_profile_dir "$dir")"
+    orca_lists_any_repo "$(ORCA_USER_DATA_PATH="$profile" "$cli" repo list --json 2>/dev/null || true)" || return 0
     cat <<WARNING
 
-WARNING: the Mac's own Orca also holds this folder as a LOCAL project.
-         Workspaces badged "Local Mac" run on the Mac with no sandbox.
-         Remove that project in Orca before working there
+WARNING: this folder's Orca profile holds a LOCAL project.
+         It will be emptied at the next ./claude-dev; agents opened
+         there meanwhile run on the Mac with no sandbox
          (./claude-dev verify reports it as the "local repos" row).
 WARNING
 }
@@ -2189,7 +2249,7 @@ docker_image_of() {
 
 cmd_verify_v3() {
     local dir="${1:-$PROJECT_SELF}" name state rc=0 url_file port st nm detail rows
-    local app="" cli=""
+    local app="" cli="" profile=""
     [ -d "$dir" ] || { echo "Error: directory does not exist: $dir" >&2; return 1; }
     dir="$(cd "$dir" && pwd -P)"
     if [ ! -f "$(orca_json "$dir")" ]; then
@@ -2229,25 +2289,38 @@ cmd_verify_v3() {
     fi
 
     # The one row only the Mac can answer, and the guard for the one risk
-    # the desktop client adds (.claude/plans/desktop-orca.md S5): Orca's
-    # app can open LOCAL workspaces, which run agents on the Mac with no
-    # container around them, and 1.4.197 has no knob to disable them. The
-    # launcher only ever hands the app a remote environment -- this reads
-    # the app's own local list back and says so if this folder is in it.
-    # A detection, not a prevention.
-    app="$(find_orca_app)" || app=""
-    if [ -n "$app" ]; then
-        cli="$(orca_cli "$app")" || cli=""
-    fi
-    if [ -n "$cli" ]; then
-        if orca_lists_local_repo "$("$cli" repo list --json 2>/dev/null || true)" "$dir"; then
-            doctor_row FAIL "local repos" "the Mac's own Orca tracks this folder as a LOCAL repo -- agents opened there run on the Mac, outside this container; remove it in Orca"
-            rc=2
-        else
-            doctor_row ok "local repos" "the Mac's own Orca does not track this folder locally"
-        fi
+    # the desktop client adds (.claude/plans/desktop-orca.md S5,
+    # claude-orca-qhq): Orca's app can open LOCAL workspaces, which run
+    # agents on the Mac with no container around them, and 1.4.197 has no
+    # knob to disable them. The launcher only ever launches the app on
+    # THIS folder's own conduit profile, never the user's own Orca -- this
+    # reads that profile's own local list back and FAILs on any repo in
+    # it, whatever path it names, since nothing else is ever added there.
+    # A detection, not a prevention. `desktop_app()`, not `find_orca_app()`
+    # -- once ui already says desktop, asking whether THIS host currently
+    # looks like a Mac is the wrong question (same reasoning as
+    # cmd_doctor_v3's own "orca app" row).
+    if [ "$(ui_of "$dir")" != "desktop" ]; then
+        doctor_row n/a "local repos" "this folder is on Orca Web -- nothing here can open the folder outside the container"
     else
-        doctor_row n/a "local repos" "no Orca.app on this host -- nothing here can open the folder outside the container"
+        app="$(desktop_app)" || app=""
+        if [ -n "$app" ]; then
+            cli="$(orca_cli "$app")" || cli=""
+        fi
+        if [ -z "$cli" ]; then
+            doctor_row n/a "local repos" "no Orca.app on this host -- nothing here can open the folder outside the container"
+        else
+            profile="$(orca_profile_dir "$dir")"
+            if [ ! -d "$profile" ]; then
+                doctor_row FAIL "local repos" "this folder's Orca profile is missing -- run ./claude-dev to create it"
+                rc=2
+            elif orca_lists_any_repo "$(ORCA_USER_DATA_PATH="$profile" "$cli" repo list --json 2>/dev/null || true)"; then
+                doctor_row FAIL "local repos" "this folder's Orca profile holds a LOCAL project -- agents opened there run on the Mac, outside this container; ./claude-dev empties it at the next launch"
+                rc=2
+            else
+                doctor_row ok "local repos" "this folder's Orca profile holds no local project"
+            fi
+        fi
     fi
 
     # ... and everything the container can see for itself.
