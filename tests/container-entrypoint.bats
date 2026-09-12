@@ -1373,3 +1373,72 @@ STUB
     [ ! -e "$proj2/.claude-dev/run/orca-pairing-url.txt" ]
     kill -TERM -"$(cat "$TMP/ep2.pgid")" 2>/dev/null || true
 }
+
+# --- managed settings (claude-orca-8a0.3) -------------------------------
+#
+# Claude Code reads /etc/claude-code/managed-settings.json as
+# administrator policy; autoContinueAtUsageLimit there is what lets a
+# dispatched worker sit out a usage-limit window and carry on instead of
+# dying mid-slice. Only root can write that path, so the entrypoint does it
+# BEFORE the privilege drop -- and skips silently when it is not root,
+# which is how this unprivileged run reaches it through the override.
+
+run_entrypoint_managed() {
+    run env HOME="$1" PROJECT_DIR="$2" \
+        CLAUDE_ORCA_MANAGED_SETTINGS="$3" \
+        ORCA_BIN="$TMP/bin/no-such-orca" CLAUDE_ORCA_SKIP_SETUP=1 \
+        CLAUDE_ORCA_SKIP_BEADS=1 CLAUDE_ORCA_ENTRYPOINT_NO_PRIVDROP=1 \
+        bash "$ENTRYPOINT"
+}
+
+@test "entrypoint writes managed settings with autoContinueAtUsageLimit when absent" {
+    [ -x "$ENTRYPOINT" ]
+    command -v jq >/dev/null 2>&1
+
+    local proj home managed
+    proj="$TMP/project"
+    make_project "$proj"
+    home="$proj/.claude-dev/home"
+    managed="$TMP/managed/managed-settings.json"
+
+    # Absent: written, with the key, readable by everyone (it is policy).
+    run_entrypoint_managed "$home" "$proj" "$managed"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"ORCA_BIN is not executable"* ]]
+    [ -f "$managed" ]
+    run jq -e '.autoContinueAtUsageLimit == true' "$managed"
+    [ "$status" -eq 0 ]
+    [ "$(stat -c '%a' "$managed")" = "644" ]
+
+    # Present without the key: merged in, every other key kept.
+    jq -n '{permissions: {allow: ["Bash"]}, apiKeyHelper: "/usr/local/bin/k"}' > "$managed"
+    run_entrypoint_managed "$home" "$proj" "$managed"
+    run jq -r '[.autoContinueAtUsageLimit, .permissions.allow[0], .apiKeyHelper]
+        | map(tostring) | join(",")' "$managed"
+    [ "$output" = "true,Bash,/usr/local/bin/k" ]
+
+    # Present WITH the key: never overwritten -- the file is policy, and an
+    # operator who turned it off meant it.
+    jq -n '{autoContinueAtUsageLimit: false, permissions: {allow: ["Read"]}}' > "$managed"
+    run_entrypoint_managed "$home" "$proj" "$managed"
+    run jq -r '[.autoContinueAtUsageLimit, .permissions.allow[0]]
+        | map(tostring) | join(",")' "$managed"
+    [ "$output" = "false,Read" ]
+
+    # Not JSON at all: left exactly as found, never replaced.
+    printf 'not json at all\n' > "$managed"
+    run_entrypoint_managed "$home" "$proj" "$managed"
+    run cat "$managed"
+    [ "$output" = "not json at all" ]
+
+    # No override and no root: silent skip, and nothing lands in /etc.
+    if [ "$(id -u)" != "0" ]; then
+        run env HOME="$home" PROJECT_DIR="$proj" \
+            ORCA_BIN="$TMP/bin/no-such-orca" CLAUDE_ORCA_SKIP_SETUP=1 \
+            CLAUDE_ORCA_SKIP_BEADS=1 CLAUDE_ORCA_ENTRYPOINT_NO_PRIVDROP=1 \
+            bash "$ENTRYPOINT"
+        [ "$status" -ne 0 ]
+        [[ "$output" == *"ORCA_BIN is not executable"* ]]
+        [ ! -f /etc/claude-code/managed-settings.json ]
+    fi
+}

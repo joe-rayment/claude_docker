@@ -595,3 +595,69 @@ set_lane() {
     [ ! -f "$OLD" ]
     [ -f "$FRESH" ]
 }
+
+# ── Bash: the orchestrator's other inline seat (claude-orca-8a0.3) ──────────
+#
+# Reading a file with `cat` costs the orchestrator exactly what reading it
+# with Read costs, so the streak that denies an Edit denies a Bash call too
+# once it is long enough. The read-only exempt list (bd, git, bats, lane,
+# tier-…) is untouched: those are how the session steers.
+
+@test "the delegation gate denies a main-loop Bash call past the deny streak" {
+    export DELEGATION_GATE_DENY_AT=3
+    export DELEGATION_GATE_WARN_AT=99
+    for i in 1 2; do
+        run sh -c 'jq -cn "{tool_name:\"Bash\",session_id:\"s50\",agent_id:null,tool_input:{command:\"cat /etc/hosts\"}}" | python3 '"$GATE"
+        [ "$status" -eq 0 ]
+        [ -z "$output" ]
+    done
+    jq -e '.streak == 2' "$(state_file s50)"
+    jq -e '.denies == 0' "$(state_file s50)"
+
+    run sh -c 'jq -cn "{tool_name:\"Bash\",session_id:\"s50\",agent_id:null,tool_input:{command:\"cat /etc/hosts\"}}" | python3 '"$GATE"
+    [ "$status" -eq 0 ]
+    echo "$output" | jq -e '.hookSpecificOutput.hookEventName == "PreToolUse"'
+    echo "$output" | jq -e '.hookSpecificOutput.permissionDecision == "deny"'
+    # the denial names the exact spawn to use instead
+    echo "$output" | jq -e '.hookSpecificOutput.permissionDecisionReason | test("scout")'
+    echo "$output" | jq -e '.hookSpecificOutput.permissionDecisionReason | test("executor")'
+    echo "$output" | jq -e '.hookSpecificOutput.permissionDecisionReason | test("orca-dispatch")'
+    jq -e '.denies == 1' "$(state_file s50)"
+
+    # the read-only exempt list still passes at any streak, and still counts
+    # for nothing
+    run sh -c 'jq -cn "{tool_name:\"Bash\",session_id:\"s50\",agent_id:null,tool_input:{command:\"bd ready\"}}" | python3 '"$GATE"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+    jq -e '.streak == 3' "$(state_file s50)"
+
+    # lane express keeps its exemption: no Bash denial there either
+    set_lane s51 express
+    for i in 1 2 3 4; do
+        run sh -c 'jq -cn "{tool_name:\"Bash\",session_id:\"s51\",agent_id:null,tool_input:{command:\"cat /etc/hosts\"}}" | python3 '"$GATE"
+        [ "$status" -eq 0 ]
+        [ -z "$output" ]
+    done
+    jq -e '.denies == 0' "$(state_file s51)"
+}
+
+@test "the delegation gate still skips subagent calls entirely" {
+    export DELEGATION_GATE_DENY_AT=1
+    export DELEGATION_GATE_WARN_AT=1
+    export DELEGATION_GATE_MODE=enforce
+    for i in 1 2 3; do
+        run sh -c 'jq -cn "{tool_name:\"Bash\",session_id:\"s52\",agent_id:\"a1\",agent_type:\"executor\",tool_input:{command:\"cat /etc/hosts\"}}" | python3 '"$GATE"
+        [ "$status" -eq 0 ]
+        [ -z "$output" ]
+    done
+    [ ! -f "$(state_file s52)" ]
+
+    # …and neither its edits nor its reads leave a trace or a denial
+    run sh -c 'jq -cn "{tool_name:\"Edit\",session_id:\"s52\",agent_id:\"a1\",tool_input:{file_path:\"/workspace/src/x.py\"}}" | python3 '"$GATE"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+    run sh -c 'jq -cn "{tool_name:\"Read\",session_id:\"s52\",agent_id:\"a1\",tool_input:{file_path:\"/x\"}}" | python3 '"$GATE"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+    [ ! -f "$(state_file s52)" ]
+}
