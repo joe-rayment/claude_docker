@@ -222,6 +222,18 @@ this template assumes — Claude Code as the master, low-cost OpenRouter models
 as delegate-route workers, and Orca's native coordination, which needs no
 opt-in now that Orca runs in the container.
 
+The UI is a client of that runtime, and on a Mac with the Orca desktop app
+installed the client is the app, not a browser tab: the launcher launches it
+and registers the container as a remote environment named
+`claude-orca-<project>` over Orca's pairing protocol (the E2EE websocket to
+the published loopback port, keyed by `run/orca-pairing-url.txt` or the web
+URL's `#pairing=` fragment). The `ui` key in `claude-orca.json`
+(`desktop`|`web`, written at register) decides; no app found, or
+`CLAUDE_ORCA_UI=web`, means Orca Web, so the browser path stays whole. The
+image is built at the app's version because Orca refuses a protocol
+mismatch, and because the app can also open *local* unsandboxed workspaces
+the launcher never hands it one and `verify` reads its local repo list back.
+
 `HOME` is `<project>/.claude-dev/home`, whose `.claude` config dir is
 populated from this repo's `config/` by a checksum-gated sync that preserves
 Orca's own managed hook entries (status dots, sub-agent rows). One directory

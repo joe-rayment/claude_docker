@@ -2,10 +2,13 @@
 
 One command turns any folder on your Mac into an isolated agent workspace.
 The folder gets its **own Linux container**, and the session manager
-([Orca](https://onorca.dev)) runs *inside* it, serving its UI back to your
-browser. On a Mac it lives inside Docker's own Linux virtual machine, a
-whole kernel away from your files. Nothing this installs on the Mac runs an
-agent, so there is no unconfined copy to start by mistake.
+([Orca](https://onorca.dev)) runs *inside* it. The Orca desktop app on your
+Mac attaches to that runtime as a client when you have it installed, and
+when you do not the same session serves its UI back to your browser. Either
+way, every agent, shell and tool call runs in the container: on a Mac that
+is inside Docker's own Linux virtual machine, a whole kernel away from your
+files. Nothing this installs on the Mac runs an agent, so there is no
+unconfined copy to start by mistake.
 
 **The stack it assumes.** Claude Code is the master: it plans, decomposes,
 reviews and decides. Low-cost **OpenRouter** models are the workers — a bead
@@ -69,15 +72,42 @@ That installs any of the dependencies above you are missing, makes sure
 Docker is running, clones this template into
 `.claude-dev/template`, writes the
 `./claude-dev` launcher stub, seeds `.claude-dev/claude-orca.json`, builds
-the image, starts the folder's container, and opens Orca in your default
-browser. Re-running is safe. To isolate another folder, run the same
-one-liner from inside it.
+the image, starts the folder's container, and opens Orca — the desktop app
+when this Mac has one, your default browser otherwise. Re-running is safe.
+To isolate another folder, run the same one-liner from inside it.
 
-**2. Sign in to Claude, inside Orca.** The browser tab is the folder's own
-Orca, already paired and already holding the project. Pick **Claude Code**
-and work as usual: the first `claude` run prints a login URL in that
-terminal — open it on this Mac and paste the code back. That is the whole
-first run. Nothing is asked of you along the way.
+**2. Sign in to Claude, inside Orca.** The window (or the browser tab) is
+the folder's own Orca, already paired and already holding the project. Pick
+**Claude Code** and work as usual: the first `claude` run prints a login URL
+in that terminal — open it on this Mac and paste the code back. That is the
+whole first run. Nothing is asked of you along the way.
+
+### How it opens — the desktop app, or the browser
+
+On a Mac with the Orca desktop app installed, the desktop path is the
+default. `./claude-dev` starts the container, launches the app, and
+registers the container as a **remote environment** named
+`claude-orca-<folder>` over Orca's own pairing protocol — an end-to-end
+encrypted websocket to the port the folder already publishes on
+`127.0.0.1`. Pick that environment in the app's **Runtime Environments**
+pane and you are in the container: the app is a client, exactly as the
+browser tab is, and nothing it runs escapes the container.
+
+Which path a folder takes is the **`ui`** key in
+`.claude-dev/claude-orca.json` (`desktop` or `web`), written once at
+registration. Bootstrap with `CLAUDE_ORCA_UI=web` to keep the browser tab,
+and a folder registered on a machine with no app found — every Linux host,
+and any Mac without one — gets `web` on its own. The browser path is
+unchanged and is the fallback for everything below.
+
+The folder's image is built at the **version of the installed app**,
+because Orca refuses a client/runtime protocol mismatch outright rather
+than warning about it; `./claude-dev --doctor` prints both versions.
+
+One thing the browser could not do, the desktop app can: it also opens
+**local** workspaces, which run agents on your Mac with no sandbox at all —
+the launcher never hands it one, and `./claude-dev verify` fails if this
+folder ever turns up in the app's local repo list.
 
 Everything below this is reference.
 
@@ -220,6 +250,7 @@ every update:
 {
   "version": 3,
   "port": 6768,
+  "ui": "desktop",
   "cpus": 4,
   "memory": "8g",
   "theme": "dark",
@@ -232,6 +263,10 @@ every update:
 - **`port`** — the host port Orca is published on. Chosen from 6768 upward
   at registration; the same number is used on both sides, because the
   pairing code names it.
+- **`ui`** — `desktop` (the Mac's own Orca, attached to this container as a
+  remote environment) or `web` (the browser tab). Written at registration:
+  `desktop` when an app was found, `web` otherwise, and `web` for a folder
+  registered before this key existed. Change it here to switch a folder over.
 - **`cpus`, `memory`** — `null` means whatever Docker defaults to.
 - **`theme`** — `dark` (the default), `light` or `system`. It reaches the
   container as `CLAUDE_ORCA_THEME`, and the entrypoint writes it into Orca's own
@@ -352,7 +387,9 @@ runs `./claude-dev --update` moves to a new image with the rebuild.
 - `scripts/container/entrypoint.sh` — runs as PID 1 under tini: drops to
   the `agent` user, starts `orca-ide --serve`, and writes the browser URL
   to `<project>/.claude-dev/run/orca-web-url.txt` (mode 600 — it carries a
-  pairing code) plus the port to `run/port`.
+  pairing code) plus the port to `run/port`. That fragment, decoded, is the
+  pairing URL the desktop path registers; newer images also write it
+  straight to `run/orca-pairing-url.txt`.
 - `scripts/container/provision-run.sh` and `scripts/container/provision.d/`
   — everything that is about *this folder* rather than about the image:
   the toolchain verify, the config sync, the first-run seeds, the git
