@@ -126,7 +126,9 @@ SERVE_LOG="$RUN_DIR/orca-serve.log"
 URL_FILE="$RUN_DIR/orca-web-url.txt"
 PORT_FILE="$RUN_DIR/port"
 SETUP_LOG="$RUN_DIR/setup.log"
-mkdir -p "$RUN_DIR" "$PROJECT_DIR/.claude-dev/home"
+PROVISION_DIR="$RUN_DIR/provision"
+SETUP_STATUS_FILE="$PROVISION_DIR/setup.status"
+mkdir -p "$RUN_DIR" "$PROVISION_DIR" "$PROJECT_DIR/.claude-dev/home"
 
 # --- where the template is (startup v4, claude-orca-qa2.9) --------------
 #
@@ -234,10 +236,23 @@ else
     if ! "$SETUP" --check >/dev/null 2>&1; then
         log "First start: installing the toolchain inside the VM (several minutes; progress in .claude-dev/run/setup.log)"
     fi
-    if "$SETUP" 2>&1 | tee -a "$SETUP_LOG"; then
+    "$SETUP" 2>&1 | tee -a "$SETUP_LOG"
+    setup_status="${PIPESTATUS[0]}"
+    # The exit code lands on disk either way, so a later reader can tell
+    # "ran fine" (0) from "failed" (non-zero) from "never ran" (no file).
+    printf '%s\n' "$setup_status" > "$SETUP_STATUS_FILE"
+    if [ "$setup_status" = "0" ]; then
         log "setup done (log: $SETUP_LOG)"
     else
-        die "setup.sh failed -- see $SETUP_LOG"
+        # NOT fatal (claude-orca-dbu.6). On the prebuilt image setup.sh is
+        # a verification pass -- every phase already present -- so a
+        # non-zero exit says something is wrong with the IMAGE, not that
+        # there is nothing to run. Dying here would take the container
+        # with it and leave nobody to report the problem: no Orca, no
+        # terminal, no Claude Code. Record it, say so loudly, carry on.
+        warn "setup.sh failed (exit $setup_status) -- see $SETUP_LOG"
+        warn "continuing anyway: the VM comes up so the failure can be"
+        warn "looked at from inside (status in $SETUP_STATUS_FILE)"
     fi
 fi
 
