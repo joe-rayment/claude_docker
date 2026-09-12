@@ -419,3 +419,128 @@ export_provision_test_env() {  # export_provision_test_env <project> <port>
     [ -f "$proj/.claude-dev/home/.claude/CLAUDE.md" ]
     wait
 }
+
+# --- S5 (claude-orca-dbu.5): the agent inside can see and repair it -------
+#
+# Provisioning that reports nothing is provisioning nobody can fix. These
+# three cases are the whole of S5's contract: a status table that a person
+# or an agent can read, a way to re-run exactly the step that broke, and a
+# session start that puts a FAILED step in front of the agent without
+# saying a word about a folder that is fine.
+
+PROVISION_BIN="$REPO_ROOT/bin/provision"
+SETTINGS="$REPO_ROOT/config/claude-settings.json"
+
+# A step's leavings without running a step: the two files provision-run.sh
+# writes, which are the only thing `provision status` reads.
+seed_provision_status() {  # seed_provision_status <project> <step> <status> <last log line>
+    local pdir="$1/.claude-dev/run/provision"
+    mkdir -p "$pdir"
+    printf '%s\n' "$3" > "$pdir/$2.status"
+    printf 'a line this step wrote earlier\n%s\n' "$4" > "$pdir/$2.log"
+}
+
+@test "with one step's status file non-zero, 'provision status' exits non-zero and names that step" {
+    [ -x "$PROVISION_BIN" ]
+
+    local proj="$TMP/project"
+    make_project "$proj"
+    mkdir -p "$TMP/home"
+    seed_provision_status "$proj" 10-toolchain-verify 0 "toolchain ok"
+    seed_provision_status "$proj" 20-config-sync 3 "cp: cannot create the settings file"
+
+    run env HOME="$TMP/home" CLAUDE_ORCA_ROOT="$proj" "$PROVISION_BIN" status
+    [ "$status" -ne 0 ]
+    # The name, because that is what `provision run <step>` takes, and the
+    # last line of its log, because that is the sentence that says why.
+    [[ "$output" == *"20-config-sync"* ]]
+    [[ "$output" == *"cp: cannot create the settings file"* ]]
+    # A table, not a complaint: every step is a row, passing ones included.
+    [[ "$output" == *"10-toolchain-verify"* ]]
+
+    # ... and a folder whose steps all passed is a clean exit, so this is
+    # usable as the condition of a script.
+    printf '0\n' > "$proj/.claude-dev/run/provision/20-config-sync.status"
+    run env HOME="$TMP/home" CLAUDE_ORCA_ROOT="$proj" "$PROVISION_BIN" status
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"10-toolchain-verify"* ]]
+}
+
+@test "'provision run <step>' re-runs exactly that step and rewrites its status" {
+    [ -x "$PROVISION_BIN" ]
+
+    local proj="$TMP/project" pdir
+    make_project "$proj"
+    mkdir -p "$TMP/home"
+    pdir="$proj/.claude-dev/run/provision"
+
+    write_step 10-first  'echo "10 ran" >> "$TMP/order"'
+    write_step 20-middle 'echo "20 ran" >> "$TMP/order"' \
+                         'if [ -f "$TMP/repaired" ]; then echo "the repair took"; exit 0; fi' \
+                         'echo "still broken" >&2' \
+                         'exit 3'
+    write_step 30-last   'echo "30 ran" >> "$TMP/order"'
+
+    env HOME="$TMP/home" PROJECT_DIR="$proj" \
+        CLAUDE_ORCA_PROVISION_STEPS="$TMP/steps" bash "$PROVISION_RUN"
+    [ "$(tr -d '[:space:]' < "$pdir/20-middle.status")" = "3" ]
+    [ "$(grep -c . "$TMP/order")" = "3" ]
+
+    # The repair a person or an agent makes, and then the one step again.
+    touch "$TMP/repaired"
+    run env HOME="$TMP/home" CLAUDE_ORCA_ROOT="$proj" \
+        CLAUDE_ORCA_PROVISION_STEPS="$TMP/steps" "$PROVISION_BIN" run 20-middle
+    [ "$status" -eq 0 ]
+
+    # EXACTLY that step: re-running a whole provision to fix one line of it
+    # is what makes people stop doing it.
+    [ "$(grep -c . "$TMP/order")" = "4" ]
+    [ "$(grep -c '20 ran' "$TMP/order")" = "2" ]
+    [ "$(grep -c '10 ran' "$TMP/order")" = "1" ]
+    [ "$(grep -c '30 ran' "$TMP/order")" = "1" ]
+
+    # ... and what it leaves behind is THIS run: the status is rewritten,
+    # and the log no longer carries the failure that has been fixed.
+    [ "$(tr -d '[:space:]' < "$pdir/20-middle.status")" = "0" ]
+    grep -qF 'the repair took' "$pdir/20-middle.log"
+    run grep -c 'still broken' "$pdir/20-middle.log"
+    [ "$output" = "0" ]
+
+    # And the table agrees with it.
+    run env HOME="$TMP/home" CLAUDE_ORCA_ROOT="$proj" "$PROVISION_BIN" status
+    [ "$status" -eq 0 ]
+}
+
+@test "the session-start hook output contains the failing step name when one has failed and no provision lines at all when none has" {
+    local proj="$TMP/project" cmd hook
+    make_project "$proj"
+    mkdir -p "$TMP/home" "$TMP/host"
+    # The hook runs from <project>/.claude-dev/template, which is this repo.
+    ln -sfn "$REPO_ROOT" "$TMP/host/template"
+
+    # The hook the folder actually runs, taken out of the settings file that
+    # ships rather than hand-written here -- a wiring this test approximates
+    # is a wiring this test cannot prove.
+    cmd="$(jq -r '[.hooks.SessionStart[]?.hooks[]?.command]
+                  | map(select(contains("bin/provision"))) | .[0] // empty' "$SETTINGS")"
+    [ -n "$cmd" ]
+    hook="${cmd//__HOST__/$TMP/host}"
+
+    seed_provision_status "$proj" 10-toolchain-verify 0 "toolchain ok"
+    seed_provision_status "$proj" 20-config-sync 3 "cp: cannot create the settings file"
+
+    run env HOME="$TMP/home" CLAUDE_ORCA_ROOT="$proj" bash -c "$hook"
+    # A SessionStart hook never fails the session, whatever it found.
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"20-config-sync"* ]]
+    [[ "$output" == *"cp: cannot create the settings file"* ]]
+    # Only the broken one: the passing steps are not news.
+    [[ "$output" != *"10-toolchain-verify"* ]]
+
+    # A folder with nothing wrong says nothing at all. Every prompt pays for
+    # this line, so a folder that is fine must not spend it.
+    printf '0\n' > "$proj/.claude-dev/run/provision/20-config-sync.status"
+    run env HOME="$TMP/home" CLAUDE_ORCA_ROOT="$proj" bash -c "$hook"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+}

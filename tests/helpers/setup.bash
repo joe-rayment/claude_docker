@@ -502,6 +502,17 @@ case "$cmd" in
                 # container that went away -- which must warn, not fail.
                 [ "${CLAUDE_ORCA_TEST_RESYNC_FAIL:-0}" = "1" ] && exit 1
                 exit 0 ;;
+            *bin/provision*)
+                # S5 (claude-orca-dbu.5): the doctor asks the container for
+                # one row per provision step, the same tab-separated shape
+                # verify-folder.sh answers in.
+                printf 'ok\t10-toolchain-verify\tok -- 2026-09-12 12:00:00\n'
+                if [ "${CLAUDE_ORCA_TEST_PROVISION_FAIL:-0}" = "1" ]; then
+                    printf 'FAIL\t20-config-sync\texit 3 -- cp: cannot create the settings file\n'
+                    exit 1
+                fi
+                printf 'ok\t20-config-sync\tok -- 2026-09-12 12:00:01\n'
+                exit 0 ;;
             *verify-folder.sh*)
                 # An image older than the checklist has no such script:
                 # the exec fails and nothing comes back.

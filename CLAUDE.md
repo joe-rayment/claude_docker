@@ -88,7 +88,12 @@ folder-shaped lives now — the config sync, the seeds, `bd init`, `orca repo
 add`, the toolchain verify, the guard check — as numbered idempotent steps
 under `scripts/container/provision.d/`, each writing
 `run/provision/<step>.log` and `.status`, none of them fatal, all of them
-re-run by the next start. The one exception is the OpenRouter guard's
+re-run by the next start. Those two files per step are what `provision
+status` reads back (one row per step; `provision run <step>` re-runs
+exactly one) -- the SessionStart hook prints the FAILED rows only, so a
+broken folder names its own fault on the first prompt and a clean one says
+nothing, and `claude-dev --doctor` fetches the same rows over `docker
+exec`. The one exception is the OpenRouter guard's
 *start*, which stays in front of `--serve`: Orca's environment is fixed at
 exec, so whether the guard's token reaches it has to be decided before it
 is started. The steps run on the Orca-cannot-start path too, right before
