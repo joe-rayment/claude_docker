@@ -226,8 +226,18 @@ seed_state() {  # seed_state <worker> <recon> -- a bound, unpinned, non-overdriv
 
 @test "tier-gate: named roles (verifier, oracle, professor, bead-auditor) are never touched" {
     seed_state sonnet haiku
-    for role in verifier oracle professor bead-auditor; do
-        gate '{"tool_name":"Agent","tool_input":{"subagent_type":"'"$role"'","prompt":"p"}}'
+    # claude-orca-8a0.2 split this set: verifier and bead-auditor GRADE, so
+    # they take the checker rung (the top capped at opus -- seed_state's top
+    # is fable); oracle and professor are consults and stay untouched. The
+    # case name predates the split.
+    for role in verifier bead-auditor; do
+        TIER_GATE_DERIVE="$DERIVE" gate '{"tool_name":"Agent","tool_input":{"subagent_type":"'"$role"'","prompt":"p"}}'
+        [ "$status" -eq 0 ]
+        run jq -e '.hookSpecificOutput.updatedInput.model == "opus"' <<<"$output"
+        [ "$status" -eq 0 ]
+    done
+    for role in oracle professor; do
+        TIER_GATE_DERIVE="$DERIVE" gate '{"tool_name":"Agent","tool_input":{"subagent_type":"'"$role"'","prompt":"p"}}'
         [ "$status" -eq 0 ]
         [ -z "$output" ]
     done
@@ -575,6 +585,67 @@ STUB
     [ "$status" -eq 0 ]
     run jq -e '.worker == "sonnet" and (.roles.worker | .agent == "claude")' "$STATE_FILE"
     [ "$status" -eq 0 ]
+}
+
+@test "tier-gate injects the checker rung into verifier spawns" {
+    TIER_ORCA_PROBE_DISABLE=1 TIER_DERIVE="$DERIVE" tier_set fable
+    [ "$status" -eq 0 ]
+
+    # the graders run the checker rung -- opus under a fable top, so the check
+    # sits in neither the orchestrator's seat nor the worker's
+    for role in verifier bead-auditor; do
+        TIER_GATE_DERIVE="$DERIVE" gate '{"tool_name":"Agent","tool_input":{"subagent_type":"'"$role"'","prompt":"p"}}'
+        [ "$status" -eq 0 ]
+        out="$output"
+        run jq -e '.hookSpecificOutput.updatedInput.model == "opus"' <<<"$out"
+        [ "$status" -eq 0 ]
+        run jq -e '.hookSpecificOutput.updatedInput.prompt == "p"' <<<"$out"
+        [ "$status" -eq 0 ]
+    done
+
+    # oracle and professor are consults, not graders: untouched by design
+    for role in oracle professor; do
+        TIER_GATE_DERIVE="$DERIVE" gate '{"tool_name":"Agent","tool_input":{"subagent_type":"'"$role"'","prompt":"p"}}'
+        [ "$status" -eq 0 ]
+        [ -z "$output" ]
+    done
+
+    # an explicit model on the call always wins
+    TIER_GATE_DERIVE="$DERIVE" gate '{"tool_name":"Agent","tool_input":{"subagent_type":"verifier","model":"haiku","prompt":"p"}}'
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+
+    # the RUNG, never a hardcoded opus: a sonnet top grades from sonnet
+    TIER_ORCA_PROBE_DISABLE=1 TIER_DERIVE="$DERIVE" tier_set sonnet
+    [ "$status" -eq 0 ]
+    TIER_GATE_DERIVE="$DERIVE" gate '{"tool_name":"Agent","tool_input":{"subagent_type":"verifier","prompt":"p"}}'
+    [ "$status" -eq 0 ]
+    run jq -e '.hookSpecificOutput.updatedInput.model == "sonnet"' <<<"$output"
+    [ "$status" -eq 0 ]
+
+    # a v1 tier.json carries no checker rung at all: derive it from the top
+    seed_state sonnet haiku
+    TIER_GATE_DERIVE="$DERIVE" gate '{"tool_name":"Agent","tool_input":{"subagent_type":"verifier","prompt":"p"}}'
+    [ "$status" -eq 0 ]
+    run jq -e '.hookSpecificOutput.updatedInput.model == "opus"' <<<"$output"
+    [ "$status" -eq 0 ]
+
+    # an off-ladder top has no rung to grade from: fail open, inject nothing
+    jq '.top = "some-custom-router-id"' "$STATE_FILE" > "$BATS_TEST_TMPDIR/off.json"
+    mv "$BATS_TEST_TMPDIR/off.json" "$STATE_FILE"
+    TIER_GATE_DERIVE="$DERIVE" gate '{"tool_name":"Agent","tool_input":{"subagent_type":"verifier","prompt":"p"}}'
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+
+    # and an explicit `/tier checker inherit` still means inherit
+    TIER_ORCA_PROBE_DISABLE=1 TIER_DERIVE="$DERIVE" tier_set fable
+    TIER_DERIVE="$DERIVE" tier_set checker inherit
+    [ "$status" -eq 0 ]
+    run jq -e '.roles.checker | .model == "inherit" and .pinned == true' "$STATE_FILE"
+    [ "$status" -eq 0 ]
+    TIER_GATE_DERIVE="$DERIVE" gate '{"tool_name":"Agent","tool_input":{"subagent_type":"verifier","prompt":"p"}}'
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
 }
 
 # ── bash 3.2 exercise ────────────────────────────────────────────────────────
