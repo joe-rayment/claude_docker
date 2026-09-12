@@ -89,9 +89,15 @@ default. `./claude-dev` starts the container, launches the app, and
 registers the container as a **remote environment** named
 `claude-orca-<folder>` over Orca's own pairing protocol — an end-to-end
 encrypted websocket to the port the folder already publishes on
-`127.0.0.1`. Pick that environment in the app's **Runtime Environments**
-pane and you are in the container: the app is a client, exactly as the
-browser tab is, and nothing it runs escapes the container.
+`127.0.0.1`. Nothing needs picking — the app already shows it attached and
+Connected in its **Remote Hosts** pane. The sidebar groups it under a
+**project** named after the folder, and each workspace under that project
+carries a badge with the environment name; open one and you are in the
+container, the app a client exactly as the browser tab is, and nothing it
+runs escapes the container. The app can also hold this same folder as its
+own **local** project (badge "Local Mac") — an agent opened there runs on
+the Mac with no sandbox; `./claude-dev` warns at hand-off if it finds one,
+and `./claude-dev verify`'s "local repos" row does the same later.
 
 Which path a folder takes is the **`ui`** key in
 `.claude-dev/claude-orca.json` (`desktop` or `web`), written once at

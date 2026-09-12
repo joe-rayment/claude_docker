@@ -606,9 +606,11 @@ desktop_fixture() {
     [ -n "$first_add" ]
     [ "$last_status" -lt "$first_add" ]
 
-    # The hand-off names the environment and the pane to pick it in.
+    # The hand-off names the environment and the sidebar mapping, not a
+    # pane to pick it in -- nothing needs picking, the app already shows
+    # it Connected.
     grep -qF "$name" <<< "$output"
-    grep -qF "Runtime Environments" <<< "$output"
+    grep -qF "Remote Hosts" <<< "$output"
 }
 
 @test "open with ui desktop adds the environment with the decoded pairing URL and records its id" {
@@ -679,10 +681,48 @@ desktop_fixture() {
 
     [ "$(cat "$PBCOPY_STUB_LOG")" = "$DESKTOP_PAIR_URL" ]
     grep -qF "clipboard" <<< "$output"
-    grep -qF "Runtime Environments" <<< "$output"
+    grep -qF "Remote Hosts" <<< "$output"
 
     # Nothing was saved, so nothing claims it was.
     [ ! -e "$primary/.claude-dev/run/orca-environment.json" ]
+}
+
+# --- the local-leak warning at hand-off (claude-orca-4x7) ----------------
+#
+# cmd_verify's "local repos" doctor row already reads the Mac's own Orca
+# back for this (tests/verify.bats); this is the same
+# ORCA_STUB_LOCAL_REPOS fixture, asked at `./claude-dev open` time instead
+# of `verify` time, because the leak is exactly as real the moment the
+# environment is handed off.
+
+@test "open with ui desktop warns when the Mac's own Orca holds the folder as a LOCAL project" {
+    local primary
+    primary="$(desktop_fixture)"
+    # find_orca_app's Darwin gate reads $STUB_UNAME_S from THIS shell, not
+    # the one desktop_fixture's own as_mac ran in and exited (a command
+    # substitution is a subshell; its exports die with it) -- pin it here
+    # too, same as verify.bats does for cmd_verify's identical gate.
+    as_mac
+    export ORCA_STUB_LOCAL_REPOS="$primary"
+
+    run bash -c "cd '$primary' && ./claude-dev open"
+    [ "$status" -eq 0 ]
+
+    grep -qF "WARNING" <<< "$output"
+    grep -qF "LOCAL project" <<< "$output"
+    grep -qF "Local Mac" <<< "$output"
+}
+
+@test "open with ui desktop prints no local-leak warning when the Mac's own Orca has no local repos" {
+    local primary
+    primary="$(desktop_fixture)"
+    as_mac
+    export ORCA_STUB_LOCAL_REPOS=""
+
+    run bash -c "cd '$primary' && ./claude-dev open"
+    [ "$status" -eq 0 ]
+
+    ! grep -qF "WARNING" <<< "$output"
 }
 
 @test "open with ui web opens the URL in the browser and never calls orca" {

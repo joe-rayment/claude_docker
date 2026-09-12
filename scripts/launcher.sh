@@ -1475,18 +1475,35 @@ REPOS
     return 1
 }
 
-# The desktop hand-off block: which environment to pick, where to pick it,
-# and the two commands. When nothing was saved the first line is the paste
-# instruction instead -- the path that always works.
+# Nothing to pick, nothing named "Runtime Environments" (1.4.197 has no
+# such pane -- confirmed against /opt/Orca/resources/app.asar, which
+# titles the pane "Remote Hosts" both in Settings and in the status bar's
+# own host popover). orca_hand_off already ran `environment add`, so by
+# the time this prints the app already shows it Connected; what is left
+# to say is where it landed. The app's sidebar groups workspaces under a
+# PROJECT named after the repo (derive_project_name), and each workspace
+# under that project carries a badge with the environment name
+# (orca_env_name, truncated in the UI) -- that mapping, not an instruction
+# to go pick something, is the whole hand-off.
+#
+# When nothing was saved the first line is the click path instead
+# (AddRepoHostSelector in app.asar): sidebar "+" -> Add project -> Add
+# remote host, then paste the pairing URL that is already on the
+# clipboard (orca_hand_off's own pbcopy, above) and name it -- Remote
+# Hosts is where it shows up once that is done.
 print_desktop_block_v3() {
-    local dir="$1" name file
+    local dir="$1" name project file
     name="$(orca_env_name "$dir")"
+    project="$(derive_project_name "$dir")"
     file="$(orca_env_file "$dir")"
     if [ -s "$file" ]; then
         cat <<RUNIT
 
 How to run it:
-  Orca (the desktop app):  pick "$name" in Runtime Environments
+  Orca (the desktop app):  open and attached -- this folder is the project
+                           "$project" in the sidebar; workspaces under it
+                           badged "$name" run inside the container.
+                           (Remote Hosts lists "$name" as Connected.)
   Reopen it later:         ./claude-dev
   A terminal inside it:    ./claude-dev shell
 RUNIT
@@ -1494,12 +1511,36 @@ RUNIT
         cat <<RUNIT
 
 How to run it:
-  Orca (the desktop app):  paste the pairing URL into Runtime Environments
-                           to add "$name"
+  Orca (the desktop app):  sidebar "+" > Add project > Add remote host,
+                           paste the pairing URL (it is on the clipboard)
+                           and name it "$name"; Remote Hosts then lists it.
   Reopen it later:         ./claude-dev
   A terminal inside it:    ./claude-dev shell
 RUNIT
     fi
+    orca_local_leak_note "$dir"
+}
+
+# The one warning cmd_verify's "local repos" doctor row could give but the
+# hand-off never did: the same folder can ALSO be a LOCAL project in the
+# Mac's own Orca (badge "Local Mac"), and agents opened there run on the
+# Mac with no container around them. A detection, not a prevention -- the
+# CLI has no `orca repo rm`, so the fix is naming where to do it by hand.
+# Quiet whenever there is no app or no CLI to ask (same gate as cmd_verify's
+# "n/a" row): a folder on Linux, or a Mac with no Orca.app, has nothing to
+# warn about.
+orca_local_leak_note() {
+    local dir="$1" app cli
+    app="$(find_orca_app 2>/dev/null)" || return 0
+    cli="$(orca_cli "$app" 2>/dev/null)" || return 0
+    orca_lists_local_repo "$("$cli" repo list --json 2>/dev/null || true)" "$dir" || return 0
+    cat <<WARNING
+
+WARNING: the Mac's own Orca also holds this folder as a LOCAL project.
+         Workspaces badged "Local Mac" run on the Mac with no sandbox.
+         Remove that project in Orca before working there
+         (./claude-dev verify reports it as the "local repos" row).
+WARNING
 }
 
 # The whole hand-off, in three lines: where Orca is, how to get back to
