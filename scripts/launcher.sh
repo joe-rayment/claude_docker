@@ -1165,6 +1165,273 @@ open_url() {
     open "$url" || echo "Could not run 'open' -- paste this into a browser: $url" >&2
 }
 
+# --- the desktop hand-off (S3, claude-orca-8uo.4) -------------------------
+#
+# With ui = desktop the client is the Mac's own Orca.app and this folder's
+# container is its runtime, attached over Orca's own pairing protocol
+# (.claude/plans/desktop-orca.md). Nothing about the boundary moves: every
+# agent, shell and tool call still runs inside the container. Three facts
+# from the probe against 1.4.197 (bead claude-orca-8uo.1) shape every line
+# below:
+#
+#   * `orca status --json` EXITS 0 whether the runtime is reachable or
+#     not. The boolean in the JSON is the only signal there is.
+#   * a second `environment add` under a name that already exists is
+#     refused outright ("A server named ... already exists."), and a
+#     recreated container mints a fresh offer -- so the saved one is
+#     removed first, every time.
+#   * the app registers no `orca://` protocol handler, so it is launched
+#     by bundle (`open -a`) and paired through its CLI.
+#
+# All of it is best effort. The container is up and serving either way and
+# Orca Web is a complete client, so a hand-off that cannot even start (no
+# app, no CLI, no pairing offer, a runtime that never answers) says why on
+# stderr and falls back to the browser rather than failing the open.
+
+# The bundle a folder that has ALREADY decided it is a desktop folder
+# hands its runtime to. An explicit CLAUDE_ORCA_APP is authoritative here
+# on any host: find_orca_app's Darwin gate belongs to the REGISTER
+# decision (a Linux host has no desktop Orca to find, so it registers a
+# web folder whatever the environment says), and is the wrong question to
+# ask of a folder whose `ui` key already says desktop and whose owner has
+# named the bundle outright.
+desktop_app() {
+    if [ -n "${CLAUDE_ORCA_APP:-}" ]; then
+        [ -d "$CLAUDE_ORCA_APP" ] || return 1
+        printf '%s\n' "$CLAUDE_ORCA_APP"
+        return 0
+    fi
+    find_orca_app
+}
+
+# The name this folder's runtime is saved under in the app: the container's
+# own name, deliberately -- one folder, one name, on both sides.
+orca_env_name() { container_name "$1"; }
+
+# A Mac-side result, so run/ and not state/.
+orca_env_file() { printf '%s\n' "$1/.claude-dev/run/orca-environment.json"; }
+
+# The ORCA_VERSION this folder's image is built at. Orca's protocol check
+# is a hard refusal on a mismatch (client-too-old / server-too-old), not a
+# warning, so a difference between it and the app is worth saying out loud
+# -- S4 is what makes it rare, by building the image at the app's version.
+image_orca_version() {
+    local f="$TEMPLATE_ROOT/Dockerfile" v=""
+    if [ -f "$f" ]; then
+        v="$(sed -n 's/^ARG ORCA_VERSION=\([^ ]*\).*$/\1/p' "$f" | head -1)"
+    fi
+    printf '%s\n' "$v"
+}
+
+# Three readers for the CLI's --json answers. jq when the Mac has one and
+# a glob when it does not: every other config read here is guarded the
+# same way, and a missing jq must not be what silently turns a desktop
+# folder into a browser folder.
+orca_json_ok() {
+    local json="$1" v=""
+    if command -v jq >/dev/null 2>&1; then
+        v="$(printf '%s' "$json" | jq -r '.ok // false' 2>/dev/null || echo false)"
+        [ "$v" = "true" ]
+        return
+    fi
+    case "$json" in
+        *'"ok":true'*|*'"ok": true'*) return 0 ;;
+    esac
+    return 1
+}
+
+orca_json_reachable() {
+    local json="$1" v=""
+    if command -v jq >/dev/null 2>&1; then
+        v="$(printf '%s' "$json" | jq -r '.result.runtime.reachable // false' 2>/dev/null || echo false)"
+        [ "$v" = "true" ]
+        return
+    fi
+    case "$json" in
+        *'"reachable":true'*|*'"reachable": true'*) return 0 ;;
+    esac
+    return 1
+}
+
+orca_json_env_id() {
+    local json="$1" v=""
+    if command -v jq >/dev/null 2>&1; then
+        v="$(printf '%s' "$json" | jq -r '.result.environment.id // empty' 2>/dev/null || true)"
+    else
+        v="$(printf '%s' "$json" | tr '{},' '\n' \
+             | sed -n 's/^"id":"\([^"]*\)"$/\1/p' | head -1)"
+    fi
+    [ "$v" = "null" ] && v=""
+    printf '%s\n' "$v"
+}
+
+# Poll until the app's runtime answers, <= CLAUDE_ORCA_ORCA_WAIT seconds
+# (60, the plan's number). The exit code says nothing, so the JSON is read
+# every time.
+orca_wait_reachable() {
+    local cli="$1" limit waited=0 out=""
+    limit="${CLAUDE_ORCA_ORCA_WAIT:-60}"
+    case "$limit" in
+        ''|*[!0-9]*) limit=60 ;;
+    esac
+    while :; do
+        out="$("$cli" status --json 2>/dev/null || true)"
+        if orca_json_reachable "$out"; then
+            return 0
+        fi
+        if [ "$waited" -ge "$limit" ]; then
+            return 1
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+}
+
+# Launch the app, wait for it, and save this folder's runtime as an
+# environment. Returns 0 when the desktop app is this folder's client --
+# whether or not the environment saved, because the block that follows
+# says which -- and 1 when the caller should open the browser instead.
+orca_hand_off() {
+    local dir="$1" app="" cli="" pair="" name="" appver="" imgver="" out="" id=""
+
+    app="$(desktop_app)" || {
+        echo "  no Orca.app on this Mac -- opening Orca Web instead ($ORCA_DOWNLOAD_URL)" >&2
+        return 1
+    }
+    pair="$(pairing_url_of "$dir")" || {
+        echo "  this container published no pairing offer -- opening Orca Web instead" >&2
+        return 1
+    }
+    cli="$(orca_cli "$app")" || {
+        echo "  $app ships no orca CLI -- opening Orca Web instead" >&2
+        return 1
+    }
+
+    appver="$(orca_app_version "$app")"
+    imgver="$(image_orca_version)"
+    if [ -n "$appver" ] && [ -n "$imgver" ] && [ "$appver" != "$imgver" ]; then
+        {
+            echo "  Warning: Orca.app is $appver and this folder's image runs Orca $imgver."
+            echo "           Orca refuses a protocol mismatch outright, so if the app will"
+            echo "           not attach, './claude-dev --update' rebuilds at the app's version."
+        } >&2
+    fi
+
+    name="$(orca_env_name "$dir")"
+    # Nothing may claim a saved environment until this run saves one.
+    rm -f "$(orca_env_file "$dir")"
+
+    if [ "${CLAUDE_ORCA_OPEN:-1}" != "0" ]; then
+        open -a "$app" || echo "  Could not launch $app" >&2
+    fi
+    if ! orca_wait_reachable "$cli"; then
+        echo "  Orca.app did not answer in ${CLAUDE_ORCA_ORCA_WAIT:-60}s -- opening Orca Web instead" >&2
+        return 1
+    fi
+
+    # Remove first, always. The name may be saved against the PREVIOUS
+    # container's offer, which is dead, and `add` on a name that exists is
+    # refused rather than replaced; an rm of a name that was never there
+    # answers ok:false and is the no-op it looks like. (The bead says
+    # "rm if the name exists"; doing it unconditionally is the same answer
+    # without having to guess the shape of `environment list --json`.)
+    "$cli" environment rm --environment "$name" --json >/dev/null 2>&1 || true
+
+    out="$("$cli" environment add --name "$name" --pairing-code "$pair" --json 2>/dev/null || true)"
+    if orca_json_ok "$out"; then
+        id="$(orca_json_env_id "$out")"
+        printf '{"name":"%s","id":"%s"}\n' "$name" "$id" > "$(orca_env_file "$dir")"
+        return 0
+    fi
+
+    # The manual fallback that always works: the offer goes on the
+    # clipboard and the block below says where to paste it.
+    if command -v pbcopy >/dev/null 2>&1; then
+        printf '%s' "$pair" | pbcopy || true
+        echo "  Orca could not save the environment; the pairing URL is on your clipboard." >&2
+    else
+        echo "  Orca could not save the environment; the pairing URL is $pair" >&2
+    fi
+    return 0
+}
+
+# Teardown's half: the app is left holding a saved environment whose
+# runtime is about to stop existing. Quiet and best effort -- no app, no
+# CLI or an environment that was never saved are all "nothing to remove".
+orca_env_forget() {
+    local dir="$1" app="" cli=""
+    app="$(desktop_app)" || return 0
+    cli="$(orca_cli "$app")" || return 0
+    "$cli" environment rm --environment "$(orca_env_name "$dir")" --json >/dev/null 2>&1 || true
+    rm -f "$(orca_env_file "$dir")"
+}
+
+# The paths the Mac's OWN Orca tracks as local repos. `repo list` with no
+# --environment is that list; there is no --host flag in 1.4.197 (bead
+# claude-orca-8uo.1, correcting the plan).
+orca_json_repo_paths() {
+    local json="$1"
+    if command -v jq >/dev/null 2>&1; then
+        printf '%s' "$json" | jq -r '.result.repos[]?.path // empty' 2>/dev/null || true
+    else
+        printf '%s' "$json" | tr '{},' '\n' | sed -n 's/^"path":"\(.*\)"$/\1/p'
+    fi
+}
+
+# Is this folder one of them -- itself, a folder inside it, or a folder
+# that contains it? Any of the three is a workspace the desktop app can
+# open with no container around it.
+orca_lists_local_repo() {
+    local json="$1" dir="$2" host="${CLAUDE_ORCA_HOST_PROJECT_DIR:-}" p=""
+    while IFS= read -r p; do
+        [ -n "$p" ] || continue
+        case "$dir" in
+            "$p"|"$p"/*) return 0 ;;
+        esac
+        case "$p" in
+            "$dir"/*) return 0 ;;
+        esac
+        if [ -n "$host" ]; then
+            case "$host" in
+                "$p"|"$p"/*) return 0 ;;
+            esac
+            case "$p" in
+                "$host"/*) return 0 ;;
+            esac
+        fi
+    done <<REPOS
+$(orca_json_repo_paths "$json")
+REPOS
+    return 1
+}
+
+# The desktop hand-off block: which environment to pick, where to pick it,
+# and the two commands. When nothing was saved the first line is the paste
+# instruction instead -- the path that always works.
+print_desktop_block_v3() {
+    local dir="$1" name file
+    name="$(orca_env_name "$dir")"
+    file="$(orca_env_file "$dir")"
+    if [ -s "$file" ]; then
+        cat <<RUNIT
+
+How to run it:
+  Orca (the desktop app):  pick "$name" in Runtime Environments
+  Reopen it later:         ./claude-dev
+  A terminal inside it:    ./claude-dev shell
+RUNIT
+    else
+        cat <<RUNIT
+
+How to run it:
+  Orca (the desktop app):  paste the pairing URL into Runtime Environments
+                           to add "$name"
+  Reopen it later:         ./claude-dev
+  A terminal inside it:    ./claude-dev shell
+RUNIT
+    fi
+}
+
 # The whole hand-off, in three lines: where Orca is, how to get back to
 # it, and how to get a terminal inside the VM.
 print_run_it_block_v3() {
@@ -1495,8 +1762,15 @@ cmd_open_v3() {
     # The one number a person actually wants after typing ./claude-dev.
     echo "Orca is up ($((t1 - t0))s)"
     resync_config "$dir" "$name"
-    open_url "$url"
-    print_run_it_block_v3 "$dir" "$url"
+    # A desktop folder hands the runtime to the Mac's own Orca.app; a web
+    # folder (and a desktop one whose hand-off could not start) opens the
+    # browser, which is the same runtime through a different client.
+    if [ "$(ui_of "$dir")" = "desktop" ] && orca_hand_off "$dir"; then
+        print_desktop_block_v3 "$dir"
+    else
+        open_url "$url"
+        print_run_it_block_v3 "$dir" "$url"
+    fi
 }
 
 cmd_register_v3() {
@@ -1654,7 +1928,7 @@ cmd_doctor_v3() {
     # the CLI that goes with it. Never a finding -- a folder on Orca Web
     # needs neither, and a desktop folder whose app has gone still opens
     # in the browser -- so both rows report and neither touches rc.
-    app="$(find_orca_app)" || app=""
+    app="$(desktop_app)" || app=""
     if [ -n "$app" ]; then
         ver="$(orca_app_version "$app")"
         doctor_row ok "orca app" "$app (${ver:-version unknown})"
@@ -1762,6 +2036,7 @@ docker_image_of() {
 
 cmd_verify_v3() {
     local dir="${1:-$PROJECT_SELF}" name state rc=0 url_file port st nm detail rows
+    local app="" cli=""
     [ -d "$dir" ] || { echo "Error: directory does not exist: $dir" >&2; return 1; }
     dir="$(cd "$dir" && pwd -P)"
     if [ ! -f "$(orca_json "$dir")" ]; then
@@ -1798,6 +2073,28 @@ cmd_verify_v3() {
     else
         doctor_row missing "web url" "not published -- $url_file"
         rc=2
+    fi
+
+    # The one row only the Mac can answer, and the guard for the one risk
+    # the desktop client adds (.claude/plans/desktop-orca.md S5): Orca's
+    # app can open LOCAL workspaces, which run agents on the Mac with no
+    # container around them, and 1.4.197 has no knob to disable them. The
+    # launcher only ever hands the app a remote environment -- this reads
+    # the app's own local list back and says so if this folder is in it.
+    # A detection, not a prevention.
+    app="$(find_orca_app)" || app=""
+    if [ -n "$app" ]; then
+        cli="$(orca_cli "$app")" || cli=""
+    fi
+    if [ -n "$cli" ]; then
+        if orca_lists_local_repo "$("$cli" repo list --json 2>/dev/null || true)" "$dir"; then
+            doctor_row FAIL "local repos" "the Mac's own Orca tracks this folder as a LOCAL repo -- agents opened there run on the Mac, outside this container; remove it in Orca"
+            rc=2
+        else
+            doctor_row ok "local repos" "the Mac's own Orca does not track this folder locally"
+        fi
+    else
+        doctor_row n/a "local repos" "no Orca.app on this host -- nothing here can open the folder outside the container"
     fi
 
     # ... and everything the container can see for itself.
@@ -1932,6 +2229,13 @@ cmd_teardown_v3() {
 
     project="$(derive_project_name "$dir")"
     name="$(container_name "$dir")"
+    # Before the container goes: the desktop app is holding a saved
+    # environment that points at a runtime which is about to stop
+    # existing, and an environment that answers nothing is worse than no
+    # environment at all.
+    if [ "$(ui_of "$dir")" = "desktop" ]; then
+        orca_env_forget "$dir"
+    fi
     ctr stop "$name" >/dev/null 2>&1 || true
     ctr rm "$name" >/dev/null 2>&1 || true
     # Orca's user-data-dir is the one piece of folder state that lives in a
@@ -2009,7 +2313,13 @@ case "${1:-}" in
     verify)        shift; cmd_verify_v3 "${1:-$PROJECT_SELF}" || exit $?; exit 0 ;;
     logs)          shift; cmd_logs_v3 "${1:-$PROJECT_SELF}" || exit $?; exit 0 ;;
     key)           shift; cmd_key_v3 "$@" || exit $?; exit 0 ;;
-    --how-to-run)  print_run_it_block_v3 "$PROJECT_SELF"; exit 0 ;;
+    --how-to-run)
+        if [ "$(ui_of "$PROJECT_SELF")" = "desktop" ]; then
+            print_desktop_block_v3 "$PROJECT_SELF"
+        else
+            print_run_it_block_v3 "$PROJECT_SELF"
+        fi
+        exit 0 ;;
     --doctor)      cmd_doctor_v3 || exit $?; exit 0 ;;
     --update)      shift; cmd_update_v3 "${1:-$PROJECT_SELF}" || exit $?; exit 0 ;;
     --teardown)    shift; cmd_teardown_v3 "$@" || exit $?; exit 0 ;;
