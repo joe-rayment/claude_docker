@@ -912,6 +912,7 @@ write_stub_orca() {
     cat > "$1" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "${ORCA_STUB_LOG:-/dev/null}"
+printf '%s\n' "${ORCA_USER_DATA_PATH:-}" >> "${ORCA_STUB_ENVPATH_LOG:-/dev/null}"
 state="${ORCA_STUB_STATE:-${TMPDIR:-/tmp}/orca-stub}"
 mkdir -p "$state"
 envs="$state/environments"
@@ -1067,6 +1068,12 @@ setup() {
     # so no other suite's `./claude-dev` learns to talk to an app.
     export ORCA_STUB_LOG="$BATS_TEST_TMPDIR/orca.log"
     : > "$ORCA_STUB_LOG"
+    # One line per ORCA_STUB_LOG line, the value ORCA_USER_DATA_PATH carried
+    # for that call (empty line when it carried none) -- a companion file
+    # rather than baking it into ORCA_STUB_LOG itself, so every existing
+    # exact-line assertion against that log stays literal.
+    export ORCA_STUB_ENVPATH_LOG="$BATS_TEST_TMPDIR/orca-envpath.log"
+    : > "$ORCA_STUB_ENVPATH_LOG"
     export ORCA_STUB_STATE="$BATS_TEST_TMPDIR/orca-state"
     mkdir -p "$ORCA_STUB_STATE"
     export PBCOPY_STUB_LOG="$BATS_TEST_TMPDIR/pbcopy.log"

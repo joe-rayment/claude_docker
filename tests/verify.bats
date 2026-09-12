@@ -53,6 +53,12 @@ contains() {
     local primary
     primary="$(abspath "$PROJECT_DIR")"
     make_project_v3 "$primary" >/dev/null
+    # make_project_v3 registers as a Mac (S2), so this folder is ui=desktop
+    # -- and the docker stub's own registration hand-off never gets a real
+    # pairing offer to run on, so the folder's own conduit profile is never
+    # actually created by it. A folder this "clean" is one that HAS been
+    # opened for real at least once, which is what creates that profile.
+    mkdir -p "$primary/.claude-dev/state/orca-profile"
 
     run bash -c "cd '$primary' && ./claude-dev verify"
     [ "$status" -eq 0 ]
@@ -126,21 +132,23 @@ contains() {
     contains "$output" "--update"
 }
 
-# --- desktop Orca, S3 (claude-orca-8uo.4) --------------------------------
+# --- desktop Orca, S3 (claude-orca-8uo.4, claude-orca-qhq) ---------------
 #
 # The one risk the desktop client adds, and its guard (.claude/plans/
 # desktop-orca.md S5). Orca's desktop app can open LOCAL workspaces --
 # folders on the Mac, whose agents run on the Mac with no container around
 # them. The browser tab cannot do that by construction; the app can, and
-# there is no knob in 1.4.197 to turn it off. The launcher only ever hands
-# the app a remote environment, never a local path, so this is a detection
-# rather than a prevention: verify reads the app's own local repo list back
-# and fails if this folder is in it.
+# there is no knob in 1.4.197 to turn it off. Since claude-orca-qhq the app
+# is launched on a profile the launcher owns outright (never the user's own
+# Orca profile) and that holds only this folder's environment, so this is a
+# detection rather than a prevention: verify reads THAT profile's own local
+# repo list back and fails if it lists anything at all -- any repo in a
+# profile the launcher controls is a leak, whatever path it names.
 #
 # `orca repo list --json` with no --environment IS the local list; there is
 # no --host flag in 1.4.197 (bead claude-orca-8uo.1, correcting the plan).
 
-@test "verify fails when the Mac Orca lists the folder as a local repo" {
+@test "verify fails when the folder's Orca profile lists a local repo" {
     mkdir -p "$PROJECT_DIR"
     local primary
     primary="$(abspath "$PROJECT_DIR")"
@@ -148,21 +156,26 @@ contains() {
     export STUB_UNAME_M=arm64
     write_stub_orca "$CLAUDE_ORCA_APP/Contents/Resources/bin/orca"
     make_project_v3 "$primary" >/dev/null
+    # As above: the registration hand-off never gets a real pairing offer
+    # from the docker stub, so it never creates the profile itself -- a
+    # folder that has been opened for real at least once has.
+    mkdir -p "$primary/.claude-dev/state/orca-profile"
 
-    # The ordinary case first: the Mac's Orca tracks other folders of its
-    # owner's, and none of them is this one.
-    export ORCA_STUB_LOCAL_REPOS="$BATS_TEST_TMPDIR/some-other-project"
+    # The ordinary case first: the folder's own conduit profile holds no
+    # local project at all.
+    export ORCA_STUB_LOCAL_REPOS=""
     run bash -c "cd '$primary' && ./claude-dev verify"
     [ "$status" -eq 0 ]
-    contains "$output" "does not track this folder locally"
+    contains "$output" "holds no local project"
 
-    # And the finding: this folder open as a local repo in the Mac's own
-    # Orca is a workspace whose agents run outside the container. The whole
-    # boundary, gone -- so it is a FAIL row and a failing exit code, not a
-    # note.
-    export ORCA_STUB_LOCAL_REPOS="$primary"
+    # And the finding: ANY repo in this folder's own profile is a leak --
+    # nothing but this folder's environment is ever added to it, so a repo
+    # showing up at all, whatever path it names, is a workspace whose
+    # agents run outside the container. A FAIL row and a failing exit code,
+    # not a note.
+    export ORCA_STUB_LOCAL_REPOS="$BATS_TEST_TMPDIR/some-other-project"
     run bash -c "cd '$primary' && ./claude-dev verify"
     [ "$status" -eq 2 ]
     contains "$output" "FAIL"
-    contains "$output" "LOCAL repo"
+    contains "$output" "LOCAL project"
 }
