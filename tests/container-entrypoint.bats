@@ -628,7 +628,10 @@ STUB
     local proj2="$TMP/project2" home2
     make_project "$proj2"
     home2="$proj2/.claude-dev/home"
-    run env HOME="$home2" PROJECT_DIR="$proj2" \
+    # -u: a claude-orca container exports the identity into every shell,
+    # and this leg is about the folder that ships none.
+    run env -u CLAUDE_ORCA_GIT_NAME -u CLAUDE_ORCA_GIT_EMAIL \
+        HOME="$home2" PROJECT_DIR="$proj2" \
         ORCA_BIN="$TMP/bin/no-such-orca" CLAUDE_ORCA_SKIP_SETUP=1 \
         CLAUDE_ORCA_SKIP_BEADS=1 CLAUDE_ORCA_ENTRYPOINT_NO_PRIVDROP=1 \
         bash "$ENTRYPOINT"
