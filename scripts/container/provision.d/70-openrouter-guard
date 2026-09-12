@@ -16,6 +16,13 @@
 # from the environment every other step inherits and hands it back here by
 # name, because a key in a place no chokepoint can see is the exact failure
 # the guard exists to prevent.
+#
+# And it goes no further than this shell: a guard restarted from here is
+# handed the key over a mode-600 file it reads once and unlinks
+# (claude-orca-qa2.25). The guard runs as the same uid as every terminal in
+# this container, so `env OPENROUTER_API_KEY=<key> python3 guard.py` would
+# publish it in that process's argv and /proc/<pid>/environ for the whole
+# uptime of the thing whose job is to keep it hidden.
 
 set -uo pipefail
 . "$(dirname "$0")/../provision-lib.sh"
@@ -26,7 +33,21 @@ GUARD_TIMEOUT="${CLAUDE_ORCA_GUARD_TIMEOUT:-30}"
 GUARD_LOG="$RUN_DIR/openrouter-guard.log"
 GUARD_PID_FILE="$RUN_DIR/openrouter-guard.pid"
 GUARD_TOKEN_FILE="$RUN_DIR/openrouter-guard.token"
+GUARD_KEY_FILE="$RUN_DIR/openrouter-guard.key"
 REAL_KEY="${CLAUDE_ORCA_OPENROUTER_REAL_KEY:-}"
+# The second caller this step has is a person re-running it by hand
+# (`provision run 70-openrouter-guard`), who should not have to put a key
+# on their own command line either: a key file is accepted here too.
+KEY_FILE_IN="${CLAUDE_ORCA_OPENROUTER_KEY_FILE:-}"
+if [ -z "$REAL_KEY" ] && [ -n "$KEY_FILE_IN" ]; then
+    [ -s "$KEY_FILE_IN" ] && REAL_KEY="$(head -1 "$KEY_FILE_IN" | tr -d '\r\n')"
+    rm -f "$KEY_FILE_IN"
+fi
+# Out of the environment before this step spawns anything. A shell variable
+# is this process's own; an exported one is every child's, and one of those
+# children is the guard -- which would put the key straight back into the
+# /proc/<pid>/environ this whole change exists to empty.
+unset CLAUDE_ORCA_OPENROUTER_REAL_KEY CLAUDE_ORCA_OPENROUTER_KEY_FILE
 
 if ! command -v python3 >/dev/null 2>&1; then
     echo "python3 not found; the OpenRouter guard cannot run here" >&2
@@ -65,9 +86,24 @@ fi
 
 token="$(head -1 "$GUARD_TOKEN_FILE" | tr -d '\r\n')"
 echo "the OpenRouter guard is not answering on 127.0.0.1:$GUARD_PORT; restarting it"
-env OPENROUTER_API_KEY="$REAL_KEY" \
+
+# 600 before a byte is in it. The bits are not what makes this safer than a
+# variable -- the agent owns both -- the unlink the guard does is.
+rm -f "$GUARD_KEY_FILE"
+if ! ( umask 077; printf '%s\n' "$REAL_KEY" > "$GUARD_KEY_FILE" ); then
+    echo "could not write the guard key file $GUARD_KEY_FILE" >&2
+    exit 1
+fi
+chmod 600 "$GUARD_KEY_FILE" 2>/dev/null
+
+# `env -u` and not just the file: this step inherits OPENROUTER_API_KEY from
+# Orca's environment, where it holds the guard TOKEN, and a guard started on
+# its own token would authenticate nothing. The guard's own os.environ scrub
+# cannot clear /proc/<pid>/environ either -- that is fixed at exec.
+env -u OPENROUTER_API_KEY \
     OPENROUTER_GUARD_TOKEN="$token" \
     CLAUDE_ORCA_RUN_DIR="$RUN_DIR" \
+    CLAUDE_ORCA_GUARD_KEY_FILE="$GUARD_KEY_FILE" \
     python3 "$GUARD_SCRIPT" --port "$GUARD_PORT" --run-dir "$RUN_DIR" \
     >>"$GUARD_LOG" 2>&1 </dev/null &
 guard_pid=$!
@@ -85,5 +121,6 @@ while [ "$waited" -lt "$GUARD_TIMEOUT" ]; do
 done
 
 kill -TERM "$guard_pid" 2>/dev/null
+rm -f "$GUARD_KEY_FILE"
 echo "the OpenRouter guard would not come back up -- see $GUARD_LOG" >&2
 exit 1

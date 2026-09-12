@@ -86,14 +86,32 @@ RUN_DIR="$PROJECT_DIR/.claude-dev/run"
 PROVISION_DIR="$RUN_DIR/provision"
 mkdir -p "$PROVISION_DIR" 2>/dev/null
 
-# The real OpenRouter key reaches exactly ONE step. It arrives here in the
-# environment, is captured into a shell variable, removed from the
+# The real OpenRouter key reaches exactly ONE step. It arrives here -- by
+# file from the entrypoint, or in the environment when a person runs this
+# by hand -- is captured into a shell variable, removed from the
 # environment every other step inherits, and handed back only to the step
 # whose name says it is the guard. The guard exists because a key in a
 # place no chokepoint can see is the failure it prevents; provisioning must
 # not be the thing that spreads it around.
+#
+# The file is read once and unlinked immediately (claude-orca-qa2.25), so
+# it exists for the hop from the entrypoint to this line and not for the
+# minutes provisioning takes. A shell variable is not in argv and not in
+# /proc/<pid>/environ -- the kernel fixed that at exec -- so from here on
+# the key is out of reach of the same-uid `ps -ef` the guard exists to
+# defeat.
 GUARD_REAL_KEY="${CLAUDE_ORCA_OPENROUTER_REAL_KEY:-}"
 unset CLAUDE_ORCA_OPENROUTER_REAL_KEY
+GUARD_KEY_FILE_IN="${CLAUDE_ORCA_OPENROUTER_KEY_FILE:-}"
+unset CLAUDE_ORCA_OPENROUTER_KEY_FILE
+if [ -n "$GUARD_KEY_FILE_IN" ]; then
+    if [ -s "$GUARD_KEY_FILE_IN" ]; then
+        GUARD_REAL_KEY="$(head -1 "$GUARD_KEY_FILE_IN" | tr -d '\r\n')"
+    else
+        warn "the OpenRouter key file $GUARD_KEY_FILE_IN is missing or empty; the guard step gets no key this run"
+    fi
+    rm -f "$GUARD_KEY_FILE_IN"
+fi
 
 export PROJECT_DIR TEMPLATE_ROOT RUN_DIR PROVISION_DIR
 
@@ -159,14 +177,21 @@ for step in ${@+"$@"}; do
     # file the failure message points at.
     case "$name" in
         *openrouter-guard*)
-            run_bounded env CLAUDE_ORCA_OPENROUTER_REAL_KEY="$GUARD_REAL_KEY" \
-                "$step" 2>&1 | tee -a "$step_log"
+            # Exported around the call rather than passed as `env VAR=...`:
+            # an assignment on a command line is in that command's argv,
+            # which every agent terminal can read out of `ps -ef`.
+            export CLAUDE_ORCA_OPENROUTER_REAL_KEY="$GUARD_REAL_KEY"
+            run_bounded "$step" 2>&1 | tee -a "$step_log"
+            # Read before the unset: PIPESTATUS belongs to the last
+            # pipeline run, and a builtin is a pipeline.
+            st="${PIPESTATUS[0]}"
+            unset CLAUDE_ORCA_OPENROUTER_REAL_KEY
             ;;
         *)
             run_bounded "$step" 2>&1 | tee -a "$step_log"
+            st="${PIPESTATUS[0]}"
             ;;
     esac
-    st="${PIPESTATUS[0]}"
     printf '%s\n' "$st" > "$step_status" 2>/dev/null
     ran=$((ran + 1))
 
