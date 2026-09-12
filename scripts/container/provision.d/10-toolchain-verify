@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+#
+# Is the filesystem the image promised? `setup.sh --check` installs
+# nothing and needs no root: it reads the artifacts and says yes or no.
+#
+# On the built-image path a non-zero answer means the IMAGE is wrong, not
+# that there is work to do -- which is precisely the report that used to be
+# impossible, because the check ran before there was anything to report it
+# with. On the runtime path (plain ubuntu:24.04) it means the install this
+# start ran did not finish.
+#
+# Idempotent because it writes nothing.
+
+set -uo pipefail
+. "$(dirname "$0")/../provision-lib.sh"
+
+if [ "${CLAUDE_ORCA_SKIP_SETUP:-0}" = "1" ]; then
+    echo "CLAUDE_ORCA_SKIP_SETUP=1; not verifying the toolchain"
+    exit 0
+fi
+
+SETUP="${CLAUDE_ORCA_SETUP:-$TEMPLATE_ROOT/scripts/container/setup.sh}"
+if [ ! -x "$SETUP" ]; then
+    echo "no setup script at $SETUP; nothing to verify"
+    exit 0
+fi
+
+echo "verifying the toolchain: $SETUP --check"
+"$SETUP" --check

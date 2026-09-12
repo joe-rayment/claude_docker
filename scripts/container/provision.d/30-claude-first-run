@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+#
+# A Claude Code worker started in a fresh .claude-dev/home stops dead at
+# two dialogs nobody is there to answer: the folder-trust prompt, then the
+# bypass-permissions disclaimer that --dangerously-skip-permissions raises
+# once per install (claude-orca-qa2.17). Both are ordinary config.
+#
+# Keys read off the shipped Claude Code binary:
+# projects[<path>].hasTrustDialogAccepted and hasCompletedOnboarding in the
+# home's .claude.json, and skipDangerousModePermissionPrompt in the config
+# dir's settings.json -- what the dialog itself writes on accept.
+#
+# Absent keys ONLY, which is also what makes this idempotent: a value the
+# user or the agent already set always wins, and a file that is not valid
+# JSON is left alone rather than replaced. Runs after 20-config-sync,
+# which regenerates settings.json wholesale.
+
+set -uo pipefail
+. "$(dirname "$0")/../provision-lib.sh"
+
+AGENT_HOME="${HOME:-/home/agent}"
+
+if ! command -v jq >/dev/null 2>&1; then
+    echo "jq not found; skipping the Claude Code first-run seed" >&2
+    exit 0
+fi
+
+seed_json_key_absent() {
+    seed_path="$1"
+    seed_filter="$2"
+    shift 2
+    [ -f "$seed_path" ] || printf '{}\n' > "$seed_path" 2>/dev/null || return 1
+    jq -e . "$seed_path" >/dev/null 2>&1 || {
+        echo "$seed_path is not valid JSON; leaving it alone" >&2
+        return 1
+    }
+    seed_tmp="$seed_path.claude-orca.tmp"
+    if jq "$@" "$seed_filter" "$seed_path" > "$seed_tmp" 2>/dev/null \
+            && [ -s "$seed_tmp" ]; then
+        mv -f "$seed_tmp" "$seed_path" || { rm -f "$seed_tmp"; return 1; }
+        return 0
+    fi
+    rm -f "$seed_tmp"
+    return 1
+}
+
+rc=0
+
+if seed_json_key_absent "$AGENT_HOME/.claude.json" '
+    (if has("hasCompletedOnboarding") then .
+     else . + {hasCompletedOnboarding: true} end)
+    | .projects = ((.projects // {}) as $pr
+        | $pr + {($p): (($pr[$p] // {})
+            | if has("hasTrustDialogAccepted") then .
+              else . + {hasTrustDialogAccepted: true} end)})
+' --arg p "$PROJECT_DIR"; then
+    echo "seeded Claude Code trust for $PROJECT_DIR in $AGENT_HOME/.claude.json"
+else
+    echo "could not seed $AGENT_HOME/.claude.json" >&2
+    rc=1
+fi
+
+mkdir -p "$AGENT_HOME/.claude" 2>/dev/null
+if seed_json_key_absent "$AGENT_HOME/.claude/settings.json" '
+    if has("skipDangerousModePermissionPrompt") then .
+    else . + {skipDangerousModePermissionPrompt: true} end
+'; then
+    echo "seeded skipDangerousModePermissionPrompt in $AGENT_HOME/.claude/settings.json"
+else
+    echo "could not seed $AGENT_HOME/.claude/settings.json" >&2
+    rc=1
+fi
+
+exit "$rc"

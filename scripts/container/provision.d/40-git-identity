@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+#
+# A fresh .claude-dev/home has no git identity, so every commit inside the
+# container fails. The Mac passes exactly its own user.name and
+# user.email; nothing else follows the identity in.
+#
+# Idempotent because an existing file always wins -- including one the
+# agent wrote itself, which is the point: this seeds a folder that has
+# nothing, it does not enforce an identity on one that does.
+
+set -uo pipefail
+. "$(dirname "$0")/../provision-lib.sh"
+
+AGENT_HOME="${HOME:-/home/agent}"
+gc="$AGENT_HOME/.gitconfig"
+
+if [ -f "$gc" ]; then
+    echo "$gc exists; leaving it alone"
+    exit 0
+fi
+if [ -z "${CLAUDE_ORCA_GIT_NAME:-}" ] || [ -z "${CLAUDE_ORCA_GIT_EMAIL:-}" ]; then
+    # Not a failure: a folder registered without an identity on the Mac has
+    # nothing to copy, and an empty [user] stanza is worse than no file.
+    echo "no CLAUDE_ORCA_GIT_NAME/CLAUDE_ORCA_GIT_EMAIL; nothing to seed"
+    exit 0
+fi
+
+{
+    printf '[user]\n'
+    printf '\tname = %s\n' "$CLAUDE_ORCA_GIT_NAME"
+    printf '\temail = %s\n' "$CLAUDE_ORCA_GIT_EMAIL"
+} > "$gc" || exit 1
+echo "seeded git identity in $gc"

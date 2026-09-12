@@ -105,21 +105,38 @@ fresh_project() {
     [ -f "$d/orca.yaml" ]
 }
 
+# Re-registered by claude-orca-88v (supersedes the seed-project contract
+# for this one case) when S4, claude-orca-dbu.4, moved the call site: the
+# intent is verbatim -- the entrypoint calls it, and it can never take PID
+# 1 down -- and only the structure it asserts has changed. seed-project.sh
+# is provision.d/50-seed-project now, reached through provision-run.sh
+# after Orca is serving, and "never dies when it fails" is a stronger
+# claim there than it was here: the runner records every step's exit code
+# and exits 0 regardless, so the failure cannot propagate at all.
 @test "the entrypoint calls it, and never dies when it fails" {
-    local body
-    body="$(cat "${BATS_TEST_DIRNAME}/../scripts/container/entrypoint.sh")"
-    case "$body" in
-        *seed-project.sh*) ;;
-        *) echo "the entrypoint does not call seed-project.sh"; return 1 ;;
-    esac
-    # The call site must not be able to take PID 1 down with it.
-    run grep -nE 'seed-project\.sh.*\|\| *(true|warn)|seed_project_floor' \
-        "${BATS_TEST_DIRNAME}/../scripts/container/entrypoint.sh"
+    local ep="${BATS_TEST_DIRNAME}/../scripts/container/entrypoint.sh"
+    local runner="${BATS_TEST_DIRNAME}/../scripts/container/provision-run.sh"
+    local step="${BATS_TEST_DIRNAME}/../scripts/container/provision.d/50-seed-project"
+
+    # The chain: entrypoint -> provision-run.sh -> 50-seed-project ->
+    # seed-project.sh.
+    run grep -nF 'provision-run.sh' "$ep"
+    [ "$status" -eq 0 ]
+    [ -x "$runner" ]
+    [ -x "$step" ]
+    run grep -nF 'seed-project.sh' "$step"
+    [ "$status" -eq 0 ]
+
+    # No call site on that chain can take PID 1 down with it: the runner
+    # captures each step's exit code into run/provision/<step>.status and
+    # exits 0 whatever happened.
+    run grep -nE '^exit 0$' "$runner"
+    [ "$status" -eq 0 ]
+    run grep -nF '.status' "$runner"
     [ "$status" -eq 0 ]
 
     # And the four seedings it replaced are gone from the entrypoint.
-    run grep -cE '^(seed_gitignore|restore_beads_snapshot)\(\)' \
-        "${BATS_TEST_DIRNAME}/../scripts/container/entrypoint.sh"
+    run grep -cE '^(seed_gitignore|restore_beads_snapshot)\(\)' "$ep"
     [ "$output" = "0" ]
 }
 
