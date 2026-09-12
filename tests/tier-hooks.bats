@@ -597,3 +597,110 @@ STUB
     run jq -e '.hookSpecificOutput.updatedInput.model == "sonnet"' <<<"$output"
     [ "$status" -eq 0 ]
 }
+
+# ── the 2026 reseat: a derived checker rung (claude-orca-8a0.2) ─────────────
+#
+# The checker is no longer a flat "inherit". It is derived from the top like
+# every other rung, CAPPED at opus: a fable orchestrator is graded by opus --
+# a seat that is neither the top's nor the worker's, which is the whole point
+# of an independent checker -- and an opus or sonnet top is graded by its own
+# model, which is what "inherit" always meant for them.
+
+@test "tier derives the checker to opus when the top is fable" {
+    # "no Orca" is pinned by the probe switch (claude-orca-xrp), never left to
+    # the box the suite happens to run on.
+    TIER_ORCA_PROBE_DISABLE=1 TIER_DERIVE="$DERIVE" tier_set fable
+    [ "$status" -eq 0 ]
+
+    run jq -e '.roles.checker | .backend == "subagent" and .agent == "claude" and .model == "opus"' "$STATE_FILE"
+    [ "$status" -eq 0 ]
+    # ... and it is a seat of its own: neither the top nor the worker.
+    run jq -e '.top == "fable" and .worker == "sonnet" and .roles.checker.model != .top and .roles.checker.model != .worker' "$STATE_FILE"
+    [ "$status" -eq 0 ]
+
+    # tier-derive is the single source of the rule -- tier-set never repeats it
+    run "$DERIVE" --checker fable
+    [ "$status" -eq 0 ]
+    [ "$output" = "opus" ]
+
+    # tier-prime shows the bound checker, not a placeholder
+    prime
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"checker=subagent:opus"* ]]
+
+    # and a SessionStart reconcile does not revert it to "inherit"
+    reconcile
+    [ "$status" -eq 0 ]
+    run jq -e '.roles.checker.model == "opus"' "$STATE_FILE"
+    [ "$status" -eq 0 ]
+}
+
+@test "tier derives the checker to the top model when the top is opus or sonnet" {
+    TIER_ORCA_PROBE_DISABLE=1 TIER_DERIVE="$DERIVE" tier_set opus
+    [ "$status" -eq 0 ]
+    run jq -e '.top == "opus" and .roles.checker.model == "opus"' "$STATE_FILE"
+    [ "$status" -eq 0 ]
+
+    TIER_ORCA_PROBE_DISABLE=1 TIER_DERIVE="$DERIVE" tier_set sonnet
+    [ "$status" -eq 0 ]
+    run jq -e '.top == "sonnet" and .roles.checker.model == "sonnet"' "$STATE_FILE"
+    [ "$status" -eq 0 ]
+
+    # the ladder itself: capped at opus, floored at haiku, family-ranked
+    run "$DERIVE" --checker opus
+    [ "$output" = "opus" ]
+    run "$DERIVE" --checker sonnet
+    [ "$output" = "sonnet" ]
+    run "$DERIVE" --checker haiku
+    [ "$output" = "haiku" ]
+    run "$DERIVE" --checker claude-opus-4-8-20260101
+    [ "$output" = "opus" ]
+    run "$DERIVE" --checker "sonnet[1m]"
+    [ "$output" = "sonnet" ]
+
+    # off-ladder stays off-ladder: nothing printed, the caller keeps inherit
+    run "$DERIVE" --checker some-custom-router-id
+    [ "$status" -eq 3 ]
+    [ -z "$output" ]
+}
+
+@test "tier derives the worker to sonnet when the top is fable" {
+    TIER_ORCA_PROBE_DISABLE=1 TIER_DERIVE="$DERIVE" tier_set fable
+    [ "$status" -eq 0 ]
+    run jq -e '.worker == "sonnet" and (.roles.worker | .agent == "claude" and .model == "sonnet")' "$STATE_FILE"
+    [ "$status" -eq 0 ]
+    # the expensive tiers stay out of the worker seat, and recon below it
+    run "$DERIVE" fable
+    [ "$output" = "fable sonnet haiku" ]
+}
+
+@test "tier recon openrouter binds the flash-class default model" {
+    TIER_ORCA_PROBE_DISABLE=1 TIER_DERIVE="$DERIVE" tier_set fable
+    [ "$status" -eq 0 ]
+
+    # the bare `openrouter` spec takes the role's OpenRouter default: for
+    # recon that is the flash-class model, not the full-size worker GLM.
+    TIER_DERIVE="$DERIVE" tier_set recon openrouter
+    [ "$status" -eq 0 ]
+    run jq -e '.roles.recon | .backend == "orca" and .agent == "opencode" and .model == "openrouter/z-ai/glm-5.3-flash" and .pinned == true' "$STATE_FILE"
+    [ "$status" -eq 0 ]
+    # the v1 mirror follows, and the other roles are untouched
+    run jq -e '.recon == "openrouter/z-ai/glm-5.3-flash" and .roles.worker.model == "sonnet"' "$STATE_FILE"
+    [ "$status" -eq 0 ]
+
+    # the default is a named constant in lib/tier-roles.sh, not a literal
+    run grep -c 'TIER_OPENROUTER_RECON_MODEL="openrouter/z-ai/glm-5.3-flash"' "$REPO_ROOT/scripts/lib/tier-roles.sh"
+    [ "$output" = "1" ]
+
+    # the explicit spelling still works and lands on the same binding
+    TIER_DERIVE="$DERIVE" tier_set recon openrouter:z-ai/glm-5.3-flash
+    [ "$status" -eq 0 ]
+    run jq -e '.roles.recon.model == "openrouter/z-ai/glm-5.3-flash"' "$STATE_FILE"
+    [ "$status" -eq 0 ]
+
+    # and the command is documented where the roles are explained
+    run grep -qF -- '/tier recon openrouter' "$REPO_ROOT/knowledge-base/TIERED_ORCHESTRATION.md"
+    [ "$status" -eq 0 ]
+    run grep -qF -- '/tier recon openrouter' "$REPO_ROOT/config/claude-commands/tier.md"
+    [ "$status" -eq 0 ]
+}
