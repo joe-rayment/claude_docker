@@ -6,10 +6,20 @@
       "pin": { "order": ["deepinfra", "parasail"], "allow_fallbacks": false },
       "grade": "executor"
     },
+    "glm-flash": {
+      "runner": "opencode",
+      "model": "openrouter/z-ai/glm-5.3-flash",
+      "grade": "scout"
+    },
     "deepseek": {
       "runner": "opencode",
       "model": "openrouter/deepseek/deepseek-chat",
       "grade": "executor"
+    },
+    "deepseek-flash": {
+      "runner": "opencode",
+      "model": "openrouter/deepseek/deepseek-v4-flash",
+      "grade": "scout"
     },
     "qwen-coder": {
       "runner": "opencode",

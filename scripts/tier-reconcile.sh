@@ -116,6 +116,15 @@ set -f; set -- $trio; set +f
 [ $# -eq 3 ] || exit 0
 want_top=$1 want_w=$2 want_c=$3
 
+# The checker rung is derived from the same top (tier-derive --checker: the
+# top capped at opus) and is NOT affected by overdrive -- lifting the worker
+# never lifts its grader. An answer we cannot derive -- an off-ladder top, or
+# a tier-derive too old to know --checker, which is exactly what a stale
+# template clone on PATH is -- must PRESERVE whatever the file already says
+# rather than flatten it back to "inherit": reverting a bound checker on
+# every SessionStart is the failure this fallback exists to prevent.
+want_ck=$("$DERIVE" --checker "$want_top" 2>/dev/null) || want_ck=""
+
 base_json='{}'
 if [ -f "$STATE_FILE" ]; then
     existing="$(cat "$STATE_FILE" 2>/dev/null)"
@@ -139,7 +148,7 @@ RFILTER='
         pinned:  ($e.pinned // false) };
   .roles = { worker:  role("worker";  $w;       (.worker // $w)),
              recon:   role("recon";   $c;       (.recon  // $c)),
-             checker: role("checker"; "inherit"; "inherit") }
+             checker: role("checker"; $ck;      "inherit") }
   | .top = $t
   | .worker = .roles.worker.model
   | .recon  = .roles.recon.model
@@ -147,17 +156,22 @@ RFILTER='
   | .overdrive = (.overdrive // false)
 '
 
+if [ -z "$want_ck" ]; then
+    want_ck=$(printf '%s' "$base_json" | jq -r '.roles.checker.model // "inherit"' 2>/dev/null)
+    [ -n "$want_ck" ] || want_ck=inherit
+fi
+
 # Idempotence: compare the WHOLE desired object (minus the timestamp) with
 # what is on disk, so a run that would change nothing writes nothing.
 desired=$(printf '%s' "$base_json" | jq -S --arg t "$want_top" --arg w "$want_w" --arg c "$want_c" \
-              "$RFILTER | del(.updated)" 2>/dev/null) || exit 0
+              --arg ck "$want_ck" "$RFILTER | del(.updated)" 2>/dev/null) || exit 0
 current=$(printf '%s' "$base_json" | jq -S 'del(.updated)' 2>/dev/null) || exit 0
 [ "$desired" = "$current" ] && exit 0
 
 mkdir -p "$(dirname "$STATE_FILE")" 2>/dev/null
 tmp=$(mktemp "$STATE_FILE.XXXXXX") || exit 0
 if printf '%s' "$base_json" | jq --arg t "$want_top" --arg w "$want_w" --arg c "$want_c" \
-      --arg u "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      --arg ck "$want_ck" --arg u "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
       "$RFILTER | .updated = \$u" \
       > "$tmp" 2>/dev/null && jq -e . "$tmp" >/dev/null 2>&1; then
     mv "$tmp" "$STATE_FILE"

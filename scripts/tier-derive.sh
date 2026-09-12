@@ -42,12 +42,23 @@
 # tier-gate) reads it there and passes --overdrive as a LEADING argument —
 # trailing it is silently ignored, as extra arguments always have been.
 #
-# Two auxiliary modes (same ladder, no separate table to drift):
+# Three auxiliary modes (same ladder, no separate table to drift):
 #   tier-derive --name <model-or-alias>   canonical DISPLAY NAME for a rung's
 #                                          concrete id ("Opus 5"); exit 1 and
 #                                          no output if off-ladder (caller
 #                                          falls back to the raw id).
 #   tier-derive --rank <model-or-alias>   numeric rank, 0 if off-ladder.
+#   tier-derive --checker <model-or-alias>  the CHECKER rung for that top: the
+#                                          top's own rung CAPPED at opus, so
+#                                          fable -> opus and opus/sonnet/haiku
+#                                          -> themselves. Off-ladder exits 3
+#                                          with no output (claude-orca-8a0.2).
+#
+# The checker cap is the one rung that is deliberately NOT the top and not the
+# worker when the top is fable: an independent check is what the evidence pays
+# for, and a grader one rung down costs about half of a fable one while still
+# sitting above the sonnet worker it grades. At opus and below the cap is a
+# no-op, which is exactly what the old flat "inherit" meant for those tops.
 #
 # Usage:  tier-derive [--overdrive] <model-or-alias>
 # Exit:   0 derived (three ids on stdout) · 2 usage · 3 off-ladder (no output)
@@ -94,7 +105,7 @@ rank_of() {  # alias OR full family id -> rank; 0 = off-ladder/unknown
     esac
 }
 
-usage() { echo "usage: tier-derive [--name|--rank|--overdrive] <model-or-alias>" >&2; exit 2; }
+usage() { echo "usage: tier-derive [--name|--rank|--checker|--overdrive] <model-or-alias>" >&2; exit 2; }
 
 [ $# -ge 1 ] && [ -n "${1:-}" ] || usage
 
@@ -116,6 +127,14 @@ case "$1" in
     --rank)
         [ $# -ge 2 ] && [ -n "${2:-}" ] || { echo "usage: tier-derive --rank <model-or-alias>" >&2; exit 2; }
         rank_of "$2"
+        exit 0
+        ;;
+    --checker)
+        [ $# -ge 2 ] && [ -n "${2:-}" ] || { echo "usage: tier-derive --checker <model-or-alias>" >&2; exit 2; }
+        r=$(rank_of "$2")
+        [ "$r" -eq 0 ] && exit 3   # off-ladder: no rung to grade from -- the caller keeps "inherit"
+        [ "$r" -gt 3 ] && r=3      # checker CAP: opus. Never another fable, never the worker's rung.
+        id_for_rank "$r"
         exit 0
         ;;
 esac

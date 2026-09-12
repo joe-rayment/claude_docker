@@ -38,7 +38,7 @@ The SessionStart status echo prints the live binding every session
 | **orchestrator** | (the main session — no agent file) | settings `.model` (written by `/tier`; moved live only by `/model`) | executor, verifier, scout | decompose, delegate, synthesize, decide |
 | **executor** | `config/agents/executor.md` | frontmatter `model:` = **concrete id** (worker rung, written by tier-set/tier-reconcile) | `scout` only | one implementation slice, end to end |
 | **scout** (leaf) | `config/agents/scout.md` | frontmatter `model:` = **concrete id** (recon rung, written by tier-set/tier-reconcile) | — | fan-out recon: find/usages/summaries |
-| **verifier** (leaf) | `config/agents/verifier.md` | `model: inherit` (= orchestrator) | — | independent check of one evidence surface |
+| **verifier** (leaf) | `config/agents/verifier.md` | frontmatter `model: inherit`; the CHECKER rung in `tier.json` is what a dispatch binds (top capped at opus) | — | independent check of one evidence surface |
 | **oracle** | `config/agents/oracle.md` | `model: inherit` (= orchestrator) | — | user-invoked checkpoint consult |
 
 **Invariant: the orchestrator is the most capable model of the three, and
@@ -49,9 +49,26 @@ combination by design, including inverted ones (user decision, bead uhs) —
 that is the operator's call, not blocked; `/tier overdrive` makes the same
 latitude *sticky*, lifting the cap on the derived path itself so the
 executor rides the top model until it is cleared (see **Overdrive — lifting
-the worker cap** below). The checkers (verifier, oracle)
-use `model: inherit`, so they always run exactly the orchestrator's model —
-never a tier below the claims they check.
+the worker cap** below).
+
+**The checker rung (2026-09-12, claude-orca-8a0.2).** The verifier is no
+longer a flat `inherit`. It is derived like every other rung — the top
+**capped at opus** (`tier-derive --checker`) — so the ladder reads:
+
+| top | worker | recon | checker |
+|-----|--------|-------|---------|
+| `fable`  | `sonnet` | `haiku` | **`opus`** |
+| `opus`   | `sonnet` | `haiku` | `opus` (= the top, what `inherit` always meant here) |
+| `sonnet` | `sonnet` | `haiku` | `sonnet` |
+| `haiku`  | `haiku`  | `haiku` | `haiku` |
+
+Under a fable top the checker is the one seat that is **neither the top's nor
+the worker's**: independence is what the evidence pays for, and an opus
+grader costs about half a fable one while still sitting a rung above the
+sonnet worker it grades — never below the claims it checks. `oracle` still
+uses `model: inherit` (it is a consult, not a grader), and so does a checker
+whose top is off the ladder. Overdrive lifts the *worker* only; a lifted
+worker never drags its grader up with it.
 
 The tree tops out at **orchestrator → executor → scout**. What's structural
 and what's convention:
@@ -100,12 +117,17 @@ Defaults: the **worker backend is `orca`** whenever the Orca runtime answers
 **worker vendor** is decided by the OpenRouter key — with one present (the
 file `claude-dev key openrouter` writes) the derived worker is `opencode` on
 `openrouter/z-ai/glm-5.3`, the default GLM executor; without one it is
-`claude:<derived worker rung>`. **Recon = `subagent` haiku** and **checker =
-`subagent` `inherit`**, both in-process on purpose — recon is cheap and
-read-only, and a checker that inherits the orchestrator's model can never
-grade a claim from below it. `/tier worker openrouter:qwen/qwen3-coder`,
+`claude:<derived worker rung>`. **Recon = `subagent` haiku** and **checker = `subagent`
+at the derived checker rung** (the top capped at opus), both in-process on
+purpose — recon is cheap and read-only, and a checker never grades a claim
+from below the worker that made it. `/tier worker openrouter:qwen/qwen3-coder`,
 `/tier worker claude:sonnet` or `/tier worker subagent` rebinds the worker
-seat; see *tier.json* below for the file all of this is read from. Every
+seat, and **`/tier recon openrouter` puts recon on the flash-class rung**
+(`openrouter/z-ai/glm-5.3-flash` run by `opencode` on the orca backend) —
+the bare `openrouter` spec takes the role's own OpenRouter default, so the
+same word means the full-size GLM for the worker and the flash sibling for
+recon. The matching delegate routes are `glm-flash` and `deepseek-flash`,
+both `grade: scout` (`config/delegate-routes.json`); see *tier.json* below for the file all of this is read from. Every
 OpenRouter call from the VM goes through the residency guard — the no-China
 provider rule and the default Fable + GLM stack are in
 `knowledge-base/DATA_RESIDENCY.md`.
@@ -230,7 +252,8 @@ dispatch; a worker already running keeps the model it was started with.
 top    -> settings .model                         (plain-launch orchestrator default)
 worker -> ~/.claude/agents/executor.md  `model:`  (CONCRETE id in frontmatter)
 recon  -> ~/.claude/agents/scout.md     `model:`  (CONCRETE id in frontmatter)
-verifier / oracle -> `model: inherit`             (track the orchestrator; unchanged)
+checker  -> tier.json `roles.checker.model`       (the top CAPPED at opus)
+oracle   -> `model: inherit`                      (tracks the orchestrator)
 ```
 
 No tier code writes any `ANTHROPIC_DEFAULT_*` var, ever. The `/model`
@@ -261,7 +284,8 @@ claude-orca-qa2.12 that file carries a **backend, agent and model per role**:
   `orca-dispatch`) or `subagent` (the in-process Agent tool).
   **agent** — `claude` · `opencode` (OpenRouter models) · `codex` · `gemini`.
 - **A v1 file reads as v2** with `backend: subagent`, `agent: claude` and the
-  model taken from the v1 `.worker`/`.recon` key (checker: `inherit`). The
+  model taken from the v1 `.worker`/`.recon` key (checker: `inherit` — a v1
+  file predates the derived checker rung). The
   reader is `tier_role`/`tier_role_field` in `scripts/lib/tier-roles.sh`;
   no script parses the file's shape by hand.
 - **Grammar:** `/tier worker openrouter:<vendor/model>` → orca + opencode;
@@ -272,7 +296,10 @@ claude-orca-qa2.12 that file carries a **backend, agent and model per role**:
   preserved by the reconciler. A 1-arg `/tier <top>` rebinds all three roles
   to the defaults — worker `orca`+`claude` when `orca-ide status --json`
   reports `.runtime.reachable` within 2s (probed once per bind, never
-  cached), else `subagent`; recon `subagent`; checker `subagent`+`inherit`.
+  cached), else `subagent`; recon `subagent`; checker `subagent` at the
+  derived checker rung (`inherit` only when the top is off-ladder). The bare
+  `/tier <role> openrouter` spec — no model named — binds that role's own
+  OpenRouter default: `/tier recon openrouter` is the flash rung.
 - **tier-prime** prints a second line, `[tier] backends: worker=… recon=…
   checker=…`, each formatted `backend[:agent]:model` (the agent segment
   appears only when it is not `claude`). The model line above it is

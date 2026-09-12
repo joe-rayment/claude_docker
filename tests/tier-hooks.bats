@@ -411,7 +411,10 @@ seed_state() {  # seed_state <worker> <recon> -- a bound, unpinned, non-overdriv
     [ "$status" -eq 0 ]
     run jq -e '.roles.recon | .backend == "subagent" and .agent == "claude" and .model == "haiku"' "$STATE_FILE"
     [ "$status" -eq 0 ]
-    run jq -e '.roles.checker | .backend == "subagent" and .agent == "claude" and .model == "inherit"' "$STATE_FILE"
+    # claude-orca-8a0.2: the checker rung is DERIVED (the top capped at opus),
+    # so a fable top binds opus here; "inherit" survives only as the v1 read
+    # rule, exercised below.
+    run jq -e '.roles.checker | .backend == "subagent" and .agent == "claude" and .model == "opus"' "$STATE_FILE"
     [ "$status" -eq 0 ]
 
     # a v1 file (no .roles block at all) reads as the subagent backend
@@ -468,7 +471,7 @@ seed_state() {  # seed_state <worker> <recon> -- a bound, unpinned, non-overdriv
     [ "$status" -eq 0 ]
     [[ "$output" == *"worker=orca:opencode:openrouter/qwen/qwen3-coder"* ]]
     [[ "$output" == *"recon=subagent:haiku"* ]]
-    [[ "$output" == *"checker=subagent:inherit"* ]]
+    [[ "$output" == *"checker=subagent:opus"* ]]
     # the orchestrator line is still printed
     [[ "$output" == *"orchestrator=fable"* ]]
 }
@@ -537,7 +540,7 @@ STUB
     [ "$status" -eq 0 ]
     run jq -e '.roles.recon | .backend == "subagent" and .agent == "claude" and .model == "haiku"' "$STATE_FILE"
     [ "$status" -eq 0 ]
-    run jq -e '.roles.checker | .agent == "claude" and .model == "inherit"' "$STATE_FILE"
+    run jq -e '.roles.checker | .agent == "claude" and .model == "opus"' "$STATE_FILE"
     [ "$status" -eq 0 ]
 
     # tier-prime shows it
