@@ -85,7 +85,8 @@ whole first run. Nothing is asked of you along the way.
 ### How it opens — the desktop app, or the browser
 
 On a Mac with the Orca desktop app installed, the desktop path is the
-default. `./claude-dev` starts the container, launches the app, and
+default. `./claude-dev` starts the container, launches the app — the one
+installed copy, never a second instance and never a private profile — and
 registers the container as a **remote environment** named
 `claude-orca-<folder>` over Orca's own pairing protocol — an end-to-end
 encrypted websocket to the port the folder already publishes on
@@ -94,13 +95,17 @@ Connected in its **Remote Hosts** pane. The sidebar groups it under a
 **project** named after the folder, and each workspace under that project
 carries a badge with the environment name; open one and you are in the
 container, the app a client exactly as the browser tab is, and nothing it
-runs escapes the container. The app is launched on a private, per-folder
-profile that holds only this container's environment, never the Mac's own
-Orca profile; that profile starts every session with no local projects,
-and `./claude-dev` empties any it finds before each launch. The app's own
-"+ Add project" cannot be turned off in 1.4.197, so a local project added
-mid-session lives on in that profile until the next `./claude-dev`, and
-`./claude-dev verify`'s "local repos" row reports it in the meantime.
+runs escapes the container. The one installed Orca is never allowed to
+hold this folder as a **local** project (agents run there with no sandbox
+at all): `./claude-dev` removes it from the app's own project list before
+handing over the runtime, quitting and relaunching Orca when the app
+already holds it and has to be asked to let go first. If it still holds
+this folder locally after that, `./claude-dev` gives up on the app for
+this run and opens the browser instead, so the folder stays sandboxed
+either way. The app's own "+ Add project" cannot be turned off in
+1.4.197, so a local project added mid-session survives until the next
+`./claude-dev` removes it again — `./claude-dev verify`'s "local repos"
+row reports it in the meantime.
 
 Which path a folder takes is the **`ui`** key in
 `.claude-dev/claude-orca.json` (`desktop` or `web`), written once at
@@ -115,8 +120,10 @@ than warning about it; `./claude-dev --doctor` prints both versions.
 
 One thing the browser could not do, the desktop app can: it also opens
 **local** workspaces, which run agents on your Mac with no sandbox at all —
-the launcher never hands it one, and `./claude-dev verify` fails if this
-folder's own conduit profile ever lists one.
+the launcher only ever hands it a remote environment, and `./claude-dev
+verify`'s "local repos" row fails if the installed Orca ever lists this
+folder as one, whether the app is running (read straight off `orca repo
+list`) or not (read straight off its own persisted `orca-data.json`).
 
 Everything below this is reference.
 

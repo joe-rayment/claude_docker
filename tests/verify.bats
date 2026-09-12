@@ -53,12 +53,10 @@ contains() {
     local primary
     primary="$(abspath "$PROJECT_DIR")"
     make_project_v3 "$primary" >/dev/null
-    # make_project_v3 registers as a Mac (S2), so this folder is ui=desktop
-    # -- and the docker stub's own registration hand-off never gets a real
-    # pairing offer to run on, so the folder's own conduit profile is never
-    # actually created by it. A folder this "clean" is one that HAS been
-    # opened for real at least once, which is what creates that profile.
-    mkdir -p "$primary/.claude-dev/state/orca-profile"
+    # make_project_v3's own uname pin (S2) is local to that one bootstrap
+    # call, so a plain `./claude-dev verify` afterward asks the real
+    # (Linux) uname -- find_orca_app() finds no Mac and the "local repos"
+    # row reads n/a, which is as clean a pass as an "ok" would be.
 
     run bash -c "cd '$primary' && ./claude-dev verify"
     [ "$status" -eq 0 ]
@@ -138,44 +136,48 @@ contains() {
 # desktop-orca.md S5). Orca's desktop app can open LOCAL workspaces --
 # folders on the Mac, whose agents run on the Mac with no container around
 # them. The browser tab cannot do that by construction; the app can, and
-# there is no knob in 1.4.197 to turn it off. Since claude-orca-qhq the app
-# is launched on a profile the launcher owns outright (never the user's own
-# Orca profile) and that holds only this folder's environment, so this is a
-# detection rather than a prevention: verify reads THAT profile's own local
-# repo list back and fails if it lists anything at all -- any repo in a
-# profile the launcher controls is a leak, whatever path it names.
+# there is no knob in 1.4.197 to turn it off. claude-orca-qhq's answer was
+# a private per-folder profile with any-repo semantics; claude-orca-tgr
+# reverses that (a second app instance is worse) back to folder-scoped
+# against the one installed Orca -- this folder, a folder inside it, or a
+# folder that contains it, whatever path it is a repo of.
 #
 # `orca repo list --json` with no --environment IS the local list; there is
 # no --host flag in 1.4.197 (bead claude-orca-8uo.1, correcting the plan).
+# This is the app-RUNNING source; tests/launcher-v3.bats covers the other
+# (orca-data.json, read directly, while the app is not running).
 
-@test "verify fails when the folder's Orca profile lists a local repo" {
+@test "verify fails when the installed Orca lists this folder as a local repo" {
     mkdir -p "$PROJECT_DIR"
     local primary
     primary="$(abspath "$PROJECT_DIR")"
     export STUB_UNAME_S=Darwin
     export STUB_UNAME_M=arm64
     write_stub_orca "$CLAUDE_ORCA_APP/Contents/Resources/bin/orca"
+    export ORCA_STUB_APP_RUNNING=true
     make_project_v3 "$primary" >/dev/null
-    # As above: the registration hand-off never gets a real pairing offer
-    # from the docker stub, so it never creates the profile itself -- a
-    # folder that has been opened for real at least once has.
-    mkdir -p "$primary/.claude-dev/state/orca-profile"
 
-    # The ordinary case first: the folder's own conduit profile holds no
-    # local project at all.
+    # The ordinary case first: the installed Orca holds no local project
+    # at all.
     export ORCA_STUB_LOCAL_REPOS=""
     run bash -c "cd '$primary' && ./claude-dev verify"
     [ "$status" -eq 0 ]
-    contains "$output" "holds no local project"
+    contains "$output" "does not track"
+    contains "$output" "repo list --json"
 
-    # And the finding: ANY repo in this folder's own profile is a leak --
-    # nothing but this folder's environment is ever added to it, so a repo
-    # showing up at all, whatever path it names, is a workspace whose
-    # agents run outside the container. A FAIL row and a failing exit code,
-    # not a note.
+    # An unrelated repo is not this folder's finding -- the row is
+    # folder-scoped again, not any-repo.
     export ORCA_STUB_LOCAL_REPOS="$BATS_TEST_TMPDIR/some-other-project"
+    run bash -c "cd '$primary' && ./claude-dev verify"
+    [ "$status" -eq 0 ]
+    contains "$output" "does not track"
+
+    # And the finding: THIS folder, listed as a local repo, is a workspace
+    # whose agents run outside the container. A FAIL row and a failing
+    # exit code, not a note.
+    export ORCA_STUB_LOCAL_REPOS="$primary"
     run bash -c "cd '$primary' && ./claude-dev verify"
     [ "$status" -eq 2 ]
     contains "$output" "FAIL"
-    contains "$output" "LOCAL project"
+    contains "$output" "LOCAL repo"
 }

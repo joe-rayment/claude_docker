@@ -549,7 +549,7 @@ write_stub_open() {
     cat > "$1" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "${OPEN_STUB_LOG:-/dev/null}"
-if [ -n "${ORCA_STUB_STATE:-}" ]; then
+if [ "${1:-}" = "-a" ] && [ -n "${ORCA_STUB_STATE:-}" ]; then
     mkdir -p "$ORCA_STUB_STATE"
     printf 'true\n' > "$ORCA_STUB_STATE/app-running"
 fi
@@ -1069,6 +1069,14 @@ STUB
 # --- per-test environment -------------------------------------------------
 
 setup() {
+    # This suite can itself be running inside a claude-orca container (the
+    # dev box this template runs on IS one), which sets these two for its
+    # OWN real Orca -- leaving either set would point orca_user_data_dir()
+    # and orca_strip_local_repo() at the HOST's actual state instead of a
+    # test's fixture (claude-orca-tgr).
+    unset ORCA_USER_DATA_PATH
+    unset CLAUDE_ORCA_HOST_PROJECT_DIR
+
     export HOME="$BATS_TEST_TMPDIR/home"
     mkdir -p "$HOME"
 
