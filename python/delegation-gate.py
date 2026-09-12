@@ -39,10 +39,16 @@ as "guard" — the gate never silently degrades to a weaker mode on a typo.
              carve-out (see is_carved_out()) OR the declared lane is
              "standard" or "express" (see "Lane awareness" below: the
              denial fires only for lane "deep" or no lane declared).
-             Read/Grep/Glob/Bash are never denied under guard, only
-             warned per the cadence below.
-  enforce    guard, PLUS Read/Grep/Glob/Bash are also denied once the
-             streak reaches DELEGATION_GATE_DENY_AT (default 8).
+             Read/Grep/Glob are never denied under guard, only warned
+             per the cadence below; a NON-EXEMPT Bash call IS denied once
+             the streak reaches DELEGATION_GATE_DENY_AT (claude-orca-8a0.3
+             — `cat`/`grep`/a build through Bash is the same inline work
+             an Edit is, and it was the hole the gate left open). That
+             Bash denial fires in EVERY lane except express — including
+             lane standard, where the edit denial does not — because
+             standard is where most sessions run.
+  enforce    guard, PLUS Read/Grep/Glob are also denied once the streak
+             reaches DELEGATION_GATE_DENY_AT (default 8).
 Every denial names the exact alternative (spawn a scout / spawn an
 executor) — never a dead end.
 
@@ -504,6 +510,30 @@ def main():
             "rung>). Either way give it a slice spec (objective, files in "
             "scope, output contract, boundaries). The orchestrator reviews "
             "the diff instead of writing it."
+        )
+        return
+
+    if mode in ("guard", "enforce") and tool_name == "Bash" and streak >= deny_at():
+        # A non-exempt Bash call is inline work exactly like an Edit --
+        # `cat` costs the orchestrator what Read costs, and a grep sweep
+        # costs more. The exempt list above (bd/git/bats/lane/tier-…) is
+        # how the session steers and is never counted, so what lands here
+        # is recon or editing that belongs in a worker's context.
+        # EVERY lane but express: unlike the edit denial, this one fires in
+        # lane standard too, because standard is where most sessions run
+        # and eight inline shell calls is a streak in any lane. express
+        # never reaches here -- its branch above returns first.
+        state["denies"] += 1
+        save_state(state_path, state)
+        emit_deny(
+            f"[delegation-gate {mode}] {streak} inline calls — this Bash "
+            "call is recon or editing the orchestrator should not be doing "
+            "itself. Recon: Agent(subagent_type=scout) with the question "
+            "and the paths. Edits and builds: `orca-dispatch <bead>` when "
+            "Orca is reachable, else Agent(subagent_type=executor, "
+            "model=<worker rung>), with a slice spec (objective, files, "
+            "contract, boundaries). Streak resets on Agent use; `bd`, "
+            "`git`, `bats`, `lane` and `tier-` calls never count."
         )
         return
 
