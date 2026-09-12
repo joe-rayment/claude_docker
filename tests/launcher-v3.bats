@@ -724,3 +724,42 @@ desktop_fixture() {
     # ... and the app no longer offers a runtime that does not exist.
     ! grep -qxF "$name" "$ORCA_STUB_STATE/environments"
 }
+
+# --- desktop Orca, S4 (claude-orca-8uo.5) --------------------------------
+#
+# The image is built at the app's Orca version and carries it in its tag,
+# so the two normally agree by construction. They come apart in one real
+# way: the user upgrades Orca.app and this folder has not rebuilt yet --
+# the ref it now wants does not exist and the image on this machine is the
+# old one. Orca refuses a protocol mismatch outright, so the doctor says
+# so. A warning and not a finding: the folder still opens (on Orca Web if
+# nothing else), and one ./claude-dev --update fixes it.
+@test "doctor flags an app/image version mismatch" {
+    as_mac
+    export CLAUDE_ORCA_APP="$(make_fake_orca_app "$BATS_TEST_TMPDIR/Applications/Orca9.app" 9.9.9)"
+    make_project_v3 "$PROJECT_DIR" >/dev/null
+
+    # What this machine actually holds under our repo: an image built at
+    # the older version, which is what the tag says.
+    printf '%s\n' "claude-orca latest-orca1.4.197 sha256:aaaaaaaaaaaa" \
+        > "$CONTAINER_STUB_STATE/images-list"
+
+    run bash -c "cd '$PROJECT_DIR' && ./claude-dev --doctor"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"orca versions"* ]]
+    [[ "$output" == *"9.9.9"* ]]
+    [[ "$output" == *"1.4.197"* ]]
+    [[ "$output" =~ \[warn[[:space:]]*\][[:space:]]+orca[[:space:]]versions ]]
+    [[ "$output" == *"--update"* ]]
+
+    # The same folder once the rebuild has happened: one row, agreeing,
+    # and no warning -- so the row above is about the versions and not
+    # about having an app at all.
+    printf '%s\n' "claude-orca latest-orca9.9.9 sha256:bbbbbbbbbbbb" \
+        > "$CONTAINER_STUB_STATE/images-list"
+    run bash -c "cd '$PROJECT_DIR' && ./claude-dev --doctor"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"orca versions"* ]]
+    [[ "$output" =~ \[ok[[:space:]]*\][[:space:]]+orca[[:space:]]versions ]]
+    [[ ! "$output" =~ \[warn[[:space:]]*\][[:space:]]+orca[[:space:]]versions ]]
+}
