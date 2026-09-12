@@ -539,11 +539,20 @@ STUB
 
 # Records what macOS was asked to open: a URL for the default browser, or
 # `-a <bundle>` for an application (S3, claude-orca-8uo.4). The whole argv,
-# so the one-argument URL case still logs exactly the URL.
+# so the one-argument URL case still logs exactly the URL. Also stands in
+# for the app process itself actually coming up: any `-a <bundle>` launch
+# flips the orca stub's own "is the app running" answer to true, the way a
+# real `open -a` starting the process would (claude-orca-tgr) -- guarded
+# on $ORCA_STUB_STATE existing at all, so a suite that never touches the
+# orca stub writes one unread file and nothing else.
 write_stub_open() {
     cat > "$1" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "${OPEN_STUB_LOG:-/dev/null}"
+if [ -n "${ORCA_STUB_STATE:-}" ]; then
+    mkdir -p "$ORCA_STUB_STATE"
+    printf 'true\n' > "$ORCA_STUB_STATE/app-running"
+fi
 exit "${STUB_OPEN_EXIT:-0}"
 STUB
     chmod +x "$1"
@@ -938,7 +947,15 @@ case "$1" in
         reachable=true
         [ "$n" -le "${ORCA_STUB_REACHABLE_AFTER:-0}" ] && reachable=false
         [ "${ORCA_STUB_UNREACHABLE:-0}" = "1" ] && reachable=false
-        printf '{"ok":true,"result":{"runtime":{"reachable":%s}}}\n' "$reachable"
+        # .result.app.running is a SEPARATE signal from runtime.reachable
+        # (claude-orca-tgr): whether the desktop PROCESS is up at all.
+        # ORCA_STUB_APP_RUNNING sets the initial answer (false by
+        # default -- the ordinary "not launched yet" case); the file lets
+        # the open/osascript stubs flip it as the run actually happens.
+        running="${ORCA_STUB_APP_RUNNING:-false}"
+        [ -f "$state/app-running" ] && running="$(cat "$state/app-running")"
+        printf '{"ok":true,"result":{"runtime":{"reachable":%s},"app":{"running":%s}}}\n' \
+            "$reachable" "$running"
         exit 0 ;;
     environment)
         sub="${2:-}"; shift 2 2>/dev/null || shift $#
@@ -982,7 +999,12 @@ case "$1" in
     repo)
         # `repo list --json` with NO --environment is the MAC's own list --
         # the local workspaces the desktop app would run outside any
-        # container. `repo list` has no --host flag (1.4.197).
+        # container. `repo list` has no --host flag (1.4.197). When
+        # $ORCA_STUB_DATA_DIR/orca-data.json exists this reads that file
+        # back (the same store orca_strip_local_repo rewrites, so a strip
+        # actually changes what this answers next); otherwise it falls
+        # back to the plain $ORCA_STUB_LOCAL_REPOS list, for a case that
+        # wants a leak the strip can never clear (claude-orca-tgr).
         remote=0
         for a in "$@"; do [ "$a" = "--environment" ] && remote=1; done
         if [ "$remote" = "1" ]; then
@@ -990,9 +1012,19 @@ case "$1" in
             exit 0
         fi
         out=""; sep=""
-        for p in ${ORCA_STUB_LOCAL_REPOS:-}; do
-            out="$out$sep{\"path\":\"$p\"}"; sep=","
-        done
+        f="${ORCA_STUB_DATA_DIR:-}/orca-data.json"
+        if [ -n "${ORCA_STUB_DATA_DIR:-}" ] && [ -f "$f" ] && command -v jq >/dev/null 2>&1; then
+            while IFS= read -r p; do
+                [ -n "$p" ] || continue
+                out="$out$sep{\"path\":\"$p\"}"; sep=","
+            done <<PATHS
+$(jq -r '.repos[]?.path // empty' "$f" 2>/dev/null)
+PATHS
+        else
+            for p in ${ORCA_STUB_LOCAL_REPOS:-}; do
+                out="$out$sep{\"path\":\"$p\"}"; sep=","
+            done
+        fi
         printf '{"ok":true,"result":{"repos":[%s]}}\n' "$out"
         exit 0 ;;
 esac
@@ -1007,6 +1039,29 @@ write_stub_pbcopy() {
     cat > "$1" <<'STUB'
 #!/usr/bin/env bash
 cat > "${PBCOPY_STUB_LOG:-/dev/null}"
+STUB
+    chmod +x "$1"
+}
+
+# 1.4.197 has no `orca://` protocol handler, so a self-heal quits Orca by
+# name through the GUI scripting bridge (claude-orca-tgr): `osascript -e
+# 'tell application "<Name>" to quit'`. Records the whole argv and, like a
+# real quit, flips the orca stub's own "is the app running" answer to
+# false -- guarded on $ORCA_STUB_STATE existing, same as the open stub.
+# OSASCRIPT_STUB_FAIL=1 stands in for a Mac with no osascript, or a quit
+# that was refused.
+write_stub_osascript() {
+    cat > "$1" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${OSASCRIPT_STUB_LOG:-/dev/null}"
+if [ "${OSASCRIPT_STUB_FAIL:-0}" = "1" ]; then
+    exit 1
+fi
+if [ -n "${ORCA_STUB_STATE:-}" ]; then
+    mkdir -p "$ORCA_STUB_STATE"
+    printf 'false\n' > "$ORCA_STUB_STATE/app-running"
+fi
+exit 0
 STUB
     chmod +x "$1"
 }
@@ -1068,10 +1123,12 @@ setup() {
     # so no other suite's `./claude-dev` learns to talk to an app.
     export ORCA_STUB_LOG="$BATS_TEST_TMPDIR/orca.log"
     : > "$ORCA_STUB_LOG"
-    # One line per ORCA_STUB_LOG line, the value ORCA_USER_DATA_PATH carried
-    # for that call (empty line when it carried none) -- a companion file
-    # rather than baking it into ORCA_STUB_LOG itself, so every existing
-    # exact-line assertion against that log stays literal.
+    # One line per ORCA_STUB_LOG line, the value $ORCA_USER_DATA_PATH
+    # carried into that call (empty line when it carried none) -- a
+    # companion file rather than baking it into ORCA_STUB_LOG itself, so
+    # every existing exact-line assertion against that log stays literal.
+    # Since claude-orca-tgr the launcher never SETS this itself; the log
+    # is what "carries no override" (a PASS-IF case) checks against.
     export ORCA_STUB_ENVPATH_LOG="$BATS_TEST_TMPDIR/orca-envpath.log"
     : > "$ORCA_STUB_ENVPATH_LOG"
     export ORCA_STUB_STATE="$BATS_TEST_TMPDIR/orca-state"
@@ -1079,6 +1136,16 @@ setup() {
     export PBCOPY_STUB_LOG="$BATS_TEST_TMPDIR/pbcopy.log"
     : > "$PBCOPY_STUB_LOG"
     write_stub_pbcopy "$STUB_BIN/pbcopy"
+    export OSASCRIPT_STUB_LOG="$BATS_TEST_TMPDIR/osascript.log"
+    : > "$OSASCRIPT_STUB_LOG"
+    write_stub_osascript "$STUB_BIN/osascript"
+    # orca_user_data_dir()'s own fallback path (claude-orca-tgr) --
+    # $HOME/Library/Application Support/Orca, standing in for the Mac's
+    # own copy without a folder-specific override. Not created here: a
+    # test creates it (and drops an orca-data.json fixture in it) only
+    # when it means to exercise that path, the same way no other Mac
+    # directory in this suite exists until a case needs it.
+    export ORCA_STUB_DATA_DIR="$HOME/Library/Application Support/Orca"
 
     # A desktop hand-off that cannot complete falls back to the browser,
     # and every suite that registers a folder takes that path (the docker
