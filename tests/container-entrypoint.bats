@@ -1201,3 +1201,71 @@ export_guard_test_env() {  # export_guard_test_env <project> <user-data-dir>
     run cat "$proj/.claude-dev/home/.claude/CLAUDE.md"
     [ "$output" = "folder memory" ]
 }
+
+# --- provision.d (claude-orca-dbu.4) -------------------------------------
+#
+# The project-shaped work -- the toolchain verify, the config sync, the
+# seeds, the tracker, the repo registration, the guard check -- is no
+# longer in front of the thing that reports it. It runs from
+# scripts/container/provision.d/ after serve has published its URL, and
+# what it leaves behind is a status per step. The contract for the steps
+# themselves is tests/provision.bats; this case is the wiring.
+
+@test "entrypoint provisions the folder through provision.d after the web URL is published" {
+    [ -x "$ENTRYPOINT" ]
+    [ -d "$REPO_ROOT/scripts/container/provision.d" ]
+
+    local proj="$TMP/project" port urlfile pdir step name
+    make_project "$proj"
+    mkdir -p "$TMP/home" "$TMP/bin"
+    port="$(free_port)"
+    pdir="$proj/.claude-dev/run/provision"
+
+    cat > "$TMP/bin/orca-ide" <<'STUB'
+#!/usr/bin/env bash
+port=""
+prev=""
+for arg in "$@"; do
+    [ "$prev" = "--port" ] && port="$arg"
+    prev="$arg"
+done
+echo "Web client URL: http://127.0.0.1:${port}/web-index.html#pairing=x"
+exec sleep 300
+STUB
+    chmod +x "$TMP/bin/orca-ide"
+
+    export HOME="$TMP/home"
+    export PROJECT_DIR="$proj"
+    export ORCA_PORT="$port"
+    export ORCA_BIN="$TMP/bin/orca-ide"
+    export ORCA_CLI=/bin/true
+    export CLAUDE_ORCA_SKIP_SETUP=1
+    export CLAUDE_ORCA_SKIP_BEADS=1
+    export CLAUDE_ORCA_ENTRYPOINT_NO_PRIVDROP=1
+    export CLAUDE_ORCA_WEBURL_TIMEOUT=30
+
+    start_entrypoint_bg
+    urlfile="$proj/.claude-dev/run/orca-web-url.txt"
+    if ! wait_for_file "$urlfile" 40; then
+        cat "$TMP/entrypoint.out" >&2 || true
+        false
+    fi
+
+    # Every real step ran and said how it went. The last one is what the
+    # wait is on: they run in order, so a status for it means a status for
+    # all of them.
+    name="$(basename "$(ls -1 "$REPO_ROOT/scripts/container/provision.d" | sort | tail -1)")"
+    if ! wait_for_file "$pdir/$name.status" 60; then
+        cat "$TMP/entrypoint.out" >&2 || true
+        ls -la "$pdir" >&2 || true
+        false
+    fi
+    for step in "$REPO_ROOT"/scripts/container/provision.d/*; do
+        [ -f "$pdir/$(basename "$step").status" ] \
+            || { echo "no status for $(basename "$step")" >&3; false; }
+    done
+
+    # The URL beat all of it, and Orca is still serving.
+    run cat "$urlfile"
+    [ "$output" = "http://127.0.0.1:${port}/web-index.html#pairing=x" ]
+}
