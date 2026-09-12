@@ -247,12 +247,12 @@ the binding lives in `.claude-dev/run/tier.json`, and since
 claude-orca-qa2.12 that file carries a **backend, agent and model per role**:
 
 ```json
-{ "top": "claude-fable-5",
+{ "top": "fable",
   "worker": "openrouter/qwen/qwen3-coder",     // v1 mirror of roles.worker.model
-  "recon":  "claude-haiku-4-5-20251001",       // v1 mirror of roles.recon.model
+  "recon":  "haiku",                          // v1 mirror of roles.recon.model
   "roles": {
     "worker":  {"backend":"orca","agent":"opencode","model":"openrouter/qwen/qwen3-coder","pinned":true},
-    "recon":   {"backend":"subagent","agent":"claude","model":"claude-haiku-4-5-20251001","pinned":false},
+    "recon":   {"backend":"subagent","agent":"claude","model":"haiku","pinned":false},
     "checker": {"backend":"subagent","agent":"claude","model":"inherit","pinned":false} },
   "pinned": false, "overdrive": false, "updated": "2026-09-06T00:00:00Z" }
 ```
@@ -309,7 +309,7 @@ reason.
    v2 there are no custom rows anymore, so whatever it persists means what
    it says.
 4. `tier-derive` strips a trailing `[...]` **for ranking only**
-   (`claude-fable-5[1m]` and `opus[1m]` rank by family; the exact original
+   (`claude-fable-5-1[1m]` and `opus[1m]` rank by family; the exact original
    value is preserved in the top slot). Safe because aliases are native
    again.
 
@@ -339,7 +339,7 @@ reason.
 ```
 /model opus                         # PRIMARY in-session lever: moves the orchestrator now AND
                                      #   (via the reconciler) re-derives worker/recon for new sessions
-/tier fable                         # explicit set: .model=claude-fable-5 + frontmatter sonnet/haiku
+/tier fable                         # explicit set: .model=fable + worker sonnet / recon haiku
 /tier claude-opus-4-8               # a full id works (dated/variant kept as-is on top)
 /tier opus sonnet                   # 2-arg explicit PIN: recon shares the worker model
 /tier opus sonnet haiku             # 3-arg explicit PIN: fully independent, any combo
@@ -368,11 +368,17 @@ recon is one rung below the worker, floored at haiku):
 | sonnet | haiku  | haiku  |
 | haiku  | haiku  | haiku  |
 
-Alias map: `fable→claude-fable-5`, `opus→claude-opus-5`,
-`sonnet→claude-sonnet-5`, `haiku→claude-haiku-4-5-20251001`. Aliases are
-resolved to **concrete ids before writing**, so a binding never drifts with
-alias defaults. A full family id (incl. dated/variant) maps to its rung and
-keeps its exact value on top; anything else is off-ladder.
+The ladder stores the FAMILY ALIAS itself -- `fable`, `opus`, `sonnet`,
+`haiku` -- never a dated id. Claude Code resolves an alias to the newest
+model of that family (`claude --help`: "an alias for the latest model"), so
+a new release needs no change here; the day the table said `claude-fable-5`
+while `/model` said `claude-fable-5-1` is why. The alias is what gets
+**written**, and every consumer ranks it rather than comparing ids:
+`tier-gate` injects it into the Agent tool's `model` (whose accepted values
+are exactly these aliases), an orca-backed worker gets it as `claude --model
+<alias>`, and `cost-mirror` prices from the concrete id the transcript
+records, never from tier.json. A full family id (incl. dated/variant) maps
+to its rung and keeps its exact value on top; anything else is off-ladder.
 
 **Off-ladder tops.** `tier-derive` prints nothing and exits 3 for a top it
 can't place (`best`, a custom id). The two callers react differently, both
@@ -1015,9 +1021,9 @@ instead of bind time; use `TIER_PROBE=1` when that matters.
 When probing runs, each slot degrades **downward** past candidates that
 fail (best-effort — a safeguard-rerouted model can still probe green):
 
-- top: `<requested>` → `claude-opus-5` → `claude-sonnet-5` → `claude-haiku-4-5-20251001`
-- worker (explicit form): `<requested>` → `claude-sonnet-5` → `claude-haiku-4-5-20251001`
-- recon (explicit form): `<requested>` → `claude-haiku-4-5-20251001`
+- top: `<requested>` → `opus` → `sonnet` → `haiku`
+- worker (explicit form): `<requested>` → `sonnet` → `haiku`
+- recon (explicit form): `<requested>` → `haiku`
 
 **A probe failure is never fatal.** If every candidate for a slot fails,
 the requested id is bound anyway with a `WARNING … bound '<id>' UNVERIFIED`
@@ -1032,12 +1038,12 @@ the live binding each session, so you always see what you actually got.
 ```
 /tier my-custom-model              # off-ladder ids are probed…
 tier[top] my-custom-model unavailable, trying next...
-tier[top] falling back -> claude-opus-5
-tier bound  top=claude-opus-5  →  worker=claude-sonnet-5  recon=claude-haiku-4-5-20251001  (worker/recon derived from the top)
-→ run  /model claude-opus-5  to move THIS session's model now — new sessions pick everything up automatically.
+tier[top] falling back -> opus
+tier bound  top=opus  →  worker=sonnet  recon=haiku  (worker/recon derived from the top)
+→ run  /model opus  to move THIS session's model now — new sessions pick everything up automatically.
 ```
 
-(Fable 5 is an active model — do not assume it is unavailable.)
+(Fable 5.1 is an active model — do not assume it is unavailable.)
 
 ## Post-mortem: why v1 (env-slot remap) was retired — never reintroduce it
 

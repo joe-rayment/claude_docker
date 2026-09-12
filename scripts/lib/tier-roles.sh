@@ -7,12 +7,12 @@
 # tier.json v2 keeps every v1 key exactly where it was and ADDS a .roles
 # block carrying a backend + agent + model per role:
 #
-#   { "top": "claude-fable-5",
-#     "worker": "claude-sonnet-5",              <- v1 mirror of roles.worker.model
-#     "recon":  "claude-haiku-4-5-20251001",    <- v1 mirror of roles.recon.model
+#   { "top": "fable",
+#     "worker": "sonnet",                      <- v1 mirror of roles.worker.model
+#     "recon":  "haiku",                       <- v1 mirror of roles.recon.model
 #     "roles": {
 #       "worker":  {"backend":"orca","agent":"opencode","model":"openrouter/qwen/qwen3-coder"},
-#       "recon":   {"backend":"subagent","agent":"claude","model":"claude-haiku-4-5-20251001"},
+#       "recon":   {"backend":"subagent","agent":"claude","model":"haiku"},
 #       "checker": {"backend":"subagent","agent":"claude","model":"inherit"} },
 #     "pinned": false, "overdrive": false, "updated": "…Z" }
 #
@@ -73,7 +73,7 @@ tier_role_field() {
 # tier_role_label <backend> <agent> <model>
 # "orca:opencode:openrouter/qwen/qwen3-coder" -- the agent segment is shown
 # only when it is not the default (claude), so a plain Anthropic binding
-# reads as "subagent:claude-sonnet-5".
+# reads as "subagent:sonnet".
 tier_role_label() {
     local b="${1:-subagent}" a="${2:-claude}" m="${3:-}"
     [ -n "$m" ] || m="<unbound>"

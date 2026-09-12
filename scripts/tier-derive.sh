@@ -16,7 +16,7 @@
 # disagree.
 #
 # Ladder (high→low, ranks): fable(4) > opus(3) > sonnet(2) > haiku(1).
-#   fable  → claude-fable-5 claude-sonnet-5 claude-haiku-4-5-20251001
+#   fable  → fable sonnet haiku
 #   opus   → claude-opus-5 claude-sonnet-5 claude-haiku-4-5-20251001
 #   sonnet → claude-sonnet-5 claude-haiku-4-5-20251001 claude-haiku-4-5-20251001
 #   haiku  → claude-haiku-4-5-20251001 (×3)
@@ -34,7 +34,7 @@
 # the TOP itself (exact value and all, dated/variant suffix included), for the
 # runs where the slice needs the expensive tier in the worker seat. Recon is
 # still derived from the CAPPED worker, so it never inflates along with it:
-#   --overdrive fable  → claude-fable-5 claude-fable-5 claude-haiku-4-5-20251001
+#   --overdrive fable  → fable fable haiku
 #   --overdrive opus   → claude-opus-5 claude-opus-5 claude-haiku-4-5-20251001
 #   --overdrive haiku  → unchanged (nothing to lift at the bottom rung)
 # tier-derive stays a PURE FUNCTION of its arguments and reads no state: the
@@ -54,26 +54,33 @@
 
 set -u
 
-id_for_rank() {  # canonical concrete id for a ladder rank
+# The canonical value for a rank is the FAMILY ALIAS, never a dated id.
+# Claude Code resolves an alias to the newest model of that family itself
+# (`claude --help`: "Provide an alias for the latest model (e.g. 'fable',
+# 'opus', or 'sonnet')"), so a new release changes nothing here -- the day
+# this table named claude-fable-5 while the picker said claude-fable-5-1 is
+# the day it stopped naming versions. A caller that passes a full id keeps
+# it (see the top-slot rule below); only the derived slots are aliases.
+id_for_rank() {  # canonical alias for a ladder rank
     case "$1" in
-        4) echo claude-fable-5 ;;
-        3) echo claude-opus-5 ;;
-        2) echo claude-sonnet-5 ;;
-        1) echo claude-haiku-4-5-20251001 ;;
+        4) echo fable ;;
+        3) echo opus ;;
+        2) echo sonnet ;;
+        1) echo haiku ;;
     esac
 }
 
 name_for_rank() {  # human display name for a ladder rank
     case "$1" in
-        4) echo "Fable 5" ;;
-        3) echo "Opus 5" ;;
-        2) echo "Sonnet 5" ;;
-        1) echo "Haiku 4.5" ;;
+        4) echo "Fable" ;;
+        3) echo "Opus" ;;
+        2) echo "Sonnet" ;;
+        1) echo "Haiku" ;;
     esac
 }
 
 rank_of() {  # alias OR full family id -> rank; 0 = off-ladder/unknown
-    # A trailing [variant] suffix (e.g. "claude-fable-5[1m]", "opus[1m]") is
+    # A trailing [variant] suffix (e.g. "claude-fable-5-1[1m]", "opus[1m]") is
     # stripped for RANKING only — the /model picker persists such values, and
     # with the env-var remap retired an alias always means its native family,
     # so ranking the base is unambiguous. The caller keeps the exact original

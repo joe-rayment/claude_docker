@@ -220,7 +220,7 @@ no_jq_bin_dir() {
 }
 
 @test "auth-guard.sh: a settings file with no .env object at all does not crash" {
-    settings_json '{"model":"claude-fable-5"}'
+    settings_json '{"model":"claude-fable-5-1"}'
     run env HOME="$HOME" "$BASH_BIN" "$SCRIPT"
     [ "$status" -eq 0 ]
     [ -z "$output" ]

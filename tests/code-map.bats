@@ -31,7 +31,7 @@ setup() {
     # battery of invocations.
     mkdir -p "$HOME/.claude/skills/x" "$HOME/.claude/agents"
     printf '# fixture CLAUDE.md\n' > "$HOME/.claude/CLAUDE.md"
-    printf '{"model":"claude-fable-5"}\n' > "$HOME/.claude/settings.json"
+    printf '{"model":"claude-fable-5-1"}\n' > "$HOME/.claude/settings.json"
     printf 'fixture skill\n' > "$HOME/.claude/skills/x/SKILL.md"
     printf 'fixture agent\n' > "$HOME/.claude/agents/y.md"
 

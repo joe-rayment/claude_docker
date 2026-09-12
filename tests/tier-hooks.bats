@@ -45,21 +45,21 @@ reconcile_with() { run "$RECON" <<<"$1"; }    # reconcile_with '<json>' (PostMod
 
 @test "tier-derive --overdrive: lifts the worker to the top per rung, recon stays derived from the capped worker" {
     run "$DERIVE" --overdrive fable
-    [ "$output" = "claude-fable-5 claude-fable-5 claude-haiku-4-5-20251001" ]
+    [ "$output" = "fable fable haiku" ]
     run "$DERIVE" --overdrive opus
-    [ "$output" = "claude-opus-5 claude-opus-5 claude-haiku-4-5-20251001" ]
+    [ "$output" = "opus opus haiku" ]
     run "$DERIVE" --overdrive sonnet
-    [ "$output" = "claude-sonnet-5 claude-sonnet-5 claude-haiku-4-5-20251001" ]
+    [ "$output" = "sonnet sonnet haiku" ]
     # the bottom rung has nothing to lift: overdrive changes nothing
     run "$DERIVE" --overdrive haiku
-    [ "$output" = "claude-haiku-4-5-20251001 claude-haiku-4-5-20251001 claude-haiku-4-5-20251001" ]
+    [ "$output" = "haiku haiku haiku" ]
 }
 
 @test "tier-derive --overdrive: a dated or [variant] top keeps its EXACT value in both the top and worker slots" {
     run "$DERIVE" --overdrive claude-opus-4-8-20260101
-    [ "$output" = "claude-opus-4-8-20260101 claude-opus-4-8-20260101 claude-haiku-4-5-20251001" ]
+    [ "$output" = "claude-opus-4-8-20260101 claude-opus-4-8-20260101 haiku" ]
     run "$DERIVE" --overdrive 'sonnet[1m]'
-    [ "$output" = "sonnet[1m] sonnet[1m] claude-haiku-4-5-20251001" ]
+    [ "$output" = "sonnet[1m] sonnet[1m] haiku" ]
 }
 
 @test "tier-derive --overdrive: an off-ladder top still exits 3 with no output" {
@@ -77,15 +77,15 @@ reconcile_with() { run "$RECON" <<<"$1"; }    # reconcile_with '<json>' (PostMod
 
 @test "tier-derive: plain (no flag) derivation is byte-identical to the capped ladder" {
     run "$DERIVE" fable
-    [ "$output" = "claude-fable-5 claude-sonnet-5 claude-haiku-4-5-20251001" ]
+    [ "$output" = "fable sonnet haiku" ]
     run "$DERIVE" opus
-    [ "$output" = "claude-opus-5 claude-sonnet-5 claude-haiku-4-5-20251001" ]
+    [ "$output" = "opus sonnet haiku" ]
     run "$DERIVE" sonnet
-    [ "$output" = "claude-sonnet-5 claude-haiku-4-5-20251001 claude-haiku-4-5-20251001" ]
+    [ "$output" = "sonnet haiku haiku" ]
     run "$DERIVE" haiku
-    [ "$output" = "claude-haiku-4-5-20251001 claude-haiku-4-5-20251001 claude-haiku-4-5-20251001" ]
+    [ "$output" = "haiku haiku haiku" ]
     run "$DERIVE" claude-opus-4-8-20260101
-    [ "$output" = "claude-opus-4-8-20260101 claude-sonnet-5 claude-haiku-4-5-20251001" ]
+    [ "$output" = "claude-opus-4-8-20260101 sonnet haiku" ]
     run "$DERIVE" gpt-5
     [ "$status" -eq 3 ]
     [ -z "$output" ]
@@ -97,7 +97,7 @@ reconcile_with() { run "$RECON" <<<"$1"; }    # reconcile_with '<json>' (PostMod
     run "$DERIVE" --rank gpt-5
     [ "$output" = "0" ]
     run "$DERIVE" --name opus
-    [ "$output" = "Opus 5" ]
+    [ "$output" = "Opus" ]
     run "$DERIVE" --name gpt-5
     [ "$status" -eq 1 ]
     [ -z "$output" ]
@@ -114,7 +114,7 @@ reconcile_with() { run "$RECON" <<<"$1"; }    # reconcile_with '<json>' (PostMod
     TIER_DERIVE="$DERIVE" tier_set fable
     [ "$status" -eq 0 ]
 
-    run jq -e '.top == "claude-fable-5" and .worker == "claude-sonnet-5" and .recon == "claude-haiku-4-5-20251001" and .pinned == false and .overdrive == false' "$STATE_FILE"
+    run jq -e '.top == "fable" and .worker == "sonnet" and .recon == "haiku" and .pinned == false and .overdrive == false' "$STATE_FILE"
     [ "$status" -eq 0 ]
     run jq -r '.updated' "$STATE_FILE"
     [[ "$output" == *T*Z ]]
@@ -128,19 +128,19 @@ reconcile_with() { run "$RECON" <<<"$1"; }    # reconcile_with '<json>' (PostMod
     printf '{"otherKey":"keepme"}\n' > "$LOCAL_SETTINGS"
     TIER_DERIVE="$DERIVE" tier_set opus
     [ "$status" -eq 0 ]
-    run jq -e '.model == "claude-opus-5" and .otherKey == "keepme"' "$LOCAL_SETTINGS"
+    run jq -e '.model == "opus" and .otherKey == "keepme"' "$LOCAL_SETTINGS"
     [ "$status" -eq 0 ]
 }
 
 @test "tier-set <top> <worker> [<recon>]: pins explicitly, recon shares worker on the 2-arg form" {
     TIER_DERIVE="$DERIVE" tier_set opus haiku
     [ "$status" -eq 0 ]
-    run jq -e '.top == "claude-opus-5" and .worker == "claude-haiku-4-5-20251001" and .recon == "claude-haiku-4-5-20251001" and .pinned == true' "$STATE_FILE"
+    run jq -e '.top == "opus" and .worker == "haiku" and .recon == "haiku" and .pinned == true' "$STATE_FILE"
     [ "$status" -eq 0 ]
 
     TIER_DERIVE="$DERIVE" tier_set opus sonnet haiku
     [ "$status" -eq 0 ]
-    run jq -e '.worker == "claude-sonnet-5" and .recon == "claude-haiku-4-5-20251001" and .pinned == true' "$STATE_FILE"
+    run jq -e '.worker == "sonnet" and .recon == "haiku" and .pinned == true' "$STATE_FILE"
     [ "$status" -eq 0 ]
 }
 
@@ -149,7 +149,7 @@ reconcile_with() { run "$RECON" <<<"$1"; }    # reconcile_with '<json>' (PostMod
     [ "$status" -eq 0 ]
     TIER_DERIVE="$DERIVE" tier_set overdrive
     [ "$status" -eq 0 ]
-    run jq -e '.top == "claude-fable-5" and .worker == "claude-fable-5" and .recon == "claude-haiku-4-5-20251001" and .overdrive == true and .pinned == false' "$STATE_FILE"
+    run jq -e '.top == "fable" and .worker == "fable" and .recon == "haiku" and .overdrive == true and .pinned == false' "$STATE_FILE"
     [ "$status" -eq 0 ]
 }
 
@@ -177,8 +177,8 @@ reconcile_with() { run "$RECON" <<<"$1"; }    # reconcile_with '<json>' (PostMod
     TIER_DERIVE="$DERIVE" tier_set opus haiku
     tier_set show
     [ "$status" -eq 0 ]
-    [[ "$output" == *"claude-opus-5"* ]]
-    [[ "$output" == *"claude-haiku-4-5-20251001"* ]]
+    [[ "$output" == *"opus"* ]]
+    [[ "$output" == *"haiku"* ]]
     [[ "$output" == *"pin"* ]] || [[ "$output" == *"PIN"* ]]
 }
 
@@ -191,11 +191,11 @@ reconcile_with() { run "$RECON" <<<"$1"; }    # reconcile_with '<json>' (PostMod
 # ── tier-gate (PreToolUse[Agent]; reads tier.json) ──────────────────────────
 
 seed_state() {  # seed_state <worker> <recon> -- a bound, unpinned, non-overdrive tier.json
-    jq -n --arg w "$1" --arg c "$2" '{top:"claude-fable-5", worker:$w, recon:$c, pinned:false, overdrive:false, updated:"2026-01-01T00:00:00Z"}' > "$STATE_FILE"
+    jq -n --arg w "$1" --arg c "$2" '{top:"fable", worker:$w, recon:$c, pinned:false, overdrive:false, updated:"2026-01-01T00:00:00Z"}' > "$STATE_FILE"
 }
 
 @test "tier-gate injects the worker model for executor spawns and the recon model for scout spawns when model is omitted, and leaves explicit models alone" {
-    seed_state claude-sonnet-5 claude-haiku-4-5-20251001
+    seed_state sonnet haiku
 
     gate '{"tool_name":"Agent","tool_input":{"subagent_type":"executor","prompt":"p","description":"d"}}'
     [ "$status" -eq 0 ]
@@ -225,7 +225,7 @@ seed_state() {  # seed_state <worker> <recon> -- a bound, unpinned, non-overdriv
 }
 
 @test "tier-gate: named roles (verifier, oracle, professor, bead-auditor) are never touched" {
-    seed_state claude-sonnet-5 claude-haiku-4-5-20251001
+    seed_state sonnet haiku
     for role in verifier oracle professor bead-auditor; do
         gate '{"tool_name":"Agent","tool_input":{"subagent_type":"'"$role"'","prompt":"p"}}'
         [ "$status" -eq 0 ]
@@ -234,7 +234,7 @@ seed_state() {  # seed_state <worker> <recon> -- a bound, unpinned, non-overdriv
 }
 
 @test "tier-gate: a bare spawn with no subagent_type is generic and gets the worker default" {
-    seed_state claude-sonnet-5 claude-haiku-4-5-20251001
+    seed_state sonnet haiku
     gate '{"tool_name":"Agent","tool_input":{"prompt":"p"}}'
     [ "$status" -eq 0 ]
     run jq -e '.hookSpecificOutput.updatedInput.model == "sonnet"' <<<"$output"
@@ -242,7 +242,7 @@ seed_state() {  # seed_state <worker> <recon> -- a bound, unpinned, non-overdriv
 }
 
 @test "tier-gate: spawns inside a subagent are left alone" {
-    seed_state claude-sonnet-5 claude-haiku-4-5-20251001
+    seed_state sonnet haiku
     gate '{"tool_name":"Agent","transcript_path":"/p/s/subagents/agent-1.jsonl","tool_input":{"prompt":"p"}}'
     [ "$status" -eq 0 ]
     [ -z "$output" ]
@@ -258,7 +258,7 @@ seed_state() {  # seed_state <worker> <recon> -- a bound, unpinned, non-overdriv
 }
 
 @test "tier-gate: an unrankable/off-ladder worker in tier.json fails open (no injection, no error)" {
-    seed_state my-custom-router claude-haiku-4-5-20251001
+    seed_state my-custom-router haiku
     gate '{"tool_name":"Agent","tool_input":{"prompt":"p"}}'
     [ "$status" -eq 0 ]
     [ -z "$output" ]
@@ -266,7 +266,7 @@ seed_state() {  # seed_state <worker> <recon> -- a bound, unpinned, non-overdriv
 
 @test "tier-gate: falls back to deriving from settings .model when tier.json is absent" {
     [ ! -f "$STATE_FILE" ]
-    printf '{"model":"claude-fable-5"}\n' > "$BASE_SETTINGS"
+    printf '{"model":"fable"}\n' > "$BASE_SETTINGS"
     gate '{"tool_name":"Agent","tool_input":{"subagent_type":"executor","prompt":"p"}}'
     [ "$status" -eq 0 ]
     run jq -e '.hookSpecificOutput.updatedInput.model == "sonnet"' <<<"$output"
@@ -274,12 +274,12 @@ seed_state() {  # seed_state <worker> <recon> -- a bound, unpinned, non-overdriv
 }
 
 @test "tier-gate: injected tier is read from tier.json at runtime, never hardcoded" {
-    seed_state claude-haiku-4-5-20251001 claude-haiku-4-5-20251001
+    seed_state haiku haiku
     gate '{"tool_name":"Agent","tool_input":{"subagent_type":"executor","prompt":"p"}}'
     run jq -e '.hookSpecificOutput.updatedInput.model == "haiku"' <<<"$output"
     [ "$status" -eq 0 ]
 
-    seed_state claude-opus-5 claude-sonnet-5
+    seed_state opus sonnet
     gate '{"tool_name":"Agent","tool_input":{"subagent_type":"executor","prompt":"p"}}'
     run jq -e '.hookSpecificOutput.updatedInput.model == "opus"' <<<"$output"
     [ "$status" -eq 0 ]
@@ -291,17 +291,17 @@ seed_state() {  # seed_state <worker> <recon> -- a bound, unpinned, non-overdriv
 # ── tier-prime (SessionStart; reads tier.json) ──────────────────────────────
 
 @test "tier-prime prints the trio from tier.json" {
-    seed_state claude-sonnet-5 claude-haiku-4-5-20251001
-    jq '.top = "claude-fable-5"' "$STATE_FILE" > "$STATE_FILE.tmp" && mv "$STATE_FILE.tmp" "$STATE_FILE"
+    seed_state sonnet haiku
+    jq '.top = "fable"' "$STATE_FILE" > "$STATE_FILE.tmp" && mv "$STATE_FILE.tmp" "$STATE_FILE"
     prime
     [ "$status" -eq 0 ]
-    [[ "$output" == *"orchestrator=claude-fable-5"* ]]
-    [[ "$output" == *"worker=claude-sonnet-5"* ]]
-    [[ "$output" == *"recon=claude-haiku-4-5-20251001"* ]]
+    [[ "$output" == *"orchestrator=fable"* ]]
+    [[ "$output" == *"worker=sonnet"* ]]
+    [[ "$output" == *"recon=haiku"* ]]
 }
 
 @test "tier-prime states OVERDRIVE and PIN flags when set, and neither when unset" {
-    seed_state claude-sonnet-5 claude-haiku-4-5-20251001
+    seed_state sonnet haiku
     prime
     [[ "$output" != *OVERDRIVE* ]]
     [[ "$output" != *PIN* ]]
@@ -325,23 +325,23 @@ seed_state() {  # seed_state <worker> <recon> -- a bound, unpinned, non-overdriv
 # ── tier-reconcile (SessionStart/PostModelSwitch/ConfigChange) ──────────────
 
 @test "tier-reconcile: re-derives tier.json's worker/recon from settings .model unless pinned" {
-    printf '{"model":"claude-fable-5"}\n' > "$LOCAL_SETTINGS"
+    printf '{"model":"fable"}\n' > "$LOCAL_SETTINGS"
     reconcile
     [ "$status" -eq 0 ]
-    run jq -e '.top == "claude-fable-5" and .worker == "claude-sonnet-5" and .recon == "claude-haiku-4-5-20251001"' "$STATE_FILE"
+    run jq -e '.top == "fable" and .worker == "sonnet" and .recon == "haiku"' "$STATE_FILE"
     [ "$status" -eq 0 ]
 
     # pinned: left exactly as it is, even though .model disagrees
-    jq '.pinned = true | .worker = "claude-haiku-4-5-20251001"' "$STATE_FILE" > "$STATE_FILE.tmp" && mv "$STATE_FILE.tmp" "$STATE_FILE"
-    printf '{"model":"claude-opus-5"}\n' > "$LOCAL_SETTINGS"
+    jq '.pinned = true | .worker = "haiku"' "$STATE_FILE" > "$STATE_FILE.tmp" && mv "$STATE_FILE.tmp" "$STATE_FILE"
+    printf '{"model":"opus"}\n' > "$LOCAL_SETTINGS"
     reconcile
     [ "$status" -eq 0 ]
-    run jq -e '.worker == "claude-haiku-4-5-20251001"' "$STATE_FILE"
+    run jq -e '.worker == "haiku"' "$STATE_FILE"
     [ "$status" -eq 0 ]
 }
 
 @test "tier-reconcile: purges legacy ANTHROPIC_DEFAULT_*/CLAUDE_CODE_SUBAGENT_MODEL vars from settings.local.json" {
-    jq -n '{model:"claude-sonnet-5", env:{ANTHROPIC_DEFAULT_OPUS_MODEL:"x", CLAUDE_CODE_SUBAGENT_MODEL:"y", KEEP_ME:"z"}}' > "$LOCAL_SETTINGS"
+    jq -n '{model:"sonnet", env:{ANTHROPIC_DEFAULT_OPUS_MODEL:"x", CLAUDE_CODE_SUBAGENT_MODEL:"y", KEEP_ME:"z"}}' > "$LOCAL_SETTINGS"
     reconcile
     [ "$status" -eq 0 ]
     run jq -e '(.env | has("ANTHROPIC_DEFAULT_OPUS_MODEL") | not) and (.env | has("CLAUDE_CODE_SUBAGENT_MODEL") | not) and .env.KEEP_ME == "z"' "$LOCAL_SETTINGS"
@@ -349,36 +349,36 @@ seed_state() {  # seed_state <worker> <recon> -- a bound, unpinned, non-overdriv
 }
 
 @test "tier-reconcile: a to_model field on PostModelSwitch stdin is preferred, and is still pin-aware" {
-    printf '{"model":"claude-sonnet-5"}\n' > "$LOCAL_SETTINGS"
-    reconcile_with '{"to_model":"claude-fable-5"}'
+    printf '{"model":"sonnet"}\n' > "$LOCAL_SETTINGS"
+    reconcile_with '{"to_model":"claude-fable-5-1"}'
     [ "$status" -eq 0 ]
-    run jq -e '.top == "claude-fable-5" and .worker == "claude-sonnet-5"' "$STATE_FILE"
+    run jq -e '.top == "claude-fable-5-1" and .worker == "sonnet"' "$STATE_FILE"
     [ "$status" -eq 0 ]
 
     jq '.pinned = true' "$STATE_FILE" > "$STATE_FILE.tmp" && mv "$STATE_FILE.tmp" "$STATE_FILE"
-    reconcile_with '{"to_model":"claude-opus-5"}'
+    reconcile_with '{"to_model":"opus"}'
     [ "$status" -eq 0 ]
-    run jq -e '.top == "claude-fable-5"' "$STATE_FILE"
+    run jq -e '.top == "claude-fable-5-1"' "$STATE_FILE"
     [ "$status" -eq 0 ]
 }
 
 @test "tier-reconcile: overdrive re-applies every run, following a /model change" {
-    printf '{"model":"claude-fable-5"}\n' > "$LOCAL_SETTINGS"
+    printf '{"model":"fable"}\n' > "$LOCAL_SETTINGS"
     reconcile
     jq '.overdrive = true' "$STATE_FILE" > "$STATE_FILE.tmp" && mv "$STATE_FILE.tmp" "$STATE_FILE"
     reconcile
-    run jq -e '.worker == "claude-fable-5"' "$STATE_FILE"
+    run jq -e '.worker == "fable"' "$STATE_FILE"
     [ "$status" -eq 0 ]
 
-    printf '{"model":"claude-opus-5"}\n' > "$LOCAL_SETTINGS"
+    printf '{"model":"opus"}\n' > "$LOCAL_SETTINGS"
     reconcile
     [ "$status" -eq 0 ]
-    run jq -e '.top == "claude-opus-5" and .worker == "claude-opus-5" and .overdrive == true' "$STATE_FILE"
+    run jq -e '.top == "opus" and .worker == "opus" and .overdrive == true' "$STATE_FILE"
     [ "$status" -eq 0 ]
 }
 
 @test "tier-reconcile: empty/non-JSON stdin and an off-ladder .model are all silent no-ops that never error" {
-    printf '{"model":"claude-fable-5"}\n' > "$LOCAL_SETTINGS"
+    printf '{"model":"fable"}\n' > "$LOCAL_SETTINGS"
     reconcile
     before="$(cat "$STATE_FILE")"
 
@@ -400,24 +400,24 @@ seed_state() {  # seed_state <worker> <recon> -- a bound, unpinned, non-overdriv
     [ "$status" -eq 0 ]
 
     # the v1 keys stay exactly what they were -- the model id per role ...
-    run jq -e '.worker == "claude-sonnet-5" and .recon == "claude-haiku-4-5-20251001"' "$STATE_FILE"
+    run jq -e '.worker == "sonnet" and .recon == "haiku"' "$STATE_FILE"
     [ "$status" -eq 0 ]
     # ... and .roles carries backend + agent + model for all three roles.
-    run jq -e '.roles.worker | .backend == "subagent" and .agent == "claude" and .model == "claude-sonnet-5"' "$STATE_FILE"
+    run jq -e '.roles.worker | .backend == "subagent" and .agent == "claude" and .model == "sonnet"' "$STATE_FILE"
     [ "$status" -eq 0 ]
-    run jq -e '.roles.recon | .backend == "subagent" and .agent == "claude" and .model == "claude-haiku-4-5-20251001"' "$STATE_FILE"
+    run jq -e '.roles.recon | .backend == "subagent" and .agent == "claude" and .model == "haiku"' "$STATE_FILE"
     [ "$status" -eq 0 ]
     run jq -e '.roles.checker | .backend == "subagent" and .agent == "claude" and .model == "inherit"' "$STATE_FILE"
     [ "$status" -eq 0 ]
 
     # a v1 file (no .roles block at all) reads as the subagent backend
-    seed_state claude-sonnet-5 claude-haiku-4-5-20251001
+    seed_state sonnet haiku
     run jq -e 'has("roles") | not' "$STATE_FILE"
     [ "$status" -eq 0 ]
     prime
     [ "$status" -eq 0 ]
-    [[ "$output" == *"worker=subagent:claude-sonnet-5"* ]]
-    [[ "$output" == *"recon=subagent:claude-haiku-4-5-20251001"* ]]
+    [[ "$output" == *"worker=subagent:sonnet"* ]]
+    [[ "$output" == *"recon=subagent:haiku"* ]]
     [[ "$output" == *"checker=subagent:inherit"* ]]
 }
 
@@ -435,15 +435,15 @@ seed_state() {  # seed_state <worker> <recon> -- a bound, unpinned, non-overdriv
 
     TIER_DERIVE="$DERIVE" tier_set worker claude:sonnet
     [ "$status" -eq 0 ]
-    run jq -e '.roles.worker | .backend == "orca" and .agent == "claude" and .model == "claude-sonnet-5"' "$STATE_FILE"
+    run jq -e '.roles.worker | .backend == "orca" and .agent == "claude" and .model == "sonnet"' "$STATE_FILE"
     [ "$status" -eq 0 ]
 
     # `subagent` puts the worker back in-process on the DERIVED model
     TIER_DERIVE="$DERIVE" tier_set worker subagent
     [ "$status" -eq 0 ]
-    run jq -e '.roles.worker | .backend == "subagent" and .agent == "claude" and .model == "claude-sonnet-5"' "$STATE_FILE"
+    run jq -e '.roles.worker | .backend == "subagent" and .agent == "claude" and .model == "sonnet"' "$STATE_FILE"
     [ "$status" -eq 0 ]
-    run jq -e '.worker == "claude-sonnet-5"' "$STATE_FILE"
+    run jq -e '.worker == "sonnet"' "$STATE_FILE"
     [ "$status" -eq 0 ]
 
     # the same grammar on the recon and checker roles
@@ -453,7 +453,7 @@ seed_state() {  # seed_state <worker> <recon> -- a bound, unpinned, non-overdriv
     [ "$status" -eq 0 ]
     TIER_DERIVE="$DERIVE" tier_set checker claude:opus
     [ "$status" -eq 0 ]
-    run jq -e '.roles.checker | .backend == "orca" and .agent == "claude" and .model == "claude-opus-5"' "$STATE_FILE"
+    run jq -e '.roles.checker | .backend == "orca" and .agent == "claude" and .model == "opus"' "$STATE_FILE"
     [ "$status" -eq 0 ]
 }
 
@@ -463,14 +463,14 @@ seed_state() {  # seed_state <worker> <recon> -- a bound, unpinned, non-overdriv
     prime
     [ "$status" -eq 0 ]
     [[ "$output" == *"worker=orca:opencode:openrouter/qwen/qwen3-coder"* ]]
-    [[ "$output" == *"recon=subagent:claude-haiku-4-5-20251001"* ]]
+    [[ "$output" == *"recon=subagent:haiku"* ]]
     [[ "$output" == *"checker=subagent:inherit"* ]]
     # the orchestrator line is still printed
-    [[ "$output" == *"orchestrator=claude-fable-5"* ]]
+    [[ "$output" == *"orchestrator=fable"* ]]
 }
 
 @test "tier-gate still injects the worker model into generic Agent spawns and leaves named roles alone" {
-    seed_state claude-sonnet-5 claude-haiku-4-5-20251001
+    seed_state sonnet haiku
     gate '{"tool_name":"Agent","tool_input":{"prompt":"p"}}'
     [ "$status" -eq 0 ]
     run jq -e '.hookSpecificOutput.updatedInput.model == "sonnet"' <<<"$output"
@@ -518,7 +518,7 @@ STUB
     # no key anywhere -> the claude rung, exactly as before
     TIER_DERIVE="$DERIVE" tier_set fable
     [ "$status" -eq 0 ]
-    run jq -e '.worker == "claude-sonnet-5" and (.roles.worker | .agent == "claude" and .model == "claude-sonnet-5")' "$STATE_FILE"
+    run jq -e '.worker == "sonnet" and (.roles.worker | .agent == "claude" and .model == "sonnet")' "$STATE_FILE"
     [ "$status" -eq 0 ]
 
     # a key file -> the worker becomes the GLM rung on opencode, and with a
@@ -529,9 +529,9 @@ STUB
     run jq -e '.roles.worker | .backend == "orca" and .agent == "opencode" and .model == "openrouter/z-ai/glm-5.3"' "$STATE_FILE"
     [ "$status" -eq 0 ]
     # the v1 mirror follows, the top is untouched, and only the worker moved
-    run jq -e '.worker == "openrouter/z-ai/glm-5.3" and .top == "claude-fable-5"' "$STATE_FILE"
+    run jq -e '.worker == "openrouter/z-ai/glm-5.3" and .top == "fable"' "$STATE_FILE"
     [ "$status" -eq 0 ]
-    run jq -e '.roles.recon | .backend == "subagent" and .agent == "claude" and .model == "claude-haiku-4-5-20251001"' "$STATE_FILE"
+    run jq -e '.roles.recon | .backend == "subagent" and .agent == "claude" and .model == "haiku"' "$STATE_FILE"
     [ "$status" -eq 0 ]
     run jq -e '.roles.checker | .agent == "claude" and .model == "inherit"' "$STATE_FILE"
     [ "$status" -eq 0 ]
@@ -545,26 +545,26 @@ STUB
     # only the backend falls back
     OPENROUTER_API_KEY=sk-or-v1-fromenv TIER_DERIVE="$DERIVE" tier_set opus
     [ "$status" -eq 0 ]
-    run jq -e '.top == "claude-opus-5" and (.roles.worker | .backend == "subagent" and .agent == "opencode" and .model == "openrouter/z-ai/glm-5.3")' "$STATE_FILE"
+    run jq -e '.top == "opus" and (.roles.worker | .backend == "subagent" and .agent == "opencode" and .model == "openrouter/z-ai/glm-5.3")' "$STATE_FILE"
     [ "$status" -eq 0 ]
 
     # an explicit /tier worker claude:<x> still overrides the default
     OPENROUTER_API_KEY=sk-or-v1-fromenv TIER_DERIVE="$DERIVE" tier_set worker claude:sonnet
     [ "$status" -eq 0 ]
-    run jq -e '.roles.worker | .agent == "claude" and .model == "claude-sonnet-5" and .pinned == true' "$STATE_FILE"
+    run jq -e '.roles.worker | .agent == "claude" and .model == "sonnet" and .pinned == true' "$STATE_FILE"
     [ "$status" -eq 0 ]
 
     # an explicit 3-arg pin is an explicit pin: the key never overrides it
     OPENROUTER_API_KEY=sk-or-v1-fromenv TIER_DERIVE="$DERIVE" tier_set opus sonnet haiku
     [ "$status" -eq 0 ]
-    run jq -e '.worker == "claude-sonnet-5" and (.roles.worker | .agent == "claude") and .pinned == true' "$STATE_FILE"
+    run jq -e '.worker == "sonnet" and (.roles.worker | .agent == "claude") and .pinned == true' "$STATE_FILE"
     [ "$status" -eq 0 ]
 
     # an empty key file is not a key
     : > "$keyfile"
     TIER_OPENROUTER_KEY_FILE="$keyfile" TIER_DERIVE="$DERIVE" tier_set fable
     [ "$status" -eq 0 ]
-    run jq -e '.worker == "claude-sonnet-5" and (.roles.worker | .agent == "claude")' "$STATE_FILE"
+    run jq -e '.worker == "sonnet" and (.roles.worker | .agent == "claude")' "$STATE_FILE"
     [ "$status" -eq 0 ]
 }
 
@@ -579,12 +579,12 @@ STUB
 
     run "$BASH32" "$TSET" opus
     [ "$status" -eq 0 ]
-    run jq -e '.top == "claude-opus-5"' "$STATE_FILE"
+    run jq -e '.top == "opus"' "$STATE_FILE"
     [ "$status" -eq 0 ]
 
     run "$BASH32" "$PRIME"
     [ "$status" -eq 0 ]
-    [[ "$output" == *"claude-opus-5"* ]]
+    [[ "$output" == *"opus"* ]]
 
     run "$BASH32" "$GATE" <<<'{"tool_name":"Agent","tool_input":{"subagent_type":"executor","prompt":"p"}}'
     [ "$status" -eq 0 ]

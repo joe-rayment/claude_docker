@@ -79,13 +79,17 @@ STATE_FILE="${TIER_STATE_FILE:-}"
 LOCAL_SETTINGS="${TIER_SETTINGS_LOCAL:-}"
 [ -n "$LOCAL_SETTINGS" ] || LOCAL_SETTINGS="$(claude_config_dir)/settings.local.json"
 
-alias_id() {  # alias -> concrete id; unknown strings pass through (full ids)
+# An alias is already the value we want: Claude Code resolves "fable",
+# "opus", "sonnet" and "haiku" to the newest model of that family, so the
+# bound value never has to be bumped when a new version ships. Only the
+# spelling is normalised (case); a full id passes through untouched.
+alias_id() {  # alias -> canonical alias; unknown strings pass through (full ids)
     case "$1" in
-        fable)  echo claude-fable-5 ;;
-        opus)   echo claude-opus-5 ;;
-        sonnet) echo claude-sonnet-5 ;;
-        haiku)  echo claude-haiku-4-5-20251001 ;;
-        *)      echo "$1" ;;
+        fable|Fable|FABLE)    echo fable ;;
+        opus|Opus|OPUS)       echo opus ;;
+        sonnet|Sonnet|SONNET) echo sonnet ;;
+        haiku|Haiku|HAIKU)    echo haiku ;;
+        *)                    echo "$1" ;;
     esac
 }
 

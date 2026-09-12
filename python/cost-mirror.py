@@ -716,7 +716,7 @@ def _snapshot_rates(model, snap):
     Matching is longest-prefix, which subsumes an exact match (a model id is
     its own longest prefix) and is what makes real transcript ids resolve:
     upstream keys the flat "claude-opus-4-6" while a transcript row says
-    "claude-opus-4-6-20260205" or "claude-fable-5[1m]". Longest wins so a
+    "claude-opus-4-6-20260205" or "claude-fable-5-1[1m]". Longest wins so a
     dated opus-4-6 id can never be captured by a shorter, cheaper key."""
     rates = snap["rates"]
     best_key = None
