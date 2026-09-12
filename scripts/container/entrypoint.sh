@@ -5,16 +5,25 @@
 # tini as root, brings Orca up headless in serve mode as the `agent` user,
 # and publishes the pairing URL the Mac side opens in a browser.
 #
-# Sequence: resolve the project -> re-map and drop to `agent` -> sync this
-# template's config/ into the agent's Claude config dir -> start the
-# OpenRouter guard, which takes sole custody of the real key -> seed Orca's own
-# state (worktree base path, theme, agent env) and `bd init` the project
-# folder, both once -> start `--serve`
-# with its output in <project>/.claude-dev/run/orca-serve.log -> wait for
-# the "Web client URL:" line -> write run/orca-web-url.txt (0600, it
-# carries the pairing code) and run/port -> register the project with
-# `orca repo add` once -> wait on the serve process, which is what keeps
-# the container alive.
+# Sequence: resolve the project -> install the toolchain (root) -> re-map
+# and drop to `agent` -> start the OpenRouter guard, which takes sole
+# custody of the real key -> seed Orca's own state (worktree base path,
+# theme, agent env) -> start `--serve` with its output in
+# <project>/.claude-dev/run/orca-serve.log -> wait for the "Web client
+# URL:" line -> write run/orca-web-url.txt (0600, it carries the pairing
+# code) and run/port -> run scripts/container/provision-run.sh -> wait on
+# the serve process, which is what keeps the container alive.
+#
+# Everything that is about THIS FOLDER rather than about the image is in
+# that provision-run.sh step and not in here (claude-orca-dbu.4): the
+# config sync, the seeds, the tracker, the repo registration, the guard
+# check. They are the steps most likely to fail, and in front of serve
+# they were in front of the only thing that could report a failure -- no
+# Orca, no terminal, no Claude Code, just a folder that did not come up.
+# Each one now writes run/provision/<step>.log and .status, none is fatal,
+# and the next start re-runs all of them. They run on the
+# Orca-cannot-start path too, right before the die, because that is the
+# folder that most needs its config and a readable status.
 #
 # Environment:
 #   PROJECT_DIR   required; the bind-mounted project, same absolute path
@@ -99,7 +108,6 @@ _resolve_script_path() {
     printf '%s\n' "$src"
 }
 SCRIPT_DIR="$(cd "$(dirname "$(_resolve_script_path)")" && pwd -P)"
-TEMPLATE_DIR="$(cd "$SCRIPT_DIR/../.." && pwd -P)"
 
 # A command given to the container runtime (after tini's `--`) wins over
 # starting Orca: that is how CI runs smoke.sh in the built image, and how
@@ -333,185 +341,15 @@ USER_DATA_DIR="${ORCA_USER_DATA_DIR:-$AGENT_HOME/.config/orca}"
 mkdir -p "$USER_DATA_DIR"
 [ "$PRIVDROP" = "1" ] && chown_agent_tree "$USER_DATA_DIR"
 
-# --- config-sync (best effort, never fatal) -----------------------------
+# --- what used to be here (claude-orca-dbu.4) ---------------------------
 #
-# The project's own .claude-dev/template wins when a folder carries one;
-# otherwise the copy baked into the image. config-sync writes into
-# <project>/.claude-dev/home/.claude, which IS the agent's own config dir
-# (the same directory, bind-mounted).
-
-# config-sync takes the dir ABOVE the template ($HOST/template/config), so
-# the mounted clone is passed as its own parent and the image's copy through
-# /opt/claude-orca-host/template, the symlink setup.sh's template phase made.
-#
-# The folder's own clone is tried FIRST and on purpose, for the same reason
-# TEMPLATE_ROOT above now tries it first too: the image's copy of config/ is
-# frozen at image build time, so on the prebuilt path every hook, agent,
-# command and skill the session runs was whatever the repo said the day the
-# image was published -- an edit committed in the folder reached the agent
-# only after a rebuild and a pull. (Found 2026-09-08: /tier's OpenRouter
-# help text and its `auth openrouter` verb were committed, synced from the
-# image anyway, and simply were not there.) setup.sh used to stay on
-# TEMPLATE_ROOT regardless -- the image's install logic describes the
-# image, config/ was the only thing the folder got to say -- until that same
-# gap cost a scripts/container/* fix too: the Orca Web clipboard-paste shim
-# (patch-orca-web-theme.py) sat committed for two days and reached no
-# running folder, because every container still booted the baked entrypoint
-# pointed at the baked setup.sh. config/ and setup.sh now come from the same
-# root, so a fix to either reaches a folder on its next recreate, with no
-# rebuild in between.
-sync_host=""
-if [ -d "$PROJECT_DIR/.claude-dev/template/config" ]; then
-    sync_host="$PROJECT_DIR/.claude-dev"
-elif [ "$(basename "$TEMPLATE_ROOT")" = "template" ] && [ -d "$TEMPLATE_ROOT/config" ]; then
-    sync_host="$(dirname "$TEMPLATE_ROOT")"
-elif [ -d "$HOST_DIR/template/config" ]; then
-    sync_host="$HOST_DIR"
-fi
-if [ -n "$sync_host" ]; then
-    if run_as_agent "$TEMPLATE_DIR/scripts/config-sync.sh" \
-            --project "$PROJECT_DIR" --host "$sync_host"; then
-        log "config synced from $sync_host/template/config"
-    else
-        warn "config-sync failed (continuing without it)"
-    fi
-else
-    log "no template config found (looked in $TEMPLATE_ROOT and $HOST_DIR/template); skipping config-sync"
-fi
-
-# --- seed the project folder (startup v4, claude-orca-qa2.9) ------------
-#
-# The four things `claude-dev register` used to seed on the Mac. They are
-# all writes into the bind mount or the agent's HOME, so they belong to the
-# side that can actually see the result, and they run before `bd init`
-# because the snapshot restore is what that init must not clobber.
-# Everything here is idempotent: a folder is started many times.
-
-# The project's own seeding -- .gitignore, attachments/, the beads
-# snapshot, `bd init`, and the orca.yaml that lets Orca do this itself --
-# is scripts/container/seed-project.sh, and it runs from there rather than
-# from here.
-#
-# It is not this process's work. This process is PID 1: the one that has
-# to bring Orca up, and anything on that path is a way for a folder to
-# fail to start. Orca's own `scripts.setup` runs in a terminal when a
-# workspace is created, which is watchable, committed with the project and
-# editable without an image rebuild -- so that is where it belongs.
-#
-# This call is the FLOOR, not the mechanism: a folder must never depend on
-# a hook having fired to have a tracker in it, and on 2026-09-08 Orca's
-# setup script could not be made to fire from the CLI at all. Best effort,
-# and its failure is a warning.
-seed_project_floor() {
-    seed_script="$TEMPLATE_ROOT/scripts/container/seed-project.sh"
-    [ -f "$seed_script" ] || seed_script="$SCRIPT_DIR/seed-project.sh"
-    if [ ! -f "$seed_script" ]; then
-        warn "no seed-project.sh next to this entrypoint; the folder is unseeded"
-        return 0
-    fi
-    if run_as_agent env PROJECT_DIR="$PROJECT_DIR" \
-            CLAUDE_ORCA_PROJECT_NAME="${CLAUDE_ORCA_PROJECT_NAME:-}" \
-            CLAUDE_ORCA_SKIP_BEADS="${CLAUDE_ORCA_SKIP_BEADS:-0}" \
-            bash "$seed_script"; then
-        :
-    else
-        warn "seed-project.sh did not finish cleanly; the folder may be missing its tracker or gitignore block (continuing)"
-    fi
-    return 0
-}
-
-# A fresh .claude-dev/home has no git identity, so every commit inside the
-# VM fails. The Mac passes exactly its user.name and user.email; nothing
-# else follows the identity in, and an existing file always wins.
-seed_git_identity() {
-    gc="$AGENT_HOME/.gitconfig"
-    [ -f "$gc" ] && return 0
-    [ -n "${CLAUDE_ORCA_GIT_NAME:-}" ] || return 0
-    [ -n "${CLAUDE_ORCA_GIT_EMAIL:-}" ] || return 0
-    {
-        printf '[user]\n'
-        printf '\tname = %s\n' "$CLAUDE_ORCA_GIT_NAME"
-        printf '\temail = %s\n' "$CLAUDE_ORCA_GIT_EMAIL"
-    } > "$gc" || return 0
-    log "seeded git identity in $gc"
-}
-
-# A Claude Code worker started in a fresh .claude-dev/home stops dead at
-# two dialogs nobody is there to answer: the folder-trust prompt, then the
-# bypass-permissions disclaimer that --dangerously-skip-permissions raises
-# once per install. Both are ordinary config, so the entrypoint seeds them
-# before Orca starts (claude-orca-qa2.17). Keys read off the shipped Claude
-# Code binary: projects[<path>].hasTrustDialogAccepted and
-# hasCompletedOnboarding in the home's .claude.json, and, in the config
-# dir's settings.json, skipDangerousModePermissionPrompt -- what the dialog
-# itself writes on accept (the older .claude.json
-# bypassPermissionsModeAccepted migrates into it).
-#
-# Absent keys only: a value the user or the agent already set always wins,
-# and a file that is not valid JSON is left untouched rather than replaced.
-# This runs AFTER config-sync, which regenerates settings.json wholesale.
-seed_json_key_absent() {
-    seed_path="$1"
-    seed_filter="$2"
-    shift 2
-    [ -f "$seed_path" ] || printf '{}\n' > "$seed_path" 2>/dev/null || return 1
-    jq -e . "$seed_path" >/dev/null 2>&1 || {
-        warn "$seed_path is not valid JSON; leaving it alone"
-        return 1
-    }
-    seed_tmp="$seed_path.claude-orca.tmp"
-    if jq "$@" "$seed_filter" "$seed_path" > "$seed_tmp" 2>/dev/null \
-            && [ -s "$seed_tmp" ]; then
-        mv -f "$seed_tmp" "$seed_path" || { rm -f "$seed_tmp"; return 1; }
-        return 0
-    fi
-    rm -f "$seed_tmp"
-    return 1
-}
-
-seed_claude_first_run() {
-    if ! command -v jq >/dev/null 2>&1; then
-        warn "jq not found; skipping the Claude Code first-run seed"
-        return 0
-    fi
-
-    if seed_json_key_absent "$AGENT_HOME/.claude.json" '
-        (if has("hasCompletedOnboarding") then .
-         else . + {hasCompletedOnboarding: true} end)
-        | .projects = ((.projects // {}) as $pr
-            | $pr + {($p): (($pr[$p] // {})
-                | if has("hasTrustDialogAccepted") then .
-                  else . + {hasTrustDialogAccepted: true} end)})
-    ' --arg p "$PROJECT_DIR"; then
-        log "seeded Claude Code trust for $PROJECT_DIR in $AGENT_HOME/.claude.json"
-    else
-        warn "could not seed $AGENT_HOME/.claude.json (continuing)"
-    fi
-
-    mkdir -p "$AGENT_HOME/.claude" 2>/dev/null
-    if seed_json_key_absent "$AGENT_HOME/.claude/settings.json" '
-        if has("skipDangerousModePermissionPrompt") then .
-        else . + {skipDangerousModePermissionPrompt: true} end
-    '; then
-        log "seeded skipDangerousModePermissionPrompt in $AGENT_HOME/.claude/settings.json"
-    else
-        warn "could not seed $AGENT_HOME/.claude/settings.json (continuing)"
-    fi
-}
-
-seed_git_identity
-seed_claude_first_run
-seed_project_floor
-
-# Written as root when we are root: hand them to the agent, who is the one
-# that edits them from here on.
-if [ "$PRIVDROP" = "1" ]; then
-    chown "$AGENT_UID:$AGENT_GID" "$PROJECT_DIR/.gitignore" \
-        "$PROJECT_DIR/attachments" "$AGENT_HOME/.gitconfig" \
-        "$AGENT_HOME/.claude.json" "$AGENT_HOME/.claude" \
-        "$AGENT_HOME/.claude/settings.json" 2>/dev/null
-    chown_agent_tree "$PROJECT_DIR/.beads"
-fi
+# The config sync, the git identity, the Claude Code first-run seed and the
+# project seed (.gitignore, attachments/, orca.yaml, the beads snapshot,
+# `bd init`) all ran on this line, between the privilege drop and Orca.
+# Every one of them is about THIS FOLDER rather than about the image, and
+# every one of them is a way for a folder to fail to start in silence.
+# They are provision.d steps now -- see run_provision below, and
+# scripts/container/provision-run.sh for why the order changed.
 
 # --- the OpenRouter guard (claude-orca-qa2.21) --------------------------
 #
@@ -641,13 +479,66 @@ if [ "$PRIVDROP" = "1" ]; then
     chown_agent_tree "$USER_DATA_DIR"
 fi
 
-# beads is seed-project.sh's now (see seed_project_floor above), which
-# runs it whether Orca's setup hook fired or not. CLAUDE_ORCA_SKIP_BEADS
-# is still honoured -- by that script.
+# --- provisioning this folder (claude-orca-dbu.4) -----------------------
+#
+# Everything project-shaped, from scripts/container/provision-run.sh: one
+# numbered, idempotent step per thing a folder needs, each with its own
+# log and status under run/provision, none of them fatal. It is called on
+# exactly two paths -- after the web URL is published, and right before
+# every exit that means Orca could not be served -- and it runs once
+# either way. beads is one of those steps now (50-seed-project);
+# CLAUDE_ORCA_SKIP_BEADS is still honoured, by that script.
+#
+# It runs in the FOREGROUND, and that costs nothing a person can see: the
+# URL is already written, Orca is already serving, and the browser the Mac
+# side opens is already usable. Every step is bounded by
+# CLAUDE_ORCA_PROVISION_TIMEOUT, so the `wait` below is never more than a
+# few minutes away even when a step hangs.
+
+PROVISION_RAN=0
+run_provision() {
+    [ "$PROVISION_RAN" = "0" ] || return 0
+    PROVISION_RAN=1
+
+    if [ "${CLAUDE_ORCA_SKIP_PROVISION:-0}" = "1" ]; then
+        log "CLAUDE_ORCA_SKIP_PROVISION=1; skipping provisioning"
+        return 0
+    fi
+
+    provision_runner="$TEMPLATE_ROOT/scripts/container/provision-run.sh"
+    [ -f "$provision_runner" ] || provision_runner="$SCRIPT_DIR/provision-run.sh"
+    if [ ! -f "$provision_runner" ]; then
+        warn "no provision-run.sh in $TEMPLATE_ROOT or $SCRIPT_DIR; this folder is unprovisioned"
+        return 0
+    fi
+
+    # The steps run as the agent, so what they write is already the agent's.
+    # These two are what a PREVIOUS start may have left root-owned.
+    if [ "$PRIVDROP" = "1" ]; then
+        chown_agent_tree "$PROVISION_DIR"
+        [ -d "$PROJECT_DIR/.beads" ] && chown_agent_tree "$PROJECT_DIR/.beads"
+    fi
+
+    # The real key is handed to the runner, which strips it from the
+    # environment every step but the guard's inherits.
+    run_as_agent env PROJECT_DIR="$PROJECT_DIR" \
+        TEMPLATE_ROOT="$TEMPLATE_ROOT" \
+        ORCA_BIN="$ORCA_BIN" \
+        ORCA_USER_DATA_DIR="$USER_DATA_DIR" \
+        CLAUDE_ORCA_OPENROUTER_REAL_KEY="${OPENROUTER_REAL_KEY:-}" \
+        bash "$provision_runner"
+    return 0
+}
 
 # --- start Orca serve ---------------------------------------------------
 
-[ -x "$ORCA_BIN" ] || die "ORCA_BIN is not executable: $ORCA_BIN"
+# Nothing to serve is still fatal -- but the folder gets provisioned
+# first. A container that cannot start Orca is exactly the one whose
+# config, seeds and status someone is about to go looking for.
+if [ ! -x "$ORCA_BIN" ]; then
+    run_provision
+    die "ORCA_BIN is not executable: $ORCA_BIN"
+fi
 
 : > "$SERVE_LOG"
 [ "$PRIVDROP" = "1" ] && chown "$AGENT_UID:$AGENT_GID" "$SERVE_LOG" 2>/dev/null
@@ -712,6 +603,7 @@ while [ "$waited" -lt "$WEBURL_TIMEOUT" ]; do
             continue
         fi
         warn "orca serve exited before announcing a Web client URL, twice -- see $SERVE_LOG"
+        run_provision
         exit 1
     fi
     sleep 1
@@ -721,6 +613,7 @@ done
 if [ -z "$web_url" ]; then
     stop_serve
     warn "orca serve did not become ready within ${WEBURL_TIMEOUT} s -- see $SERVE_LOG"
+    run_provision
     exit 1
 fi
 
@@ -754,46 +647,9 @@ if [ -n "$pairing_url" ]; then
     log "Orca pairing URL written to $PAIRING_FILE"
 fi
 
-# --- register the project with Orca, exactly once -----------------------
+# --- everything about this folder, now that it can be watched -----------
 
-resolve_cli() {
-    if [ -n "${ORCA_CLI:-}" ]; then
-        printf '%s\n' "$ORCA_CLI"
-        return 0
-    fi
-    for candidate in \
-        "$(dirname "$ORCA_BIN")/resources/bin/orca-ide" \
-        "$AGENT_HOME/.local/bin/orca-ide" \
-        "$AGENT_HOME/.local/bin/orca"
-    do
-        [ -x "$candidate" ] && { printf '%s\n' "$candidate"; return 0; }
-    done
-    for name in orca orca-ide; do
-        found="$(command -v "$name" 2>/dev/null)"
-        [ -n "$found" ] && { printf '%s\n' "$found"; return 0; }
-    done
-    return 1
-}
-
-cli="$(resolve_cli)"
-if [ -n "$cli" ]; then
-    # The CLI finds the running server through its user-data dir, and it
-    # defaults to Orca's own rather than the one serve was started with.
-    # Without this the registration talks to a runtime that is not there
-    # and fails silently (claude-orca-qa2.17).
-    log "registering project with Orca: $cli repo add --path $PROJECT_DIR (ORCA_USER_DATA_PATH=$USER_DATA_DIR)"
-    if command -v timeout >/dev/null 2>&1; then
-        run_as_agent env ORCA_USER_DATA_PATH="$USER_DATA_DIR" \
-            timeout 60 "$cli" repo add --path "$PROJECT_DIR" --json \
-            >>"$SERVE_LOG" 2>&1 || warn "orca repo add failed (continuing)"
-    else
-        run_as_agent env ORCA_USER_DATA_PATH="$USER_DATA_DIR" \
-            "$cli" repo add --path "$PROJECT_DIR" --json \
-            >>"$SERVE_LOG" 2>&1 || warn "orca repo add failed (continuing)"
-    fi
-else
-    warn "no Orca CLI found; skipping repo add"
-fi
+run_provision
 
 # --- the container lives as long as Orca serves -------------------------
 

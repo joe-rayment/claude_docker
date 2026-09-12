@@ -330,6 +330,30 @@ path_without_docker() {
     ! grep -q "claude_orca" "$HOME/.zshrc"
 }
 
+# S5 (claude-orca-dbu.5): a folder can be diagnosed from either side. The
+# steps write their status inside the container; the doctor on the Mac asks
+# the container for them rather than parsing the files itself, so a folder
+# whose provisioning half failed cannot look healthy from here.
+@test "doctor grows one row per provision step, fetched from the container, and exits 2 on a failed step" {
+    mkdir -p "$PROJECT_DIR"
+    primary="$(abspath "$PROJECT_DIR")"
+    make_project_v3 "$primary" >/dev/null
+
+    run bash -c "cd '$primary' && ./claude-dev --doctor"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"10-toolchain-verify"* ]]
+    [[ "$output" == *"20-config-sync"* ]]
+
+    # One failed step is a finding, named, with the line that says why.
+    export CLAUDE_ORCA_TEST_PROVISION_FAIL=1
+    run bash -c "cd '$primary' && ./claude-dev --doctor"
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"FAIL"* ]]
+    [[ "$output" == *"20-config-sync"* ]]
+    [[ "$output" == *"cp: cannot create the settings file"* ]]
+}
+
+
 # --- desktop Orca, S1 (claude-orca-8uo.2) --------------------------------
 #
 # A desktop Orca on the Mac attaches to the container's runtime with the

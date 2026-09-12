@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+#
+# Is the OpenRouter chokepoint actually answering?
+#
+# The guard STARTS in the entrypoint, before serve, and that is deliberate
+# rather than left over: Orca's process environment is fixed at exec, and
+# the fail-closed rule -- the token and base URL reach Orca only when the
+# guard came up -- is a decision that has to be made before Orca is
+# started. What can safely wait is this: checking that it is still
+# listening, and restarting it if it is not.
+#
+# Idempotent: a guard that is answering makes this a probe and nothing
+# else, which is the state every start after the first one finds.
+#
+# The real key reaches this step and no other. provision-run.sh strips it
+# from the environment every other step inherits and hands it back here by
+# name, because a key in a place no chokepoint can see is the exact failure
+# the guard exists to prevent.
+
+set -uo pipefail
+. "$(dirname "$0")/../provision-lib.sh"
+
+GUARD_PORT="${CLAUDE_ORCA_GUARD_PORT:-4141}"
+GUARD_SCRIPT="${CLAUDE_ORCA_GUARD_SCRIPT:-$STEP_TREE/scripts/container/openrouter-guard.py}"
+GUARD_TIMEOUT="${CLAUDE_ORCA_GUARD_TIMEOUT:-30}"
+GUARD_LOG="$RUN_DIR/openrouter-guard.log"
+GUARD_PID_FILE="$RUN_DIR/openrouter-guard.pid"
+GUARD_TOKEN_FILE="$RUN_DIR/openrouter-guard.token"
+REAL_KEY="${CLAUDE_ORCA_OPENROUTER_REAL_KEY:-}"
+
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "python3 not found; the OpenRouter guard cannot run here" >&2
+    exit 0
+fi
+
+guard_port_open() {
+    python3 -c "import socket,sys
+s = socket.socket()
+s.settimeout(0.3)
+sys.exit(0 if s.connect_ex(('127.0.0.1', $GUARD_PORT)) == 0 else 1)" \
+        >/dev/null 2>&1
+}
+
+if [ -z "$REAL_KEY" ]; then
+    echo "no OPENROUTER_API_KEY in this folder; there is nothing to guard"
+    exit 0
+fi
+
+if guard_port_open; then
+    echo "the OpenRouter guard is answering on 127.0.0.1:$GUARD_PORT"
+    exit 0
+fi
+
+# Not answering. A restart is only worth anything if it comes back up on
+# the token Orca's environment already carries -- a fresh one would be a
+# credential every terminal in this container has never heard of.
+if [ ! -s "$GUARD_TOKEN_FILE" ]; then
+    echo "the guard is not answering on 127.0.0.1:$GUARD_PORT and $GUARD_TOKEN_FILE is empty: it never started this boot, and a new token is one no terminal here carries. Agents have no OpenRouter access this run -- that is deliberate, because an unpoliced key in a terminal is what the guard exists to prevent." >&2
+    exit 1
+fi
+if [ ! -f "$GUARD_SCRIPT" ]; then
+    echo "the guard is not answering and there is no guard script at $GUARD_SCRIPT" >&2
+    exit 1
+fi
+
+token="$(head -1 "$GUARD_TOKEN_FILE" | tr -d '\r\n')"
+echo "the OpenRouter guard is not answering on 127.0.0.1:$GUARD_PORT; restarting it"
+env OPENROUTER_API_KEY="$REAL_KEY" \
+    OPENROUTER_GUARD_TOKEN="$token" \
+    CLAUDE_ORCA_RUN_DIR="$RUN_DIR" \
+    python3 "$GUARD_SCRIPT" --port "$GUARD_PORT" --run-dir "$RUN_DIR" \
+    >>"$GUARD_LOG" 2>&1 </dev/null &
+guard_pid=$!
+
+waited=0
+while [ "$waited" -lt "$GUARD_TIMEOUT" ]; do
+    if guard_port_open; then
+        printf '%s\n' "$guard_pid" > "$GUARD_PID_FILE"
+        echo "the OpenRouter guard is listening again (pid $guard_pid, log: $GUARD_LOG)"
+        exit 0
+    fi
+    kill -0 "$guard_pid" 2>/dev/null || break
+    sleep 1
+    waited=$((waited + 1))
+done
+
+kill -TERM "$guard_pid" 2>/dev/null
+echo "the OpenRouter guard would not come back up -- see $GUARD_LOG" >&2
+exit 1

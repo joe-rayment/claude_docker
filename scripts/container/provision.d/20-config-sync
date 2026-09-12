@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+#
+# This repo's config/ into the folder's sandboxed Claude config dir: the
+# hooks, agents, commands, skills and CLAUDE.md every session in this
+# folder runs under.
+#
+# The folder's own clone is the source FIRST and on purpose: the image's
+# copy is frozen at build time, so on the prebuilt path an edit committed
+# in the folder reached the agent only after a rebuild and a pull (found
+# 2026-09-08: /tier's OpenRouter verb was committed, synced from the image
+# anyway, and simply was not there).
+#
+# config-sync takes the dir ABOVE the template ($HOST/template/config), so
+# the mounted clone is passed as its own parent and the image's copy
+# through /opt/claude-orca-host/template, the symlink setup.sh's template
+# phase made.
+#
+# Idempotent: config-sync is checksum-gated, so the second start is a
+# no-op, and it takes a flock so the host side's post-URL resync over
+# `docker exec` cannot interleave with this one.
+
+set -uo pipefail
+. "$(dirname "$0")/../provision-lib.sh"
+
+HOST_DIR="${CLAUDE_ORCA_HOST_DIR:-/opt/claude-orca-host}"
+
+sync_host=""
+if [ -d "$PROJECT_DIR/.claude-dev/template/config" ]; then
+    sync_host="$PROJECT_DIR/.claude-dev"
+elif [ "$(basename "$TEMPLATE_ROOT")" = "template" ] && [ -d "$TEMPLATE_ROOT/config" ]; then
+    sync_host="$(dirname "$TEMPLATE_ROOT")"
+elif [ -d "$HOST_DIR/template/config" ]; then
+    sync_host="$HOST_DIR"
+fi
+
+if [ -z "$sync_host" ]; then
+    echo "no template config found (looked in $TEMPLATE_ROOT and $HOST_DIR/template); skipping config-sync"
+    exit 0
+fi
+
+# The script from the tree this step came from, never TEMPLATE_ROOT's: the
+# two are the same clone whenever provisioning runs from the entrypoint,
+# and when they are not, the code that goes with this step is the one that
+# should run.
+if "$STEP_TREE/scripts/config-sync.sh" --project "$PROJECT_DIR" --host "$sync_host"; then
+    echo "config synced from $sync_host/template/config"
+    exit 0
+fi
+echo "config-sync failed (the folder keeps whatever it had)" >&2
+exit 1

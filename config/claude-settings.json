@@ -56,7 +56,8 @@
           { "type": "command", "command": "[ -x \"__HOST__/template/bin/disk-cleanup\" ] && (\"__HOST__/template/bin/disk-cleanup\" >/dev/null 2>&1 &); exit 0" },
           { "type": "command", "command": "__HOST__/template/bin/tier-reconcile" },
           { "type": "command", "command": "__HOST__/template/bin/tier-prime" },
-          { "type": "command", "command": "[ -x \"__HOST__/template/bin/cost-mirror\" ] && (timeout 3 \"__HOST__/template/bin/cost-mirror\" --refresh-pricing >/dev/null 2>&1 &); exit 0" }
+          { "type": "command", "command": "[ -x \"__HOST__/template/bin/cost-mirror\" ] && (timeout 3 \"__HOST__/template/bin/cost-mirror\" --refresh-pricing >/dev/null 2>&1 &); exit 0" },
+          { "type": "command", "command": "[ -x \"__HOST__/template/bin/provision\" ] && exec \"__HOST__/template/bin/provision\" status --failed; exit 0" }
         ]
       }
     ],

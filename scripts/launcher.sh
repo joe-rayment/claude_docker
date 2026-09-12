@@ -1879,6 +1879,7 @@ doctor_row() {
 # entrypoint published. Exits 2 on any finding, so it is usable in a script.
 cmd_doctor_v3() {
     local dir="$PROJECT_SELF" rc=0 ref name state port url_file src vol app ver cli
+    local prov=0 st nm detail
     # Whichever image THIS folder runs: a runtime-install folder has no
     # prebuilt image and never will, so asking after one would be a finding
     # about something it does not use.
@@ -2008,6 +2009,31 @@ cmd_doctor_v3() {
     else
         doctor_row missing "web url" "not published yet -- $url_file"
         rc=2
+    fi
+
+    # ... and one row per provisioning step (S5, claude-orca-dbu.5). The
+    # steps run inside the container and write their status there; the
+    # container is asked for them, the way `claude-dev verify` asks
+    # verify-folder.sh, so a folder whose provisioning half failed cannot
+    # look healthy from this side. Only worth asking a container that is
+    # up -- one that is not has already been reported two rows above.
+    if [ "$state" = "running" ]; then
+        prov=0
+        while IFS="$(printf '\t')" read -r st nm detail; do
+            [ -n "$st" ] || continue
+            prov=$((prov + 1))
+            case "$st" in
+                ok)  doctor_row ok   "$nm" "$detail" ;;
+                n/a) doctor_row n/a  "$nm" "$detail" ;;
+                *)   doctor_row FAIL "$nm" "$detail"; rc=2 ;;
+            esac
+        done <<PROVISION
+$(ctr exec -u agent "$name" bash "$(guest_project_dir "$dir")/.claude-dev/template/bin/provision" status --tsv 2>/dev/null || true)
+PROVISION
+        # No rows is not a pass and not a fault: a container that has only
+        # just come up has not finished provisioning, and one built from an
+        # image older than this has no `provision` to ask.
+        [ "$prov" -eq 0 ] && doctor_row warn "provisioning" "no step statuses yet -- ./claude-dev logs, or ./claude-dev --update"
     fi
 
     return "$rc"
