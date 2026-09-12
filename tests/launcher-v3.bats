@@ -329,3 +329,102 @@ path_without_docker() {
     [ ! -e "$primary/claude-dev" ]
     ! grep -q "claude_orca" "$HOME/.zshrc"
 }
+
+# --- desktop Orca, S1 (claude-orca-8uo.2) --------------------------------
+#
+# A desktop Orca on the Mac attaches to the container's runtime with the
+# pairing URL `orca serve` minted. A folder can have it two ways, and the
+# launcher must take either: run/orca-pairing-url.txt, which the entrypoint
+# writes from serve's own `Pairing URL:` line, or -- for every folder still
+# on an image built before that change -- the `#pairing=` fragment of
+# run/orca-web-url.txt, which carries the same URL percent-encoded. A
+# change that can only arrive in a rebuilt image reaches nobody, so the
+# second path is not a fallback, it is the one that always works.
+
+# The launcher is a command-dispatching script, so a unit case lifts the
+# one function out of it with sed, the way tests/toolchain-cache.bats
+# drives try_build. A missing function fails loudly rather than looking
+# like the "no URL" return it is being asked about.
+run_pairing_url_of() {
+    local fns
+    fns="$(sed -n '/^pairing_url_of()/,/^}$/p' "$REPO_ROOT/scripts/launcher.sh")"
+    if [ -z "$fns" ]; then
+        echo "pairing_url_of is not defined in scripts/launcher.sh" >&2
+        return 99
+    fi
+    bash -c "set -uo pipefail
+$fns
+pairing_url_of \"\$@\"" _ "$@"
+}
+
+pairing_fixture() {
+    local dir="$1"
+    mkdir -p "$dir/.claude-dev/run"
+    rm -f "$dir/.claude-dev/run/orca-pairing-url.txt" \
+          "$dir/.claude-dev/run/orca-web-url.txt"
+}
+
+@test "pairing_url_of prefers run/orca-pairing-url.txt" {
+    local dir="$BATS_TEST_TMPDIR/pair1"
+    pairing_fixture "$dir"
+
+    # Both files present and disagreeing: the entrypoint's own file wins,
+    # because it is serve's verbatim line rather than something derived.
+    printf '%s\n' 'orca://pair?code=FROMTHEFILE' \
+        > "$dir/.claude-dev/run/orca-pairing-url.txt"
+    printf '%s\n' \
+        'http://127.0.0.1:5173/web-index.html#pairing=orca%3A%2F%2Fpair%3Fcode%3DFROMTHEFRAGMENT' \
+        > "$dir/.claude-dev/run/orca-web-url.txt"
+
+    run run_pairing_url_of "$dir"
+    [ "$status" -eq 0 ]
+    [ "$output" = "orca://pair?code=FROMTHEFILE" ]
+
+    # A pairing file that is not a pairing URL at all (a truncated write, a
+    # stale placeholder) is not trusted: the fragment still answers.
+    printf '%s\n' 'not a url' > "$dir/.claude-dev/run/orca-pairing-url.txt"
+    run run_pairing_url_of "$dir"
+    [ "$status" -eq 0 ]
+    [ "$output" = "orca://pair?code=FROMTHEFRAGMENT" ]
+}
+
+@test "pairing_url_of decodes the #pairing= fragment of run/orca-web-url.txt" {
+    local dir="$BATS_TEST_TMPDIR/pair2"
+    pairing_fixture "$dir"
+
+    # A real fragment: the whole URL percent-encoded, base64url payload and
+    # its `=` padding included (%3D), which is what makes a plain `tr` or a
+    # `${x//%2F//}` pass wrong and a proper decode necessary.
+    printf '%s\n' \
+        'http://127.0.0.1:5173/web-index.html#pairing=orca%3A%2F%2Fpair%3Fcode%3DeyJ2IjoyLCJzY29wZSI6InJ1bnRpbWUifQ%3D%3D' \
+        > "$dir/.claude-dev/run/orca-web-url.txt"
+
+    run run_pairing_url_of "$dir"
+    [ "$status" -eq 0 ]
+    [ "$output" = 'orca://pair?code=eyJ2IjoyLCJzY29wZSI6InJ1bnRpbWUifQ==' ]
+}
+
+@test "pairing_url_of fails with empty output when neither file yields an orca://pair URL" {
+    local dir="$BATS_TEST_TMPDIR/pair3"
+
+    # Nothing published yet.
+    pairing_fixture "$dir"
+    run run_pairing_url_of "$dir"
+    [ "$status" -eq 1 ]
+    [ -z "$output" ]
+
+    # A web URL with no fragment at all.
+    printf '%s\n' 'http://127.0.0.1:5173/web-index.html' \
+        > "$dir/.claude-dev/run/orca-web-url.txt"
+    run run_pairing_url_of "$dir"
+    [ "$status" -eq 1 ]
+    [ -z "$output" ]
+
+    # A fragment that decodes to something that is not a pairing URL.
+    printf '%s\n' \
+        'http://127.0.0.1:5173/web-index.html#pairing=http%3A%2F%2Fexample.invalid' \
+        > "$dir/.claude-dev/run/orca-web-url.txt"
+    run run_pairing_url_of "$dir"
+    [ "$status" -eq 1 ]
+    [ -z "$output" ]
+}

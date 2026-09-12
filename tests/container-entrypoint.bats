@@ -1201,3 +1201,103 @@ export_guard_test_env() {  # export_guard_test_env <project> <user-data-dir>
     run cat "$proj/.claude-dev/home/.claude/CLAUDE.md"
     [ "$output" = "folder memory" ]
 }
+
+# --- desktop Orca, S1 (claude-orca-8uo.2) --------------------------------
+#
+# `orca-ide --serve` announces two lines: the Web client URL and, on the
+# very next line, `Pairing URL: orca://pair?code=<base64url json>`. The
+# first is the browser handshake and has been written out since v3; the
+# second is what a desktop Orca on the Mac needs to attach to this
+# container's runtime. Both are credentials, so both are 0600 and owned by
+# the agent. A serve that announces no pairing line at all (an older Orca)
+# must still come up: the Mac half can decode the same URL out of the web
+# URL's fragment, so the absence is a missing file, never a failed start.
+
+@test "entrypoint writes run/orca-pairing-url.txt 0600 from the Pairing URL line" {
+    [ -x "$ENTRYPOINT" ]
+
+    local proj="$TMP/project" home="$TMP/home" port pairfile urlfile
+    make_project "$proj"
+    mkdir -p "$home" "$TMP/bin"
+    port="$(free_port)"
+
+    # A stub Orca speaking serve's two lines, in serve's own order.
+    cat > "$TMP/bin/orca-ide" <<'STUB'
+#!/usr/bin/env bash
+port=""
+prev=""
+for arg in "$@"; do
+    [ "$prev" = "--port" ] && port="$arg"
+    prev="$arg"
+done
+echo "Orca server ready"
+echo "Web client URL: http://127.0.0.1:${port}/web-index.html#pairing=orca%3A%2F%2Fpair%3Fcode%3DeyJ2IjoyfQ"
+echo "Pairing URL: orca://pair?code=eyJ2IjoyfQ"
+exec sleep 300
+STUB
+    chmod +x "$TMP/bin/orca-ide"
+
+    cat > "$TMP/bin/orca" <<'STUB'
+#!/usr/bin/env bash
+exit 0
+STUB
+    chmod +x "$TMP/bin/orca"
+
+    export HOME="$home"
+    export PROJECT_DIR="$proj"
+    export ORCA_PORT="$port"
+    export ORCA_BIN="$TMP/bin/orca-ide"
+    export ORCA_CLI="$TMP/bin/orca"
+    export CLAUDE_ORCA_ENTRYPOINT_NO_PRIVDROP=1
+    export CLAUDE_ORCA_WEBURL_TIMEOUT=30
+
+    start_entrypoint_bg
+
+    pairfile="$proj/.claude-dev/run/orca-pairing-url.txt"
+    if ! wait_for_file "$pairfile" 30; then
+        cat "$TMP/entrypoint.out" >&2 || true
+        false
+    fi
+    run cat "$pairfile"
+    [ "$status" -eq 0 ]
+    [ "$output" = "orca://pair?code=eyJ2IjoyfQ" ]
+    [ "$(stat -c '%a' "$pairfile")" = "600" ]
+
+    stop_entrypoint
+
+    # An Orca that announces only the web URL: the pairing file is simply
+    # absent, and the start is otherwise untouched.
+    local proj2="$TMP/project2" home2="$TMP/home2" port2
+    make_project "$proj2"
+    mkdir -p "$home2"
+    port2="$(free_port)"
+    cat > "$TMP/bin/orca-nopair" <<'STUB'
+#!/usr/bin/env bash
+port=""
+prev=""
+for arg in "$@"; do
+    [ "$prev" = "--port" ] && port="$arg"
+    prev="$arg"
+done
+echo "Web client URL: http://127.0.0.1:${port}/web-index.html#pairing=x"
+exec sleep 300
+STUB
+    chmod +x "$TMP/bin/orca-nopair"
+
+    export EP_PGID_FILE="$TMP/ep2.pgid"
+    export HOME="$home2"
+    export PROJECT_DIR="$proj2"
+    export ORCA_PORT="$port2"
+    export ORCA_BIN="$TMP/bin/orca-nopair"
+    setsid bash -c 'echo $$ > "$EP_PGID_FILE"; exec bash "$EP_SCRIPT"' \
+        >"$TMP/entrypoint2.out" 2>&1 &
+
+    urlfile="$proj2/.claude-dev/run/orca-web-url.txt"
+    if ! wait_for_file "$urlfile" 30; then
+        cat "$TMP/entrypoint2.out" >&2 || true
+        false
+    fi
+    sleep 2
+    [ ! -e "$proj2/.claude-dev/run/orca-pairing-url.txt" ]
+    kill -TERM -"$(cat "$TMP/ep2.pgid")" 2>/dev/null || true
+}
