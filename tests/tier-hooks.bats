@@ -36,7 +36,7 @@ setup() {
 }
 
 tier_set() { run "$TSET" "$@"; }
-gate() { run "$GATE" <<<"$1"; }              # gate '<json>' -- pipes $1 to tier-gate
+gate() { TIER_GATE_DERIVE="$DERIVE" run "$GATE" <<<"$1"; }              # gate '<json>' -- pipes $1 to tier-gate, pinned to this repo's tier-derive (never PATH)
 prime() { run "$PRIME"; }
 reconcile() { run "$RECON" </dev/null; }      # no stdin payload (SessionStart shape)
 reconcile_with() { run "$RECON" <<<"$1"; }    # reconcile_with '<json>' (PostModelSwitch/ConfigChange shape)
@@ -493,9 +493,20 @@ seed_state() {  # seed_state <worker> <recon> -- a bound, unpinned, non-overdriv
     run jq -e '.hookSpecificOutput.updatedInput.model == "sonnet"' <<<"$output"
     [ "$status" -eq 0 ]
 
+    # verifier GRADES, so it takes the checker rung: seed_state's top is
+    # "fable" and a v1 file carries no checker rung of its own, so slice B's
+    # rule derives it from that top -- fable -> opus (claude-orca-8a0.2)
     gate '{"tool_name":"Agent","tool_input":{"subagent_type":"verifier","prompt":"p"}}'
     [ "$status" -eq 0 ]
-    [ -z "$output" ]
+    run jq -e '.hookSpecificOutput.updatedInput.model == "opus"' <<<"$output"
+    [ "$status" -eq 0 ]
+
+    # oracle and professor are consults, not graders: still untouched
+    for role in oracle professor; do
+        gate '{"tool_name":"Agent","tool_input":{"subagent_type":"'"$role"'","prompt":"p"}}'
+        [ "$status" -eq 0 ]
+        [ -z "$output" ]
+    done
 
     # an orca-backed worker: the spawn is still ALLOWED, with one note and no
     # model injection (the orchestrator should have used orca-dispatch)
