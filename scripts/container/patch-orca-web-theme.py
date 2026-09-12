@@ -49,8 +49,18 @@ served page by hiding `readText` on the clipboard object. Copy is
 unaffected: it goes through `writeText`, which is auto-granted, with an
 execCommand("copy") fallback behind it.
 
-Idempotent: re-running with the same theme and the shim present is a
-no-op; a different theme replaces the theme seed and keeps the shim.
+The same rewrite also gives the tab a favicon. The served page ships no
+<link rel="icon"> at all, so every Orca Web tab wears the browser's
+default mark -- while Orca's own icon is already in the archive next to
+the bundle, as out/web/assets/icon-<hash>.png, served at
+./assets/icon-<hash>.png relative to the page. The hash is a build
+detail, so the name is DISCOVERED by listing the archive rather than
+spelled out here; an Orca that renames or drops the asset gets a warning
+and its default tab mark, never a broken link.
+
+Idempotent: re-running with the same theme, the shim and the favicon
+present is a no-op; a different theme replaces the theme seed and keeps
+the shim and the favicon.
 Run as root at image build (setup.sh --phase template) and optionally
 again at boot with the folder's CLAUDE_ORCA_THEME.
 
@@ -66,6 +76,7 @@ shape; `--terminal-theme` picks any other palette Orca knows.
     patch-orca-web-theme.py --check  [--asar PATH] [--theme T]   # 0 if seeded
                                                                  # T + palette
                                                                  # + shim
+                                                                 # + favicon
     patch-orca-web-theme.py --print  [--asar PATH]               # dump the html
 """
 
@@ -78,7 +89,14 @@ import sys
 
 DEFAULT_ASAR = "/opt/Orca/resources/app.asar"
 HTML_PATH = ("out", "web", "web-index.html")
+ASSETS_PATH = ("out", "web", "assets")
 THEMES = ("dark", "light", "system")
+
+# Orca's web icon is one asset in out/web/assets, under a build hash
+# (icon-DcVXyfru.png in 1.4.197). The prefix AND the .png tail both
+# matter: icons-<hash>.js -- the lucide icon chunk -- sits in the same
+# directory and is not a picture of anything.
+ICON_RE = re.compile(r"^icon-[^/]*\.png$")
 
 # Orca ships a terminal palette called "Homebrew" -- black ground,
 # #00ff00 text and cursor -- which is the old phosphor-monitor look this
@@ -100,6 +118,8 @@ SCRIPT_RE = re.compile(
 CLIPBOARD_RE = re.compile(
     r'[ \t]*<script data-claude-orca-clipboard="[^"]*">.*?</script>\n?', re.S)
 PRELOAD_RE = re.compile(r'[ \t]*<link rel="modulepreload"[^>]*>\n')
+FAVICON_RE = re.compile(
+    r'[ \t]*<link rel="icon" data-claude-orca-favicon="[^"]*"[^>]*>\n?')
 
 # Hiding readText also empties the custom context-menu "Paste" item, which
 # calls the same readClipboardText: it returns "" instead of throwing. That
@@ -139,6 +159,18 @@ def seed_script(theme, terminal_theme):
             % (theme, terminal_theme, js))
 
 
+def favicon_link(asset):
+    """The tab's icon, served from the archive's own assets directory."""
+    return ('    <link rel="icon" data-claude-orca-favicon="1" '
+            'href="./assets/%s">\n' % asset)
+
+
+def seeded_favicon(html):
+    m = re.search(r'<link rel="icon" data-claude-orca-favicon="[^"]*" '
+                  r'href="([^"]*)"', html)
+    return m.group(1) if m else None
+
+
 def seeded_theme(html):
     m = re.search(r'<script data-claude-orca-theme="([a-z]*)"', html)
     return m.group(1) if m else None
@@ -153,23 +185,30 @@ def clipboard_seeded(html):
     return CLIPBOARD_RE.search(html) is not None
 
 
-def rewrite_html(html, theme, terminal_theme):
-    """Return html with both seeds, at exactly len(html) bytes."""
+def rewrite_html(html, theme, terminal_theme, icon_asset):
+    """Return html with both seeds and the favicon, at exactly len(html) bytes.
+
+    icon_asset is the name of the archive's own web icon, or None -- in
+    which case no <link rel="icon"> is written and any earlier one is
+    dropped, because the file it pointed at is no longer there.
+    """
     size = len(html.encode("utf-8"))
     # Strip earlier seeds and their padding so re-theming starts clean.
     html = SCRIPT_RE.sub("", html)
     html = CLIPBOARD_RE.sub("", html)
+    html = FAVICON_RE.sub("", html)
     html = re.sub(r" +\n  </head>", "\n  </head>", html)
 
     anchor = html.find("    <script type=\"module\"")
     if anchor < 0:
         raise SystemExit("web-index.html has no module script tag; "
                          "unexpected Orca Web layout")
-    html = (html[:anchor] + seed_script(theme, terminal_theme)
+    head = favicon_link(icon_asset) if icon_asset else ""
+    html = (html[:anchor] + head + seed_script(theme, terminal_theme)
             + CLIPBOARD_SCRIPT + html[anchor:])
 
     # Free bytes from the END of the modulepreload hint list, only as many
-    # as the two seeds need.
+    # as the injections need.
     while len(html.encode("utf-8")) > size:
         hints = list(PRELOAD_RE.finditer(html))
         if not hints:
@@ -195,12 +234,32 @@ def read_header(f):
     return header_size, raw, json.loads(raw)
 
 
-def html_entry(header):
+def find_node(header, parts):
+    """The header node at parts, or None when the archive has no such path."""
     node = header
-    for part in HTML_PATH:
-        node = node.get("files", {}).get(part)
+    for part in parts:
+        node = (node.get("files") or {}).get(part)
         if node is None:
-            raise SystemExit("app.asar has no %s" % "/".join(HTML_PATH))
+            return None
+    return node
+
+
+def web_icon_asset(header):
+    """The name of Orca's own web icon in this archive, or None.
+
+    Discovered, never hard-coded: the asset carries a build hash that
+    changes with every Orca release. Sorted, so an archive that somehow
+    ships two of them seeds the same one on every run.
+    """
+    node = find_node(header, ASSETS_PATH) or {}
+    names = [n for n in (node.get("files") or {}) if ICON_RE.match(n)]
+    return sorted(names)[0] if names else None
+
+
+def html_entry(header):
+    node = find_node(header, HTML_PATH)
+    if node is None:
+        raise SystemExit("app.asar has no %s" % "/".join(HTML_PATH))
     if node.get("unpacked"):
         raise SystemExit("web-index.html is unpacked; patch the file on disk")
     return node
@@ -241,6 +300,8 @@ def main(argv=None):
     with open(args.asar, mode) as f:
         header_size, raw, header = read_header(f)
         entry = html_entry(header)
+        icon = web_icon_asset(header)
+        want_fav = ("./assets/%s" % icon) if icon else None
         data_start = 8 + header_size
         offset = data_start + int(entry["offset"])
         size = int(entry["size"])
@@ -254,10 +315,17 @@ def main(argv=None):
         current = seeded_theme(old)
         current_term = seeded_terminal_theme(old)
         clip = clipboard_seeded(old)
+        fav = seeded_favicon(old)
+        # An archive with no icon asset is in its right state with no
+        # favicon at all: nothing to point a link at, so --check passes
+        # and a stale link from an older Orca is what fails.
+        fav_ok = fav == want_fav
+        fav_state = fav or ("n/a (no icon asset)" if icon is None
+                            else "MISSING")
         if args.check:
             theme_ok = current == args.theme
             term_ok = current_term == args.terminal_theme
-            ok = theme_ok and term_ok and clip
+            ok = theme_ok and term_ok and clip and fav_ok
             missing = []
             if not theme_ok:
                 missing.append("theme %s (has %s)"
@@ -267,22 +335,35 @@ def main(argv=None):
                                % (args.terminal_theme, current_term or "none"))
             if not clip:
                 missing.append("the clipboard shim")
+            if not fav_ok:
+                missing.append("the stale favicon %s removed" % fav
+                               if want_fav is None
+                               else "favicon %s (has %s)"
+                                    % (want_fav, fav or "none"))
             print("[patch-orca-web] %s: web-index.html seeds theme %s, "
-                  "terminal theme %s, clipboard shim %s%s"
+                  "terminal theme %s, clipboard shim %s, favicon %s%s"
                   % ("ok" if ok else "FAIL", current or "(none)",
                      current_term or "(none)",
-                     "present" if clip else "MISSING",
+                     "present" if clip else "MISSING", fav_state,
                      "" if ok else " -- missing: " + " and ".join(missing)))
             return 0 if ok else 1
 
+        # The tab's icon is Orca's own, so a build that renames or drops it
+        # leaves the browser's default mark rather than a broken link.
+        if icon is None:
+            print("[patch-orca-web] warning: no out/web/assets/icon-*.png in "
+                  "%s; the tab keeps the browser's default mark" % args.asar,
+                  file=sys.stderr)
+        fav_note = "favicon %s" % icon if icon else "no favicon"
+
         if current == args.theme and current_term == args.terminal_theme \
-                and clip:
+                and clip and fav_ok:
             print("[patch-orca-web] already seeds theme %s + terminal theme "
-                  "%s + clipboard shim (%s)"
-                  % (args.theme, args.terminal_theme, args.asar))
+                  "%s + clipboard shim + %s (%s)"
+                  % (args.theme, args.terminal_theme, fav_note, args.asar))
             return 0
 
-        new = rewrite_html(old, args.theme, args.terminal_theme)
+        new = rewrite_html(old, args.theme, args.terminal_theme, icon)
         new_b = new.encode("utf-8")
         assert len(new_b) == size
 
@@ -317,8 +398,8 @@ def main(argv=None):
         f.flush()
 
     print("[patch-orca-web] web-index.html now seeds theme %s + terminal "
-          "theme %s + the clipboard shim (%s)"
-          % (args.theme, args.terminal_theme, args.asar))
+          "theme %s + the clipboard shim + %s (%s)"
+          % (args.theme, args.terminal_theme, fav_note, args.asar))
     return 0
 
 
