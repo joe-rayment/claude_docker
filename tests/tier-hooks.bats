@@ -396,7 +396,11 @@ seed_state() {  # seed_state <worker> <recon> -- a bound, unpinned, non-overdriv
 # ── tier v2: a backend per role (claude-orca-qa2.12) ────────────────────────
 
 @test "tier.json v2 carries backend, agent and model per role and a v1 file reads as subagent backend" {
-    TIER_DERIVE="$DERIVE" tier_set fable
+    # claude-orca-xrp: the derived worker's BACKEND is whatever the Orca probe
+    # answers, so a case that asserts the subagent default has to say "no Orca"
+    # out loud -- ambient reachability (the suite now runs inside the folder's
+    # own container, where orca-ide is up) is not part of what this case means.
+    TIER_ORCA_PROBE_DISABLE=1 TIER_DERIVE="$DERIVE" tier_set fable
     [ "$status" -eq 0 ]
 
     # the v1 keys stay exactly what they were -- the model id per role ...
@@ -542,8 +546,10 @@ STUB
     [[ "$output" == *"worker=orca:opencode:openrouter/z-ai/glm-5.3"* ]]
 
     # the env var alone is enough; with no Orca the vendor still holds and
-    # only the backend falls back
-    OPENROUTER_API_KEY=sk-or-v1-fromenv TIER_DERIVE="$DERIVE" tier_set opus
+    # only the backend falls back -- "no Orca" is pinned by the probe switch
+    # (claude-orca-xrp), never left to the box the suite happens to run on
+    OPENROUTER_API_KEY=sk-or-v1-fromenv TIER_ORCA_PROBE_DISABLE=1 \
+        TIER_DERIVE="$DERIVE" tier_set opus
     [ "$status" -eq 0 ]
     run jq -e '.top == "opus" and (.roles.worker | .backend == "subagent" and .agent == "opencode" and .model == "openrouter/z-ai/glm-5.3")' "$STATE_FILE"
     [ "$status" -eq 0 ]
