@@ -1021,6 +1021,51 @@ wait_for_web_url() {
     return 1
 }
 
+# The pairing URL Orca minted for this container -- what a desktop Orca on
+# the Mac needs to attach to the runtime inside it -- by either of the two
+# paths a folder can have it.
+#
+# run/orca-pairing-url.txt is serve's own `Pairing URL:` line, written by
+# the entrypoint (0600; it is a credential). It only exists in a folder
+# whose image carries that change, which is exactly why it is not the only
+# path: the web URL's fragment has carried the same URL percent-encoded
+# since v3, so `#pairing=orca%3A%2F%2Fpair%3Fcode%3D...` decoded is the
+# same string, and every folder already running has it. A change that can
+# only arrive in a rebuilt image reaches nobody.
+#
+# Decoding in bash 3.2 and no more: every %XX becomes \xXX and printf '%b'
+# turns those into bytes. Prints nothing and returns 1 when neither file
+# yields an orca://pair URL -- a truncated write or a web URL with no
+# fragment is "no pairing URL", never a half-decoded one.
+pairing_url_of() {
+    local dir="$1" pfile wfile url="" frag=""
+    pfile="$dir/.claude-dev/run/orca-pairing-url.txt"
+    wfile="$dir/.claude-dev/run/orca-web-url.txt"
+
+    if [ -s "$pfile" ]; then
+        url="$(head -1 "$pfile")"
+        case "$url" in
+            orca://pair*) printf '%s\n' "$url"; return 0 ;;
+        esac
+    fi
+
+    if [ -s "$wfile" ]; then
+        url="$(head -1 "$wfile")"
+        case "$url" in
+            *'#pairing='*) frag="${url#*#pairing=}" ;;
+            *)             frag="" ;;
+        esac
+        if [ -n "$frag" ]; then
+            url="$(printf '%b' "${frag//%/\\x}")"
+            case "$url" in
+                orca://pair*) printf '%s\n' "$url"; return 0 ;;
+            esac
+        fi
+    fi
+
+    return 1
+}
+
 open_url() {
     local url="$1"
     if [ "${CLAUDE_ORCA_OPEN:-1}" = "0" ]; then
