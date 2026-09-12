@@ -244,7 +244,11 @@ STUB
     [[ "$output" == *"skipping setup"* ]]
     [[ "$output" == *"$TMP/no-setup.sh"* ]]
 
-    # A failing setup is fatal, and says where to look.
+    # A failing setup says where to look and carries on (claude-orca-dbu.6):
+    # on the built-image path setup.sh is a verification pass, so its
+    # failure means the image is wrong -- and killing the container there
+    # removes the only thing that could report that. The run goes on to the
+    # one die that is still fatal, the missing Orca binary.
     run env HOME="$proj/.claude-dev/home" PROJECT_DIR="$proj" \
         ORCA_BIN="$TMP/bin/no-such-orca" CLAUDE_ORCA_SETUP="$TMP/setup.sh" \
         CLAUDE_ORCA_STUB_SETUP_STATUS=1 \
@@ -253,7 +257,139 @@ STUB
     [ "$status" -ne 0 ]
     [[ "$output" == *"setup.sh failed"* ]]
     [[ "$output" == *"$proj/.claude-dev/run/setup.log"* ]]
-    [[ "$output" != *"ORCA_BIN is not executable"* ]]
+    [[ "$output" == *"ORCA_BIN is not executable"* ]]
+}
+
+# write_setup_stub's failing twin (claude-orca-dbu.6). --check passes, so
+# there is no first-start notice to confuse the assertions; the real run
+# prints a line (which still has to reach run/setup.log) and exits 1.
+write_failing_setup_stub() {
+    local path="$1"
+    mkdir -p "$(dirname "$path")"
+    cat > "$path" <<STUB
+#!/usr/bin/env bash
+if [ "\${1:-}" = "--check" ]; then exit 0; fi
+echo "stub setup: this image is not what it promised"
+exit 1
+STUB
+    chmod +x "$path"
+}
+
+@test "a failing setup.sh does not stop the entrypoint: Orca still starts and run/orca-web-url.txt is still written" {
+    [ -x "$ENTRYPOINT" ]
+
+    local proj="$TMP/project" urlfile port
+    make_project "$proj"
+    mkdir -p "$TMP/home" "$TMP/bin"
+    write_failing_setup_stub "$TMP/setup.sh"
+    port="$(free_port)"
+
+    # A stub Orca that speaks serve's URL line and then stays up.
+    cat > "$TMP/bin/orca-ide" <<'STUB'
+#!/usr/bin/env bash
+port=""
+prev=""
+for arg in "$@"; do
+    [ "$prev" = "--port" ] && port="$arg"
+    prev="$arg"
+done
+echo "Web client URL: http://127.0.0.1:${port}/web-index.html#pairing=x"
+exec sleep 300
+STUB
+    chmod +x "$TMP/bin/orca-ide"
+
+    export HOME="$TMP/home"
+    export PROJECT_DIR="$proj"
+    export ORCA_PORT="$port"
+    export ORCA_BIN="$TMP/bin/orca-ide"
+    export ORCA_CLI=/bin/true
+    export CLAUDE_ORCA_SETUP="$TMP/setup.sh"
+    export CLAUDE_ORCA_SKIP_BEADS=1
+    export CLAUDE_ORCA_ENTRYPOINT_NO_PRIVDROP=1
+    export CLAUDE_ORCA_WEBURL_TIMEOUT=30
+
+    start_entrypoint_bg
+
+    urlfile="$proj/.claude-dev/run/orca-web-url.txt"
+    if ! wait_for_file "$urlfile" 40; then
+        echo "--- entrypoint stdout ---" >&2
+        cat "$TMP/entrypoint.out" >&2 || true
+        false
+    fi
+
+    run cat "$urlfile"
+    [ "$status" -eq 0 ]
+    [ "$output" = "http://127.0.0.1:${port}/web-index.html#pairing=x" ]
+
+    # The failure was not silent: it is on the console, in setup.log, and
+    # in the status file -- and Orca came up anyway.
+    grep -qF 'setup.sh failed' "$TMP/entrypoint.out"
+    grep -qF 'stub setup: this image is not what it promised' \
+        "$proj/.claude-dev/run/setup.log"
+    [ "$(cat "$proj/.claude-dev/run/provision/setup.status" | tr -d '[:space:]')" = "1" ]
+}
+
+@test "a failing setup.sh leaves a non-zero run/provision/setup.status and a warning, not a die" {
+    [ -x "$ENTRYPOINT" ]
+
+    local proj="$TMP/project"
+    make_project "$proj"
+    write_failing_setup_stub "$TMP/setup.sh"
+
+    run env HOME="$proj/.claude-dev/home" PROJECT_DIR="$proj" \
+        ORCA_BIN="$TMP/bin/no-such-orca" CLAUDE_ORCA_SETUP="$TMP/setup.sh" \
+        CLAUDE_ORCA_SKIP_BEADS=1 CLAUDE_ORCA_ENTRYPOINT_NO_PRIVDROP=1 \
+        bash "$ENTRYPOINT"
+
+    # Warned, named the log, and carried on: the only die it reaches is the
+    # one for a missing Orca, which is downstream of everything setup does.
+    [[ "$output" == *"setup.sh failed"* ]]
+    [[ "$output" == *"$proj/.claude-dev/run/setup.log"* ]]
+    [[ "$output" == *"ORCA_BIN is not executable"* ]]
+
+    run cat "$proj/.claude-dev/run/provision/setup.status"
+    [ "$status" -eq 0 ]
+    [ "$(printf '%s' "$output" | tr -d '[:space:]')" = "1" ]
+}
+
+@test "a succeeding setup.sh leaves run/provision/setup.status 0" {
+    [ -x "$ENTRYPOINT" ]
+
+    local proj="$TMP/project"
+    make_project "$proj"
+    : > "$TMP/setup.argv"
+    write_setup_stub "$TMP/setup.sh"
+
+    run env HOME="$proj/.claude-dev/home" PROJECT_DIR="$proj" \
+        ORCA_BIN="$TMP/bin/no-such-orca" CLAUDE_ORCA_SETUP="$TMP/setup.sh" \
+        CLAUDE_ORCA_SKIP_BEADS=1 CLAUDE_ORCA_ENTRYPOINT_NO_PRIVDROP=1 \
+        bash "$ENTRYPOINT"
+    [[ "$output" == *"setup done"* ]]
+    [[ "$output" != *"setup.sh failed"* ]]
+
+    # 0 is written too, so "ran fine" and "never ran" are distinguishable.
+    run cat "$proj/.claude-dev/run/provision/setup.status"
+    [ "$status" -eq 0 ]
+    [ "$(printf '%s' "$output" | tr -d '[:space:]')" = "0" ]
+}
+
+@test "an ORCA_BIN that is not executable still fails the entrypoint" {
+    [ -x "$ENTRYPOINT" ]
+
+    local proj="$TMP/project"
+    make_project "$proj"
+    : > "$TMP/setup.argv"
+    write_setup_stub "$TMP/setup.sh"
+
+    # Nothing to serve is still fatal: this is the one die the demotion
+    # above leaves standing.
+    run env HOME="$proj/.claude-dev/home" PROJECT_DIR="$proj" \
+        ORCA_BIN="$TMP/bin/no-such-orca" CLAUDE_ORCA_SETUP="$TMP/setup.sh" \
+        CLAUDE_ORCA_SKIP_BEADS=1 CLAUDE_ORCA_ENTRYPOINT_NO_PRIVDROP=1 \
+        bash "$ENTRYPOINT"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"ORCA_BIN is not executable"* ]]
+    [[ "$output" == *"$TMP/bin/no-such-orca"* ]]
 }
 
 @test "entrypoint starts Orca serve headless from ORCA_BIN, writes run/orca-web-url.txt with the pairing URL and run/port, and the URL serves Orca Web" {
