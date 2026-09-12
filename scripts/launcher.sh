@@ -1362,18 +1362,81 @@ orca_json_app_running() {
     return 1
 }
 
+# `.result.app.pid` -- the running app's own process id, the one thing
+# lsof discovery (below) needs and `status --json` is the only place to
+# read it from. Empty when absent, null, or unreadable.
+orca_json_app_pid() {
+    local json="$1" v=""
+    if command -v jq >/dev/null 2>&1; then
+        v="$(printf '%s' "$json" | jq -r '.result.app.pid // empty' 2>/dev/null || true)"
+    else
+        v="$(printf '%s' "$json" | tr '{},' '\n' | sed -n 's/^"pid":\([0-9]*\)$/\1/p' | head -1)"
+    fi
+    [ "$v" = "null" ] && v=""
+    printf '%s\n' "$v"
+}
+
+# The one line this prints whenever nothing below can name the Mac's own
+# Orca "user data" directory at all -- a guess that used to no-op quietly
+# is now something that SAYS so, on stderr from the strip and in the
+# detail column from cmd_verify's own row.
+orca_no_data_dir_message() {
+    printf "cannot find Orca's data folder (looked for %s); set ORCA_USER_DATA_PATH to it" \
+        "$HOME/Library/Application Support/{Orca,ArchitectureGrammar}"
+}
+
 # The Mac's own Orca "user data" directory -- where it persists
-# orca-data.json, its local project list. $ORCA_USER_DATA_PATH is
-# authoritative when the environment already carries one; otherwise the
-# bundle's package name is ArchitectureGrammar and the running app calls
-# app.setName at startup, so the ordinary default is one of the two (the
-# mac-e2e run settles which). Empty when neither exists -- the launcher
-# never invents a path to write one at.
+# orca-data.json, its local project list. In order: $ORCA_USER_DATA_PATH,
+# when the environment already carries one, is authoritative outright;
+# then the cache this discovered last time (.claude-dev/state/, Mac-side
+# authority the same as the legacy-profile cleanup above), as long as the
+# directory it named still exists; then discovery, while the app is
+# running ($2, its CLI) -- `status --json`'s own `.result.app.pid` and the
+# first line of `lsof -p <pid> -Fn` naming orca-environments.json or
+# orca-data.json, whose dirname IS the answer, cached for next time; and
+# only then the two Library guesses (the bundle's package name is
+# ArchitectureGrammar and the running app calls app.setName at startup, so
+# the ordinary default is one of the two -- the mac-e2e run settles
+# which). Empty when none of the above found anything -- the launcher
+# never invents a path to write one at, and every caller says so instead
+# of silently no-op'ing.
 orca_user_data_dir() {
-    local d
+    local dir="${1:-}" cli="${2:-}" cache d pid lsof_line found=""
     if [ -n "${ORCA_USER_DATA_PATH:-}" ]; then
         printf '%s\n' "$ORCA_USER_DATA_PATH"
         return 0
+    fi
+    if [ -n "$dir" ]; then
+        cache="$dir/.claude-dev/state/orca-data-dir"
+        if [ -s "$cache" ]; then
+            d="$(head -1 "$cache")"
+            if [ -n "$d" ] && [ -d "$d" ]; then
+                printf '%s\n' "$d"
+                return 0
+            fi
+        fi
+    fi
+    if [ -n "$cli" ] && command -v lsof >/dev/null 2>&1; then
+        pid="$(orca_json_app_pid "$("$cli" status --json 2>/dev/null || true)")"
+        if [ -n "$pid" ]; then
+            while IFS= read -r lsof_line; do
+                case "$lsof_line" in
+                    n*orca-environments.json|n*orca-data.json)
+                        found="$(dirname "${lsof_line#n}")"
+                        break ;;
+                esac
+            done <<LSOF
+$(lsof -p "$pid" -Fn 2>/dev/null || true)
+LSOF
+            if [ -n "$found" ] && [ -d "$found" ]; then
+                if [ -n "$dir" ]; then
+                    mkdir -p "$dir/.claude-dev/state"
+                    printf '%s\n' "$found" > "$dir/.claude-dev/state/orca-data-dir"
+                fi
+                printf '%s\n' "$found"
+                return 0
+            fi
+        fi
     fi
     for d in "$HOME/Library/Application Support/Orca" \
              "$HOME/Library/Application Support/ArchitectureGrammar"; do
@@ -1389,13 +1452,18 @@ orca_user_data_dir() {
 # path is this folder (or $CLAUDE_ORCA_HOST_PROJECT_DIR, when set) or lies
 # under either -- every other repo and every other top-level key preserved
 # untouched. A no-op whenever there is nothing to read or no jq to rewrite
-# it with. Callers only ever run this while the app is NOT running:
-# orca-data.json is the app's own on-disk state, and writing under it
-# while it is open is a race this script has no business starting.
+# it with, but a LOUD one when the data dir itself could not be found at
+# all -- see orca_no_data_dir_message. Callers only ever run this while
+# the app is NOT running: orca-data.json is the app's own on-disk state,
+# and writing under it while it is open is a race this script has no
+# business starting.
 orca_strip_local_repo() {
-    local dir="$1" data f tmp host="${CLAUDE_ORCA_HOST_PROJECT_DIR:-}"
-    data="$(orca_user_data_dir)"
-    [ -n "$data" ] || return 0
+    local dir="$1" cli="${2:-}" data f tmp host="${CLAUDE_ORCA_HOST_PROJECT_DIR:-}"
+    data="$(orca_user_data_dir "$dir" "$cli")"
+    if [ -z "$data" ]; then
+        echo "  $(orca_no_data_dir_message)" >&2
+        return 0
+    fi
     f="$data/orca-data.json"
     [ -f "$f" ] || return 0
     command -v jq >/dev/null 2>&1 || return 0
@@ -1411,14 +1479,39 @@ orca_strip_local_repo() {
 }
 
 # The only way 1.4.197 is quit with no `orca://` protocol handler to ask
-# it directly: by name, through the GUI scripting bridge. No osascript at
-# all -- a non-Mac host, or one that lacks the tool -- counts as a failed
-# quit, the same as a refusal would.
+# it directly: by name, through the GUI scripting bridge. A quit that hits
+# an "Are you sure?" dialog leaves osascript blocking forever, and macOS
+# has no `timeout` -- so this backgrounds it and watches it with its own
+# poll loop, <= CLAUDE_ORCA_ORCA_WAIT seconds (the same default as the
+# reachable wait), killing it and giving up rather than hanging the whole
+# hand-off on a dialog nobody is there to answer. Returns 2 (not 1) on
+# that specific timeout, having already said why on stderr, so the caller
+# does not ALSO print its own generic "could not quit" line. No osascript
+# at all -- a non-Mac host, or one that lacks the tool -- still counts as
+# a failed quit (1), the same as a refusal would, with no watchdog to run.
 orca_quit_app() {
-    local app="$1" name
+    local app="$1" name limit waited=0 pid rc
     command -v osascript >/dev/null 2>&1 || return 1
     name="$(basename "$app" .app)"
-    osascript -e "tell application \"$name\" to quit"
+    limit="${CLAUDE_ORCA_ORCA_WAIT:-60}"
+    case "$limit" in
+        ''|*[!0-9]*) limit=60 ;;
+    esac
+    osascript -e "tell application \"$name\" to quit" &
+    pid=$!
+    while kill -0 "$pid" 2>/dev/null; do
+        if [ "$waited" -ge "$limit" ]; then
+            kill "$pid" 2>/dev/null
+            wait "$pid" 2>/dev/null
+            echo "  Orca did not quit within ${limit}s (a dialog may be open) -- opening Orca Web instead" >&2
+            return 2
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+    wait "$pid"
+    rc=$?
+    return "$rc"
 }
 
 # Poll until the app's runtime answers, <= CLAUDE_ORCA_ORCA_WAIT seconds
@@ -1470,7 +1563,7 @@ orca_wait_app_not_running() {
 # whether or not the environment saved, because the block that follows
 # says which -- and 1 when the caller should open the browser instead.
 orca_hand_off() {
-    local dir="$1" app="" cli="" pair="" name="" appver="" imgver="" out="" id=""
+    local dir="$1" app="" cli="" pair="" name="" appver="" imgver="" out="" id="" quit_rc=0
 
     app="$(desktop_app)" || {
         echo "  no Orca.app on this Mac -- opening Orca Web instead ($ORCA_DOWNLOAD_URL)" >&2
@@ -1516,7 +1609,7 @@ orca_hand_off() {
         if orca_json_app_running "$("$cli" status --json 2>/dev/null || true)"; then
             : # already running -- the local-repo check below covers it
         else
-            orca_strip_local_repo "$dir"
+            orca_strip_local_repo "$dir" "$cli"
             open -a "$app" || echo "  Could not launch $app" >&2
         fi
     fi
@@ -1532,11 +1625,16 @@ orca_hand_off() {
     # than leaving this folder open on the Mac with no sandbox.
     if orca_lists_local_repo "$("$cli" repo list --json 2>/dev/null || true)" "$dir"; then
         echo "  Orca already holds this folder as a LOCAL project -- quitting and relaunching to remove it" >&2
-        if ! orca_quit_app "$app" || ! orca_wait_app_not_running "$cli"; then
+        orca_quit_app "$app"
+        quit_rc=$?
+        if [ "$quit_rc" -eq 2 ]; then
+            # orca_quit_app's own watchdog already said why on stderr.
+            return 1
+        elif [ "$quit_rc" -ne 0 ] || ! orca_wait_app_not_running "$cli"; then
             echo "  could not quit $app -- opening Orca Web instead so this folder stays sandboxed" >&2
             return 1
         fi
-        orca_strip_local_repo "$dir"
+        orca_strip_local_repo "$dir" "$cli"
         if [ "${CLAUDE_ORCA_OPEN:-1}" != "0" ]; then
             open -a "$app" || echo "  Could not relaunch $app" >&2
         fi
@@ -2434,7 +2532,7 @@ cmd_verify_v3() {
                 doctor_row ok "local repos" "the Mac's own Orca does not track this folder locally ($src)"
             fi
         else
-            data="$(orca_user_data_dir)"
+            data="$(orca_user_data_dir "$dir" "$cli")"
             if [ -n "$data" ]; then
                 src="$data/orca-data.json"
                 if orca_paths_include_dir "$dir" "$(orca_data_json_repo_paths "$src")"; then
@@ -2444,7 +2542,7 @@ cmd_verify_v3() {
                     doctor_row ok "local repos" "the Mac's own Orca does not track this folder locally ($src)"
                 fi
             else
-                doctor_row ok "local repos" "no Orca user-data directory found on this host -- nothing here tracks a local repo"
+                doctor_row ok "local repos" "$(orca_no_data_dir_message)"
             fi
         fi
     fi

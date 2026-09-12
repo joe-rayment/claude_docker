@@ -954,8 +954,13 @@ case "$1" in
         # the open/osascript stubs flip it as the run actually happens.
         running="${ORCA_STUB_APP_RUNNING:-false}"
         [ -f "$state/app-running" ] && running="$(cat "$state/app-running")"
-        printf '{"ok":true,"result":{"runtime":{"reachable":%s},"app":{"running":%s}}}\n' \
-            "$reachable" "$running"
+        # .result.app.pid: the running app's own process id, orca_user_data_dir()'s
+        # own way into lsof discovery (claude-orca-tgr). A fixed default is
+        # fine -- nothing here forks a real Orca process for this pid to
+        # name -- a test that needs to watch a REAL backgrounded osascript
+        # instead pins $! itself.
+        printf '{"ok":true,"result":{"runtime":{"reachable":%s},"app":{"running":%s,"pid":%s}}}\n' \
+            "$reachable" "$running" "${ORCA_STUB_APP_PID:-4242}"
         exit 0 ;;
     environment)
         sub="${2:-}"; shift 2 2>/dev/null || shift $#
@@ -1057,9 +1062,38 @@ printf '%s\n' "$*" >> "${OSASCRIPT_STUB_LOG:-/dev/null}"
 if [ "${OSASCRIPT_STUB_FAIL:-0}" = "1" ]; then
     exit 1
 fi
+if [ "${OSASCRIPT_STUB_HANG:-0}" = "1" ]; then
+    # exec, not a plain `sleep 30` line: a real "Are you sure?" dialog
+    # blocks osascript's own single process, not a subprocess of it, and
+    # the watchdog's `kill "$pid"` only reaches the process it backgrounded
+    # -- a stub that forked sleep as a CHILD would leave that child holding
+    # the pipe open for the rest of its 30s even after the kill, which is
+    # a bug in the stub, not evidence of one in orca_quit_app.
+    exec sleep 30
+fi
 if [ -n "${ORCA_STUB_STATE:-}" ]; then
     mkdir -p "$ORCA_STUB_STATE"
     printf 'false\n' > "$ORCA_STUB_STATE/app-running"
+fi
+exit 0
+STUB
+    chmod +x "$1"
+}
+
+# orca_user_data_dir()'s own discovery path (claude-orca-tgr): a running
+# app's open files, read with `lsof -p <pid> -Fn`. A minimal -Fn shape --
+# the 'p' (pid) header line every lsof answer carries, and one 'n'-prefixed
+# name line per open file -- with $ORCA_STUB_LSOF_DIR standing in for the
+# directory the app's orca-environments.json actually lives in. Prints
+# nothing at all when $ORCA_STUB_LSOF_DIR is unset, the same as a real
+# lsof against a process with no such file open.
+write_stub_lsof() {
+    cat > "$1" <<'STUB'
+#!/usr/bin/env bash
+printf 'p%s\n' "${ORCA_STUB_APP_PID:-4242}"
+if [ -n "${ORCA_STUB_LSOF_DIR:-}" ]; then
+    printf 'f10\n'
+    printf 'n%s/orca-environments.json\n' "$ORCA_STUB_LSOF_DIR"
 fi
 exit 0
 STUB
@@ -1147,6 +1181,7 @@ setup() {
     export OSASCRIPT_STUB_LOG="$BATS_TEST_TMPDIR/osascript.log"
     : > "$OSASCRIPT_STUB_LOG"
     write_stub_osascript "$STUB_BIN/osascript"
+    write_stub_lsof "$STUB_BIN/lsof"
     # orca_user_data_dir()'s own fallback path (claude-orca-tgr) --
     # $HOME/Library/Application Support/Orca, standing in for the Mac's
     # own copy without a folder-specific override. Not created here: a
