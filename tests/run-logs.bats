@@ -89,9 +89,7 @@ STAMP='^[0-9][0-9]:[0-9][0-9]:[0-9][0-9] '
     # A phase that needs root, run as a non-root user: need_root dies
     # through say/die before anything is installed, so this is a real run
     # of the real logger on any box, with no side effects.
-    if [ "$(id -u)" = "0" ]; then
-        skip "needs a non-root user (this run is root, so the phase would install)"
-    fi
+    need_nonroot "as root the phase would really install, instead of dying in need_root"
     run bash "$REPO_ROOT/scripts/container/setup.sh" --phase base
     [ "$status" -ne 0 ]
     output_matches '^\[setup \+[0-9]+s\]'

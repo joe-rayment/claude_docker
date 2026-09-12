@@ -55,6 +55,14 @@ lift_dns_fns() {
 
 @test "the entrypoint repairs a resolv.conf that cannot resolve" {
     [ -x "$ENTRYPOINT" ]
+
+    # Half of this case is what a NON-root run is told: the entrypoint
+    # declines to rewrite resolv.conf and says "only root may repair" it.
+    # Run as root that branch is never taken, the file is rewritten in
+    # place, and the assertions below would be measuring the opposite
+    # behaviour rather than failing honestly.
+    need_nonroot "the entrypoint's refusal to rewrite resolv.conf"
+
     proj="$BATS_TEST_TMPDIR/ep"
     make_ep_project "$proj"
     resolv="$BATS_TEST_TMPDIR/resolv.conf"
