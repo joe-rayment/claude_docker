@@ -269,8 +269,16 @@ IMAGE_REPO="${CLAUDE_ORCA_IMAGE_REPO:-claude-orca}"
 
 # The tag lives in one file at the template root, so a folder that only
 # ever runs `claude-dev --update` moves to the new image with the rebuild.
+#
+# The Orca version is folded in (<tag>-orca<version>, S4/claude-orca-8uo.5)
+# because the image and the Mac's Orca.app are one pair: Orca's protocol
+# check is a hard refusal on a mismatch, not a warning. A folder whose app
+# has moved must therefore ask the daemon for a DIFFERENT ref -- otherwise
+# it finds the image it already has under the same name, decides it is
+# there, and runs a container the app cannot attach to. Everything reads
+# the ref through image_ref, so nothing else has to know this.
 image_tag() {
-    local f tag=""
+    local f tag="" ver=""
     for f in "$TEMPLATE_ROOT/IMAGE_TAG" "$HOST_DIR/template/IMAGE_TAG"; do
         if [ -f "$f" ]; then
             tag="$(tr -d '[:space:]' < "$f")"
@@ -278,6 +286,8 @@ image_tag() {
         fi
     done
     if [ -z "$tag" ]; then tag="latest"; fi
+    ver="$(wanted_orca_version)"
+    if [ -n "$ver" ]; then tag="$tag-orca$ver"; fi
     printf '%s\n' "$tag"
 }
 
@@ -633,9 +643,22 @@ BUILD_STALL="${CLAUDE_ORCA_BUILD_STALL:-180}"
 
 try_build() {
     local ref="$1" ctx="$2" log rc=0 pid waited=0 quiet=0 last="" line="" said_how=0
+    local ver=""
     log="${CTR_RUN_DIR:-${TMPDIR:-/tmp}}/build.log"
     : > "$log" 2>/dev/null || log="${TMPDIR:-/tmp}/claude-orca-build.log"
-    ctr build --tag "$ref" "$ctx" > "$log" 2>&1 &
+    # The app decides the version (S4/claude-orca-8uo.5) -- and only the
+    # app. With no app on this host there is no build arg at all: the
+    # Dockerfile's own default is the answer, and passing it back in would
+    # be a second place for that pin to be wrong.
+    #
+    # --tag stays the FIRST flag: `docker build --tag <ref>` is what every
+    # reader of the command line here greps for, the suite included.
+    ver="$(app_orca_version)"
+    if [ -n "$ver" ]; then
+        ctr build --tag "$ref" --build-arg "ORCA_VERSION=$ver" "$ctx" > "$log" 2>&1 &
+    else
+        ctr build --tag "$ref" "$ctx" > "$log" 2>&1 &
+    fi
     pid=$!
     while kill -0 "$pid" 2>/dev/null; do
         sleep 1
@@ -1211,15 +1234,62 @@ orca_env_name() { container_name "$1"; }
 # A Mac-side result, so run/ and not state/.
 orca_env_file() { printf '%s\n' "$1/.claude-dev/run/orca-environment.json"; }
 
-# The ORCA_VERSION this folder's image is built at. Orca's protocol check
-# is a hard refusal on a mismatch (client-too-old / server-too-old), not a
-# warning, so a difference between it and the app is worth saying out loud
-# -- S4 is what makes it rare, by building the image at the app's version.
-image_orca_version() {
+# The template's own ORCA_VERSION default, read rather than repeated: the
+# pin lives at Dockerfile:30 and is mirrored once in setup.sh, and a third
+# copy here is a third thing to forget. Empty when there is no Dockerfile
+# to read, which is an answer -- the version is then simply not knowable.
+dockerfile_orca_version() {
     local f="$TEMPLATE_ROOT/Dockerfile" v=""
     if [ -f "$f" ]; then
         v="$(sed -n 's/^ARG ORCA_VERSION=\([^ ]*\).*$/\1/p' "$f" | head -1)"
     fi
+    printf '%s\n' "$v"
+}
+
+# The Orca version of the app on THIS host, or empty -- no app, no Mac, or
+# a bundle whose Info.plist will not answer.
+app_orca_version() {
+    local app=""
+    app="$(find_orca_app 2>/dev/null)" || return 0
+    orca_app_version "$app"
+}
+
+# The version the image is BUILT at (S4/claude-orca-8uo.5): the app's when
+# this host has one, because the app is the client that has to attach to
+# it, and the template default when it has not. One answer, used by both
+# the tag and the build arg, so the image a folder asks for and the image
+# it would build are never two different things.
+wanted_orca_version() {
+    local v=""
+    v="$(app_orca_version)"
+    if [ -z "$v" ]; then v="$(dockerfile_orca_version)"; fi
+    printf '%s\n' "$v"
+}
+
+# The ORCA_VERSION the image THIS MACHINE actually holds is at, read off
+# the tag the build gave it. Orca's protocol check is a hard refusal on a
+# mismatch (client-too-old / server-too-old), not a warning, so a
+# difference between it and the app is worth saying out loud -- and since
+# S4 the wanted version comes FROM the app, asking what this folder wants
+# could never show one. Only the daemon can: a folder whose app moved and
+# has not rebuilt still has the old image sitting there. Falls back to the
+# template default when there is nothing of ours to read.
+image_orca_version() {
+    local repo="" repository tag id v=""
+    repo="$(image_ref)"
+    repo="${repo%:*}"
+    if [ "${CTR_RUNTIME:-docker}" != "local" ]; then
+        while read -r repository tag id; do
+            [ -n "$tag" ] || continue
+            [ "$repository" = "$repo" ] || continue
+            case "$tag" in *-orca?*) ;; *) continue ;; esac
+            v="${tag##*-orca}"
+            break
+        done <<IMAGES
+$(ctr images --format '{{.Repository}} {{.Tag}} {{.ID}}' 2>/dev/null || true)
+IMAGES
+    fi
+    if [ -z "$v" ]; then v="$(dockerfile_orca_version)"; fi
     printf '%s\n' "$v"
 }
 
@@ -1879,7 +1949,7 @@ doctor_row() {
 # entrypoint published. Exits 2 on any finding, so it is usable in a script.
 cmd_doctor_v3() {
     local dir="$PROJECT_SELF" rc=0 ref name state port url_file src vol app ver cli
-    local prov=0 st nm detail
+    local prov=0 st nm detail want="" imgver=""
     # Whichever image THIS folder runs: a runtime-install folder has no
     # prebuilt image and never will, so asking after one would be a finding
     # about something it does not use.
@@ -1944,6 +2014,22 @@ cmd_doctor_v3() {
         doctor_row ok "orca cli" "$cli"
     else
         doctor_row n/a "orca cli" "missing -- only the desktop Orca ships one"
+    fi
+
+    # The two versions that have to agree. They normally do by
+    # construction -- the image is built at the app's version and carries
+    # it in its tag -- and they come apart in one real way: the user
+    # upgraded Orca.app and this folder has not rebuilt yet. Never a
+    # finding: the folder still opens, on Orca Web if nothing else, and
+    # one rebuild fixes it. So a mismatch warns and leaves rc alone.
+    want="$(wanted_orca_version)"
+    imgver="$(image_orca_version)"
+    if [ "$src" = "runtime" ]; then
+        doctor_row n/a "orca versions" "app ${ver:-unknown} -- the runtime path installs orca ${want:-unknown} in the VM"
+    elif [ -n "$imgver" ] && [ -n "$want" ] && [ "$imgver" != "$want" ]; then
+        doctor_row warn "orca versions" "app ${ver:-$want}, image $imgver -- Orca refuses a protocol mismatch; ./claude-dev --update rebuilds the image at $want"
+    else
+        doctor_row ok "orca versions" "orca ${want:-unknown} -- the app and this folder's image agree"
     fi
 
     # built or runtime -- which one it is says whether this folder is
