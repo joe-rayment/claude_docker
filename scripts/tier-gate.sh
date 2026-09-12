@@ -60,6 +60,32 @@ SCRIPT_DIR="$(cd "$(dirname "$(_resolve_script_path)")" && pwd)"
 IN=$(cat 2>/dev/null) || exit 0
 [ -n "$IN" ] || exit 0
 
+# Once-per-session-per-slot notice throttling. Claude Code surfaces every
+# PreToolUse systemMessage as a visible "PreToolUse:Agent says: ..." line;
+# repeating the same injection note on every recon/worker/checker spawn in
+# a session is noise once the operator has seen it once. This NEVER
+# touches updatedInput/the injection itself -- only whether the
+# human-facing systemMessage is included. session_id comes off the hook's
+# stdin JSON (falls back to "nosession" when absent, same as an unnamed
+# session); the marker directory follows the same CLAUDE_CONFIG_DIR
+# convention python/delegation-gate.py uses for its own state dir. Fails
+# OPEN: an unwritable cache dir means the marker never persists, so the
+# notice just keeps printing every call, same as before this existed.
+SESSION_ID=$(printf '%s' "$IN" | jq -r '.session_id // empty' 2>/dev/null)
+[ -n "$SESSION_ID" ] || SESSION_ID="nosession"
+TIER_GATE_NOTICE_DIR="$(claude_config_dir)/cache/tier-gate"
+
+# _tier_gate_announce_once <marker-suffix> -- 0 (announce) the first time a
+# given suffix is seen for this session, 1 (stay quiet) every time after.
+# Creates the marker right when it decides to announce.
+_tier_gate_announce_once() {
+    local marker="$TIER_GATE_NOTICE_DIR/$SESSION_ID.$1"
+    [ -f "$marker" ] && return 1
+    mkdir -p "$TIER_GATE_NOTICE_DIR" 2>/dev/null
+    : > "$marker" 2>/dev/null
+    return 0
+}
+
 TOOL=$(printf '%s' "$IN" | jq -r '.tool_name // empty' 2>/dev/null) || exit 0
 case "$TOOL" in Agent|Task) : ;; *) exit 0 ;; esac   # Task = legacy tool name
 
@@ -157,10 +183,16 @@ elif [ -n "$STATE_FILE" ] && [ -f "$STATE_FILE" ]; then
         else
             # A non-Claude agent (opencode/codex/gemini) has no model the
             # Agent tool would accept, and its rung is not this hook's to
-            # guess: note only, no injection.
-            jq -cn --arg slot "$SLOT" --arg m "$RM" --arg a "$RA" \
-               '{systemMessage: ("tier-gate: " + $slot + " backend is orca (" + $a + " " + $m + ") — prefer orca-dispatch for this slice; the Agent-tool spawn was allowed and runs on the orchestrator'"'"'s own model.")}' \
-               2>/dev/null || exit 0
+            # guess: note only, no injection. Once per session per slot,
+            # same as the injection notice below -- a distinct marker
+            # suffix (".orca") so this note and the injection note (a
+            # claude-agent orca role can still hit both, at different
+            # times) are tracked independently.
+            if _tier_gate_announce_once "$SLOT.orca"; then
+                jq -cn --arg slot "$SLOT" --arg m "$RM" --arg a "$RA" \
+                   '{systemMessage: ("tier-gate: " + $slot + " backend is orca (" + $a + " " + $m + ") — prefer orca-dispatch for this slice; the Agent-tool spawn was allowed and runs on the orchestrator'"'"'s own model.")}' \
+                   2>/dev/null || exit 0
+            fi
             exit 0
         fi
     else
@@ -195,11 +227,20 @@ case "$RANK" in
     *) exit 0 ;;   # unrankable target: fail open
 esac
 
-printf '%s' "$IN" | jq -c --arg m "$ALIAS" --arg id "$TARGET_ID" --arg slot "$SLOT" --arg note "${ORCA_NOTE:-}" '{
-    systemMessage: ("tier-gate:" + $note + " " + $slot + " spawn had no model — injected " + $slot + " tier \($m) (\($id)). An explicit model on the Agent call always wins."),
+# The injection (updatedInput) happens on every call, unconditionally;
+# only the human-facing systemMessage is throttled to once per session
+# per slot.
+ANNOUNCE=false
+_tier_gate_announce_once "$SLOT" && ANNOUNCE=true
+
+printf '%s' "$IN" | jq -c --arg m "$ALIAS" --arg id "$TARGET_ID" --arg slot "$SLOT" --arg note "${ORCA_NOTE:-}" --argjson announce "$ANNOUNCE" '
+{
     hookSpecificOutput: {
         hookEventName: "PreToolUse",
         updatedInput: (.tool_input + {model: $m})
     }
-}' 2>/dev/null || exit 0
+} + (if $announce then {
+    systemMessage: ("tier-gate:" + $note + " " + $slot + " spawn had no model — injected " + $slot + " tier \($m) (\($id)). An explicit model on the Agent call always wins.")
+} else {} end)
+' 2>/dev/null || exit 0
 exit 0

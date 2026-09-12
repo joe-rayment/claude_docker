@@ -36,7 +36,7 @@ setup() {
 }
 
 tier_set() { run "$TSET" "$@"; }
-gate() { run "$GATE" <<<"$1"; }              # gate '<json>' -- pipes $1 to tier-gate
+gate() { TIER_GATE_DERIVE="$DERIVE" run "$GATE" <<<"$1"; }              # gate '<json>' -- pipes $1 to tier-gate, pinned to this repo's tier-derive (never PATH)
 prime() { run "$PRIME"; }
 reconcile() { run "$RECON" </dev/null; }      # no stdin payload (SessionStart shape)
 reconcile_with() { run "$RECON" <<<"$1"; }    # reconcile_with '<json>' (PostModelSwitch/ConfigChange shape)
@@ -493,9 +493,20 @@ seed_state() {  # seed_state <worker> <recon> -- a bound, unpinned, non-overdriv
     run jq -e '.hookSpecificOutput.updatedInput.model == "sonnet"' <<<"$output"
     [ "$status" -eq 0 ]
 
+    # verifier GRADES, so it takes the checker rung: seed_state's top is
+    # "fable" and a v1 file carries no checker rung of its own, so slice B's
+    # rule derives it from that top -- fable -> opus (claude-orca-8a0.2)
     gate '{"tool_name":"Agent","tool_input":{"subagent_type":"verifier","prompt":"p"}}'
     [ "$status" -eq 0 ]
-    [ -z "$output" ]
+    run jq -e '.hookSpecificOutput.updatedInput.model == "opus"' <<<"$output"
+    [ "$status" -eq 0 ]
+
+    # oracle and professor are consults, not graders: still untouched
+    for role in oracle professor; do
+        gate '{"tool_name":"Agent","tool_input":{"subagent_type":"'"$role"'","prompt":"p"}}'
+        [ "$status" -eq 0 ]
+        [ -z "$output" ]
+    done
 
     # an orca-backed worker: the spawn is still ALLOWED, with one note and no
     # model injection (the orchestrator should have used orca-dispatch)
@@ -646,6 +657,42 @@ STUB
     TIER_GATE_DERIVE="$DERIVE" gate '{"tool_name":"Agent","tool_input":{"subagent_type":"verifier","prompt":"p"}}'
     [ "$status" -eq 0 ]
     [ -z "$output" ]
+}
+
+@test "tier-gate announces an injection once per session per slot" {
+    seed_state sonnet haiku
+
+    # two consecutive scout spawns, same session: the first carries the
+    # notice, the second is silent about it but still gets its model
+    TIER_GATE_DERIVE="$DERIVE" gate '{"session_id":"sess-1","tool_name":"Agent","tool_input":{"subagent_type":"scout","prompt":"p"}}'
+    [ "$status" -eq 0 ]
+    first_out="$output"
+    run jq -e '.systemMessage | test("tier-gate")' <<<"$first_out"
+    [ "$status" -eq 0 ]
+    run jq -e '.hookSpecificOutput.updatedInput.model == "haiku"' <<<"$first_out"
+    [ "$status" -eq 0 ]
+
+    TIER_GATE_DERIVE="$DERIVE" gate '{"session_id":"sess-1","tool_name":"Agent","tool_input":{"subagent_type":"scout","prompt":"p"}}'
+    [ "$status" -eq 0 ]
+    second_out="$output"
+    run jq -e 'has("systemMessage") | not' <<<"$second_out"
+    [ "$status" -eq 0 ]
+    run jq -e '.hookSpecificOutput.updatedInput.model == "haiku"' <<<"$second_out"
+    [ "$status" -eq 0 ]
+
+    # a different session: the notice returns
+    TIER_GATE_DERIVE="$DERIVE" gate '{"session_id":"sess-2","tool_name":"Agent","tool_input":{"subagent_type":"scout","prompt":"p"}}'
+    [ "$status" -eq 0 ]
+    run jq -e '.systemMessage | test("tier-gate")' <<<"$output"
+    [ "$status" -eq 0 ]
+
+    # back on sess-1, but the CHECKER slot: it announces once even though
+    # the recon slot on that same session already did (the marker is per
+    # slot, not just per session)
+    TIER_GATE_DERIVE="$DERIVE" gate '{"session_id":"sess-1","tool_name":"Agent","tool_input":{"subagent_type":"verifier","prompt":"p"}}'
+    [ "$status" -eq 0 ]
+    run jq -e '.systemMessage | test("tier-gate")' <<<"$output"
+    [ "$status" -eq 0 ]
 }
 
 # ── bash 3.2 exercise ────────────────────────────────────────────────────────
