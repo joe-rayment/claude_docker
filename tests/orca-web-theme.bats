@@ -424,6 +424,7 @@ setup() {
 @test "--check reports a missing favicon and passes once it is present" {
     local iconed="$BATS_TEST_TMPDIR/iconed.asar"
     make_asar "$iconed" icon-DcVXyfru.png
+    cp "$iconed" "$BATS_TEST_TMPDIR/iconed-pristine.asar"
 
     run python3 "$PATCHER" --asar "$iconed" --check --theme dark
     [ "$status" -eq 1 ]
@@ -448,7 +449,7 @@ setup() {
     # And a re-run puts it back.
     run python3 "$PATCHER" --asar "$iconed" --theme dark
     [ "$status" -eq 0 ]
-    [ "$(wc -c <"$iconed")" = "$(wc -c <"$BATS_TEST_TMPDIR/pristine.asar")" ]
+    [ "$(wc -c <"$iconed")" = "$(wc -c <"$BATS_TEST_TMPDIR/iconed-pristine.asar")" ]
     python3 "$PATCHER" --asar "$iconed" --check --theme dark
     asar_hash_ok "$iconed" out/web/web-index.html
 }
