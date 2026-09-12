@@ -125,3 +125,44 @@ contains() {
     contains "$output" "answered nothing"
     contains "$output" "--update"
 }
+
+# --- desktop Orca, S3 (claude-orca-8uo.4) --------------------------------
+#
+# The one risk the desktop client adds, and its guard (.claude/plans/
+# desktop-orca.md S5). Orca's desktop app can open LOCAL workspaces --
+# folders on the Mac, whose agents run on the Mac with no container around
+# them. The browser tab cannot do that by construction; the app can, and
+# there is no knob in 1.4.197 to turn it off. The launcher only ever hands
+# the app a remote environment, never a local path, so this is a detection
+# rather than a prevention: verify reads the app's own local repo list back
+# and fails if this folder is in it.
+#
+# `orca repo list --json` with no --environment IS the local list; there is
+# no --host flag in 1.4.197 (bead claude-orca-8uo.1, correcting the plan).
+
+@test "verify fails when the Mac Orca lists the folder as a local repo" {
+    mkdir -p "$PROJECT_DIR"
+    local primary
+    primary="$(abspath "$PROJECT_DIR")"
+    export STUB_UNAME_S=Darwin
+    export STUB_UNAME_M=arm64
+    write_stub_orca "$CLAUDE_ORCA_APP/Contents/Resources/bin/orca"
+    make_project_v3 "$primary" >/dev/null
+
+    # The ordinary case first: the Mac's Orca tracks other folders of its
+    # owner's, and none of them is this one.
+    export ORCA_STUB_LOCAL_REPOS="$BATS_TEST_TMPDIR/some-other-project"
+    run bash -c "cd '$primary' && ./claude-dev verify"
+    [ "$status" -eq 0 ]
+    contains "$output" "does not track this folder locally"
+
+    # And the finding: this folder open as a local repo in the Mac's own
+    # Orca is a workspace whose agents run outside the container. The whole
+    # boundary, gone -- so it is a FAIL row and a failing exit code, not a
+    # note.
+    export ORCA_STUB_LOCAL_REPOS="$primary"
+    run bash -c "cd '$primary' && ./claude-dev verify"
+    [ "$status" -eq 2 ]
+    contains "$output" "FAIL"
+    contains "$output" "LOCAL repo"
+}

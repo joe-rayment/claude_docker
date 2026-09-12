@@ -540,3 +540,226 @@ as_mac() {
     [ "$status" -eq 0 ]
     [[ "$output" =~ orca[[:space:]]app[[:space:]]+missing ]]
 }
+
+# --- desktop Orca, S3 (claude-orca-8uo.4) --------------------------------
+#
+# With `ui = desktop` the hand-off stops being a browser tab. The launcher
+# launches the Mac's own Orca.app, waits for its runtime to answer, saves
+# this folder's container as a named environment through the app's own
+# CLI, and prints the pane to pick it in. Three facts from the probe (bead
+# claude-orca-8uo.1) shape all of it: `orca status --json` exits 0 whether
+# the runtime is reachable or not, so the boolean in the JSON is the only
+# signal; a second `environment add` under a name that already exists is
+# refused outright, so the stale one goes first; and no `orca://` protocol
+# handler is registered, so the app is launched by bundle (`open -a`) and
+# paired through the CLI.
+#
+# The CLI is stubbed at the path orca_cli() resolves -- the app bundle's
+# own Contents/Resources/bin/orca -- and logs its argv, one line per call.
+
+DESKTOP_PAIR_URL='orca://pair?code=eyJ2IjoyLCJzY29wZSI6InJ1bnRpbWUifQ=='
+DESKTOP_PAIR_FRAGMENT='orca%3A%2F%2Fpair%3Fcode%3DeyJ2IjoyLCJzY29wZSI6InJ1bnRpbWUifQ%3D%3D'
+
+# A registered folder with its container up, on a Mac whose Orca.app has a
+# CLI that answers, and a pairing offer published the way an image that
+# carries S1 publishes it. Prints the project path; leaves both logs empty
+# so a case asserts about its own `./claude-dev open` and not about the
+# register that set the folder up.
+desktop_fixture() {
+    local primary
+    as_mac
+    write_stub_orca "$CLAUDE_ORCA_APP/Contents/Resources/bin/orca"
+    mkdir -p "$PROJECT_DIR"
+    primary="$(abspath "$PROJECT_DIR")"
+    make_project_v3 "$primary" >/dev/null
+    printf '%s\n' "$DESKTOP_PAIR_URL" \
+        > "$primary/.claude-dev/run/orca-pairing-url.txt"
+    : > "$ORCA_STUB_LOG"
+    : > "$OPEN_STUB_LOG"
+    printf '%s\n' "$primary"
+}
+
+@test "open with ui desktop launches the app and waits for orca status reachable" {
+    local primary name last_status first_add
+    # The runtime is not up the moment the app is: two answers of false
+    # before the true one, which is the whole reason this is a poll.
+    export ORCA_STUB_REACHABLE_AFTER=2
+    export CLAUDE_ORCA_ORCA_WAIT=10
+    primary="$(desktop_fixture)"
+    name="claude-orca-$(basename "$primary")"
+
+    run bash -c "cd '$primary' && ./claude-dev open"
+    [ "$status" -eq 0 ]
+
+    # The app itself, by bundle path.
+    grep -qxF -- "-a $CLAUDE_ORCA_APP" "$OPEN_STUB_LOG"
+    # ... and no browser tab: on this path the desktop app IS the client.
+    ! grep -q '^http' "$OPEN_STUB_LOG"
+
+    # It kept asking until the runtime said yes -- and an exit code would
+    # have told it nothing, so it read the JSON.
+    [ "$(grep -c '^status --json$' "$ORCA_STUB_LOG")" -eq 3 ]
+
+    # ... and only then handed the runtime over.
+    last_status="$(grep -n '^status --json$' "$ORCA_STUB_LOG" | tail -1 | cut -d: -f1)"
+    first_add="$(grep -n '^environment add ' "$ORCA_STUB_LOG" | head -1 | cut -d: -f1)"
+    [ -n "$first_add" ]
+    [ "$last_status" -lt "$first_add" ]
+
+    # The hand-off names the environment and the pane to pick it in.
+    grep -qF "$name" <<< "$output"
+    grep -qF "Runtime Environments" <<< "$output"
+}
+
+@test "open with ui desktop adds the environment with the decoded pairing URL and records its id" {
+    local primary name envfile
+    primary="$(desktop_fixture)"
+    name="claude-orca-$(basename "$primary")"
+
+    # The fragment path, not the file: a folder whose image predates
+    # run/orca-pairing-url.txt still has the offer, percent-encoded in the
+    # web URL Orca published. What reaches `environment add` is the
+    # decoded URL, base64url padding and all.
+    rm -f "$primary/.claude-dev/run/orca-pairing-url.txt"
+    printf 'http://127.0.0.1:6768/web-index.html#pairing=%s\n' "$DESKTOP_PAIR_FRAGMENT" \
+        > "$primary/.claude-dev/run/orca-web-url.txt"
+    : > "$ORCA_STUB_LOG"
+
+    run bash -c "cd '$primary' && ./claude-dev open"
+    [ "$status" -eq 0 ]
+
+    grep -qxF \
+        "environment add --name $name --pairing-code $DESKTOP_PAIR_URL --json" \
+        "$ORCA_STUB_LOG"
+
+    # The id the app gave back is a Mac-side result, so it lands in run/.
+    envfile="$primary/.claude-dev/run/orca-environment.json"
+    [ -s "$envfile" ]
+    [ "$(jq -r '.id' "$envfile")" = "68b6f2e5-1111-2222-3333-444455556666" ]
+    [ "$(jq -r '.name' "$envfile")" = "$name" ]
+}
+
+@test "open with ui desktop removes an existing environment of the same name before adding" {
+    local primary name rm_line add_line
+    primary="$(desktop_fixture)"
+    name="claude-orca-$(basename "$primary")"
+
+    # A folder opened once before: the app already has an environment of
+    # this name, saved against the PREVIOUS container's pairing offer. A
+    # recreated container mints a new one, and a second add under the same
+    # name is refused ("A server named ... already exists."), so the stale
+    # environment goes first.
+    printf '%s\n' "$name" > "$ORCA_STUB_STATE/environments"
+    : > "$ORCA_STUB_LOG"
+
+    run bash -c "cd '$primary' && ./claude-dev open"
+    [ "$status" -eq 0 ]
+
+    rm_line="$(grep -n "^environment rm --environment $name --json$" "$ORCA_STUB_LOG" | head -1 | cut -d: -f1)"
+    add_line="$(grep -n "^environment add --name $name " "$ORCA_STUB_LOG" | head -1 | cut -d: -f1)"
+    [ -n "$rm_line" ]
+    [ -n "$add_line" ]
+    [ "$rm_line" -lt "$add_line" ]
+
+    # ... and the add went through rather than being refused.
+    [ -s "$primary/.claude-dev/run/orca-environment.json" ]
+}
+
+@test "open with ui desktop copies the pairing URL to the clipboard when environment add fails" {
+    local primary name
+    export ORCA_STUB_ADD_FAIL=1
+    primary="$(desktop_fixture)"
+    name="claude-orca-$(basename "$primary")"
+
+    run bash -c "cd '$primary' && ./claude-dev open"
+    # The container is up and the app is running either way: a hand-off
+    # the CLI could not finish is something to tell the user how to
+    # finish by hand, not a failed open.
+    [ "$status" -eq 0 ]
+
+    [ "$(cat "$PBCOPY_STUB_LOG")" = "$DESKTOP_PAIR_URL" ]
+    grep -qF "clipboard" <<< "$output"
+    grep -qF "Runtime Environments" <<< "$output"
+
+    # Nothing was saved, so nothing claims it was.
+    [ ! -e "$primary/.claude-dev/run/orca-environment.json" ]
+}
+
+@test "open with ui web opens the URL in the browser and never calls orca" {
+    local primary url config
+    primary="$(desktop_fixture)"
+    config="$primary/.claude-dev/claude-orca.json"
+
+    # The same Mac, the same app, the same pairing offer -- and a folder
+    # that says it is a browser folder. Today's open runs untouched.
+    jq '.ui = "web"' "$config" > "$config.t" && mv "$config.t" "$config"
+    : > "$ORCA_STUB_LOG"
+    : > "$OPEN_STUB_LOG"
+
+    run bash -c "cd '$primary' && ./claude-dev open"
+    [ "$status" -eq 0 ]
+
+    url="$(head -1 "$primary/.claude-dev/run/orca-web-url.txt")"
+    [ "$(tail -1 "$OPEN_STUB_LOG")" = "$url" ]
+    [ ! -s "$ORCA_STUB_LOG" ]
+    grep -qF "open in a browser" <<< "$output"
+}
+
+@test "teardown removes the environment" {
+    local primary name
+    primary="$(desktop_fixture)"
+    name="claude-orca-$(basename "$primary")"
+
+    run bash -c "cd '$primary' && ./claude-dev open"
+    [ "$status" -eq 0 ]
+    [ -s "$primary/.claude-dev/run/orca-environment.json" ]
+
+    # A fresh log, so the rm asserted below is teardown's own and not the
+    # remove-first the open above did.
+    : > "$ORCA_STUB_LOG"
+    run bash -c "cd '$primary' && ./claude-dev --teardown"
+    [ "$status" -eq 0 ]
+
+    grep -qxF "environment rm --environment $name --json" "$ORCA_STUB_LOG"
+    # ... and the app no longer offers a runtime that does not exist.
+    ! grep -qxF "$name" "$ORCA_STUB_STATE/environments"
+}
+
+# --- desktop Orca, S4 (claude-orca-8uo.5) --------------------------------
+#
+# The image is built at the app's Orca version and carries it in its tag,
+# so the two normally agree by construction. They come apart in one real
+# way: the user upgrades Orca.app and this folder has not rebuilt yet --
+# the ref it now wants does not exist and the image on this machine is the
+# old one. Orca refuses a protocol mismatch outright, so the doctor says
+# so. A warning and not a finding: the folder still opens (on Orca Web if
+# nothing else), and one ./claude-dev --update fixes it.
+@test "doctor flags an app/image version mismatch" {
+    as_mac
+    export CLAUDE_ORCA_APP="$(make_fake_orca_app "$BATS_TEST_TMPDIR/Applications/Orca9.app" 9.9.9)"
+    make_project_v3 "$PROJECT_DIR" >/dev/null
+
+    # What this machine actually holds under our repo: an image built at
+    # the older version, which is what the tag says.
+    printf '%s\n' "claude-orca latest-orca1.4.197 sha256:aaaaaaaaaaaa" \
+        > "$CONTAINER_STUB_STATE/images-list"
+
+    run bash -c "cd '$PROJECT_DIR' && ./claude-dev --doctor"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"orca versions"* ]]
+    [[ "$output" == *"9.9.9"* ]]
+    [[ "$output" == *"1.4.197"* ]]
+    [[ "$output" =~ \[warn[[:space:]]*\][[:space:]]+orca[[:space:]]versions ]]
+    [[ "$output" == *"--update"* ]]
+
+    # The same folder once the rebuild has happened: one row, agreeing,
+    # and no warning -- so the row above is about the versions and not
+    # about having an app at all.
+    printf '%s\n' "claude-orca latest-orca9.9.9 sha256:bbbbbbbbbbbb" \
+        > "$CONTAINER_STUB_STATE/images-list"
+    run bash -c "cd '$PROJECT_DIR' && ./claude-dev --doctor"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"orca versions"* ]]
+    [[ "$output" =~ \[ok[[:space:]]*\][[:space:]]+orca[[:space:]]versions ]]
+    [[ ! "$output" =~ \[warn[[:space:]]*\][[:space:]]+orca[[:space:]]versions ]]
+}

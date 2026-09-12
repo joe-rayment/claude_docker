@@ -537,11 +537,13 @@ STUB
     chmod +x "$1"
 }
 
-# Records the URL macOS was asked to hand to the default browser.
+# Records what macOS was asked to open: a URL for the default browser, or
+# `-a <bundle>` for an application (S3, claude-orca-8uo.4). The whole argv,
+# so the one-argument URL case still logs exactly the URL.
 write_stub_open() {
     cat > "$1" <<'STUB'
 #!/usr/bin/env bash
-printf '%s\n' "$1" >> "${OPEN_STUB_LOG:-/dev/null}"
+printf '%s\n' "$*" >> "${OPEN_STUB_LOG:-/dev/null}"
 exit "${STUB_OPEN_EXIT:-0}"
 STUB
     chmod +x "$1"
@@ -893,6 +895,121 @@ PLIST
     printf '%s\n' "$app"
 }
 
+# S3 (claude-orca-8uo.4): the Orca CLI the desktop hand-off drives, at
+# the path orca_cli() resolves -- the app bundle's own
+# Contents/Resources/bin/orca. It logs every invocation's argv as one line
+# to $ORCA_STUB_LOG and keeps its world (how many times it has been asked
+# for status, which environments the app has saved, which repos the Mac's
+# own Orca tracks locally) in $ORCA_STUB_STATE and a handful of env vars,
+# so a test puts it into any state without a fixture file.
+#
+# The one behaviour that matters and is easy to get wrong: `status --json`
+# EXITS 0 whether the runtime is reachable or not (verified against
+# 1.4.197, bead claude-orca-8uo.1), so the boolean in the JSON is the only
+# signal there is. Same for a refused `environment add`: ok:false, exit 0.
+write_stub_orca() {
+    mkdir -p "$(dirname "$1")"
+    cat > "$1" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${ORCA_STUB_LOG:-/dev/null}"
+state="${ORCA_STUB_STATE:-${TMPDIR:-/tmp}/orca-stub}"
+mkdir -p "$state"
+envs="$state/environments"
+[ -f "$envs" ] || : > "$envs"
+
+# The value after a flag in argv, or nothing.
+arg_after() {
+    local want="$1" prev="" a
+    shift
+    for a in "$@"; do
+        if [ "$prev" = "$want" ]; then printf '%s\n' "$a"; return 0; fi
+        prev="$a"
+    done
+    return 1
+}
+
+case "$1" in
+    status)
+        n=0
+        [ -f "$state/status-calls" ] && n="$(cat "$state/status-calls")"
+        n=$((n + 1))
+        printf '%s\n' "$n" > "$state/status-calls"
+        reachable=true
+        [ "$n" -le "${ORCA_STUB_REACHABLE_AFTER:-0}" ] && reachable=false
+        [ "${ORCA_STUB_UNREACHABLE:-0}" = "1" ] && reachable=false
+        printf '{"ok":true,"result":{"runtime":{"reachable":%s}}}\n' "$reachable"
+        exit 0 ;;
+    environment)
+        sub="${2:-}"; shift 2 2>/dev/null || shift $#
+        case "$sub" in
+            add)
+                name="$(arg_after --name "$@")" || name=""
+                code="$(arg_after --pairing-code "$@")" || code=""
+                if [ "${ORCA_STUB_ADD_FAIL:-0}" = "1" ]; then
+                    printf '{"ok":false,"error":"the pairing offer was refused"}\n'
+                    exit 0
+                fi
+                if grep -qxF "$name" "$envs"; then
+                    printf '{"ok":false,"error":"A server named \"%s\" already exists."}\n' "$name"
+                    exit 0
+                fi
+                printf '%s\n' "$name" >> "$envs"
+                printf '%s\n' "$code" > "$state/pairing-code"
+                printf '{"ok":true,"result":{"environment":{"id":"%s","name":"%s"}}}\n' \
+                    "${ORCA_STUB_ENV_ID:-68b6f2e5-1111-2222-3333-444455556666}" "$name"
+                exit 0 ;;
+            rm)
+                name="$(arg_after --environment "$@")" || name=""
+                if grep -qxF "$name" "$envs"; then
+                    grep -vxF "$name" "$envs" > "$envs.t" || :
+                    mv "$envs.t" "$envs"
+                    printf '{"ok":true,"result":{"removed":{"name":"%s"}}}\n' "$name"
+                    exit 0
+                fi
+                printf '{"ok":false,"error":"No server named \"%s\" is saved."}\n' "$name"
+                exit 0 ;;
+            list)
+                out=""; sep=""
+                while IFS= read -r nm; do
+                    [ -n "$nm" ] || continue
+                    out="$out$sep{\"name\":\"$nm\"}"; sep=","
+                done < "$envs"
+                printf '{"ok":true,"result":{"environments":[%s]}}\n' "$out"
+                exit 0 ;;
+        esac
+        exit 0 ;;
+    repo)
+        # `repo list --json` with NO --environment is the MAC's own list --
+        # the local workspaces the desktop app would run outside any
+        # container. `repo list` has no --host flag (1.4.197).
+        remote=0
+        for a in "$@"; do [ "$a" = "--environment" ] && remote=1; done
+        if [ "$remote" = "1" ]; then
+            printf '{"ok":true,"result":{"repos":[{"path":"/workspace/stub"}]}}\n'
+            exit 0
+        fi
+        out=""; sep=""
+        for p in ${ORCA_STUB_LOCAL_REPOS:-}; do
+            out="$out$sep{\"path\":\"$p\"}"; sep=","
+        done
+        printf '{"ok":true,"result":{"repos":[%s]}}\n' "$out"
+        exit 0 ;;
+esac
+exit 0
+STUB
+    chmod +x "$1"
+}
+
+# The Mac's clipboard, as a file: the manual fallback puts the pairing URL
+# on it when the CLI could not save the environment.
+write_stub_pbcopy() {
+    cat > "$1" <<'STUB'
+#!/usr/bin/env bash
+cat > "${PBCOPY_STUB_LOG:-/dev/null}"
+STUB
+    chmod +x "$1"
+}
+
 # --- per-test environment -------------------------------------------------
 
 setup() {
@@ -941,6 +1058,27 @@ setup() {
     # that does not exist, which is an answer on any host, Mac included.
     write_stub_defaults "$STUB_BIN/defaults"
     export CLAUDE_ORCA_APP="$(make_fake_orca_app)"
+
+    # S3 (claude-orca-8uo.4): where the orca CLI stub logs its argv and
+    # keeps its state, and where the clipboard ends up. `pbcopy` goes on
+    # PATH for every suite and is inert until the desktop hand-off's
+    # manual fallback runs; the orca stub is NOT installed globally -- the
+    # fake app carries an inert `exit 0` until a desktop case replaces it,
+    # so no other suite's `./claude-dev` learns to talk to an app.
+    export ORCA_STUB_LOG="$BATS_TEST_TMPDIR/orca.log"
+    : > "$ORCA_STUB_LOG"
+    export ORCA_STUB_STATE="$BATS_TEST_TMPDIR/orca-state"
+    mkdir -p "$ORCA_STUB_STATE"
+    export PBCOPY_STUB_LOG="$BATS_TEST_TMPDIR/pbcopy.log"
+    : > "$PBCOPY_STUB_LOG"
+    write_stub_pbcopy "$STUB_BIN/pbcopy"
+
+    # A desktop hand-off that cannot complete falls back to the browser,
+    # and every suite that registers a folder takes that path (the docker
+    # stub publishes no real pairing offer). Nothing should sit in a poll
+    # loop for a minute to get there: the cases that are ABOUT the wait
+    # raise it themselves.
+    export CLAUDE_ORCA_ORCA_WAIT=2
 
     # The bootstrap installs a missing dependency rather than instructing
     # it, so the tools that install things are stubbed too. All four are
