@@ -648,6 +648,42 @@ STUB
     [ -z "$output" ]
 }
 
+@test "tier-gate announces an injection once per session per slot" {
+    seed_state sonnet haiku
+
+    # two consecutive scout spawns, same session: the first carries the
+    # notice, the second is silent about it but still gets its model
+    TIER_GATE_DERIVE="$DERIVE" gate '{"session_id":"sess-1","tool_name":"Agent","tool_input":{"subagent_type":"scout","prompt":"p"}}'
+    [ "$status" -eq 0 ]
+    first_out="$output"
+    run jq -e '.systemMessage | test("tier-gate")' <<<"$first_out"
+    [ "$status" -eq 0 ]
+    run jq -e '.hookSpecificOutput.updatedInput.model == "haiku"' <<<"$first_out"
+    [ "$status" -eq 0 ]
+
+    TIER_GATE_DERIVE="$DERIVE" gate '{"session_id":"sess-1","tool_name":"Agent","tool_input":{"subagent_type":"scout","prompt":"p"}}'
+    [ "$status" -eq 0 ]
+    second_out="$output"
+    run jq -e 'has("systemMessage") | not' <<<"$second_out"
+    [ "$status" -eq 0 ]
+    run jq -e '.hookSpecificOutput.updatedInput.model == "haiku"' <<<"$second_out"
+    [ "$status" -eq 0 ]
+
+    # a different session: the notice returns
+    TIER_GATE_DERIVE="$DERIVE" gate '{"session_id":"sess-2","tool_name":"Agent","tool_input":{"subagent_type":"scout","prompt":"p"}}'
+    [ "$status" -eq 0 ]
+    run jq -e '.systemMessage | test("tier-gate")' <<<"$output"
+    [ "$status" -eq 0 ]
+
+    # back on sess-1, but the CHECKER slot: it announces once even though
+    # the recon slot on that same session already did (the marker is per
+    # slot, not just per session)
+    TIER_GATE_DERIVE="$DERIVE" gate '{"session_id":"sess-1","tool_name":"Agent","tool_input":{"subagent_type":"verifier","prompt":"p"}}'
+    [ "$status" -eq 0 ]
+    run jq -e '.systemMessage | test("tier-gate")' <<<"$output"
+    [ "$status" -eq 0 ]
+}
+
 # ── bash 3.2 exercise ────────────────────────────────────────────────────────
 
 @test "tier-set, tier-gate and tier-prime run cleanly under bash 3.2" {
