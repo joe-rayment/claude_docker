@@ -352,3 +352,191 @@ path_without_docker() {
     [[ "$output" == *"20-config-sync"* ]]
     [[ "$output" == *"cp: cannot create the settings file"* ]]
 }
+
+
+# --- desktop Orca, S1 (claude-orca-8uo.2) --------------------------------
+#
+# A desktop Orca on the Mac attaches to the container's runtime with the
+# pairing URL `orca serve` minted. A folder can have it two ways, and the
+# launcher must take either: run/orca-pairing-url.txt, which the entrypoint
+# writes from serve's own `Pairing URL:` line, or -- for every folder still
+# on an image built before that change -- the `#pairing=` fragment of
+# run/orca-web-url.txt, which carries the same URL percent-encoded. A
+# change that can only arrive in a rebuilt image reaches nobody, so the
+# second path is not a fallback, it is the one that always works.
+
+# The launcher is a command-dispatching script, so a unit case lifts the
+# one function out of it with sed, the way tests/toolchain-cache.bats
+# drives try_build. A missing function fails loudly rather than looking
+# like the "no URL" return it is being asked about.
+run_pairing_url_of() {
+    local fns
+    fns="$(sed -n '/^pairing_url_of()/,/^}$/p' "$REPO_ROOT/scripts/launcher.sh")"
+    if [ -z "$fns" ]; then
+        echo "pairing_url_of is not defined in scripts/launcher.sh" >&2
+        return 99
+    fi
+    bash -c "set -uo pipefail
+$fns
+pairing_url_of \"\$@\"" _ "$@"
+}
+
+pairing_fixture() {
+    local dir="$1"
+    mkdir -p "$dir/.claude-dev/run"
+    rm -f "$dir/.claude-dev/run/orca-pairing-url.txt" \
+          "$dir/.claude-dev/run/orca-web-url.txt"
+}
+
+@test "pairing_url_of prefers run/orca-pairing-url.txt" {
+    local dir="$BATS_TEST_TMPDIR/pair1"
+    pairing_fixture "$dir"
+
+    # Both files present and disagreeing: the entrypoint's own file wins,
+    # because it is serve's verbatim line rather than something derived.
+    printf '%s\n' 'orca://pair?code=FROMTHEFILE' \
+        > "$dir/.claude-dev/run/orca-pairing-url.txt"
+    printf '%s\n' \
+        'http://127.0.0.1:5173/web-index.html#pairing=orca%3A%2F%2Fpair%3Fcode%3DFROMTHEFRAGMENT' \
+        > "$dir/.claude-dev/run/orca-web-url.txt"
+
+    run run_pairing_url_of "$dir"
+    [ "$status" -eq 0 ]
+    [ "$output" = "orca://pair?code=FROMTHEFILE" ]
+
+    # A pairing file that is not a pairing URL at all (a truncated write, a
+    # stale placeholder) is not trusted: the fragment still answers.
+    printf '%s\n' 'not a url' > "$dir/.claude-dev/run/orca-pairing-url.txt"
+    run run_pairing_url_of "$dir"
+    [ "$status" -eq 0 ]
+    [ "$output" = "orca://pair?code=FROMTHEFRAGMENT" ]
+}
+
+@test "pairing_url_of decodes the #pairing= fragment of run/orca-web-url.txt" {
+    local dir="$BATS_TEST_TMPDIR/pair2"
+    pairing_fixture "$dir"
+
+    # A real fragment: the whole URL percent-encoded, base64url payload and
+    # its `=` padding included (%3D), which is what makes a plain `tr` or a
+    # `${x//%2F//}` pass wrong and a proper decode necessary.
+    printf '%s\n' \
+        'http://127.0.0.1:5173/web-index.html#pairing=orca%3A%2F%2Fpair%3Fcode%3DeyJ2IjoyLCJzY29wZSI6InJ1bnRpbWUifQ%3D%3D' \
+        > "$dir/.claude-dev/run/orca-web-url.txt"
+
+    run run_pairing_url_of "$dir"
+    [ "$status" -eq 0 ]
+    [ "$output" = 'orca://pair?code=eyJ2IjoyLCJzY29wZSI6InJ1bnRpbWUifQ==' ]
+}
+
+@test "pairing_url_of fails with empty output when neither file yields an orca://pair URL" {
+    local dir="$BATS_TEST_TMPDIR/pair3"
+
+    # Nothing published yet.
+    pairing_fixture "$dir"
+    run run_pairing_url_of "$dir"
+    [ "$status" -eq 1 ]
+    [ -z "$output" ]
+
+    # A web URL with no fragment at all.
+    printf '%s\n' 'http://127.0.0.1:5173/web-index.html' \
+        > "$dir/.claude-dev/run/orca-web-url.txt"
+    run run_pairing_url_of "$dir"
+    [ "$status" -eq 1 ]
+    [ -z "$output" ]
+
+    # A fragment that decodes to something that is not a pairing URL.
+    printf '%s\n' \
+        'http://127.0.0.1:5173/web-index.html#pairing=http%3A%2F%2Fexample.invalid' \
+        > "$dir/.claude-dev/run/orca-web-url.txt"
+    run run_pairing_url_of "$dir"
+    [ "$status" -eq 1 ]
+    [ -z "$output" ]
+}
+
+# --- desktop Orca, S2 (claude-orca-8uo.3) --------------------------------
+#
+# Which of the two UIs a folder runs is a property OF THE FOLDER, decided
+# once at register and written into claude-orca.json as `ui`: desktop when
+# the Mac has an Orca.app and nothing said otherwise, web in every other
+# case. It is a decision, not a probe, so a re-register never revisits it
+# -- a folder that was set to web stays web even after the user installs
+# the app, and a desktop folder survives the app being moved. The doctor
+# reports what it can see of the app either way, and never turns a missing
+# desktop Orca into a failing exit code: Orca Web is a complete answer.
+
+# The uname stub answers only what a test pins, and make_project_v3 pins
+# Darwin for the bootstrap call alone -- so a case that drives the launcher
+# AFTER the install (the doctor) has to pin it for itself.
+as_mac() {
+    export STUB_UNAME_S=Darwin
+    export STUB_UNAME_M=arm64
+}
+
+@test "register writes ui desktop when the app is found" {
+    as_mac
+    make_project_v3 "$PROJECT_DIR" >/dev/null
+
+    [ "$(jq -r '.ui' "$PROJECT_DIR/.claude-dev/claude-orca.json")" = "desktop" ]
+
+    # The same folder re-registered is still desktop: the key is written
+    # once and read forever after.
+    run bash -c "cd '$PROJECT_DIR' && ./claude-dev register"
+    [ "$status" -eq 0 ]
+    [ "$(jq -r '.ui' "$PROJECT_DIR/.claude-dev/claude-orca.json")" = "desktop" ]
+}
+
+@test "register leaves an existing ui key alone" {
+    as_mac
+    make_project_v3 "$PROJECT_DIR" >/dev/null
+    config="$PROJECT_DIR/.claude-dev/claude-orca.json"
+
+    # The counterfactual first, so "left alone" is not a property of a
+    # register that never writes the key at all: a config with no ui key
+    # (a folder carried over from before this template had one) gets the
+    # probe's answer written into it.
+    jq 'del(.ui)' "$config" > "$config.t" && mv "$config.t" "$config"
+    run bash -c "cd '$PROJECT_DIR' && ./claude-dev register"
+    [ "$status" -eq 0 ]
+    [ "$(jq -r '.ui' "$config")" = "desktop" ]
+
+    # A folder deliberately pinned to Orca Web, on a Mac that has the app:
+    # the probe would say desktop, and the folder's own answer wins.
+    jq '.ui = "web"' "$config" > "$config.t" && mv "$config.t" "$config"
+    run bash -c "cd '$PROJECT_DIR' && ./claude-dev register"
+    [ "$status" -eq 0 ]
+    [ "$(jq -r '.ui' "$config")" = "web" ]
+
+    # And the other way: a desktop folder whose app has gone stays desktop
+    # rather than being quietly demoted behind the user's back.
+    jq '.ui = "desktop"' "$config" > "$config.t" && mv "$config.t" "$config"
+    run bash -c "cd '$PROJECT_DIR' \
+        && CLAUDE_ORCA_APP='$BATS_TEST_TMPDIR/no-such-Orca.app' ./claude-dev register"
+    [ "$status" -eq 0 ]
+    [ "$(jq -r '.ui' "$config")" = "desktop" ]
+}
+
+@test "doctor prints the orca app row with its version" {
+    as_mac
+    make_project_v3 "$PROJECT_DIR" >/dev/null
+
+    run bash -c "cd '$PROJECT_DIR' && ./claude-dev --doctor"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"orca app"* ]]
+    [[ "$output" == *"$CLAUDE_ORCA_APP (1.4.197)"* ]]
+    [[ "$output" == *"orca cli"* ]]
+    [[ "$output" == *"$CLAUDE_ORCA_APP/Contents/Resources/bin/orca"* ]]
+}
+
+@test "doctor prints the orca app row missing when there is no app" {
+    as_mac
+    # A folder that registered as web, on a Mac with no Orca.app: both rows
+    # still print, and neither is a finding -- Orca Web needs no app.
+    export CLAUDE_ORCA_UI=web
+    make_project_v3 "$PROJECT_DIR" >/dev/null
+    [ "$(jq -r '.ui' "$PROJECT_DIR/.claude-dev/claude-orca.json")" = "web" ]
+
+    export CLAUDE_ORCA_APP="$BATS_TEST_TMPDIR/no-such-Orca.app"
+    run bash -c "cd '$PROJECT_DIR' && ./claude-dev --doctor"
+    [ "$status" -eq 0 ]
+    [[ "$output" =~ orca[[:space:]]app[[:space:]]+missing ]]
+}

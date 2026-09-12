@@ -38,6 +38,8 @@ step() {
     echo "==> $*"
 }
 
+ORCA_DOWNLOAD_URL="https://orca.dev/download"
+
 RERUN_NOTE="Then re-run this same command -- bootstrap is idempotent and picks up where it left off."
 
 on_err() {
@@ -251,6 +253,51 @@ if ! have docker; then
     } >&2
     exit 1
 fi
+
+# The desktop Orca is the other half of the pair on a Mac: the container
+# publishes a pairing URL and the app on this Mac attaches to it. It is not
+# something this script can install -- Orca ships as a notarized download,
+# not a cask -- so the preflight names the page the way the docker check
+# names Docker Desktop, and stops before the first mkdir.
+#
+# A folder that means to stay in the browser says so with
+# CLAUDE_ORCA_UI=web and is never asked. Linux never looks: there is no
+# .app to find, and the browser is the only UI there.
+ORCA_APP=""
+if [ "$UNAME_S" = "Darwin" ] && [ "${CLAUDE_ORCA_UI:-}" != "web" ]; then
+    if [ -n "${CLAUDE_ORCA_APP:-}" ]; then
+        # An explicit override is the answer, even when it points nowhere.
+        # An `if`, not a `&&`: a false test at the end of a statement is a
+        # failing statement, and errexit would take the script down.
+        if [ -d "$CLAUDE_ORCA_APP" ]; then ORCA_APP="$CLAUDE_ORCA_APP"; fi
+    else
+        for candidate in "/Applications/Orca.app" "$HOME/Applications/Orca.app"; do
+            if [ -d "$candidate" ]; then
+                ORCA_APP="$candidate"
+                break
+            fi
+        done
+    fi
+
+    if [ -z "$ORCA_APP" ]; then
+        {
+            echo "Error: Orca.app was not found in /Applications or ~/Applications."
+            echo "  Download and install it, then re-run this command:"
+            echo "    $ORCA_DOWNLOAD_URL"
+            echo "  Already have it somewhere else? Point at it:"
+            echo "    CLAUDE_ORCA_APP=/path/to/Orca.app"
+            echo "  Or skip the app and use Orca Web in the browser:"
+            echo "    CLAUDE_ORCA_UI=web"
+            echo "  $RERUN_NOTE"
+        } >&2
+        exit 1
+    fi
+    export CLAUDE_ORCA_APP="$ORCA_APP"
+fi
+
+# What the preflight decided, handed to `register` below (which is exec'd,
+# so the environment is the only way through).
+if [ -n "${CLAUDE_ORCA_UI:-}" ]; then export CLAUDE_ORCA_UI; fi
 
 rm -rf "$TMP_DIR"
 

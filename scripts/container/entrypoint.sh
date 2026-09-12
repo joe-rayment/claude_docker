@@ -132,6 +132,7 @@ HOST_DIR="${CLAUDE_ORCA_HOST_DIR:-/opt/claude-orca-host}"
 RUN_DIR="$PROJECT_DIR/.claude-dev/run"
 SERVE_LOG="$RUN_DIR/orca-serve.log"
 URL_FILE="$RUN_DIR/orca-web-url.txt"
+PAIRING_FILE="$RUN_DIR/orca-pairing-url.txt"
 PORT_FILE="$RUN_DIR/port"
 SETUP_LOG="$RUN_DIR/setup.log"
 PROVISION_DIR="$RUN_DIR/provision"
@@ -626,6 +627,25 @@ if [ "$PRIVDROP" = "1" ]; then
     chown "$AGENT_UID:$AGENT_GID" "$URL_FILE" "$PORT_FILE" 2>/dev/null
 fi
 log "Orca web URL written to $URL_FILE"
+
+# The other line serve announces, on the heels of the first: the pairing
+# URL a desktop Orca on the Mac uses to attach to THIS container's
+# runtime. Same credential, same 0600, same owner. An Orca that announces
+# no pairing line is not a failure and does not stop the start -- the Mac
+# side carries the same URL percent-encoded in the web URL's fragment and
+# decodes it there, which is the path every folder already on an older
+# image takes.
+pairing_url="$(sed -n 's|^.*Pairing URL:[[:space:]]*\(orca://pair[^[:space:]]*\).*$|\1|p' \
+    "$SERVE_LOG" 2>/dev/null | tail -1)"
+if [ -n "$pairing_url" ]; then
+    : > "$PAIRING_FILE"
+    chmod 600 "$PAIRING_FILE"
+    printf '%s\n' "$pairing_url" > "$PAIRING_FILE"
+    if [ "$PRIVDROP" = "1" ]; then
+        chown "$AGENT_UID:$AGENT_GID" "$PAIRING_FILE" 2>/dev/null
+    fi
+    log "Orca pairing URL written to $PAIRING_FILE"
+fi
 
 # --- everything about this folder, now that it can be watched -----------
 

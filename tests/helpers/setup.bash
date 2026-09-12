@@ -851,6 +851,48 @@ STUB
     chmod +x "$1"
 }
 
+# S2 (claude-orca-8uo.3): `defaults read <plist> <key>` -- enough of the
+# real macOS tool to read CFBundleShortVersionString out of the Info.plist
+# of the fake Orca.app below, and nothing else. The real one takes the
+# path with or without the .plist extension, so this takes both.
+write_stub_defaults() {
+    cat > "$1" <<'STUB'
+#!/usr/bin/env bash
+[ "${1:-}" = "read" ] || exit 1
+plist="${2:-}"
+key="${3:-}"
+[ -f "$plist" ] || plist="$plist.plist"
+[ -f "$plist" ] || { echo "Domain ${2:-} does not exist" >&2; exit 1; }
+v="$(grep -A1 "<key>$key</key>" "$plist" \
+    | sed -n 's|.*<string>\(.*\)</string>.*|\1|p' | head -1)"
+[ -n "$v" ] || { echo "The domain/default pair of (${2:-}, $key) does not exist" >&2; exit 1; }
+printf '%s\n' "$v"
+STUB
+    chmod +x "$1"
+}
+
+# An Orca.app bundle with the two files the launcher reads: the CLI under
+# Contents/Resources/bin and the Info.plist `defaults` is asked for.
+# Prints the bundle path. $1 is the bundle, $2 the version string.
+make_fake_orca_app() {
+    local app="${1:-$BATS_TEST_TMPDIR/Applications/Orca.app}" version="${2:-1.4.197}"
+    mkdir -p "$app/Contents/Resources/bin"
+    printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$app/Contents/Resources/bin/orca"
+    chmod +x "$app/Contents/Resources/bin/orca"
+    cat > "$app/Contents/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+	<key>CFBundleName</key>
+	<string>Orca</string>
+	<key>CFBundleShortVersionString</key>
+	<string>$version</string>
+</dict>
+</plist>
+PLIST
+    printf '%s\n' "$app"
+}
+
 # --- per-test environment -------------------------------------------------
 
 setup() {
@@ -890,6 +932,15 @@ setup() {
     write_stub_open "$STUB_BIN/open"
     write_stub_sw_vers "$STUB_BIN/sw_vers"
     write_stub_uname "$STUB_BIN/uname"
+
+    # S2 (claude-orca-8uo.3): every suite drives the bootstrap as a Mac
+    # (make_project_v3 pins uname to Darwin), and the Darwin preflight now
+    # refuses to install without an Orca.app. So the fixture Mac has one,
+    # pointed at by the same override a real user would use -- and the
+    # cases that are ABOUT a Mac with no Orca point the override at a path
+    # that does not exist, which is an answer on any host, Mac included.
+    write_stub_defaults "$STUB_BIN/defaults"
+    export CLAUDE_ORCA_APP="$(make_fake_orca_app)"
 
     # The bootstrap installs a missing dependency rather than instructing
     # it, so the tools that install things are stubbed too. All four are

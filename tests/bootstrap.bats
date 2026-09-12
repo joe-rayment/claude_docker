@@ -465,3 +465,51 @@ shadow_path_without() {
     [ "$status" -eq 0 ]
     [ -d "$PROJECT_DIR/.claude-dev/template" ]
 }
+
+# --- desktop Orca, S2 (claude-orca-8uo.3) ---------------------------------
+#
+# A folder that means to run the desktop Orca needs the app to exist before
+# anything is installed, so the preflight asks after it the way it asks
+# after docker: Darwin only, before the first mkdir, and with the download
+# page named rather than a command the user cannot run. A folder that means
+# to stay on Orca Web says so with CLAUDE_ORCA_UI=web and is never asked.
+# Linux never looks at all -- there is no Orca.app to find.
+
+@test "bootstrap on Darwin stops with the download URL when no Orca.app is found" {
+    mac_env
+    # An explicit override that points nowhere is the answer on any host --
+    # including a developer's Mac with a real Orca.app in /Applications.
+    export CLAUDE_ORCA_APP="$BATS_TEST_TMPDIR/no-such-Orca.app"
+
+    run bash "$REPO_ROOT/bootstrap.sh" "$PROJECT_DIR"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"https://orca.dev/download"* ]]
+    [[ "$output" == *"Orca"* ]]
+
+    # The preflight stops before the first mkdir, exactly like the docker
+    # check: nothing is left behind to clean up or to confuse a re-run.
+    [ ! -e "$ORCA_HOST" ]
+}
+
+@test "bootstrap on Darwin with CLAUDE_ORCA_UI=web registers without the app" {
+    mac_env
+    export CLAUDE_ORCA_APP="$BATS_TEST_TMPDIR/no-such-Orca.app"
+    export CLAUDE_ORCA_UI=web
+
+    run make_project_v3 "$PROJECT_DIR"
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"orca.dev/download"* ]]
+    [ -d "$ORCA_HOST/template/.git" ]
+    [ "$(jq -r '.ui' "$PROJECT_DIR/.claude-dev/claude-orca.json")" = "web" ]
+}
+
+@test "bootstrap on Linux registers ui web" {
+    export STUB_UNAME_S=Linux
+    export STUB_UNAME_M=aarch64
+    # The fixture Mac's Orca.app is still on the environment; a Linux host
+    # has no desktop Orca to attach to whatever the override says.
+    run make_project_v3 "$PROJECT_DIR"
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"orca.dev/download"* ]]
+    [ "$(jq -r '.ui' "$PROJECT_DIR/.claude-dev/claude-orca.json")" = "web" ]
+}

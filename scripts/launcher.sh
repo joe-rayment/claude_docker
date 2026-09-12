@@ -861,6 +861,72 @@ cmd_key_v3() {
     echo "It rides into the container as OPENROUTER_API_KEY next time you run ./claude-dev."
 }
 
+# --- the desktop Orca on the Mac (S2, claude-orca-8uo.3) -----------------
+#
+# A folder runs one of two UIs: Orca Web in the browser, or the Orca.app on
+# the Mac attached to the container's runtime. Which one is decided once,
+# at register, and the three functions below are everything the decision
+# and the doctor need to know about the app.
+
+ORCA_DOWNLOAD_URL="https://orca.dev/download"
+
+# The Orca.app bundle, or rc 1 and no output. macOS only: a Linux host has
+# no .app to find, whatever the environment says.
+#
+# CLAUDE_ORCA_APP is consulted FIRST and is authoritative -- an explicit
+# override that points nowhere is an answer ("this Mac has no Orca for
+# this folder"), not a reason to carry on to /Applications. That is what
+# lets a test, or a user with two Orca builds, say which one is meant on a
+# machine that also has the ordinary one installed.
+find_orca_app() {
+    local app
+    [ "$(uname -s)" = "Darwin" ] || return 1
+    if [ -n "${CLAUDE_ORCA_APP:-}" ]; then
+        [ -d "$CLAUDE_ORCA_APP" ] || return 1
+        printf '%s\n' "$CLAUDE_ORCA_APP"
+        return 0
+    fi
+    for app in "/Applications/Orca.app" "$HOME/Applications/Orca.app"; do
+        if [ -d "$app" ]; then
+            printf '%s\n' "$app"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# The orca CLI that goes with a bundle. The app ships it under
+# Contents/Resources/bin (`orca` since 1.4, `orca-ide` on older builds);
+# an `orca` already on PATH -- a Homebrew install, a dev checkout -- is the
+# last answer rather than the first, so the CLI matches the app whenever
+# the app has one.
+orca_cli() {
+    local app="${1:-}" c
+    if [ -n "$app" ]; then
+        for c in "$app/Contents/Resources/bin/orca" "$app/Contents/Resources/bin/orca-ide"; do
+            if [ -x "$c" ]; then
+                printf '%s\n' "$c"
+                return 0
+            fi
+        done
+    fi
+    c="$(command -v orca 2>/dev/null)" || c=""
+    [ -n "$c" ] || return 1
+    printf '%s\n' "$c"
+}
+
+# CFBundleShortVersionString, or empty. `defaults` is the only reader of a
+# binary plist that is always on a Mac; off a Mac there is none and the
+# version is simply unknown, which is a row the doctor can still print.
+orca_app_version() {
+    local app="${1:-}" v=""
+    [ -n "$app" ] || return 0
+    if command -v defaults >/dev/null 2>&1; then
+        v="$(defaults read "$app/Contents/Info.plist" CFBundleShortVersionString 2>/dev/null)" || v=""
+    fi
+    printf '%s\n' "$v"
+}
+
 # One scalar out of claude-orca.json, empty when absent, null or unreadable.
 json_get() {
     local json v=""
@@ -870,6 +936,31 @@ json_get() {
     fi
     if [ "$v" = "null" ]; then v=""; fi
     printf '%s\n' "$v"
+}
+
+# Which UI this folder runs. An absent key reads as web: every folder
+# registered before this template had the key is a browser folder, and a
+# folder whose config cannot be read is one too -- Orca Web is the answer
+# that needs nothing on the Mac.
+ui_of() {
+    case "$(json_get "$1" '.ui')" in
+        desktop) printf 'desktop\n' ;;
+        *)       printf 'web\n' ;;
+    esac
+}
+
+# Written once, at register, the same way the port is.
+persist_ui() {
+    local dir="$1" ui="$2" json tmp
+    json="$(orca_json "$dir")"
+    [ -f "$json" ] || return 0
+    command -v jq >/dev/null 2>&1 || return 0
+    tmp="$json.tmp"
+    if jq --arg u "$ui" '.ui = $u' "$json" > "$tmp" 2>/dev/null; then
+        mv "$tmp" "$json"
+    else
+        rm -f "$tmp"
+    fi
 }
 
 # A free port is one nothing answers on: bash's own /dev/tcp connect,
@@ -1018,6 +1109,51 @@ wait_for_web_url() {
         sleep 1
         waited=$((waited + 1))
     done
+    return 1
+}
+
+# The pairing URL Orca minted for this container -- what a desktop Orca on
+# the Mac needs to attach to the runtime inside it -- by either of the two
+# paths a folder can have it.
+#
+# run/orca-pairing-url.txt is serve's own `Pairing URL:` line, written by
+# the entrypoint (0600; it is a credential). It only exists in a folder
+# whose image carries that change, which is exactly why it is not the only
+# path: the web URL's fragment has carried the same URL percent-encoded
+# since v3, so `#pairing=orca%3A%2F%2Fpair%3Fcode%3D...` decoded is the
+# same string, and every folder already running has it. A change that can
+# only arrive in a rebuilt image reaches nobody.
+#
+# Decoding in bash 3.2 and no more: every %XX becomes \xXX and printf '%b'
+# turns those into bytes. Prints nothing and returns 1 when neither file
+# yields an orca://pair URL -- a truncated write or a web URL with no
+# fragment is "no pairing URL", never a half-decoded one.
+pairing_url_of() {
+    local dir="$1" pfile wfile url="" frag=""
+    pfile="$dir/.claude-dev/run/orca-pairing-url.txt"
+    wfile="$dir/.claude-dev/run/orca-web-url.txt"
+
+    if [ -s "$pfile" ]; then
+        url="$(head -1 "$pfile")"
+        case "$url" in
+            orca://pair*) printf '%s\n' "$url"; return 0 ;;
+        esac
+    fi
+
+    if [ -s "$wfile" ]; then
+        url="$(head -1 "$wfile")"
+        case "$url" in
+            *'#pairing='*) frag="${url#*#pairing=}" ;;
+            *)             frag="" ;;
+        esac
+        if [ -n "$frag" ]; then
+            url="$(printf '%b' "${frag//%/\\x}")"
+            case "$url" in
+                orca://pair*) printf '%s\n' "$url"; return 0 ;;
+            esac
+        fi
+    fi
+
     return 1
 }
 
@@ -1364,7 +1500,7 @@ cmd_open_v3() {
 }
 
 cmd_register_v3() {
-    local dir="${1:-$PROJECT_SELF}" name port
+    local dir="${1:-$PROJECT_SELF}" name port ui
     [ -d "$dir" ] || { echo "Error: directory does not exist: $dir" >&2; return 1; }
     dir="$(cd "$dir" && pwd -P)"
     name="$(derive_project_name "$dir")"
@@ -1389,6 +1525,22 @@ JSON
     fi
 
     write_project_stub "$dir"
+
+    # Desktop or web, decided once. A config that already carries the key
+    # keeps it: the folder's own answer outlives the app being installed,
+    # moved or removed, and a re-register never quietly moves a working
+    # folder to the other UI.
+    if [ -z "$(json_get "$dir" '.ui')" ]; then
+        case "${CLAUDE_ORCA_UI:-}" in
+            desktop) ui="desktop" ;;
+            web)     ui="web" ;;
+            *)
+                ui="web"
+                if find_orca_app >/dev/null 2>&1; then ui="desktop"; fi
+                ;;
+        esac
+        persist_ui "$dir" "$ui"
+    fi
 
     port="$(choose_port "$dir")"
     persist_port "$dir" "$port"
@@ -1452,7 +1604,7 @@ doctor_row() {
 # the CLI, the service, the image, the container, the port and the URL the
 # entrypoint published. Exits 2 on any finding, so it is usable in a script.
 cmd_doctor_v3() {
-    local dir="$PROJECT_SELF" rc=0 ref name state port url_file src vol
+    local dir="$PROJECT_SELF" rc=0 ref name state port url_file src vol app ver cli
     local prov=0 st nm detail
     # Whichever image THIS folder runs: a runtime-install folder has no
     # prebuilt image and never will, so asking after one would be a finding
@@ -1497,6 +1649,27 @@ cmd_doctor_v3() {
             doctor_row missing "image" "$ref (build it: ./claude-dev --update)"
             rc=2
         fi
+    fi
+
+    # The Mac half of the pair: the Orca.app this folder attaches to and
+    # the CLI that goes with it. Never a finding -- a folder on Orca Web
+    # needs neither, and a desktop folder whose app has gone still opens
+    # in the browser -- so both rows report and neither touches rc.
+    app="$(find_orca_app)" || app=""
+    if [ -n "$app" ]; then
+        ver="$(orca_app_version "$app")"
+        doctor_row ok "orca app" "$app (${ver:-version unknown})"
+    elif [ "$(ui_of "$dir")" = "desktop" ]; then
+        doctor_row warn "orca app" "missing -- this folder is set to the desktop Orca: $ORCA_DOWNLOAD_URL"
+    else
+        doctor_row n/a "orca app" "missing -- this folder is on Orca Web, which needs no app"
+    fi
+
+    cli="$(orca_cli "$app")" || cli=""
+    if [ -n "$cli" ]; then
+        doctor_row ok "orca cli" "$cli"
+    else
+        doctor_row n/a "orca cli" "missing -- only the desktop Orca ships one"
     fi
 
     # built or runtime -- which one it is says whether this folder is
