@@ -13,7 +13,7 @@
 #     "roles": {
 #       "worker":  {"backend":"orca","agent":"opencode","model":"openrouter/qwen/qwen3-coder"},
 #       "recon":   {"backend":"subagent","agent":"claude","model":"haiku"},
-#       "checker": {"backend":"subagent","agent":"claude","model":"inherit"} },
+#       "checker": {"backend":"subagent","agent":"claude","model":"opus"} },
 #     "pinned": false, "overdrive": false, "updated": "…Z" }
 #
 # A v1 file (no .roles) READS as v2 with backend "subagent", agent "claude"
@@ -29,7 +29,9 @@
 # tier_role <state-file> <worker|recon|checker>
 # Prints "<backend>\t<agent>\t<model>\t<pinned>" -- always exits 0; an
 # absent/unreadable file yields the subagent+claude defaults with an empty
-# model (checker: "inherit").
+# model (checker: "inherit" -- a v1 file predates the derived checker rung,
+# and "inherit" is what it meant; a v2 file written by tier-set carries the
+# rung tier-derive --checker gives for the bound top, claude-orca-8a0.2).
 tier_role() {
     local f="${1:-}" r="${2:-}"
     if [ -z "$f" ] || [ ! -f "$f" ] || ! command -v jq >/dev/null 2>&1; then
@@ -91,6 +93,23 @@ tier_role_label() {
 # in-VM guard forces config/provider-policy.json's allowlist onto every
 # request, which is what keeps the traffic out of China.
 TIER_OPENROUTER_DEFAULT_MODEL="openrouter/z-ai/glm-5.3"
+
+# The RECON rung's OpenRouter default (claude-orca-8a0.2). Recon is fan-out
+# lookup work -- find the callers, list the usages, summarise the directory --
+# where latency and price matter and depth does not, so the flash-class sibling
+# of the worker GLM is the right seat for it. `/tier recon openrouter` (the
+# bare spec, no model named) binds exactly this.
+TIER_OPENROUTER_RECON_MODEL="openrouter/z-ai/glm-5.3-flash"
+
+# tier_openrouter_role_default <worker|recon|checker> -- the OpenRouter model
+# a bare `openrouter` spec binds for that role: the flash rung for recon, the
+# full-size GLM for anything else.
+tier_openrouter_role_default() {
+    case "${1:-}" in
+        recon) printf '%s\n' "$TIER_OPENROUTER_RECON_MODEL" ;;
+        *)     printf '%s\n' "$TIER_OPENROUTER_DEFAULT_MODEL" ;;
+    esac
+}
 
 # tier_openrouter_key_file -- where this folder's OpenRouter key lives:
 # .claude-dev/home/.openrouter.key, the file `claude-dev key openrouter`

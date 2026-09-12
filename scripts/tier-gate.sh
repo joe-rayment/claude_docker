@@ -8,8 +8,13 @@
 # unnamed spawns), the RECON model for scout spawns, whenever the Agent call
 # omits `model` -- an explicit model always wins (also the idempotency
 # guard: the injected call re-enters here and passes through, since it now
-# carries a model). Named roles other than executor/scout (verifier/oracle/
-# professor/bead-auditor) are model:inherit BY DESIGN and are never touched.
+# carries a model). The GRADERS -- verifier and bead-auditor -- take the
+# CHECKER rung (roles.checker.model, else `tier-derive --checker <top>`: the
+# top capped at opus), so an in-process check runs from a seat that is
+# neither the orchestrator's nor the worker's (claude-orca-8a0.2). A checker
+# that resolves to "inherit" -- an off-ladder top, or an explicit
+# `/tier checker inherit` -- is left untouched, which is what inherit means.
+# oracle and professor are consults, not graders: never touched.
 #
 # tier.json already reflects overdrive/pin (tier-set/tier-reconcile keep it
 # current), so this hook never re-derives or re-checks those flags itself --
@@ -72,6 +77,7 @@ SLOT=worker   # default: generic/unnamed spawns get the worker tier
 case "$ST" in
     executor) SLOT=worker ;;
     scout)    SLOT=recon ;;
+    verifier|bead-auditor) SLOT=checker ;;
     "")       SLOT=worker ;;
     *)
         hit=0
@@ -93,7 +99,34 @@ STATE_FILE="${TIER_GATE_STATE_FILE:-}"
 [ -n "$STATE_FILE" ] || STATE_FILE="$(tier_state_file 2>/dev/null)" || STATE_FILE=""
 
 TARGET_ID=""
-if [ -n "$STATE_FILE" ] && [ -f "$STATE_FILE" ]; then
+if [ "$SLOT" = "checker" ]; then
+    # The grader's rung. The file's own value wins when it names a model; a
+    # bare "inherit" is re-derived from the top ONLY when it was not pinned
+    # there on purpose -- that is the v1 read rule (a file written before the
+    # checker rung existed), not an operator's explicit `/tier checker
+    # inherit`, which stays inherit. Anything that still resolves to inherit,
+    # or to nothing at all, means "run the orchestrator's own model": leave
+    # the spawn exactly as it came in.
+    CK_PINNED=false
+    if [ -n "$STATE_FILE" ] && [ -f "$STATE_FILE" ]; then
+        TARGET_ID=$(tier_role_field "$STATE_FILE" checker model)
+        CK_PINNED=$(tier_role_field "$STATE_FILE" checker pinned)
+    fi
+    if [ -z "$TARGET_ID" ] || { [ "$TARGET_ID" = "inherit" ] && [ "$CK_PINNED" != "true" ]; }; then
+        TOP_ID=""
+        if [ -n "$STATE_FILE" ] && [ -f "$STATE_FILE" ]; then
+            TOP_ID=$(jq -r '.top // empty' "$STATE_FILE" 2>/dev/null)
+        fi
+        if [ -z "$TOP_ID" ]; then
+            SETTINGS="${TIER_GATE_SETTINGS:-$(claude_config_dir)/settings.json}"
+            TOP_ID=$(jq -r '.model // empty' "$SETTINGS" 2>/dev/null)
+        fi
+        [ -n "$TOP_ID" ] || exit 0
+        TARGET_ID=$("$DERIVE" --checker "$TOP_ID" 2>/dev/null) || TARGET_ID=""
+    fi
+    [ -n "$TARGET_ID" ] || exit 0
+    [ "$TARGET_ID" = "inherit" ] && exit 0
+elif [ -n "$STATE_FILE" ] && [ -f "$STATE_FILE" ]; then
     # v2 (claude-orca-qa2.12): the role's BACKEND decides what happens here.
     # A v1 tier.json reads as backend "subagent" (lib/tier-roles.sh), so the
     # injection path below is byte-for-byte what it always was.

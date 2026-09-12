@@ -133,21 +133,27 @@ TIER_EFFECTIVE_WORKER=""
 write_state() {
     [ -n "$STATE_FILE" ] || { echo "tier-set: cannot determine the project's tier state file (not inside a bootstrapped project; set CLAUDE_ORCA_ROOT or TIER_STATE_FILE) -- nothing bound" >&2; return 1; }
     mkdir -p "$(dirname "$STATE_FILE")" 2>/dev/null
-    local tmp wb wa wm
+    local tmp wb wa wm ck
     wb=subagent
     tier_orca_reachable && wb=orca
     wa=claude; wm="$2"
+    # The checker rung is derived like every other one (tier-derive --checker:
+    # the top capped at opus), so a fable orchestrator is graded from a seat
+    # that is neither its own nor the worker's. An off-ladder top has no rung
+    # to grade from, and keeps the old flat "inherit" (claude-orca-8a0.2).
+    ck=$("$DERIVE" --checker "$1" 2>/dev/null) || ck=""
+    [ -n "$ck" ] || ck=inherit
     if [ "${6:-false}" = "true" ] && tier_openrouter_key_present; then
         wa=opencode; wm="$TIER_OPENROUTER_DEFAULT_MODEL"
     fi
     TIER_EFFECTIVE_WORKER="$wm"
     tmp=$(mktemp "$STATE_FILE.XXXXXX") || return 1
     if jq -n --arg t "$1" --arg w "$wm" --arg c "$3" --argjson p "$4" --argjson o "$5" \
-          --arg wb "$wb" --arg wa "$wa" --arg u "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+          --arg wb "$wb" --arg wa "$wa" --arg ck "$ck" --arg u "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
           '{top: $t, worker: $w, recon: $c,
             roles: {worker:  {backend: $wb,       agent: $wa,      model: $w},
                     recon:   {backend: "subagent", agent: "claude", model: $c},
-                    checker: {backend: "subagent", agent: "claude", model: "inherit"}},
+                    checker: {backend: "subagent", agent: "claude", model: $ck}},
             pinned: $p, overdrive: $o, updated: $u}' \
           > "$tmp" 2>/dev/null && jq -e . "$tmp" >/dev/null 2>&1; then
         mv "$tmp" "$STATE_FILE"
@@ -229,7 +235,8 @@ show_state() {
     fi
     echo "1-arg /tier auto-derives worker/recon: worker = one rung down capped at sonnet-class, recon = one below the worker (fable>opus>sonnet>haiku, floored)."
     echo "2/3-arg /tier <top> <worker> [<recon>] pins those bindings explicitly; /tier overdrive lifts the worker cap on the bound top."
-    echo "verifier & oracle inherit the orchestrator's model; /model is the primary in-session lever for the derived default."
+    echo "the checker (verifier) rung is derived too: the top capped at opus, so a fable top is graded from opus; oracle still inherits the orchestrator's model. /model is the primary in-session lever for the derived default."
+    echo "cheap recon on OpenRouter: /tier recon openrouter  binds $TIER_OPENROUTER_RECON_MODEL on the orca backend (opencode)."
 }
 
 if [ $# -eq 0 ] || [ "${1:-}" = "show" ]; then
@@ -292,12 +299,20 @@ fi
 # derived_role_model <role> -- the ladder's model for that role, from the
 # bound top (overdrive-aware). checker never derives: it inherits.
 derived_role_model() {
-    local r="$1" top trio
-    [ "$r" = "checker" ] && { echo inherit; return 0; }
+    local r="$1" top trio ck
     top="$(state_field top)"
     if [ -z "$top" ]; then
+        # The checker has a sane answer without a top -- "inherit", what it
+        # was before the rung existed -- so only worker/recon insist on one.
+        [ "$r" = "checker" ] && { echo inherit; return 0; }
         echo "tier-set: no top bound yet -- run /tier <top> first; nothing bound" >&2
         return 1
+    fi
+    if [ "$r" = "checker" ]; then
+        ck=$("$DERIVE" --checker "$top" 2>/dev/null) || ck=""
+        [ -n "$ck" ] || ck=inherit
+        echo "$ck"
+        return 0
     fi
     if [ "$(state_field overdrive)" = "true" ]; then
         trio=$("$DERIVE" --overdrive "$top" 2>/dev/null) || trio=""
@@ -326,6 +341,11 @@ case "${1:-}" in
         [ $# -gt 2 ] && echo "tier: extra args ignored (dropped: ${*:3})" >&2
         B=subagent; A=claude; M=""; PIN=false; IS_OPENROUTER=false
         case "$spec" in
+            openrouter)
+                # No model named: the role's own OpenRouter default -- the
+                # flash rung for recon, the full-size GLM otherwise.
+                B=orca; A=opencode; M="$(tier_openrouter_role_default "$role")"
+                PIN=true; IS_OPENROUTER=true ;;
             openrouter:*)
                 rest="${spec#openrouter:}"
                 [ -n "$rest" ] || { echo "tier-set: 'openrouter:' needs a <vendor/model>, e.g. openrouter:qwen/qwen3-coder -- nothing bound" >&2; exit 1; }

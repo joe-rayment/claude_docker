@@ -691,7 +691,8 @@ STUB
     run jq -e . "$SHIPPED_ROUTES"
     [ "$status" -eq 0 ]
 
-    [ "$(jq -r '.routes | keys | join(",")' "$SHIPPED_ROUTES")" = "codex,deepseek,gemini,glm,local,qwen-coder" ]
+    # claude-orca-8a0.2 added the two flash-class scout routes.
+    [ "$(jq -r '.routes | keys | join(",")' "$SHIPPED_ROUTES")" = "codex,deepseek,deepseek-flash,gemini,glm,glm-flash,local,qwen-coder" ]
     [ "$(jq -r '.routes.glm.runner' "$SHIPPED_ROUTES")" = "opencode" ]
     [ "$(jq -r '.routes.glm.model' "$SHIPPED_ROUTES")" = "openrouter/z-ai/glm-5.3" ]
     [ "$(jq -r '.routes.glm.pin.order | join(",")' "$SHIPPED_ROUTES")" = "deepinfra,parasail" ]
