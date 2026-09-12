@@ -87,6 +87,16 @@ STUB
 # One entrypoint run in its own process group, backgrounded, with the
 # stub toolchain on PATH. $1 is a label used for the pgid/log files; the
 # caller exports whatever else it wants first.
+#
+# CLAUDE_ORCA_SKIP_SETUP=1 for the same reason the toolchain is stubbed:
+# what is under test is the seeding the entrypoint does, and nothing here
+# asserts anything about setup.sh. Without it the run reached the real
+# setup.sh, which refuses to install apt packages as anyone but root
+# ("error: must run as root (phase: base)") and took the entrypoint down
+# with it before a single seed was written -- so the case could only ever
+# pass as root, for a reason it does not measure. It is the idiom every
+# other entrypoint-driving file already uses (tests/container-
+# entrypoint.bats, tests/first-start-dns.bats).
 start_ep() {
     local label="$1" proj="$2" home="$3"
     mkdir -p "$home"
@@ -100,6 +110,7 @@ start_ep() {
     BD_STUB_LOG="$TMP/bd.log" \
     CLAUDE_ORCA_ENTRYPOINT_NO_PRIVDROP=1 \
     CLAUDE_ORCA_WEBURL_TIMEOUT=30 \
+    CLAUDE_ORCA_SKIP_SETUP=1 \
     ORCA_PORT="$(free_port)" \
     CLAUDE_ORCA_THEME="${EP_THEME:-}" \
     CLAUDE_ORCA_PROJECT_NAME="${EP_PROJECT_NAME:-}" \
@@ -199,8 +210,18 @@ teardown() {
     run grep -q 'orca state present, not seeded' "$TMP/p2.out"
     [ "$status" -eq 0 ]
 
-    # bd is never run against a folder that already has beads.
-    run grep -c '' "$TMP/bd.log"
+    # bd never INITIALIZES a folder that already has beads. This read
+    # "bd is never run at all" when the only bd call seed-project.sh made
+    # was `init`; 45c41a1 added quiet_bd_metrics, an unconditional
+    # `bd metrics off` that silences the once-per-config metrics banner
+    # and runs whether or not the tracker already exists. So the log is
+    # pinned to exactly that one line, which is both the narrowest
+    # statement of what "left alone" means here and stricter than a bare
+    # count: a second `bd init` would show up as an extra line AND as a
+    # line that is not `metrics off`.
+    run grep -c '^init' "$TMP/bd.log"
+    [ "$(printf '%s' "$output" | tr -d '[:space:]')" = "0" ]
+    run grep -cv '^metrics off$' "$TMP/bd.log"
     [ "$(printf '%s' "$output" | tr -d '[:space:]')" = "0" ]
 
     # --- 3. claude-orca.json's theme rides in and wins -------------------
