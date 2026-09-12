@@ -39,7 +39,7 @@
 # this paragraph spells them out rather than quoting them. Results
 # accumulate in a file rather than an array for the same reason.
 #
-# THE DESKTOP ROWS (section 4b) are the only evidence anywhere that the
+# THE DESKTOP ROWS (sections 0b and 4b) are the only evidence anywhere that the
 # Mac's own Orca attaches to the container's runtime: the bats suite stubs
 # the orca CLI, so it proves the launcher's argv and nothing about a real
 # app. They run only when the folder registered `ui: desktop`; a browser
@@ -187,6 +187,7 @@ project_name() {
     printf '%s\n' "$n"
 }
 CNAME="claude-orca-$(project_name "$PROJECT")"
+HOST="$PROJECT/.claude-dev"
 
 cleanup() {
     if [ "$KEEP" -eq 1 ] || [ -n "$EXISTING_FOLDER" ]; then
@@ -209,6 +210,125 @@ if [ -n "$IMAGE_REF" ]; then
     export CLAUDE_ORCA_IMAGE="$IMAGE_REF"
     echo "         image  $IMAGE_REF (local; no registry is contacted)"
 fi
+
+
+# =========================================================================
+# 0b. the desktop client, before anything opens
+# =========================================================================
+#
+# The app has to be RUNNING before ./claude-dev opens the folder. S3's
+# desktop branch launches it with `open -a <app>` and then waits for the
+# app's CLI to report the runtime reachable -- but CLAUDE_ORCA_OPEN=0,
+# which this script sets so that no browser tab is thrown at whoever is
+# watching, suppresses that launch and not the wait, and a wait that times
+# out makes the branch give up and fall back to Orca Web. So a headless run
+# would register no environment at all, and section 4b would report the
+# app's absence as a product bug. This script launches it itself, in the
+# background (`open -g`), and waits for the same signal.
+#
+# find_orca_app()/orca_cli() in scripts/launcher.sh, reproduced -- the
+# override first and authoritative, then /Applications, then the user's
+# own; then the bundle's CLI (`orca`, or `orca-ide` on older builds) and
+# only last an `orca` already on PATH. Resolved out here, not inside a row:
+# check() runs its command in a command substitution, so anything a row
+# assigns dies with the subshell.
+d_find_app() {
+    local a
+    if [ -n "${CLAUDE_ORCA_APP:-}" ]; then
+        [ -d "$CLAUDE_ORCA_APP" ] || return 1
+        printf '%s\n' "$CLAUDE_ORCA_APP"
+        return 0
+    fi
+    for a in "/Applications/Orca.app" "$HOME/Applications/Orca.app"; do
+        if [ -d "$a" ]; then printf '%s\n' "$a"; return 0; fi
+    done
+    return 1
+}
+d_find_cli() {
+    local app="${1:-}" c
+    if [ -n "$app" ]; then
+        for c in "$app/Contents/Resources/bin/orca" "$app/Contents/Resources/bin/orca-ide"; do
+            if [ -x "$c" ]; then printf '%s\n' "$c"; return 0; fi
+        done
+    fi
+    c="$(command -v orca 2>/dev/null)" || c=""
+    [ -n "$c" ] || return 1
+    printf '%s\n' "$c"
+}
+
+# A table cell out of a multi-line answer. The CLI's failures are JSON,
+# so `tail -1` on one of them says "}" and diagnoses nothing.
+d_oneline() { printf '%s' "$1" | tr '\n' ' ' | sed 's/  */ /g' | cut -c1-90; }
+
+ORCA_APP="$(d_find_app)" || ORCA_APP=""
+ORCA_CLI="$(d_find_cli "$ORCA_APP")" || ORCA_CLI=""
+APP_VER=""
+if [ -n "$ORCA_APP" ]; then
+    APP_VER="$(defaults read "$ORCA_APP/Contents/Info.plist" CFBundleShortVersionString 2>/dev/null)" || APP_VER=""
+fi
+
+# Which path this folder is on. A folder already registered has answered
+# it (the `ui` key); a folder about to be registered will be given the
+# same answer bootstrap gives -- desktop when an app was found and
+# CLAUDE_ORCA_UI does not say otherwise. Section 4b re-reads the key that
+# registration actually wrote, which is the authority from then on.
+UI="web"
+if [ -n "$EXISTING_FOLDER" ]; then
+    if command -v jq >/dev/null 2>&1 && [ -f "$HOST/claude-orca.json" ]; then
+        UI="$(jq -r '.ui // "web"' "$HOST/claude-orca.json" 2>/dev/null || echo web)"
+    fi
+elif [ -n "$ORCA_APP" ] && [ "${CLAUDE_ORCA_UI:-}" != "web" ]; then
+    UI="desktop"
+fi
+[ "$UI" = "desktop" ] || UI="web"
+
+# The environment the launcher registers is named after the folder, the
+# same string as the container (S3 / claude-orca-8uo.4).
+ENV_NAME="$CNAME"
+
+# dcheck <name> <command...> -- one desktop row: SKIP on a browser folder
+# (row() does not count a SKIP, so the exit status is unmoved and the
+# browser path stays whole), check_detail otherwise.
+dcheck() {
+    local name="$1"
+    shift
+    if [ "$UI" != "desktop" ]; then
+        row SKIP "-" "$name" "ui is web -- this folder opens in a browser"
+        return 0
+    fi
+    check_detail "$name" "$@"
+}
+
+# `status --json` ALWAYS exits 0 (S3's note): the boolean is the signal,
+# never the exit code. CLAUDE_ORCA_ORCA_WAIT is the launcher's own budget,
+# shared here so both wait the same length.
+d_app_launched() {
+    local budget deadline out t0 now
+    [ -n "$ORCA_APP" ] || { echo "no Orca app to launch"; return 1; }
+    [ -n "$ORCA_CLI" ] || { echo "no orca CLI to ask"; return 1; }
+    out="$(open -g -a "$ORCA_APP" 2>&1)" \
+        || { echo "open -g -a $ORCA_APP: $(d_oneline "$out")"; return 1; }
+    budget="${CLAUDE_ORCA_ORCA_WAIT:-60}"
+    t0="$(date +%s)"
+    deadline=$((t0 + budget))
+    while :; do
+        out="$("$ORCA_CLI" status --json 2>&1)"
+        printf '%s\n' "$out" >> "$RUN_LOG"
+        if printf '%s' "$out" | jq -e '.result.runtime.reachable == true' >/dev/null 2>&1; then
+            now="$(date +%s)"
+            printf '%s reachable after %ss\n' "$ORCA_APP" "$((now - t0))"
+            return 0
+        fi
+        now="$(date +%s)"
+        [ "$now" -lt "$deadline" ] || break
+        sleep 2
+    done
+    echo "the app's runtime is not reachable after ${budget}s: $(d_oneline "$out")"
+    return 1
+}
+
+note "desktop: the app has to be up before the folder opens"
+dcheck "desktop: app launched and reachable" d_app_launched
 
 # =========================================================================
 # 1. bootstrap (steps 1-3 of the pipeline: preflight, register, image)
@@ -248,8 +368,6 @@ fi
 # =========================================================================
 
 note "layout: what the Mac side is allowed to have created"
-
-HOST="$PROJECT/.claude-dev"
 
 layout_dirs() { [ -d "$HOST/template" ] && [ -d "$HOST/bin" ] && [ -d "$HOST/home" ]; }
 layout_clone() { [ -d "$HOST/template/.git" ]; }
@@ -458,65 +576,23 @@ check "inside: the mount list"                                in_mounts
 # 4b. the desktop client -- the Mac's own Orca attached to this container
 # =========================================================================
 #
-# Only the folder that asked for it. A folder bootstrapped with
-# CLAUDE_ORCA_UI=web, or before the `ui` key existed, is a browser folder:
-# every row here records SKIP, which row() does not count as a failure, so
-# the browser path stays whole and this script's exit status is unmoved.
+# Only the folder that asked for it, and by now the folder has answered:
+# the `ui` key registration wrote is the authority, not 0b's guess at it.
+# A browser folder records every row SKIP, which row() does not count as a
+# failure, so the browser path stays whole and the exit status is unmoved.
 #
-# CLAUDE_ORCA_OPEN=0 above suppresses `open <url>` -- the browser tab --
-# and nothing else: registering the environment is not opening a browser.
-# So "no environment" on a desktop folder is a real finding, not a
-# side-effect of running headless.
+# The app itself was launched and waited for back in 0b, because
+# CLAUDE_ORCA_OPEN=0 suppresses the launcher's own `open -a <app>` while
+# leaving its wait in place. So "no environment" here is a real finding,
+# not a side-effect of running headless.
 
 note "desktop: the Mac's own Orca as the client of this container"
 
-UI="web"
 if command -v jq >/dev/null 2>&1 && [ -f "$HOST/claude-orca.json" ]; then
     UI="$(jq -r '.ui // "web"' "$HOST/claude-orca.json" 2>/dev/null || echo web)"
 fi
 [ "$UI" = "desktop" ] || UI="web"
 
-# The environment the launcher registers is named after the folder, the
-# same string as the container (S3 / claude-orca-8uo.4).
-ENV_NAME="$CNAME"
-
-# Resolved out here, not inside a row: check() runs its command in a
-# command substitution, so anything a row assigns dies with the subshell.
-#
-# find_orca_app()/orca_cli() in scripts/launcher.sh, reproduced -- the
-# override first and authoritative, then /Applications, then the user's
-# own; then the bundle's CLI (`orca`, or `orca-ide` on older builds) and
-# only last an `orca` already on PATH.
-d_find_app() {
-    local a
-    if [ -n "${CLAUDE_ORCA_APP:-}" ]; then
-        [ -d "$CLAUDE_ORCA_APP" ] || return 1
-        printf '%s\n' "$CLAUDE_ORCA_APP"
-        return 0
-    fi
-    for a in "/Applications/Orca.app" "$HOME/Applications/Orca.app"; do
-        if [ -d "$a" ]; then printf '%s\n' "$a"; return 0; fi
-    done
-    return 1
-}
-d_find_cli() {
-    local app="${1:-}" c
-    if [ -n "$app" ]; then
-        for c in "$app/Contents/Resources/bin/orca" "$app/Contents/Resources/bin/orca-ide"; do
-            if [ -x "$c" ]; then printf '%s\n' "$c"; return 0; fi
-        done
-    fi
-    c="$(command -v orca 2>/dev/null)" || c=""
-    [ -n "$c" ] || return 1
-    printf '%s\n' "$c"
-}
-
-ORCA_APP="$(d_find_app)" || ORCA_APP=""
-ORCA_CLI="$(d_find_cli "$ORCA_APP")" || ORCA_CLI=""
-APP_VER=""
-if [ -n "$ORCA_APP" ]; then
-    APP_VER="$(defaults read "$ORCA_APP/Contents/Info.plist" CFBundleShortVersionString 2>/dev/null)" || APP_VER=""
-fi
 # The version the IMAGE actually carries, asked of the running container
 # rather than of the pin -- S4 builds the image at the app's version, so
 # the pin in setup.sh is the fallback, not the authority.
@@ -524,18 +600,6 @@ IMG_ORCA_VER="$(inc cat /opt/orca/VERSION 2>/dev/null | tr -d '[:space:]')"
 if [ -z "$IMG_ORCA_VER" ]; then
     IMG_ORCA_VER="$(sed -n 's/^ORCA_VERSION="${ORCA_VERSION:-\(.*\)}"$/\1/p' "$REPO_ROOT/scripts/container/setup.sh")"
 fi
-
-# dcheck <name> <command...> -- one desktop row: SKIP on a browser folder,
-# check_detail otherwise.
-dcheck() {
-    local name="$1"
-    shift
-    if [ "$UI" != "desktop" ]; then
-        row SKIP "-" "$name" "ui is web -- this folder opens in a browser"
-        return 0
-    fi
-    check_detail "$name" "$@"
-}
 
 d_app_found() {
     [ -n "$ORCA_APP" ] || {
@@ -570,12 +634,12 @@ d_repo_remote() {
     local out
     [ -n "$ORCA_CLI" ] || { echo "no orca CLI to ask"; return 1; }
     out="$("$ORCA_CLI" repo list --environment "$ENV_NAME" --json 2>&1)" \
-        || { printf '%s\n' "$out" | tail -1; return 1; }
+        || { d_oneline "$out"; return 1; }
     printf '%s\n' "$out" >> "$RUN_LOG"
     printf '%s' "$out" | jq -e --arg p "$GUEST_DIR" \
         '[.result.repos[]?.path] | map(select(. == $p or startswith($p + "/"))) | length > 0' \
         >/dev/null 2>&1 \
-        || { echo "$ENV_NAME does not list $GUEST_DIR: $(printf '%s' "$out" | tail -1 | cut -c1-70)"; return 1; }
+        || { echo "$ENV_NAME does not list $GUEST_DIR: $(d_oneline "$out")"; return 1; }
     printf '%s lists %s\n' "$ENV_NAME" "$GUEST_DIR"
 }
 
@@ -587,7 +651,7 @@ d_repo_local_clean() {
     local out hit
     [ -n "$ORCA_CLI" ] || { echo "no orca CLI to ask"; return 1; }
     out="$("$ORCA_CLI" repo list --json 2>&1)" \
-        || { printf '%s\n' "$out" | tail -1; return 1; }
+        || { d_oneline "$out"; return 1; }
     printf '%s\n' "$out" >> "$RUN_LOG"
     hit="$(printf '%s' "$out" | jq -r --arg a "$PROJECT" --arg b "$GUEST_DIR" \
         '[.result.repos[]?.path] | map(select(. == $a or . == $b)) | .[]' 2>/dev/null)"
@@ -644,7 +708,7 @@ if [ "$KEEP" -eq 0 ] && [ -z "$EXISTING_FOLDER" ]; then
         local out
         [ -n "$ORCA_CLI" ] || { echo "no orca CLI to ask"; return 1; }
         out="$("$ORCA_CLI" environment list --json 2>&1)" \
-            || { printf '%s\n' "$out" | tail -1; return 1; }
+            || { d_oneline "$out"; return 1; }
         printf '%s\n' "$out" >> "$RUN_LOG"
         if printf '%s' "$out" | jq -e --arg n "$ENV_NAME" \
             '[.result.environments[]?.name] | index($n)' >/dev/null 2>&1; then
