@@ -127,6 +127,12 @@ rec_activity() {
     t="$(jq -r '.last_activity // 0' "$f" 2>/dev/null)"
     case "$t" in ''|*[!0-9]*) t=0 ;; esac
     [ "$t" -gt "$a" ] && a="$t"
+    # The nudge itself restarts the clock: "stalls again" means quiet for a
+    # fresh --stall-after window after being told to carry on, not quiet on
+    # the very next poll.
+    t="$(jq -r '.nudged_at // 0' "$f" 2>/dev/null)"
+    case "$t" in ''|*[!0-9]*) t=0 ;; esac
+    [ "$t" -gt "$a" ] && a="$t"
 
     wt="$(jq -r '.worktree_path // ""' "$f" 2>/dev/null)"
     if [ -n "$wt" ] && [ -d "$wt" ]; then
