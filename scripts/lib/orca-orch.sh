@@ -229,6 +229,13 @@ WORKER RULES
   CHECK verbatim, commit the implementation, note GREEN-AT: <sha>. The
   FROZEN files are frozen from the RED commit onward -- never edit one to
   make an implementation pass.
+- Stay visible: after every commit, and at least every 5 minutes of work,
+  send one heartbeat --
+  `orca-ide orchestration send --type heartbeat --subject alive
+   --task-id <task id> --dispatch-id <dispatch id> --json`
+  A worker that goes quiet for longer than the orchestrator's stall window
+  (a commit, a file change or a heartbeat all count as being alive) is
+  nudged once through its terminal and then replaced.
 - Ask before guessing past a decision that is not yours:
   `orca-ide orchestration ask --question "<question>" --json` blocks until
   the orchestrator answers.
@@ -283,4 +290,14 @@ orca_opencode_command() {
         fi
     fi
     printf 'opencode --model %s' "$model"
+}
+
+# --- small portability helpers -------------------------------------------
+
+# orch_mtime <path> -- the file's mtime in epoch seconds. GNU stat first,
+# BSD stat second; empty output when neither answers.
+orch_mtime() {
+    stat -c %Y "$1" 2>/dev/null && return 0
+    stat -f %m "$1" 2>/dev/null && return 0
+    printf ''
 }

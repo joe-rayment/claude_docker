@@ -174,10 +174,45 @@ fi
 
 # --- the worker ----------------------------------------------------------
 
-TERMINAL=""; DISPATCH_ID=""; STATE=""; COMMAND=""
+TERMINAL=""; DISPATCH_ID=""; STATE=""; COMMAND=""; WORKTREE_PATH=""
 REQUESTED_AGENT="$AGENT"
 MODEL_ARGS=()
 [ -n "$MODEL" ] && MODEL_ARGS=(--model "$MODEL")
+
+# `--worktree new-child` lets the runtime pick the name, which produces
+# wt/<random> panes nobody can tell apart in a fan-out. Name it after the
+# bead instead; the path the runtime actually made is read back below.
+NAME_ARGS=()
+case "$WORKTREE" in
+    new-child) NAME_ARGS=(--name "wt/$BEAD") ;;
+esac
+
+# --- stagger a fan-out wave ----------------------------------------------
+#
+# Dispatches fired in one breath all miss the first worker's cached prefix
+# and all land in the same per-minute rate-limit bucket. If the newest
+# dispatch record was written less than CLAUDE_ORCA_DISPATCH_STAGGER_MS ago,
+# sleep the remainder before asking the runtime for another worker.
+disp_stagger() {
+    local stagger dir newest when age rem whole frac
+    stagger="${CLAUDE_ORCA_DISPATCH_STAGGER_MS:-5000}"
+    case "$stagger" in ''|*[!0-9]*) return 0 ;; esac
+    [ "$stagger" -gt 0 ] || return 0
+    dir="$(orch_dir "$ROOT")/dispatch"
+    [ -d "$dir" ] || return 0
+    newest="$(ls -t "$dir"/*.json 2>/dev/null | head -1)"
+    [ -n "$newest" ] || return 0
+    when="$(orch_mtime "$newest")"
+    case "$when" in ''|*[!0-9]*) return 0 ;; esac
+    age=$(( $(date +%s) - when ))
+    [ "$age" -ge 0 ] || age=0
+    rem=$(( stagger - age * 1000 ))
+    [ "$rem" -gt 0 ] || return 0
+    whole=$(( rem / 1000 )); frac=$(( rem % 1000 ))
+    note "stagger: the last dispatch was ${age}s ago; waiting ${rem}ms so this worker shares its cached prefix"
+    sleep "$whole.$(printf '%03d' "$frac")"
+}
+disp_stagger
 
 new_terminal() {
     local cmd="$1" title="$2" r
@@ -210,14 +245,16 @@ case "$AGENT" in
             --timeout-ms 30000 --json >/dev/null 2>&1 ||
             note "opencode did not report tui-idle; adopting the terminal anyway"
         out="$(orca_call orchestration worker-start --task "$TASK_ID" \
-            --terminal "$TERMINAL" --worktree "$WORKTREE" --run "$RUN_ID" \
+            --terminal "$TERMINAL" --worktree "$WORKTREE" \
+            ${NAME_ARGS[@]+"${NAME_ARGS[@]}"} --run "$RUN_ID" \
             --timeout-ms "$TIMEOUT_MS" ${FROM_ARGS[@]+"${FROM_ARGS[@]}"} --json)" || true
         DISPATCH_ID="$(orca_field "$out" '.result.dispatchId')"
         STATE="$(orca_field "$out" '.result.state')"
         ;;
     claude|codex|gemini|cursor)
         out="$(orca_call orchestration worker-start --task "$TASK_ID" \
-            --worktree "$WORKTREE" --agent "$AGENT" \
+            --worktree "$WORKTREE" ${NAME_ARGS[@]+"${NAME_ARGS[@]}"} \
+            --agent "$AGENT" \
             ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} --run "$RUN_ID" \
             --timeout-ms "$TIMEOUT_MS" ${FROM_ARGS[@]+"${FROM_ARGS[@]}"} --json)" || true
         DISPATCH_ID="$(orca_field "$out" '.result.dispatchId')"
@@ -245,17 +282,58 @@ if [ -z "$DISPATCH_ID" ] || [ -z "$TERMINAL" ]; then
 fi
 [ -n "$STATE" ] || STATE="dispatched"
 
+# Where the worker actually works: whatever the runtime reports (the only
+# way to learn a new-child path), else the directory behind a path:
+# selector, else empty. orca-wait's stall watch reads it.
+WORKTREE_PATH="$(orca_field "$out" \
+    '.result.worktree.path // .result.worktreePath
+     // .result.launch.effective.worktreePath // .result.launch.worktree.path')"
+if [ -z "$WORKTREE_PATH" ]; then
+    case "$WORKTREE" in path:*) WORKTREE_PATH="${WORKTREE#path:}" ;; esac
+fi
+STARTED_AT="$(date +%s)"
+
+# A failed launch is a diagnosis, not a mystery: the terminal still holds
+# whatever the agent printed before it quit (today's case: Claude Code's
+# bypass-permissions warning and then a shell prompt). Keep the last 8
+# non-empty lines so the orchestrator reads the cause in the receipt.
+LAUNCH_TAIL='[]'; REASON=""
+if [ "$STATE" = "failed" ] && [ -n "$TERMINAL" ]; then
+    tout="$(orca_call terminal read --terminal "$TERMINAL" --json)" || true
+    if [ -n "$tout" ]; then
+        LAUNCH_TAIL="$(printf '%s' "$tout" | jq -c '
+            [.. | .lines? // empty] | add // []
+            | map(select(type == "string"))
+            | map(select(test("^[[:space:]]*$") | not)) | .[-8:]' 2>/dev/null)"
+        [ -n "$LAUNCH_TAIL" ] || LAUNCH_TAIL='[]'
+        REASON="$(printf '%s' "$LAUNCH_TAIL" | jq -r '.[-1] // ""')"
+    fi
+fi
+
 RECEIPT="$(jq -n -c --arg bead "$BEAD" --arg run "$RUN_ID" --arg task "$TASK_ID" \
     --arg disp "$DISPATCH_ID" --arg backend "$BACKEND" --arg agent "$AGENT" \
     --arg model "$MODEL" --arg term "$TERMINAL" --arg wt "$WORKTREE" \
-    --arg state "$STATE" --arg cmd "$COMMAND" \
+    --arg state "$STATE" --arg cmd "$COMMAND" --arg wtp "$WORKTREE_PATH" \
+    --argjson started "$STARTED_AT" --argjson tail "$LAUNCH_TAIL" \
+    --arg reason "$REASON" \
     '{bead: $bead, run_id: $run, task_id: $task, dispatch_id: $disp,
       backend: $backend, agent: $agent, model: $model, terminal: $term,
-      worktree: $wt, state: $state, command: $cmd}')"
+      worktree: $wt, worktree_path: $wtp, state: $state, command: $cmd,
+      started_at: $started, launch_tail: $tail, reason: $reason}')"
 
 printf '%s' "$RECEIPT" >"$(orch_disp_file "$ROOT" "$DISPATCH_ID")"
 orch_note_bead "$ROOT" "$BEAD" \
     "ORCA DISPATCH run=$RUN_ID task=$TASK_ID dispatch=$DISPATCH_ID agent=$AGENT model=${MODEL:-none} state=$STATE"
+
+# Same contract as the unreachable-runtime path: the fallback spec on
+# stdout and exit 3, so the orchestrator re-runs the slice in-process now
+# instead of waiting on a worker that never started.
+if [ "$STATE" = "failed" ]; then
+    note "worker-start reported state=failed for $TASK_ID in $TERMINAL${REASON:+ -- $REASON}"
+    printf '%s\n' "$RECEIPT" >&2
+    orch_fallback "$SPEC" "$MODEL"
+    exit 3
+fi
 
 note "dispatched $BEAD -> $AGENT${MODEL:+ ($MODEL)} in $TERMINAL [$STATE]"
 printf '%s\n' "$RECEIPT"
