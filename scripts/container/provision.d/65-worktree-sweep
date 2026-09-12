@@ -1,0 +1,152 @@
+#!/usr/bin/env bash
+#
+# claude-orca-grq -- nothing in this repo ever removes a worktree
+# (orca-run.sh, delegate.sh and by-hand executors all create one; none of
+# them calls `orca worktree rm` or `git worktree remove`), and Orca
+# rediscovers every git worktree from .git/worktrees at load, so a folder's
+# sidebar fills with detached-HEAD and stale-branch entries forever. This
+# step is the sweep: it runs at every start and clears what the last run
+# left behind.
+#
+# For every worktree of PROJECT_DIR other than the main one:
+#
+#   * its directory is gone      -> `git worktree prune` covers it.
+#   * a process has it as cwd    -> kept; not a failure -- a live editor or
+#                                    shell in there is normal, not stale.
+#   * clean (no uncommitted or untracked changes) -> removed: through Orca
+#     when it is reachable (orca-ide also drops the branch when it can
+#     prove it merged, keeps it otherwise), through plain git otherwise.
+#   * otherwise (uncommitted or untracked changes) -> kept, and this run
+#     exits non-zero so `provision status` surfaces it at the next prompt.
+#     A person or an agent has to decide whether that work is wanted.
+#
+# Idempotent: a folder with nothing stale finds nothing to do and exits 0.
+# Never fatal to the boot -- provision-run.sh does not stop on a non-zero
+# step -- but its own exit code still carries the one thing worth a human's
+# attention: uncommitted work this sweep declined to throw away.
+
+set -uo pipefail
+. "$(dirname "$0")/../provision-lib.sh"
+
+if [ -z "${PROJECT_DIR:-}" ] || [ ! -d "$PROJECT_DIR" ]; then
+    echo "no PROJECT_DIR; nothing to sweep"
+    exit 0
+fi
+if ! git -C "$PROJECT_DIR" rev-parse --git-dir >/dev/null 2>&1; then
+    echo "$PROJECT_DIR is not a git repo; nothing to sweep"
+    exit 0
+fi
+
+# The CLI is resolved exactly the way 60-orca-repo-add resolves it, because
+# a folder that registered with Orca under one path must ask the same CLI
+# about it.
+AGENT_HOME="${HOME:-/home/agent}"
+ORCA_BIN="${ORCA_BIN:-/opt/orca/orca-ide}"
+USER_DATA_DIR="${ORCA_USER_DATA_DIR:-$AGENT_HOME/.config/orca}"
+
+resolve_cli() {
+    if [ -n "${ORCA_CLI:-}" ]; then
+        printf '%s\n' "$ORCA_CLI"
+        return 0
+    fi
+    for candidate in \
+        "$(dirname "$ORCA_BIN")/resources/bin/orca-ide" \
+        "$AGENT_HOME/.local/bin/orca-ide" \
+        "$AGENT_HOME/.local/bin/orca"
+    do
+        [ -x "$candidate" ] && { printf '%s\n' "$candidate"; return 0; }
+    done
+    for name in orca orca-ide; do
+        found="$(command -v "$name" 2>/dev/null)"
+        [ -n "$found" ] && { printf '%s\n' "$found"; return 0; }
+    done
+    return 1
+}
+
+cli="$(resolve_cli || true)"
+
+orca_call() {  # orca_call <args...> -- CLI call, bounded, with the runtime's user-data dir
+    if command -v timeout >/dev/null 2>&1; then
+        env ORCA_USER_DATA_PATH="$USER_DATA_DIR" timeout 15 "$cli" "$@"
+    else
+        env ORCA_USER_DATA_PATH="$USER_DATA_DIR" "$cli" "$@"
+    fi
+}
+
+# Reachable is asked once per run, not once per worktree: the answer does
+# not change mid-sweep, and a run with several stale worktrees must not
+# make several network round trips to find that out.
+orca_reachable() {
+    [ -n "$cli" ] || return 1
+    local out
+    out="$(orca_call status --json 2>/dev/null)" || return 1
+    if command -v jq >/dev/null 2>&1; then
+        [ "$(printf '%s' "$out" | jq -r '.result.runtime.reachable // false' 2>/dev/null)" = "true" ]
+        return
+    fi
+    case "$out" in
+        *'"reachable":true'*|*'"reachable": true'*) return 0 ;;
+    esac
+    return 1
+}
+reachable=0
+orca_reachable && reachable=1
+
+MAIN_PATH="$(cd "$PROJECT_DIR" && pwd -P)"
+
+worktree_paths=()
+while IFS= read -r p; do
+    [ -n "$p" ] && worktree_paths+=("$p")
+done < <(git -C "$PROJECT_DIR" worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p')
+
+fail=0
+swept=0
+
+for path in ${worktree_paths[@]+"${worktree_paths[@]}"}; do
+    [ "$path" = "$MAIN_PATH" ] && continue
+    swept=$((swept + 1))
+
+    if [ ! -d "$path" ]; then
+        git -C "$PROJECT_DIR" worktree prune >/dev/null 2>&1
+        echo "pruned $path (directory gone)"
+        continue
+    fi
+
+    # A live process in there is not stale, whatever git thinks of its
+    # contents -- scan /proc rather than trust anything the worktree itself
+    # reports.
+    real_path="$(cd "$path" && pwd -P)"
+    busy=0
+    for cwdlink in /proc/[0-9]*/cwd; do
+        [ -e "$cwdlink" ] || continue
+        target="$(readlink -f "$cwdlink" 2>/dev/null)" || continue
+        case "$target" in
+            "$real_path"|"$real_path"/*) busy=1; break ;;
+        esac
+    done
+    if [ "$busy" = "1" ]; then
+        echo "busy $path (a running process has it as its cwd)"
+        continue
+    fi
+
+    status_out="$(git -C "$path" status --porcelain --untracked-files=all 2>/dev/null)"
+    if [ -z "$status_out" ]; then
+        if [ "$reachable" = "1" ]; then
+            orca_call worktree rm --worktree "path:$path" --json >/dev/null 2>&1
+        else
+            git -C "$PROJECT_DIR" worktree remove "$path" >/dev/null 2>&1
+        fi
+        git -C "$PROJECT_DIR" worktree prune >/dev/null 2>&1
+        echo "removed $path"
+    else
+        echo "FAIL: kept $path (uncommitted or untracked changes)"
+        fail=1
+    fi
+done
+
+if [ "$swept" = "0" ]; then
+    echo "no worktree other than $MAIN_PATH; nothing to sweep"
+fi
+
+[ "$fail" = "1" ] && exit 1
+exit 0
