@@ -428,3 +428,91 @@ pairing_fixture() {
     [ "$status" -eq 1 ]
     [ -z "$output" ]
 }
+
+# --- desktop Orca, S2 (claude-orca-8uo.3) --------------------------------
+#
+# Which of the two UIs a folder runs is a property OF THE FOLDER, decided
+# once at register and written into claude-orca.json as `ui`: desktop when
+# the Mac has an Orca.app and nothing said otherwise, web in every other
+# case. It is a decision, not a probe, so a re-register never revisits it
+# -- a folder that was set to web stays web even after the user installs
+# the app, and a desktop folder survives the app being moved. The doctor
+# reports what it can see of the app either way, and never turns a missing
+# desktop Orca into a failing exit code: Orca Web is a complete answer.
+
+# The uname stub answers only what a test pins, and make_project_v3 pins
+# Darwin for the bootstrap call alone -- so a case that drives the launcher
+# AFTER the install (the doctor) has to pin it for itself.
+as_mac() {
+    export STUB_UNAME_S=Darwin
+    export STUB_UNAME_M=arm64
+}
+
+@test "register writes ui desktop when the app is found" {
+    as_mac
+    make_project_v3 "$PROJECT_DIR" >/dev/null
+
+    [ "$(jq -r '.ui' "$PROJECT_DIR/.claude-dev/claude-orca.json")" = "desktop" ]
+
+    # The same folder re-registered is still desktop: the key is written
+    # once and read forever after.
+    run bash -c "cd '$PROJECT_DIR' && ./claude-dev register"
+    [ "$status" -eq 0 ]
+    [ "$(jq -r '.ui' "$PROJECT_DIR/.claude-dev/claude-orca.json")" = "desktop" ]
+}
+
+@test "register leaves an existing ui key alone" {
+    as_mac
+    make_project_v3 "$PROJECT_DIR" >/dev/null
+    config="$PROJECT_DIR/.claude-dev/claude-orca.json"
+
+    # The counterfactual first, so "left alone" is not a property of a
+    # register that never writes the key at all: a config with no ui key
+    # (a folder carried over from before this template had one) gets the
+    # probe's answer written into it.
+    jq 'del(.ui)' "$config" > "$config.t" && mv "$config.t" "$config"
+    run bash -c "cd '$PROJECT_DIR' && ./claude-dev register"
+    [ "$status" -eq 0 ]
+    [ "$(jq -r '.ui' "$config")" = "desktop" ]
+
+    # A folder deliberately pinned to Orca Web, on a Mac that has the app:
+    # the probe would say desktop, and the folder's own answer wins.
+    jq '.ui = "web"' "$config" > "$config.t" && mv "$config.t" "$config"
+    run bash -c "cd '$PROJECT_DIR' && ./claude-dev register"
+    [ "$status" -eq 0 ]
+    [ "$(jq -r '.ui' "$config")" = "web" ]
+
+    # And the other way: a desktop folder whose app has gone stays desktop
+    # rather than being quietly demoted behind the user's back.
+    jq '.ui = "desktop"' "$config" > "$config.t" && mv "$config.t" "$config"
+    run bash -c "cd '$PROJECT_DIR' \
+        && CLAUDE_ORCA_APP='$BATS_TEST_TMPDIR/no-such-Orca.app' ./claude-dev register"
+    [ "$status" -eq 0 ]
+    [ "$(jq -r '.ui' "$config")" = "desktop" ]
+}
+
+@test "doctor prints the orca app row with its version" {
+    as_mac
+    make_project_v3 "$PROJECT_DIR" >/dev/null
+
+    run bash -c "cd '$PROJECT_DIR' && ./claude-dev --doctor"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"orca app"* ]]
+    [[ "$output" == *"$CLAUDE_ORCA_APP (1.4.197)"* ]]
+    [[ "$output" == *"orca cli"* ]]
+    [[ "$output" == *"$CLAUDE_ORCA_APP/Contents/Resources/bin/orca"* ]]
+}
+
+@test "doctor prints the orca app row missing when there is no app" {
+    as_mac
+    # A folder that registered as web, on a Mac with no Orca.app: both rows
+    # still print, and neither is a finding -- Orca Web needs no app.
+    export CLAUDE_ORCA_UI=web
+    make_project_v3 "$PROJECT_DIR" >/dev/null
+    [ "$(jq -r '.ui' "$PROJECT_DIR/.claude-dev/claude-orca.json")" = "web" ]
+
+    export CLAUDE_ORCA_APP="$BATS_TEST_TMPDIR/no-such-Orca.app"
+    run bash -c "cd '$PROJECT_DIR' && ./claude-dev --doctor"
+    [ "$status" -eq 0 ]
+    [[ "$output" =~ orca[[:space:]]app[[:space:]]+missing ]]
+}
