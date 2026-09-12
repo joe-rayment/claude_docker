@@ -119,6 +119,10 @@ setup() {
 
 teardown() {
     stop_entrypoint
+    # Guards a case started by hand (claude-orca-qa2.25) outlive the
+    # entrypoint's process group, so they get their own kill -- only the
+    # pids this test recorded, never a peer's.
+    [ -n "${GUARD_PIDS:-}" ] && kill -KILL $GUARD_PIDS 2>/dev/null
     [ -n "${TMP:-}" ] && rm -rf "$TMP"
     return 0
 }
@@ -543,4 +547,138 @@ seed_provision_status() {  # seed_provision_status <project> <step> <status> <la
     run env HOME="$TMP/home" CLAUDE_ORCA_ROOT="$proj" bash -c "$hook"
     [ "$status" -eq 0 ]
     [ -z "$output" ]
+}
+
+# --- the guard step's own job (claude-orca-qa2.25) ------------------------
+#
+# 70-openrouter-guard is a probe on every start but the one where the guard
+# has died, and on that one it is a restart -- on the SAME token, because a
+# fresh one is a credential no terminal in this container has heard of. The
+# key it restarts with goes over a mode-600 file the guard reads once and
+# unlinks, never argv or the environment: the guard runs as the same uid as
+# every terminal here, so a key in /proc/<guard>/environ is a key `ps -ef`
+# hands out for the guard's whole uptime.
+
+GUARD_STEP="$REPO_ROOT/scripts/container/provision.d/70-openrouter-guard"
+GUARD_PY="$REPO_ROOT/scripts/container/openrouter-guard.py"
+GUARD_POLICY="$REPO_ROOT/config/provider-policy.json"
+PROV_REAL_KEY="sk-or-v1-real-secret-never-in-a-guard-argv"
+
+wait_tcp_port() {  # wait_tcp_port <port>
+    local i=0
+    while [ "$i" -lt 100 ]; do
+        if python3 -c "import socket,sys; s=socket.socket(); s.settimeout(0.3); sys.exit(0 if s.connect_ex(('127.0.0.1',$1))==0 else 1)"; then
+            return 0
+        fi
+        i=$((i + 1))
+        sleep 0.2
+    done
+    return 1
+}
+
+wait_tcp_closed() {  # wait_tcp_closed <port>
+    local i=0
+    while [ "$i" -lt 100 ]; do
+        if ! python3 -c "import socket,sys; s=socket.socket(); s.settimeout(0.3); sys.exit(0 if s.connect_ex(('127.0.0.1',$1))==0 else 1)"; then
+            return 0
+        fi
+        i=$((i + 1))
+        sleep 0.2
+    done
+    return 1
+}
+
+@test "the guard step restarts a guard that has died, on the same token, and a live one is left alone" {
+    [ -x "$GUARD_STEP" ]
+    [ -f "$GUARD_PY" ]
+    command -v curl >/dev/null 2>&1
+
+    local proj="$TMP/project" rund port pid1 pid2 token
+    make_project "$proj"
+    mkdir -p "$TMP/home"
+    rund="$proj/.claude-dev/run"
+    port="$(free_port)"
+    token="tok-same-across-restarts"
+
+    # The token Orca's environment already carries, from a previous boot.
+    printf '%s\n' "$token" > "$rund/openrouter-guard.token"
+    chmod 600 "$rund/openrouter-guard.token"
+
+    # A guard that is already up, started the way the entrypoint starts it:
+    # the key over a mode-600 file, nothing on the command line.
+    printf '%s\n' "$PROV_REAL_KEY" > "$rund/openrouter-guard.key"
+    chmod 600 "$rund/openrouter-guard.key"
+    env -u OPENROUTER_API_KEY \
+        CLAUDE_ORCA_GUARD_KEY_FILE="$rund/openrouter-guard.key" \
+        OPENROUTER_GUARD_TOKEN="$token" \
+        OPENROUTER_UPSTREAM="http://127.0.0.1:1" \
+        python3 "$GUARD_PY" --port "$port" --policy "$GUARD_POLICY" \
+        --run-dir "$rund" >>"$rund/openrouter-guard.log" 2>&1 &
+    pid1=$!
+    GUARD_PIDS="$pid1"
+    wait_tcp_port "$port"
+    printf '%s\n' "$pid1" > "$rund/openrouter-guard.pid"
+    # read once and unlinked: the window is startup, not uptime
+    [ ! -e "$rund/openrouter-guard.key" ]
+
+    # A live guard is left alone: a probe, and nothing else.
+    run env -u OPENROUTER_API_KEY HOME="$TMP/home" PROJECT_DIR="$proj" \
+        CLAUDE_ORCA_GUARD_PORT="$port" \
+        CLAUDE_ORCA_GUARD_SCRIPT="$GUARD_PY" \
+        CLAUDE_ORCA_GUARD_TIMEOUT=20 \
+        CLAUDE_ORCA_OPENROUTER_REAL_KEY="$PROV_REAL_KEY" \
+        bash "$GUARD_STEP"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"answering"* ]]
+    kill -0 "$pid1"
+    [ "$(cat "$rund/openrouter-guard.pid")" = "$pid1" ]
+
+    # Now it dies.
+    kill -KILL "$pid1" 2>/dev/null
+    wait_tcp_closed "$port"
+
+    run env -u OPENROUTER_API_KEY HOME="$TMP/home" PROJECT_DIR="$proj" \
+        CLAUDE_ORCA_GUARD_PORT="$port" \
+        CLAUDE_ORCA_GUARD_SCRIPT="$GUARD_PY" \
+        CLAUDE_ORCA_GUARD_TIMEOUT=20 \
+        CLAUDE_ORCA_OPENROUTER_REAL_KEY="$PROV_REAL_KEY" \
+        OPENROUTER_UPSTREAM="http://127.0.0.1:1" \
+        bash "$GUARD_STEP"
+    [ "$status" -eq 0 ]
+    [ -s "$rund/openrouter-guard.pid" ]
+    pid2="$(cat "$rund/openrouter-guard.pid")"
+    GUARD_PIDS="$pid1 $pid2"
+    [ "$pid2" != "$pid1" ]
+    kill -0 "$pid2"
+    wait_tcp_port "$port"
+
+    # Same token, and the restarted guard still honours it: a request that
+    # carries it gets as far as the (unreachable) upstream, one that does
+    # not is refused at the door.
+    [ "$(cat "$rund/openrouter-guard.token")" = "$token" ]
+    run curl -s -o /dev/null -w '%{http_code}' \
+        -X POST "http://127.0.0.1:$port/api/v1/chat/completions" \
+        -H "Authorization: Bearer $token" \
+        -H 'Content-Type: application/json' \
+        --data-binary '{"model":"m","messages":[]}'
+    [ "$output" = "502" ]
+    run curl -s -o /dev/null -w '%{http_code}' \
+        -X POST "http://127.0.0.1:$port/api/v1/chat/completions" \
+        -H "Authorization: Bearer not-the-token" \
+        -H 'Content-Type: application/json' \
+        --data-binary '{"model":"m","messages":[]}'
+    [ "$output" = "401" ]
+
+    # The restarted guard holds the key the same way the first one did:
+    # not in its environment, not on its command line, and not in a file
+    # left behind under run/.
+    run bash -c "tr '\0' '\n' < /proc/$pid2/environ | grep -c -- '$PROV_REAL_KEY'"
+    [ "$output" = "0" ]
+    run bash -c "tr '\0' '\n' < /proc/$pid2/cmdline | grep -c -- '$PROV_REAL_KEY'"
+    [ "$output" = "0" ]
+    [ ! -e "$rund/openrouter-guard.key" ]
+    run bash -c "grep -rl -- '$PROV_REAL_KEY' '$rund' | wc -l"
+    [ "$output" = "0" ]
+
+    kill -KILL "$pid2" 2>/dev/null || true
 }
