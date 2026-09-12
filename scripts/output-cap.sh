@@ -21,7 +21,10 @@
 # Never touches: a SUBAGENT's Bash call (reading the whole output and
 # returning a summary is precisely a worker's job), a backgrounded call
 # (the tool collects that output itself), a command the caller already
-# bounded with `| head/tail/wc`, and anything at all when
+# bounded with `| head/tail/wc`, a bare `cd` (or `cd <one argument>`) --
+# the wrapper runs the command in a CHILD shell, so capping a lone `cd`
+# would silently drop the working directory the tool's persistent shell is
+# expected to carry into the next call -- and anything at all when
 # CLAUDE_ORCA_OUTPUT_CAP=0.
 #
 # Fails OPEN everywhere: no jq, malformed stdin, unwritable spill dir ->
@@ -61,6 +64,47 @@ CMD=$(printf '%s' "$IN" | jq -r '.tool_input.command // empty' 2>/dev/null) || e
 # Already bounded by the caller: capping a cap only hides the tail they
 # deliberately asked for.
 printf '%s' "$CMD" | grep -Eq '\|[[:space:]]*(head|tail|wc)([[:space:]][^|]*)?[[:space:]]*$' && exit 0
+
+# A lone `cd`: the Bash tool keeps one shell across calls, and `bash <file>`
+# is a child, so wrapping `cd /workspace/x` would change the child's
+# directory and nothing else. Only a SINGLE statement qualifies -- one
+# containing `;`, `&&`, `||`, `|` or a newline does real work after the
+# navigation and is capped like anything else.
+is_bare_cd() {
+    local cmd="$1" rest
+    # trim surrounding whitespace
+    cmd="${cmd#"${cmd%%[![:space:]]*}"}"
+    cmd="${cmd%"${cmd##*[![:space:]]}"}"
+    case "$cmd" in
+        *';'*|*'&'*|*'|'*|*'
+'*) return 1 ;;
+    esac
+    case "$cmd" in
+        cd) return 0 ;;
+        cd[[:space:]]*) rest="${cmd#cd}" ;;
+        *) return 1 ;;
+    esac
+    rest="${rest#"${rest%%[![:space:]]*}"}"
+    [ -n "$rest" ] || return 0
+    # One quoted argument may legitimately hold a space: `cd "my dir"`.
+    case "$rest" in
+        \"*\")
+            rest="${rest#\"}"; rest="${rest%\"}"
+            case "$rest" in *\"*) return 1 ;; esac
+            return 0
+            ;;
+        \'*\')
+            rest="${rest#\'}"; rest="${rest%\'}"
+            case "$rest" in *\'*) return 1 ;; esac
+            return 0
+            ;;
+    esac
+    case "$rest" in
+        *[[:space:]]*|*\"*|*\'*) return 1 ;;   # more than one argument
+    esac
+    return 0
+}
+is_bare_cd "$CMD" && exit 0
 
 SESSION=$(printf '%s' "$IN" | jq -r '.session_id // "session"' 2>/dev/null) || exit 0
 SESSION=$(printf '%s' "$SESSION" | tr -c 'A-Za-z0-9._-' '-')

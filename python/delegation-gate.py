@@ -43,7 +43,10 @@ as "guard" — the gate never silently degrades to a weaker mode on a typo.
              per the cadence below; a NON-EXEMPT Bash call IS denied once
              the streak reaches DELEGATION_GATE_DENY_AT (claude-orca-8a0.3
              — `cat`/`grep`/a build through Bash is the same inline work
-             an Edit is, and it was the hole the gate left open).
+             an Edit is, and it was the hole the gate left open). That
+             Bash denial fires in EVERY lane except express — including
+             lane standard, where the edit denial does not — because
+             standard is where most sessions run.
   enforce    guard, PLUS Read/Grep/Glob are also denied once the streak
              reaches DELEGATION_GATE_DENY_AT (default 8).
 Every denial names the exact alternative (spawn a scout / spawn an
@@ -510,17 +513,16 @@ def main():
         )
         return
 
-    if (
-        mode in ("guard", "enforce")
-        and tool_name == "Bash"
-        and streak >= deny_at()
-        and lane in ("deep", "unset")
-    ):
+    if mode in ("guard", "enforce") and tool_name == "Bash" and streak >= deny_at():
         # A non-exempt Bash call is inline work exactly like an Edit --
         # `cat` costs the orchestrator what Read costs, and a grep sweep
         # costs more. The exempt list above (bd/git/bats/lane/tier-…) is
         # how the session steers and is never counted, so what lands here
         # is recon or editing that belongs in a worker's context.
+        # EVERY lane but express: unlike the edit denial, this one fires in
+        # lane standard too, because standard is where most sessions run
+        # and eight inline shell calls is a streak in any lane. express
+        # never reaches here -- its branch above returns first.
         state["denies"] += 1
         save_state(state_path, state)
         emit_deny(
