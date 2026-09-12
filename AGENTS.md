@@ -199,9 +199,19 @@ anything to reuse there.
 `setup.sh --check` is what says the image is the filesystem it promised.
 Inside,
 `scripts/container/entrypoint.sh` runs as PID 1, drops to the `agent` user,
-config-syncs, and starts `orca-ide --serve`; it writes the browser URL to
+and starts `orca-ide --serve`; it writes the browser URL to
 `run/orca-web-url.txt` (mode 600 — the fragment carries a pairing code),
-which is the handshake the Mac side waits on before calling `open`. Claude
+which is the handshake the Mac side waits on before calling `open`. Only
+then does it run `scripts/container/provision-run.sh`, where everything
+folder-shaped lives now — the config sync, the seeds, `bd init`, `orca repo
+add`, the toolchain verify, the guard check — as numbered idempotent steps
+under `scripts/container/provision.d/`, each writing
+`run/provision/<step>.log` and `.status`, none of them fatal, all of them
+re-run by the next start. The one exception is the OpenRouter guard's
+*start*, which stays in front of `--serve`: Orca's environment is fixed at
+exec, so whether the guard's token reaches it has to be decided before it
+is started. The steps run on the Orca-cannot-start path too, right before
+the die. Claude
 Code signs in on its own first run inside Orca. Registration seeds the stack
 this template assumes — Claude Code as the master, low-cost OpenRouter models
 as delegate-route workers, and Orca's native coordination, which needs no

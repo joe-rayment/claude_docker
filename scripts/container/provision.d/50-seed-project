@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+#
+# The folder's own seeding -- .gitignore, attachments/, orca.yaml, the
+# beads snapshot restore and `bd init` -- through the one script that has
+# two callers: Orca's `scripts.setup` in the project's orca.yaml, and this
+# step as the FLOOR. A folder must never depend on a hook having fired to
+# have a tracker in it, and on 2026-09-08 Orca's setup script could not be
+# made to fire from the CLI at all.
+#
+# seed-project.sh is idempotent by construction and exits 0 for anything it
+# merely could not do, so this step's status says "the script ran", which
+# is the honest claim to make about a floor.
+
+set -uo pipefail
+. "$(dirname "$0")/../provision-lib.sh"
+
+seed_script="$TEMPLATE_ROOT/scripts/container/seed-project.sh"
+[ -f "$seed_script" ] || seed_script="$STEP_TREE/scripts/container/seed-project.sh"
+if [ ! -f "$seed_script" ]; then
+    echo "no seed-project.sh in $TEMPLATE_ROOT or $STEP_TREE; the folder is unseeded" >&2
+    exit 1
+fi
+
+env PROJECT_DIR="$PROJECT_DIR" \
+    CLAUDE_ORCA_PROJECT_NAME="${CLAUDE_ORCA_PROJECT_NAME:-}" \
+    CLAUDE_ORCA_SKIP_BEADS="${CLAUDE_ORCA_SKIP_BEADS:-0}" \
+    bash "$seed_script"

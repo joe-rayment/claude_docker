@@ -350,9 +350,19 @@ runs `./claude-dev --update` moves to a new image with the rebuild.
   chroot by `scripts/container/verify-rootfs.sh`. This template lands at
   `/opt/claude-orca`.
 - `scripts/container/entrypoint.sh` — runs as PID 1 under tini: drops to
-  the `agent` user, config-syncs, starts `orca-ide --serve`, and writes the
-  browser URL to `<project>/.claude-dev/run/orca-web-url.txt` (mode 600 —
-  it carries a pairing code) plus the port to `run/port`.
+  the `agent` user, starts `orca-ide --serve`, and writes the browser URL
+  to `<project>/.claude-dev/run/orca-web-url.txt` (mode 600 — it carries a
+  pairing code) plus the port to `run/port`.
+- `scripts/container/provision-run.sh` and `scripts/container/provision.d/`
+  — everything that is about *this folder* rather than about the image:
+  the toolchain verify, the config sync, the first-run seeds, the git
+  identity, the tracker, the `orca repo add`, the guard check. They run
+  **after** the URL is published, one numbered idempotent step at a time,
+  each leaving `run/provision/<step>.log` and `run/provision/<step>.status`.
+  No step is fatal and the next start re-runs all of them, so a step that
+  died on a network hiccup is repaired by starting the folder again. They
+  used to run in front of `--serve`, where a failure took the container
+  with it and left nothing running that could say what went wrong.
 - `scripts/container/smoke.sh` — starts the entrypoint against a throwaway
   project and fails unless Orca serves and the URL answers; run by hand
   against a freshly built image, or on the public base image to prove the

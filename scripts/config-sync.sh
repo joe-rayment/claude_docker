@@ -84,6 +84,26 @@ done
 project="$(cd "$project" && pwd -P)"
 host="$(cd "$host" && pwd -P)"
 
+# --- one caller at a time (claude-orca-dbu.4) --------------------------
+#
+# Two callers can land on the same settings.json at the same moment: the
+# provision.d step on a folder's start, and the host side's resync over
+# `docker exec` right after the URL is published (plus a /config-resync
+# typed in a terminal). The settings.json rewrite below is a
+# read-modify-write over a file Orca's own installer also touches, so an
+# interleaved pair can drop one side's managed hook entries entirely.
+#
+# flock is util-linux's and is not on a stock Mac, where this script also
+# runs -- so it is taken when it is there and skipped when it is not,
+# which is no worse than the behaviour this replaces.
+LOCK_FILE="$project/.claude-dev/run/config-sync.lock"
+if command -v flock >/dev/null 2>&1; then
+    mkdir -p "$(dirname "$LOCK_FILE")" 2>/dev/null || true
+    if { exec 9>"$LOCK_FILE"; } 2>/dev/null; then
+        flock 9 || true
+    fi
+fi
+
 TEMPLATE_CONFIG="$host/template/config"
 [ -d "$TEMPLATE_CONFIG" ] || die "template config not found: $TEMPLATE_CONFIG"
 
