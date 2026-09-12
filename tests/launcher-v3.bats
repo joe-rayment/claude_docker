@@ -579,22 +579,38 @@ desktop_fixture() {
     printf '%s\n' "$primary"
 }
 
-@test "open with ui desktop launches the app and waits for orca status reachable" {
-    local primary name last_status first_add
+# --- the conduit profile (claude-orca-qhq) -------------------------------
+#
+# Orca.app can open LOCAL workspaces (agents run on the Mac, no container)
+# and has no knob to refuse them (1.4.197). Detection at hand-off was not
+# enough, so the app is launched on a profile the launcher owns outright --
+# .claude-dev/state/orca-profile -- rather than the user's own Orca
+# profile, which is never touched again. Every `orca` CLI call the launcher
+# makes now carries ORCA_USER_DATA_PATH pointing at it (verified fact: the
+# CLI resolves the instance through that env var; `status --json` under an
+# empty profile answers reachable:false), and the profile is emptied of any
+# local repo before every launch -- the conduit's own promise is that it
+# starts each session with zero local projects.
+
+@test "open with ui desktop launches the app on the folder's own profile with open -n --args --user-data-dir" {
+    local primary name profile last_status first_add
     # The runtime is not up the moment the app is: two answers of false
     # before the true one, which is the whole reason this is a poll.
     export ORCA_STUB_REACHABLE_AFTER=2
     export CLAUDE_ORCA_ORCA_WAIT=10
     primary="$(desktop_fixture)"
     name="claude-orca-$(basename "$primary")"
+    profile="$primary/.claude-dev/state/orca-profile"
 
     run bash -c "cd '$primary' && ./claude-dev open"
     [ "$status" -eq 0 ]
 
-    # The app itself, by bundle path.
-    grep -qxF -- "-a $CLAUDE_ORCA_APP" "$OPEN_STUB_LOG"
+    # A new instance, by bundle path, on this folder's own profile -- never
+    # the user's own Orca.
+    grep -qxF -- "-n -a $CLAUDE_ORCA_APP --args --user-data-dir=$profile" "$OPEN_STUB_LOG"
     # ... and no browser tab: on this path the desktop app IS the client.
     ! grep -q '^http' "$OPEN_STUB_LOG"
+    [ -d "$profile" ]
 
     # It kept asking until the runtime said yes -- and an exit code would
     # have told it nothing, so it read the JSON.
@@ -611,6 +627,57 @@ desktop_fixture() {
     # it Connected.
     grep -qF "$name" <<< "$output"
     grep -qF "Remote Hosts" <<< "$output"
+}
+
+@test "open with ui desktop empties the profile's local repos before launching" {
+    local primary profile
+    primary="$(desktop_fixture)"
+    profile="$primary/.claude-dev/state/orca-profile"
+
+    # A profile left over from an earlier session (or one the app's own
+    # "+ Add project" grew mid-session): a local repo already on file
+    # before this run even starts.
+    mkdir -p "$profile"
+    printf '{"repos":[{"path":"/Users/joe/some-other-project"}]}\n' \
+        > "$profile/orca-data.json"
+
+    run bash -c "cd '$primary' && ./claude-dev open"
+    [ "$status" -eq 0 ]
+
+    [ "$(jq -c '.repos' "$profile/orca-data.json")" = "[]" ]
+}
+
+@test "open with ui desktop skips the launch when the profile's runtime is already reachable" {
+    local primary name
+    primary="$(desktop_fixture)"
+    name="claude-orca-$(basename "$primary")"
+    # ORCA_STUB_REACHABLE_AFTER defaults to 0: the very first status call
+    # already answers reachable -- the shape an earlier ./claude-dev left
+    # running behind it.
+
+    run bash -c "cd '$primary' && ./claude-dev open"
+    [ "$status" -eq 0 ]
+
+    [ ! -s "$OPEN_STUB_LOG" ]
+    # The hand-off still ran to completion on the runtime that was already
+    # there -- this is a skipped launch, not a failed one.
+    grep -qxF \
+        "environment add --name $name --pairing-code $DESKTOP_PAIR_URL --json" \
+        "$ORCA_STUB_LOG"
+}
+
+@test "desktop cli calls carry ORCA_USER_DATA_PATH pointing at the folder's profile" {
+    local primary profile
+    primary="$(desktop_fixture)"
+    profile="$primary/.claude-dev/state/orca-profile"
+
+    run bash -c "cd '$primary' && ./claude-dev open"
+    [ "$status" -eq 0 ]
+
+    [ -s "$ORCA_STUB_ENVPATH_LOG" ]
+    # Every call this hand-off made carried the SAME value -- this folder's
+    # own profile, never the user's own Orca profile (which is unset).
+    ! grep -vxF "$profile" "$ORCA_STUB_ENVPATH_LOG"
 }
 
 @test "open with ui desktop adds the environment with the decoded pairing URL and records its id" {
@@ -687,15 +754,17 @@ desktop_fixture() {
     [ ! -e "$primary/.claude-dev/run/orca-environment.json" ]
 }
 
-# --- the local-leak warning at hand-off (claude-orca-4x7) ----------------
+# --- the local-leak warning at hand-off (claude-orca-4x7, claude-orca-qhq) -
 #
-# cmd_verify's "local repos" doctor row already reads the Mac's own Orca
-# back for this (tests/verify.bats); this is the same
+# cmd_verify's "local repos" doctor row already reads this folder's own
+# conduit profile back for this (tests/verify.bats); this is the same
 # ORCA_STUB_LOCAL_REPOS fixture, asked at `./claude-dev open` time instead
 # of `verify` time, because the leak is exactly as real the moment the
-# environment is handed off.
+# environment is handed off. Since the profile is the launcher's own and
+# holds only this folder's environment, ANY repo turning up in it is the
+# leak -- not only this folder's own path.
 
-@test "open with ui desktop warns when the Mac's own Orca holds the folder as a LOCAL project" {
+@test "open with ui desktop warns when the folder's profile holds any local project" {
     local primary
     primary="$(desktop_fixture)"
     # find_orca_app's Darwin gate reads $STUB_UNAME_S from THIS shell, not
@@ -703,17 +772,16 @@ desktop_fixture() {
     # substitution is a subshell; its exports die with it) -- pin it here
     # too, same as verify.bats does for cmd_verify's identical gate.
     as_mac
-    export ORCA_STUB_LOCAL_REPOS="$primary"
+    export ORCA_STUB_LOCAL_REPOS="$BATS_TEST_TMPDIR/anything"
 
     run bash -c "cd '$primary' && ./claude-dev open"
     [ "$status" -eq 0 ]
 
     grep -qF "WARNING" <<< "$output"
     grep -qF "LOCAL project" <<< "$output"
-    grep -qF "Local Mac" <<< "$output"
 }
 
-@test "open with ui desktop prints no local-leak warning when the Mac's own Orca has no local repos" {
+@test "open with ui desktop prints no local-leak warning when the folder's profile has no local repos" {
     local primary
     primary="$(desktop_fixture)"
     as_mac
@@ -763,6 +831,47 @@ desktop_fixture() {
     grep -qxF "environment rm --environment $name --json" "$ORCA_STUB_LOG"
     # ... and the app no longer offers a runtime that does not exist.
     ! grep -qxF "$name" "$ORCA_STUB_STATE/environments"
+}
+
+@test "teardown removes the folder's profile" {
+    local primary profile
+    primary="$(desktop_fixture)"
+    profile="$primary/.claude-dev/state/orca-profile"
+
+    run bash -c "cd '$primary' && ./claude-dev open"
+    [ "$status" -eq 0 ]
+    [ -d "$profile" ]
+
+    run bash -c "cd '$primary' && ./claude-dev --teardown"
+    [ "$status" -eq 0 ]
+
+    [ ! -e "$profile" ]
+}
+
+@test "verify fails the local repos row when the folder's profile lists any repo" {
+    local primary
+    primary="$(desktop_fixture)"
+    run bash -c "cd '$primary' && ./claude-dev open"
+    [ "$status" -eq 0 ]
+
+    export ORCA_STUB_LOCAL_REPOS="$BATS_TEST_TMPDIR/anything"
+    run bash -c "cd '$primary' && ./claude-dev verify"
+    [ "$status" -eq 2 ]
+    grep -qF "FAIL" <<< "$output"
+    grep -qF "local repos" <<< "$output"
+}
+
+@test "verify fails the local repos row when ui is desktop and the profile dir is missing" {
+    local primary
+    primary="$(desktop_fixture)"
+    run bash -c "cd '$primary' && ./claude-dev open"
+    [ "$status" -eq 0 ]
+    rm -rf "$primary/.claude-dev/state/orca-profile"
+
+    run bash -c "cd '$primary' && ./claude-dev verify"
+    [ "$status" -eq 2 ]
+    grep -qF "FAIL" <<< "$output"
+    grep -qF "local repos" <<< "$output"
 }
 
 # --- desktop Orca, S4 (claude-orca-8uo.5) --------------------------------
