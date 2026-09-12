@@ -32,6 +32,7 @@
       "Bash(snowsql *)"
     ]
   },
+  "subagentPromptCacheTtl": "1h",
   "enableAllProjectMcpServers": true,
   "hooks": {
     "UserPromptSubmit": [
@@ -99,7 +100,8 @@
         "hooks": [
           { "type": "command", "command": "[ -x \"__HOST__/template/bin/bd-guard\" ] && exec \"__HOST__/template/bin/bd-guard\"; exit 0" },
           { "type": "command", "command": "[ -x \"__HOST__/template/bin/outbound-guard\" ] && exec \"__HOST__/template/bin/outbound-guard\"; exit 0" },
-          { "type": "command", "command": "[ -x \"__HOST__/template/bin/contract-gate\" ] && exec \"__HOST__/template/bin/contract-gate\"; exit 0", "timeout": 10 }
+          { "type": "command", "command": "[ -x \"__HOST__/template/bin/contract-gate\" ] && exec \"__HOST__/template/bin/contract-gate\"; exit 0", "timeout": 10 },
+          { "type": "command", "command": "[ -x \"__HOST__/template/bin/output-cap\" ] && exec \"__HOST__/template/bin/output-cap\"; exit 0", "timeout": 10 }
         ]
       },
       {

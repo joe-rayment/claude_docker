@@ -68,6 +68,10 @@
 #   CLAUDE_ORCA_WEBURL_TIMEOUT        seconds to wait for serve (120).
 #   CLAUDE_ORCA_ENTRYPOINT_NO_PRIVDROP=1   skip usermod/setpriv (tests,
 #                 and any run that is already unprivileged).
+#   CLAUDE_ORCA_MANAGED_SETTINGS      where Claude Code's administrator
+#                 policy file lives (default /etc/claude-code/managed-
+#                 settings.json). Set, it is honoured whatever the uid --
+#                 which is how the unprivileged test run reaches that step.
 #
 # bash 3.2 clean (scripts/lint-bash32.sh scans all of scripts/), even
 # though the image ships bash 5.
@@ -262,6 +266,55 @@ else
         warn "setup.sh failed (exit $setup_status) -- see $SETUP_LOG"
         warn "continuing anyway: the VM comes up so the failure can be"
         warn "looked at from inside (status in $SETUP_STATUS_FILE)"
+    fi
+fi
+
+# --- managed settings (claude-orca-8a0.3) -------------------------------
+#
+# /etc/claude-code/managed-settings.json is Claude Code's administrator
+# policy file, and autoContinueAtUsageLimit is the one key this container
+# needs there: a dispatched worker that hits a usage-limit window should
+# wait it out and carry on rather than die mid-slice, taking its worktree
+# and its half-finished commit with it. Only root can write /etc, so this
+# runs BEFORE the privilege drop -- and skips silently when it is not root,
+# which is every unprivileged run including the native test suite.
+# CLAUDE_ORCA_MANAGED_SETTINGS overrides the path (tests point it at a
+# temp file). An existing file is MERGED, never replaced: it is policy, and
+# anything already there -- including an explicit false -- was meant.
+
+MANAGED_SETTINGS="${CLAUDE_ORCA_MANAGED_SETTINGS:-}"
+if [ -n "$MANAGED_SETTINGS" ] || [ "$(id -u)" = "0" ]; then
+    [ -n "$MANAGED_SETTINGS" ] || MANAGED_SETTINGS=/etc/claude-code/managed-settings.json
+    if ! command -v jq >/dev/null 2>&1; then
+        warn "no jq; leaving $MANAGED_SETTINGS alone"
+    elif mkdir -p "$(dirname "$MANAGED_SETTINGS")" 2>/dev/null; then
+        if [ ! -f "$MANAGED_SETTINGS" ]; then
+            if printf '{"autoContinueAtUsageLimit": true}\n' > "$MANAGED_SETTINGS" 2>/dev/null; then
+                chmod 644 "$MANAGED_SETTINGS" 2>/dev/null || true
+                log "managed settings: wrote autoContinueAtUsageLimit to $MANAGED_SETTINGS"
+            else
+                warn "cannot write $MANAGED_SETTINGS; skipping managed settings"
+            fi
+        elif ! jq -e . "$MANAGED_SETTINGS" >/dev/null 2>&1; then
+            # Not JSON: an operator put something there by hand. Never
+            # clobber it -- say so and move on.
+            warn "$MANAGED_SETTINGS is not JSON; leaving it exactly as found"
+        elif jq -e 'has("autoContinueAtUsageLimit")' "$MANAGED_SETTINGS" >/dev/null 2>&1; then
+            log "managed settings: autoContinueAtUsageLimit already set in $MANAGED_SETTINGS"
+        else
+            managed_tmp="$MANAGED_SETTINGS.tmp.$$"
+            if jq '. + {autoContinueAtUsageLimit: true}' "$MANAGED_SETTINGS" \
+                    > "$managed_tmp" 2>/dev/null && [ -s "$managed_tmp" ]; then
+                mv "$managed_tmp" "$MANAGED_SETTINGS"
+                chmod 644 "$MANAGED_SETTINGS" 2>/dev/null || true
+                log "managed settings: merged autoContinueAtUsageLimit into $MANAGED_SETTINGS"
+            else
+                rm -f "$managed_tmp" 2>/dev/null || true
+                warn "could not merge autoContinueAtUsageLimit into $MANAGED_SETTINGS"
+            fi
+        fi
+    else
+        warn "cannot create $(dirname "$MANAGED_SETTINGS"); skipping managed settings"
     fi
 fi
 
