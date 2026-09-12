@@ -17,6 +17,12 @@
 # Orca's own fallback (isWebClient && !clipboardReadTextAvailable), which
 # lets the native paste event xterm listens for through. Copy is unaffected.
 #
+# The same rewrite adds the <link rel="icon"> the served page has never
+# carried, pointed at the icon Orca already ships next to its bundle
+# (out/web/assets/icon-<hash>.png). The hash is a build detail, so the
+# patcher lists the archive for it instead of naming it, and a build
+# without one keeps a default tab mark rather than a broken link.
+#
 # tests/fixtures/orca-web-index.html is the real 1.4.197 file; the archive
 # around it is built here, small, with the same duplicate the real one has
 # (out/renderer/web-index.html, same bytes, same hash) and a file after it
@@ -27,10 +33,14 @@ REPO_ROOT="$(cd "$REPO_ROOT/.." && pwd)"
 PATCHER="$REPO_ROOT/scripts/container/patch-orca-web-theme.py"
 FIXTURE="$REPO_ROOT/tests/fixtures/orca-web-index.html"
 
-# make_asar <out> -- an asar with out/web/web-index.html, its renderer
-# twin, and out/web/assets/tail.js after them.
+# make_asar <out> [asset-name...] -- an asar with out/web/web-index.html,
+# its renderer twin, and out/web/assets/tail.js after them. Any extra
+# argument becomes one more file under out/web/assets/ with bytes of its
+# own, which is how a case gives the archive (or denies it) an icon asset.
 make_asar() {
-    python3 - "$1" "$FIXTURE" <<'EOF'
+    local out="$1"
+    shift
+    python3 - "$out" "$FIXTURE" "$@" <<'EOF'
 import hashlib, json, struct, sys
 out, fixture = sys.argv[1], sys.argv[2]
 html = open(fixture, "rb").read()
@@ -43,6 +53,8 @@ def entry(data, offset):
 files = [("out/renderer/web-index.html", html),
          ("out/web/web-index.html", html),
          ("out/web/assets/tail.js", tail)]
+files += [("out/web/assets/" + name, ("asset:" + name).encode())
+          for name in sys.argv[3:]]
 header = {"files": {}}
 blob = b""
 for path, data in files:
@@ -92,6 +104,30 @@ f.seek(8 + hs + int(node["offset"]))
 data = f.read(node["size"])
 ok = hashlib.sha256(data).hexdigest() == node["integrity"]["hash"] == node["integrity"]["blocks"][0]
 sys.exit(0 if ok else 1)
+EOF
+}
+
+# strip_favicon <asar> -- blank the favicon link out of the served
+# web-index.html in place, keeping the file's size, so a case can hand
+# --check an archive that seeds the theme and the shim but no favicon.
+# --check reads no hashes, so the header is left alone.
+strip_favicon() {
+    python3 - "$1" <<'EOF'
+import json, re, struct, sys
+f = open(sys.argv[1], "r+b")
+_, hs, _, js = struct.unpack("<IIII", f.read(16))
+h = json.loads(f.read(js))
+node = h
+for p in ("out", "web", "web-index.html"):
+    node = node["files"][p]
+off, size = 8 + hs + int(node["offset"]), node["size"]
+f.seek(off)
+html = f.read(size).decode("utf-8")
+new = re.sub(r'[ \t]*<link rel="icon"[^>]*>\n',
+             lambda m: " " * (len(m.group(0)) - 1) + "\n", html)
+assert new != html and len(new.encode()) == size
+f.seek(off)
+f.write(new.encode())
 EOF
 }
 
@@ -255,6 +291,13 @@ setup() {
     asar_hash_ok "$real" out/web/web-index.html
     python3 "$PATCHER" --asar "$real" --print | grep -q 'data-claude-orca-theme="dark"'
     python3 "$PATCHER" --asar "$real" --print | grep -q 'data-claude-orca-clipboard="1"'
+    # The real archive ships out/web/assets/icon-<hash>.png, so the tab
+    # gets Orca's own mark and the href names a file the serve can answer.
+    python3 "$PATCHER" --asar "$real" --print \
+        | grep -o 'href="./assets/icon-[^"]*\.png"' >"$BATS_TEST_TMPDIR/href"
+    [ -s "$BATS_TEST_TMPDIR/href" ]
+    asar_file "$real" "out/web/assets/$(sed 's|.*assets/||;s|"$||' "$BATS_TEST_TMPDIR/href")" \
+        | head -c 8 | grep -q PNG
     python3 "$PATCHER" --asar "$real" --check --theme dark
 
     # A second run changes nothing at all.
@@ -298,4 +341,136 @@ setup() {
     run python3 "$PATCHER" --asar "$ASAR" --theme dark --terminal-theme 'a";alert(1);var z="'
     [ "$status" -eq 0 ]
     python3 "$PATCHER" --asar "$ASAR" --check --theme dark --terminal-theme Homebrew
+}
+
+# The browser tab. The served page ships no <link rel="icon">, so a tab
+# shows the browser's default mark; Orca's own icon is already in the
+# archive as out/web/assets/icon-<hash>.png and is served next to the
+# bundle. The name carries a build hash, so the patcher discovers it in
+# the asar rather than spelling it out.
+@test "patch-orca-web-theme injects a favicon link pointing at the asar's own web icon asset, at the original size, hash kept true" {
+    # icons-<hash>.js sits in the same directory in the real archive and
+    # must not be mistaken for the icon: the tab wants the png.
+    local iconed="$BATS_TEST_TMPDIR/iconed.asar"
+    make_asar "$iconed" icons-xUlpmk3_.js icon-DcVXyfru.png
+    cp "$iconed" "$BATS_TEST_TMPDIR/iconed-pristine.asar"
+
+    run python3 "$PATCHER" --asar "$iconed" --theme dark
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"warning"* ]]
+    [[ "$output" == *"favicon"* ]]
+
+    # Same archive size, same page size: the rewrite is still in place.
+    [ "$(wc -c <"$iconed")" = "$(wc -c <"$BATS_TEST_TMPDIR/iconed-pristine.asar")" ]
+    asar_file "$iconed" out/web/web-index.html >"$BATS_TEST_TMPDIR/served.html"
+    [ "$(wc -c <"$BATS_TEST_TMPDIR/served.html")" = "$(wc -c <"$FIXTURE")" ]
+
+    grep -q '<link rel="icon" data-claude-orca-favicon="1" href="./assets/icon-DcVXyfru.png">' \
+        "$BATS_TEST_TMPDIR/served.html"
+    ! grep -q 'icons-xUlpmk3_' "$BATS_TEST_TMPDIR/served.html"
+    [ "$(grep -n 'data-claude-orca-favicon' "$BATS_TEST_TMPDIR/served.html" | cut -d: -f1)" \
+        -lt "$(grep -n 'type="module"' "$BATS_TEST_TMPDIR/served.html" | cut -d: -f1)" ]
+
+    # Everything the page already did still happens.
+    grep -q 'type="module" crossorigin src="./assets/web-' "$BATS_TEST_TMPDIR/served.html"
+    grep -q 'rel="stylesheet"' "$BATS_TEST_TMPDIR/served.html"
+    grep -q '<script data-claude-orca-theme="dark"' "$BATS_TEST_TMPDIR/served.html"
+    grep -q '<script data-claude-orca-clipboard="1">' "$BATS_TEST_TMPDIR/served.html"
+    [ "$(grep -c modulepreload "$BATS_TEST_TMPDIR/served.html")" -gt 0 ]
+
+    # The icon asset itself is not touched, and the header stays true for
+    # both twins of the page.
+    asar_file "$iconed" out/web/assets/icon-DcVXyfru.png \
+        | cmp -s - <(asar_file "$BATS_TEST_TMPDIR/iconed-pristine.asar" out/web/assets/icon-DcVXyfru.png)
+    asar_hash_ok "$iconed" out/web/web-index.html
+    asar_hash_ok "$iconed" out/renderer/web-index.html
+
+    # Discovered, never hard-coded: another build's icon is found under
+    # its own hash.
+    local other="$BATS_TEST_TMPDIR/other.asar"
+    make_asar "$other" icon-ZZ9testQ.png
+    run python3 "$PATCHER" --asar "$other" --theme dark
+    [ "$status" -eq 0 ]
+    asar_file "$other" out/web/web-index.html >"$BATS_TEST_TMPDIR/other.html"
+    grep -q 'href="./assets/icon-ZZ9testQ.png"' "$BATS_TEST_TMPDIR/other.html"
+    ! grep -q 'icon-DcVXyfru' "$BATS_TEST_TMPDIR/other.html"
+    asar_hash_ok "$other" out/web/web-index.html
+}
+
+@test "the favicon link is not duplicated on a second run" {
+    local iconed="$BATS_TEST_TMPDIR/iconed.asar"
+    make_asar "$iconed" icon-DcVXyfru.png
+    python3 "$PATCHER" --asar "$iconed" --theme dark >/dev/null
+    cp "$iconed" "$BATS_TEST_TMPDIR/once.asar"
+
+    run python3 "$PATCHER" --asar "$iconed" --theme dark
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"already seeds"* ]]
+    cmp -s "$iconed" "$BATS_TEST_TMPDIR/once.asar"
+    asar_file "$iconed" out/web/web-index.html >"$BATS_TEST_TMPDIR/served.html"
+    [ "$(grep -c 'data-claude-orca-favicon' "$BATS_TEST_TMPDIR/served.html")" = "1" ]
+
+    # Re-theming rewrites the whole head and still leaves exactly one.
+    run python3 "$PATCHER" --asar "$iconed" --theme light
+    [ "$status" -eq 0 ]
+    [ "$(wc -c <"$iconed")" = "$(wc -c <"$BATS_TEST_TMPDIR/once.asar")" ]
+    asar_file "$iconed" out/web/web-index.html >"$BATS_TEST_TMPDIR/served.html"
+    [ "$(wc -c <"$BATS_TEST_TMPDIR/served.html")" = "$(wc -c <"$FIXTURE")" ]
+    [ "$(grep -c 'data-claude-orca-favicon' "$BATS_TEST_TMPDIR/served.html")" = "1" ]
+    [ "$(grep -c 'rel="icon"' "$BATS_TEST_TMPDIR/served.html")" = "1" ]
+    asar_hash_ok "$iconed" out/web/web-index.html
+}
+
+@test "--check reports a missing favicon and passes once it is present" {
+    local iconed="$BATS_TEST_TMPDIR/iconed.asar"
+    make_asar "$iconed" icon-DcVXyfru.png
+
+    run python3 "$PATCHER" --asar "$iconed" --check --theme dark
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"FAIL"* ]]
+    [[ "$output" == *"favicon MISSING"* ]]
+
+    python3 "$PATCHER" --asar "$iconed" --theme dark >/dev/null
+    run python3 "$PATCHER" --asar "$iconed" --check --theme dark
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"ok"* ]]
+    [[ "$output" == *"favicon ./assets/icon-DcVXyfru.png"* ]]
+
+    # The favicon is its own dimension: with the theme and the shim still
+    # seeded and only the link gone, --check must fail rather than read the
+    # archive as patched.
+    strip_favicon "$iconed"
+    run python3 "$PATCHER" --asar "$iconed" --check --theme dark
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"favicon MISSING"* ]]
+    [[ "$output" == *"clipboard shim present"* ]]
+
+    # And a re-run puts it back.
+    run python3 "$PATCHER" --asar "$iconed" --theme dark
+    [ "$status" -eq 0 ]
+    [ "$(wc -c <"$iconed")" = "$(wc -c <"$BATS_TEST_TMPDIR/pristine.asar")" ]
+    python3 "$PATCHER" --asar "$iconed" --check --theme dark
+    asar_hash_ok "$iconed" out/web/web-index.html
+}
+
+@test "no favicon is injected and the patch still succeeds when the asar carries no web icon asset" {
+    # $ASAR from setup() carries out/web/assets/tail.js and no icon, which
+    # is the shape of an Orca that renamed or dropped the asset.
+    run python3 "$PATCHER" --asar "$ASAR" --theme dark
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"no out/web/assets/icon-"* ]]
+    [ "$(wc -c <"$ASAR")" = "$(wc -c <"$BATS_TEST_TMPDIR/pristine.asar")" ]
+    asar_file "$ASAR" out/web/web-index.html >"$BATS_TEST_TMPDIR/served.html"
+    [ "$(wc -c <"$BATS_TEST_TMPDIR/served.html")" = "$(wc -c <"$FIXTURE")" ]
+    ! grep -q 'rel="icon"' "$BATS_TEST_TMPDIR/served.html"
+
+    # The theme and the shim still land, and the header is still true.
+    grep -q '<script data-claude-orca-theme="dark"' "$BATS_TEST_TMPDIR/served.html"
+    grep -q '<script data-claude-orca-clipboard="1">' "$BATS_TEST_TMPDIR/served.html"
+    asar_hash_ok "$ASAR" out/web/web-index.html
+
+    # And --check does not fail a folder whose Orca ships no web icon.
+    run python3 "$PATCHER" --asar "$ASAR" --check --theme dark
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"favicon n/a"* ]]
 }
