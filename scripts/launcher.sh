@@ -1267,6 +1267,13 @@ orca_env_legacy_name() { container_name "$1"; }
 # A Mac-side result, so run/ and not state/.
 orca_env_file() { printf '%s\n' "$1/.claude-dev/run/orca-environment.json"; }
 
+# The other Mac-side result of a hand-off: one line saying why this folder
+# is STILL a local project in the Mac's own Orca, written when the launcher
+# could not remove it and removed at the top of every hand-off. Also run/
+# and not state/ -- it is what the last run observed, never authority; the
+# block printer asks the app itself as well.
+orca_leak_file() { printf '%s\n' "$1/.claude-dev/run/orca-local-leak"; }
+
 # The template's own ORCA_VERSION default, read rather than repeated: the
 # pin lives at Dockerfile:30 and is mirrored once in setup.sh, and a third
 # copy here is a third thing to forget. Empty when there is no Dockerfile
@@ -1502,11 +1509,12 @@ LSOF
 #      leak -- a Mac whose Orca has never been launched has neither a
 #      folder to strip nor a project in it.
 #
-# Callers only ever run this while the app is NOT running, and only once
-# its PROCESS is gone (orca_wait_app_gone): the app's shutdown flushes
-# this same file in parallel with stopping its RPC, so a rewrite done the
-# instant `status --json` says "not running" is a rewrite the flush
-# clobbers.
+# Callers only ever run this while the app is NOT running: the app's
+# shutdown flushes this same file in parallel with stopping its RPC, so a
+# rewrite done the instant `status --json` says "not running" is a rewrite
+# the flush clobbers. The launcher never quits Orca to get that window
+# (claude-orca, 2026-09-13) -- it takes the one it is given, and says what
+# to remove by hand when there is none.
 orca_strip_local_repo() {
     local dir="$1" cli="${2:-}" data f tmp p drop=""
     data="$(orca_user_data_dir "$dir" "$cli")"
@@ -1559,56 +1567,6 @@ REPOS
     return 0
 }
 
-# The only way 1.4.197 is quit with no `orca://` protocol handler to ask
-# it directly: by name, through the GUI scripting bridge. A quit that hits
-# an "Are you sure?" dialog leaves osascript blocking forever, and macOS
-# has no `timeout` -- so this backgrounds it and watches it with its own
-# poll loop, <= CLAUDE_ORCA_ORCA_WAIT seconds (the same default as the
-# reachable wait), killing it and giving up rather than hanging the whole
-# hand-off on a dialog nobody is there to answer. Returns 2 (not 1) on
-# that specific timeout, having already said why on stderr, so the caller
-# does not ALSO print its own generic "could not quit" line. No osascript
-# at all -- a non-Mac host, or one that lacks the tool -- still counts as
-# a failed quit (1), the same as a refusal would, with no watchdog to run.
-#
-# The quit is GUARDED on the app already running, and that guard is not a
-# nicety: `tell application "X" to quit` LAUNCHES X when it is not running
-# (AppleScript's own semantics), so an unguarded quit against an app that
-# has already gone away starts a fresh Orca and immediately kills it --
-# which is the second half of "I quit Orca, ran ./claude-dev, and it
-# opened and quit again".
-orca_quit_app() {
-    local app="$1" name limit waited=0 pid rc hinted=0
-    command -v osascript >/dev/null 2>&1 || return 1
-    name="$(basename "$app" .app)"
-    limit="${CLAUDE_ORCA_ORCA_WAIT:-60}"
-    case "$limit" in
-        ''|*[!0-9]*) limit=60 ;;
-    esac
-    osascript -e "if application \"$name\" is running then tell application \"$name\" to quit" &
-    pid=$!
-    while kill -0 "$pid" 2>/dev/null; do
-        # Three seconds in and still blocked is a dialog, not a slow
-        # quit -- say so ONCE, because the person watching a bootstrap
-        # scroll past has no other way to know they are the hold-up.
-        if [ "$hinted" -eq 0 ] && [ "$waited" -ge 3 ]; then
-            hinted=1
-            echo "  Orca is asking you to confirm -- click Quit in Orca (waiting up to ${limit}s)" >&2
-        fi
-        if [ "$waited" -ge "$limit" ]; then
-            kill "$pid" 2>/dev/null
-            wait "$pid" 2>/dev/null
-            echo "  Orca did not quit within ${limit}s (a dialog may be open) -- opening Orca Web instead" >&2
-            return 2
-        fi
-        sleep 1
-        waited=$((waited + 1))
-    done
-    wait "$pid"
-    rc=$?
-    return "$rc"
-}
-
 # Poll until the app's runtime answers, <= CLAUDE_ORCA_ORCA_WAIT seconds
 # (60, the plan's number). The exit code says nothing, so the JSON is read
 # every time.
@@ -1631,65 +1589,24 @@ orca_wait_reachable() {
     done
 }
 
-# The mirror of the above, for the other half of a self-heal: polls until
-# the app PROCESS itself is gone, so the relaunch that follows a quit
-# never races one that has not finished landing.
-orca_wait_app_not_running() {
-    local cli="$1" limit waited=0 out=""
-    limit="${CLAUDE_ORCA_ORCA_WAIT:-60}"
-    case "$limit" in
-        ''|*[!0-9]*) limit=60 ;;
-    esac
-    while :; do
-        out="$("$cli" status --json 2>/dev/null || true)"
-        if ! orca_json_app_running "$out"; then
-            return 0
-        fi
-        if [ "$waited" -ge "$limit" ]; then
-            return 1
-        fi
-        sleep 1
-        waited=$((waited + 1))
-    done
-}
-
-# The wait a strip is actually safe after. `.result.app.running` goes
-# false when Orca's RPC stops, and its shutdown runs that stop IN PARALLEL
-# with the debounced flush of orca-data.json (Promise.all with a deadline,
-# then app.quit()) -- so the RPC answer alone says nothing about whether
-# the store has stopped being written. Waiting for the PROCESS to be gone
-# does: the flush cannot outlive it. pgrep against the bundle's own
-# executable path, since two things named Orca could otherwise be one
-# match; no pgrep (it ships with macOS, so this is the unusual host) means
-# the RPC answer is all there is and this returns what it returned.
-orca_wait_app_gone() {
-    local app="$1" cli="$2" limit waited=0 out=""
-    orca_wait_app_not_running "$cli" || return 1
-    command -v pgrep >/dev/null 2>&1 || return 0
-    limit="${CLAUDE_ORCA_ORCA_WAIT:-60}"
-    case "$limit" in
-        ''|*[!0-9]*) limit=60 ;;
-    esac
-    while :; do
-        out="$(pgrep -f "$app/Contents/MacOS/" 2>/dev/null || true)"
-        if [ -z "$out" ]; then
-            return 0
-        fi
-        if [ "$waited" -ge "$limit" ]; then
-            return 1
-        fi
-        sleep 1
-        waited=$((waited + 1))
-    done
-}
-
 # Launch the app, wait for it, and save this folder's runtime as an
 # environment. Returns 0 when the desktop app is this folder's client --
-# whether or not the environment saved, because the block that follows
-# says which -- and 1 when the caller should open the browser instead.
+# whether or not the environment saved, and whether or not this folder is
+# ALSO a local project there, because the block that follows says which --
+# and 1 only when the hand-off cannot happen at all (no app, no CLI, no
+# pairing offer, an app that never answers), which is the one case the
+# browser is still the answer for.
+#
+# Nothing here ever quits Orca (the user's decision, 2026-09-13): their
+# windows and their running agents are worth more than the one thing a
+# quit buys, a writable orca-data.json. A local project this run could
+# not remove is reported instead -- the diagnostic below names the entry
+# that matched, and print_desktop_block_v3 prints the clicks that remove
+# it -- while the remote environment is registered regardless, so the
+# sandboxed workspace exists to open.
 orca_hand_off() {
     local dir="$1" app="" cli="" pair="" name="" legacy="" appver="" imgver="" \
-          out="" id="" quit_rc=0 strip_rc=0 data="" f=""
+          out="" id="" strip_rc=0 leak=0 leak_why=""
 
     app="$(desktop_app)" || {
         echo "  no Orca.app on this Mac -- opening Orca Web instead ($ORCA_DOWNLOAD_URL)" >&2
@@ -1725,84 +1642,46 @@ orca_hand_off() {
 
     name="$(orca_env_name "$dir")"
     legacy="$(orca_env_legacy_name "$dir")"
-    # Nothing may claim a saved environment until this run saves one.
+    # Nothing may claim a saved environment until this run saves one, and
+    # nothing may claim a local project until this run sees one.
     rm -f "$(orca_env_file "$dir")"
+    rm -f "$(orca_leak_file "$dir")"
 
     # Two paths, and which one this is decides everything below: the app
     # is already up (a launch would be a SECOND instance, which
-    # claude-orca-tgr forbids, and its store is being written under us),
-    # or it is not (the store is ours to rewrite, and NOTHING here may
-    # quit -- a quit would be aimed at an app this run launched itself).
+    # claude-orca-tgr forbids, and its store is being written under us,
+    # so there is no safe rewrite to attempt at all), or it is not (the
+    # store is ours to rewrite, and the app this run starts starts
+    # without this folder in it).
     if orca_json_app_running "$("$cli" status --json 2>/dev/null || true)"; then
         # Ask for the data dir while the process still exists: discovery
         # goes through `lsof -p <pid>`, so the answer is only obtainable
-        # now, and it is cached under state/ for the strip that may follow
-        # the quit -- by which time there is no pid to ask about.
-        data="$(orca_user_data_dir "$dir" "$cli")"
+        # now, and it is cached under state/ for every later run that has
+        # no pid to ask about -- including the diagnostic below.
+        orca_user_data_dir "$dir" "$cli" >/dev/null
         if ! orca_wait_reachable "$cli"; then
             echo "  Orca.app did not answer in ${CLAUDE_ORCA_ORCA_WAIT:-60}s -- opening Orca Web instead" >&2
             return 1
         fi
-
-        # Self-heal ONCE if this folder is a local project there: quit the
-        # one installed Orca, strip, relaunch. A failure at any step falls
-        # back to Orca Web rather than leaving this folder open on the Mac
-        # with no sandbox.
         if orca_lists_local_repo "$("$cli" repo list --json 2>/dev/null || true)" "$dir"; then
-            # ... but only when the store we would rewrite actually names
-            # the folder. Quitting a person's app to rewrite a file that
-            # cannot produce the change is the worst of both: they lose
-            # their session and the leak survives.
-            f=""
-            if [ -n "$data" ]; then f="$data/orca-data.json"; fi
-            if [ -z "$f" ] || ! orca_data_json_lists_dir "$f" "$dir"; then
-                echo "  Orca holds this folder as a LOCAL project but ${f:-its data folder} does not name it, so the launcher cannot remove it; remove the project in Orca (sidebar > right-click the project > Remove) and rerun ./claude-dev -- opening Orca Web instead" >&2
-                return 1
-            fi
-            if [ "${CLAUDE_ORCA_OPEN:-1}" = "0" ]; then
-                echo "  Orca holds this folder as a LOCAL project and CLAUDE_ORCA_OPEN=0 forbids quitting it -- opening Orca Web instead" >&2
-                return 1
-            fi
-            echo "  Orca already holds this folder as a LOCAL project -- quitting and relaunching to remove it" >&2
-            quit_rc=0
-            orca_quit_app "$app" || quit_rc=$?
-            if [ "$quit_rc" -eq 2 ]; then
-                # orca_quit_app's own watchdog already said why on stderr.
-                return 1
-            elif [ "$quit_rc" -ne 0 ] || ! orca_wait_app_gone "$app" "$cli"; then
-                echo "  could not quit $app -- opening Orca Web instead so this folder stays sandboxed" >&2
-                return 1
-            fi
-            if ! orca_strip_local_repo "$dir" "$cli"; then
-                echo "  -- opening Orca Web instead" >&2
-                return 1
-            fi
-            open -a "$app" || echo "  Could not relaunch $app" >&2
-            if ! orca_wait_reachable "$cli"; then
-                echo "  Orca.app did not answer in ${CLAUDE_ORCA_ORCA_WAIT:-60}s -- opening Orca Web instead" >&2
-                return 1
-            fi
-            if orca_lists_local_repo "$("$cli" repo list --json 2>/dev/null || true)" "$dir"; then
-                # One self-heal, never two: a second quit here is the loop
-                # that opens the app and closes it again.
-                echo "  this folder is still a LOCAL project in Orca after relaunching -- opening Orca Web instead so it stays sandboxed" >&2
-                return 1
-            fi
+            leak=1
+            leak_why="Orca lists this folder as a LOCAL project"
+            orca_report_local_leak "$dir" "$cli"
         fi
     else
-        # Not running: strip first and verify it landed, THEN launch. In
-        # this order a launch is never something this run has to undo --
-        # and there is no quit anywhere on this path, because the only app
-        # there could be to quit is the one this run just started.
+        # Not running: strip first, THEN launch. In this order the app
+        # this run starts has never held the folder -- and when the strip
+        # could not land, the hand-off still happens; the block at the end
+        # is what asks for the two clicks that finish it.
         if [ "${CLAUDE_ORCA_OPEN:-1}" != "0" ]; then
             strip_rc=0
             orca_strip_local_repo "$dir" "$cli" || strip_rc=$?
             # 2 is "there is no store here to read" -- said on stderr
-            # already, and no reason to withhold the app. 1 is a folder
-            # this Mac's Orca still holds: do not hand it over.
+            # already, and no evidence of a leak. 1 is a folder this Mac's
+            # Orca still holds after the rewrite, which it also said.
             if [ "$strip_rc" -eq 1 ]; then
-                echo "  -- opening Orca Web instead" >&2
-                return 1
+                leak=1
+                leak_why="this Mac's orca-data.json still lists this folder after the strip"
             fi
             open -a "$app" || echo "  Could not launch $app" >&2
         fi
@@ -1811,9 +1690,18 @@ orca_hand_off() {
             return 1
         fi
         if orca_lists_local_repo "$("$cli" repo list --json 2>/dev/null || true)" "$dir"; then
-            echo "  Orca re-added this folder as a LOCAL project on launch -- opening Orca Web instead so it stays sandboxed" >&2
-            return 1
+            leak=1
+            leak_why="Orca re-added this folder as a LOCAL project on launch"
+            orca_report_local_leak "$dir" "$cli"
         fi
+    fi
+
+    # A result, not authority: what the block printer says without having
+    # to ask the app a second time (it still asks, so a leak that appears
+    # between here and the block is reported too).
+    if [ "$leak" -eq 1 ]; then
+        mkdir -p "$dir/.claude-dev/run"
+        printf '%s\n' "$leak_why" > "$(orca_leak_file "$dir")"
     fi
 
     # Remove first, always. The name may be saved against the PREVIOUS
@@ -1871,6 +1759,70 @@ orca_json_repo_paths() {
         printf '%s' "$json" | jq -r '.result.repos[]?.path // empty' 2>/dev/null || true
     else
         printf '%s' "$json" | tr '{},' '\n' | sed -n 's/^"path":"\(.*\)"$/\1/p'
+    fi
+}
+
+# The same answer with the two fields that say WHICH entry this is:
+# path<TAB>host<TAB>id, one line each. Orca's own record (out/shared/
+# execution-host.js in 1.4.197) carries executionHostId normalised to
+# "local", "ssh:<target>" or "runtime:<env>", with connectionId as the
+# older spelling -- so the host column is the one thing that tells this
+# folder's own container workspace apart from a real local project.
+# Deliberately UNFILTERED: the diagnostic that prints these exists
+# precisely because a CLI answer and the persisted store disagreed once,
+# and hiding the host of whatever matched is how that stayed a mystery.
+# Empty without jq; the caller falls back to the path list.
+orca_json_repo_rows() {
+    local json="$1"
+    command -v jq >/dev/null 2>&1 || return 0
+    printf '%s' "$json" | jq -r '.result.repos[]?
+        | [(.path // ""), (.executionHostId // .connectionId // "local"), (.id // "")]
+        | @tsv' 2>/dev/null || true
+}
+
+# What the launcher saw, whenever `repo list` says this folder is a local
+# project in the Mac's own Orca. On a real Mac (2026-09-13) the CLI said
+# local and orca-data.json did not name the folder at all, and nothing in
+# the output said which entry had matched -- so every run that meets this
+# again prints the matching rows with their host, this folder's own path,
+# and what the persisted store lists locally. stderr, one line each.
+orca_report_local_leak() {
+    local dir="$1" cli="$2" json="" tab p host id data="" f="" locals="" sep=""
+    tab="$(printf '\t')"
+    json="$("$cli" repo list --json 2>/dev/null || true)"
+    echo "  Orca lists this folder as a LOCAL project:" >&2
+    if command -v jq >/dev/null 2>&1; then
+        while IFS="$tab" read -r p host id; do
+            [ -n "$p" ] || continue
+            orca_path_is_this_folder "$p" "$dir" || continue
+            echo "    $p  host=${host:-local}  id=$id" >&2
+        done <<ROWS
+$(orca_json_repo_rows "$json")
+ROWS
+    else
+        while IFS= read -r p; do
+            [ -n "$p" ] || continue
+            orca_path_is_this_folder "$p" "$dir" || continue
+            echo "    $p" >&2
+        done <<PATHS
+$(orca_json_repo_paths "$json")
+PATHS
+    fi
+    echo "    this folder: $dir" >&2
+    data="$(orca_user_data_dir "$dir" "$cli")"
+    if [ -n "$data" ]; then f="$data/orca-data.json"; fi
+    if [ -n "$f" ] && [ -f "$f" ]; then
+        while IFS= read -r p; do
+            [ -n "$p" ] || continue
+            locals="$locals$sep$p"
+            sep=", "
+        done <<LOCALS
+$(orca_data_json_repo_paths "$f")
+LOCALS
+        [ -n "$locals" ] || locals="none"
+        echo "    $f local entries: $locals" >&2
+    else
+        echo "    $(orca_no_data_dir_message)" >&2
     fi
 }
 
@@ -2015,28 +1967,50 @@ RUNIT
     orca_local_leak_note "$dir"
 }
 
-# The one warning cmd_verify's "local repos" doctor row could give but the
-# hand-off never did: the same folder can ALSO be a LOCAL project in the
-# Mac's own Orca (badge "Local Mac"), and agents opened there run on the
-# Mac with no container around them. A last line of defence, not the
-# primary guard -- orca_hand_off's own self-heal already asks and fixes
-# this before a successful hand-off ever gets here, so this should never
-# actually fire. The CLI has no `orca repo rm`, so the fix is naming where
-# to do it by hand. Quiet whenever there is no app or no CLI to ask (same
-# gate as cmd_verify's "n/a" row): a folder on Linux, or a Mac with no
-# Orca.app, has nothing to warn about.
+# The two clicks that finish a hand-off the launcher could not finish
+# itself: the same folder is ALSO a LOCAL project in the Mac's own Orca
+# (badge "Local Mac"), where agents run with no container around them.
+# Since 2026-09-13 that is no longer a reason to withhold the app -- the
+# remote environment is registered either way -- so this is the ACTION,
+# not a warning printed on the way to the browser.
+#
+# Two sources, because neither alone is enough: the file orca_hand_off
+# wrote when it saw the leak itself (run/orca-local-leak, this run's own
+# observation), and the app's own answer right now -- which catches a
+# project added between the hand-off and this block, and keeps the note
+# working for every caller that never ran a hand-off at all. Quiet when
+# there is no app or no CLI to ask (the same gate as cmd_verify's "n/a"
+# row): a folder on Linux, or a Mac with no Orca.app, has nothing to say.
+#
+# The labels are Orca 1.4.197's own (renderer bundle): the workspace
+# context menu says "Remove Project from Orca", the local badge is
+# "Local Mac", the sidebar button is "New workspace" and its host picker
+# is "Run on". Settings > Remove Project is a DIFFERENT command --
+# "Remove this project from Orca on all configured hosts" -- which would
+# take the container's workspace with it, hence the warning against it.
 orca_local_leak_note() {
-    local dir="$1" app cli
-    app="$(find_orca_app 2>/dev/null)" || return 0
-    cli="$(orca_cli "$app" 2>/dev/null)" || return 0
-    orca_lists_local_repo "$("$cli" repo list --json 2>/dev/null || true)" "$dir" || return 0
-    cat <<WARNING
+    local dir="$1" name project app cli
+    if [ ! -s "$(orca_leak_file "$dir")" ]; then
+        app="$(find_orca_app 2>/dev/null)" || return 0
+        cli="$(orca_cli "$app" 2>/dev/null)" || return 0
+        orca_lists_local_repo "$("$cli" repo list --json 2>/dev/null || true)" "$dir" || return 0
+    fi
+    name="$(orca_env_name "$dir")"
+    project="$(derive_project_name "$dir")"
+    cat <<ACTION
 
-WARNING: the Mac's own Orca also holds this folder as a LOCAL project.
-         Workspaces badged "Local Mac" run on the Mac with no sandbox.
-         Remove that project in Orca before working there
-         (./claude-dev verify reports it as the "local repos" row).
-WARNING
+ACTION NEEDED in Orca, once. This folder is ALSO open there as a LOCAL project,
+and agents started in that workspace run on the Mac with no sandbox.
+  1. In Orca's sidebar, under the project "$project", find the workspace
+     badged "Local Mac".
+  2. Right-click that workspace and choose "Remove Project from Orca".
+     Do NOT use Settings > Remove Project: that removes it on every host,
+     the container's copy included.
+  3. The workspace badged "$name" is the sandboxed one -- open it.
+     To make another: click "+" (New workspace), pick the project
+     "$project", and under "Run on" choose "$name".
+  If the "$name" workspace is missing afterwards, rerun ./claude-dev.
+ACTION
 }
 
 # The whole hand-off, in three lines: where Orca is, how to get back to

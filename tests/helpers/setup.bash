@@ -1032,8 +1032,17 @@ case "$1" in
 $(jq -r '.repos[]?.path // empty' "$f" 2>/dev/null)
 PATHS
         else
+            # The full record shape, not just the path: 1.4.197 stores
+            # {id, path, executionHostId, ...} and the launcher's own
+            # diagnostic prints the host and the id of whatever entry
+            # matched this folder. $ORCA_STUB_LOCAL_HOST sets that host --
+            # "local" (the default) is the leak this is all about, a
+            # "runtime:<env>" value is the container's own workspace.
+            n=0
             for p in ${ORCA_STUB_LOCAL_REPOS:-}; do
-                out="$out$sep{\"path\":\"$p\"}"; sep=","
+                n=$((n + 1))
+                out="$out$sep{\"id\":\"repo-$n\",\"path\":\"$p\",\"executionHostId\":\"${ORCA_STUB_LOCAL_HOST:-local}\"}"
+                sep=","
             done
         fi
         printf '{"ok":true,"result":{"repos":[%s]}}\n' "$out"
@@ -1054,13 +1063,12 @@ STUB
     chmod +x "$1"
 }
 
-# 1.4.197 has no `orca://` protocol handler, so a self-heal quits Orca by
-# name through the GUI scripting bridge (claude-orca-tgr): `osascript -e
-# 'tell application "<Name>" to quit'`. Records the whole argv and, like a
-# real quit, flips the orca stub's own "is the app running" answer to
-# false -- guarded on $ORCA_STUB_STATE existing, same as the open stub.
-# OSASCRIPT_STUB_FAIL=1 stands in for a Mac with no osascript, or a quit
-# that was refused.
+# The GUI scripting bridge -- the only way anything can quit the Mac's own
+# Orca, since 1.4.197 registers no `orca://` protocol handler. The launcher
+# does NOT do that any more (the user's decision, 2026-09-13: their windows
+# and their running agents are never this launcher's to close), so this
+# stub exists to CATCH one: a case asserts $OSASCRIPT_STUB_LOG is empty,
+# which it can only do if a real osascript call would have landed in it.
 write_stub_osascript() {
     cat > "$1" <<'STUB'
 #!/usr/bin/env bash
@@ -1068,43 +1076,11 @@ printf '%s\n' "$*" >> "${OSASCRIPT_STUB_LOG:-/dev/null}"
 if [ "${OSASCRIPT_STUB_FAIL:-0}" = "1" ]; then
     exit 1
 fi
-if [ "${OSASCRIPT_STUB_HANG:-0}" = "1" ]; then
-    # exec, not a plain `sleep 30` line: a real "Are you sure?" dialog
-    # blocks osascript's own single process, not a subprocess of it, and
-    # the watchdog's `kill "$pid"` only reaches the process it backgrounded
-    # -- a stub that forked sleep as a CHILD would leave that child holding
-    # the pipe open for the rest of its 30s even after the kill, which is
-    # a bug in the stub, not evidence of one in orca_quit_app.
-    exec sleep 30
-fi
 if [ -n "${ORCA_STUB_STATE:-}" ]; then
     mkdir -p "$ORCA_STUB_STATE"
     printf 'false\n' > "$ORCA_STUB_STATE/app-running"
 fi
 exit 0
-STUB
-    chmod +x "$1"
-}
-
-# orca_wait_app_gone()'s second half: the app's own PROCESS, not its RPC.
-# Orca flushes orca-data.json in PARALLEL with stopping the RPC at quit,
-# so `status --json` can say "not running" while the store is still being
-# written -- the launcher waits for `pgrep -f <bundle>/Contents/MacOS/` to
-# go quiet as well. The stub answers from the same app-running file the
-# open and osascript stubs already flip, and is silent (exit 1, like a
-# real pgrep with no match) once the quit has landed.
-write_stub_pgrep() {
-    cat > "$1" <<'STUB'
-#!/usr/bin/env bash
-running="${ORCA_STUB_APP_RUNNING:-false}"
-if [ -n "${ORCA_STUB_STATE:-}" ] && [ -f "$ORCA_STUB_STATE/app-running" ]; then
-    running="$(cat "$ORCA_STUB_STATE/app-running")"
-fi
-if [ "$running" = "true" ]; then
-    printf '%s\n' "${ORCA_STUB_APP_PID:-4242}"
-    exit 0
-fi
-exit 1
 STUB
     chmod +x "$1"
 }
@@ -1210,7 +1186,6 @@ setup() {
     export OSASCRIPT_STUB_LOG="$BATS_TEST_TMPDIR/osascript.log"
     : > "$OSASCRIPT_STUB_LOG"
     write_stub_osascript "$STUB_BIN/osascript"
-    write_stub_pgrep "$STUB_BIN/pgrep"
     write_stub_lsof "$STUB_BIN/lsof"
     # orca_user_data_dir()'s own fallback path (claude-orca-tgr) --
     # $HOME/Library/Application Support/Orca, standing in for the Mac's

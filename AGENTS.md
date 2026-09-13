@@ -234,8 +234,11 @@ URL's `#pairing=` fragment). The `ui` key in `claude-orca.json`
 (`desktop`|`web`, written at register) decides; no app found, or
 `CLAUDE_ORCA_UI=web`, means Orca Web, so the browser path stays whole. The
 image is built at the app's version because Orca refuses a protocol
-mismatch, and because the app can also open *local* unsandboxed workspaces
-the launcher never hands it one and `verify` reads its local repo list back.
+mismatch. The app can also open *local* unsandboxed workspaces, so the
+launcher strips this folder out of `orca-data.json` while Orca is closed --
+it never quits a running Orca to get that window, attaches the remote host
+either way, and prints the in-app clicks when a local project survives --
+and `verify` reads its local repo list back.
 
 `HOME` is `<project>/.claude-dev/home`, whose `.claude` config dir is
 populated from this repo's `config/` by a checksum-gated sync that preserves

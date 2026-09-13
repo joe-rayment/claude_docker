@@ -97,17 +97,17 @@ Connected in its **Remote Hosts** pane. The sidebar groups it under a
 carries a badge with the environment name, so a sandboxed workspace reads
 `remote-…` where a local one reads **Local Mac**; open one and you are in the
 container, the app a client exactly as the browser tab is, and nothing it
-runs escapes the container. The one installed Orca is never allowed to
-hold this folder as a **local** project (agents run there with no sandbox
-at all): `./claude-dev` removes it from the app's own project list before
-handing over the runtime, quitting and relaunching Orca when the app
-already holds it and has to be asked to let go first. If it still holds
-this folder locally after that, `./claude-dev` gives up on the app for
-this run and opens the browser instead, so the folder stays sandboxed
-either way. The app's own "+ Add project" cannot be turned off in
-1.4.197, so a local project added mid-session survives until the next
-`./claude-dev` removes it again — `./claude-dev verify`'s "local repos"
-row reports it in the meantime.
+runs escapes the container. Holding this folder as a **local** project
+as well is the one thing to avoid (agents run there with no sandbox at
+all): `./claude-dev` removes it from the app's own project list before
+handing over the runtime, by rewriting `orca-data.json` while Orca is
+closed. It never quits a running Orca to do that -- your windows and your
+running agents are yours -- so when the app is already up, or the rewrite
+cannot land, the folder is handed over anyway and `./claude-dev` prints
+the two clicks that remove the local project by hand. The app's own
+"+ Add project" cannot be turned off in 1.4.197, so a local project added
+mid-session survives until the next `./claude-dev` removes it again —
+`./claude-dev verify`'s "local repos" row reports it in the meantime.
 
 Which path a folder takes is the **`ui`** key in
 `.claude-dev/claude-orca.json` (`desktop` or `web`), written once at
