@@ -61,10 +61,14 @@ setup() {
     export TMPDIR="$BATS_TEST_TMPDIR"
 }
 
-@test "rulebook: config/claude-user-memory.md is at most 1000 words" {
+# The cap moved 1000 -> 1150 in Sept 2026: the message-contract section
+# gained the self-contained-question rule and the interim-update/notification
+# rule, and § Delegation gained the unnamed-spawn rule -- all three are
+# verbatim user text, so the budget moved rather than the words.
+@test "rulebook: config/claude-user-memory.md is at most 1150 words" {
     local words
     words=$(wc -w < "$USER_MEMORY")
-    [ "$words" -le 1000 ]
+    [ "$words" -le 1150 ]
 }
 
 @test "rulebook: CLAUDE.md is at most 1700 words" {
@@ -112,7 +116,7 @@ setup() {
                   'independent slices run in parallel' \
                   'share files run sequentially' \
                   'recon fans out freely' \
-                  '<role>-<agent>-<model-slug>'; do
+                  'Spawns are unnamed'; do
         case "$deleg" in
             *"$phrase"*) ;;
             *) printf 'rulebook § Delegation missing: %s\n' "$phrase"; return 1 ;;

@@ -7,10 +7,17 @@ orchestrator to push recon to scout, implementation to executor, and keep
 its own tool calls to review/decide — but nothing enforces that; the main
 loop can grind through reads/edits inline indefinitely and nothing in the
 harness pushes back. This hook counts consecutive inline work-tool calls
-made by the MAIN LOOP ONLY (never a subagent) and, depending on mode,
-nudges (warn) and/or blocks (guard/enforce) once a streak crosses a
-threshold. Calling the Agent (or Workflow) tool resets the streak to zero
-— that is the "I delegated" signal.
+made by the MAIN LOOP ONLY (never a subagent) and nudges once a streak
+crosses a threshold. Calling the Agent (or Workflow) tool resets the
+streak to zero — that is the "I delegated" signal.
+
+ADVISORY ONLY (claude-orca, Sept 2026): this gate NEVER denies a tool
+call, in any mode. Every path that used to emit a deny now emits the same
+text as an allow + additionalContext note prefixed "[delegation-gate]".
+The mode names below are kept (mode files and env overrides in the wild
+still set them) and still decide WHICH note fires, but "guard" and
+"enforce" are now differences of wording, not of permission. The
+"denies" counter in the state file stays in the schema and stays 0.
 
 Main-loop discriminator (empirical, scratchpad/gateprobe/ raw log,
 harness v2.1.220): the obvious hypothesis — that a subagent's PreToolUse
@@ -33,27 +40,20 @@ as "guard" — the gate never silently degrades to a weaker mode on a typo.
              switching modes mid-session picks up an accurate count).
   warn-only  (alias: "warn") allow everything, but fire the repeating
              warn note per the cadence below. Never denies.
-  guard      (DEFAULT) Edit/Write/NotebookEdit in the main loop are
-             DENIED — an implementation edit is the executor's seat —
-             UNLESS the target path falls under the orchestrator's own
-             carve-out (see is_carved_out()) OR the declared lane is
-             "standard" or "express" (see "Lane awareness" below: the
-             denial fires only for lane "deep" or no lane declared).
-             Read/Grep/Glob are never denied under guard, only warned
-             per the cadence below; a NON-EXEMPT Bash call IS denied once
-             the streak reaches DELEGATION_GATE_DENY_AT (claude-orca-8a0.3
-             — `cat`/`grep`/a build through Bash is the same inline work
-             an Edit is, and it was the hole the gate left open). That
-             Bash denial fires in EVERY lane except express — including
-             lane standard, where the edit denial does not — because
-             standard is where most sessions run.
-  enforce    guard, PLUS Read/Grep/Glob are also denied once the streak
+  guard      (DEFAULT) Edit/Write/NotebookEdit in the main loop draw the
+             executor's-seat note — unless the target path is exempt (see
+             is_exempt_edit()) or the declared lane is "standard" or
+             "express" (see "Lane awareness" below: the note fires only
+             for lane "deep" or no lane declared). A NON-EXEMPT Bash call
+             draws its own note once the streak reaches
+             DELEGATION_GATE_DENY_AT, in every lane except express.
+  enforce    guard, PLUS Read/Grep/Glob draw a note once the streak
              reaches DELEGATION_GATE_DENY_AT (default 8).
-Every denial names the exact alternative (spawn a scout / spawn an
+Every note names the exact alternative (spawn a scout / spawn an
 executor) — never a dead end.
 
 Repeating warn cadence: the original shipped gate warned once (at streak
-DELEGATION_GATE_WARN_AT, default 4) and then fell silent for the rest of
+DELEGATION_GATE_WARN_AT, default 8) and then fell silent for the rest of
 the session — the one mechanism that fires mid-turn shut itself up after
 a single use, which is self-defeating for a session that ignores it. The
 fix is a watermark, not a boolean: warn again whenever
@@ -63,15 +63,24 @@ plain nudge, 2x-warn_at adds the standing-authorization reminder, 6x-warn_at
 adds the re-billing economics. Agent/Workflow calls clear the watermark
 (and the streak) back to zero.
 
-Edit carve-out (guard/enforce only): planning and memory ARE the
-orchestrator's own seat, and the plan file itself is written by the main
-loop — without an exception, guard mode makes plan mode unusable. Carved
-out: $CLAUDE_CONFIG_DIR/plans/**, $CLAUDE_CONFIG_DIR/projects/*/memory/** (the harness
-auto-memory dir), and any path containing "/.claude/plans/" (covers a
-git-root-relative .claude/plans/ dir too). The carve-out must be PROVEN
-from an explicit, resolvable path — if tool_input carries no path, the
-edit is NOT carved out (denied). Deliberately excludes /tmp and the
-scratchpad: that would be a smuggling hole for real implementation edits.
+Edit exemptions (all modes): planning, memory and scratch ARE the
+orchestrator's own seat, so an Edit/Write/NotebookEdit landing there is
+not counted at all — no streak increment, no note. Exempt: any path
+containing "/.claude/plans/" (covers $CLAUDE_CONFIG_DIR/plans/** and a
+git-root-relative .claude/plans/ dir), $CLAUDE_CONFIG_DIR/projects/*/memory/**
+(the harness auto-memory dir), and a scratchpad path — /tmp/claude-*/…
+or anything containing "/scratchpad/". The exemption must be PROVEN from
+an explicit, resolvable path: if tool_input carries no path, the edit
+counts like any other. (The scratchpad used to be excluded deliberately,
+as a smuggling hole for real edits; with the gate advisory there is
+nothing left to smuggle past, and scratch files are not the grinding this
+hook targets.)
+
+Read-only half-counting: Read/Grep/Glob increment the streak by 1 only on
+every SECOND such call (the odd one is held in state as "ro_pending"), so
+a pure-recon stretch reaches WARN_AT=8 at about 16 calls while a stretch
+of edits or non-exempt Bash still reaches it at 8. Reading is the cheapest
+thing the orchestrator does inline and was over-weighted before.
 
 State: $CLAUDE_CONFIG_DIR/cache/delegation-gate/<session_id>.json holds
 {"streak": int, "warned_at": int, "max_streak": int, "warns": int,
@@ -94,46 +103,42 @@ context (observed live — the session that shipped this hook read its own
 streak-4 warn and delegated in response), but in headless `claude -p`
 runs a full content-scan of every user/assistant message found the probe
 strings only in sidecar attachment records, never model-visible. So warn
-is effective in interactive sessions and inert in headless children;
-where headless behavior must actually change, use guard/enforce — only a
-deny steers there. This is also why guard denying edits by default is the
-real floor: warn text can be dropped, a deny cannot.
+is effective in interactive sessions and inert in headless children. A
+deny used to be the answer to that; it no longer is — the gate is
+advisory, so a note that the harness drops is simply a note that was not
+read, and no tool call is ever stopped.
 
 Lane awareness (complexity router, scripts/lane.sh): the orchestrator
 declares a lane per prompt and `lane` records it at
 $LANE_STATE_DIR/<session_id>.json. An express lane means the task is small
 by definition — a single mechanical edit or a one-lookup answer — so the
-guard/enforce denials are exactly backwards there: spawning an executor to
+guard/enforce notes are exactly backwards there: spawning an executor to
 change one line costs more than the change. Under express, main-loop
-Edit/Write/NotebookEdit are allowed outright (the plans/memory carve-out
-never has to be proven) and enforce's read/Bash streak-deny is suspended;
-the streak is still counted, and a NEW warn (EXPRESS_WARN_AT, repeating
+Edit/Write/NotebookEdit draw no note at all and the read/Bash streak note
+is suspended; the streak is still counted, and a NEW warn (EXPRESS_WARN_AT, repeating
 every EXPRESS_WARN_EVERY, sharing the same warned_at watermark) fires
 instead of the delegation nudge — a long grind under express is the
 mis-routing signal, and telling that session to delegate would contradict
 the lane it declared.
 
 Standard lane (beads_claude_docker-dl2) also suspends the guard/enforce
-edit denial, though NOT the rest of the pre-lane behavior: the standard
-rubric already allows a one-slice task to finish inline, so a hard deny
-there just forces an executor spawn the rubric never asked for. Unlike
-express, standard gets no dedicated warn — it falls through to the
-ordinary streak warn cadence (WARN_AT/WARN_EVERY) below like any other
-allowed call, it just never hits emit_deny(). Because the guard/enforce
-edit-deny check is one shared branch (mode in ("guard", "enforce")),
-enforce inherits this relaxation too — same as it already inherits
-express's — there is no separate enforce-only edit rule to preserve.
-Deep and unset (which also covers any unrecognized lane name or an
-unreadable/absent state file) are the only two lane readings that still
-hit the unconditional edit deny: byte-identical to the pre-lane
-behavior, the same never-weaker principle as get_mode()'s
-unrecognized-value fallback.
+edit note: the standard rubric already allows a one-slice task to finish
+inline, so nagging there asks for an executor spawn the rubric never
+wanted. Unlike express, standard gets no dedicated warn — it falls
+through to the ordinary streak warn cadence (WARN_AT/WARN_EVERY) below
+like any other call, it just never hits the edit note. Because that check
+is one shared branch (mode in ("guard", "enforce")), enforce inherits the
+relaxation too. Deep and unset (which also covers any unrecognized lane
+name or an unreadable/absent state file) are the two lane readings that
+still draw the edit note.
 
 Failure posture: fail SILENT AND OPEN. Any error — malformed stdin,
 unreadable state, an unwritable cache dir — exits 0 with no output.
-Exempt from all of this: a short list of housekeeping Bash commands
-(bd/git read-only/bats/dev-log/cost-mirror/tier-*/delegation-gate itself)
-that are recon-adjacent bookkeeping, not the grinding this hook targets.
+Exempt from all of this: a list of housekeeping Bash commands — `bd`,
+every `git` and every `gh` invocation (not just the read-only ones: a
+commit or a push is session steering, not inline work), bats, dev-log,
+cost-mirror, tier-*, lane, run-tests, take-screenshot and delegation-gate
+itself — which are bookkeeping, not the grinding this hook targets.
 """
 
 import json
@@ -170,10 +175,12 @@ EXPRESS_WARN_EVERY = 4
 COUNTED_TOOLS = {"Read", "Grep", "Glob", "Edit", "Write", "NotebookEdit"}
 RESET_TOOLS = {"Agent", "Workflow"}
 EDIT_TOOLS = {"Edit", "Write", "NotebookEdit"}
+# Read-only recon: counted at half weight (one streak tick per two calls).
+READONLY_TOOLS = {"Read", "Grep", "Glob"}
 RECOGNIZED_MODES = {"off", "warn-only", "warn", "guard", "enforce"}
 
 EXEMPT_BASH_RE = re.compile(
-    r"^\s*(bd|git (status|log|diff|show|add|commit|push|pull|restore|stash)"
+    r"^\s*(bd|git|gh"
     r"|bats|dev-log|cost-mirror|tier-|lane|delegation-gate|run-tests"
     r"|take-screenshot)\b"
 )
@@ -186,8 +193,11 @@ EXEMPT_BASH_RE = re.compile(
 BASH_SPLIT_RE = re.compile(r"&&|\|\||\||;|\n")
 CD_SEGMENT_RE = re.compile(r"^cd\b")
 
-# Edit carve-out: the harness auto-memory dir is $CLAUDE_CONFIG_DIR/projects/<slug>/memory/.
+# Edit exemption: the harness auto-memory dir is $CLAUDE_CONFIG_DIR/projects/<slug>/memory/.
 MEMORY_DIR_RE = re.compile(r"/\.claude/projects/[^/]+/memory/")
+# Scratchpad: the session scratch dir (/tmp/claude-<uid>/…/scratchpad) and
+# any other path that names a scratchpad directory.
+SCRATCHPAD_RE = re.compile(r"^/tmp/claude-[^/]*/|/scratchpad/")
 
 
 def is_main_loop(payload):
@@ -275,7 +285,7 @@ def _int_env(name, default):
 
 
 def warn_at():
-    return _int_env("DELEGATION_GATE_WARN_AT", 4)
+    return _int_env("DELEGATION_GATE_WARN_AT", 8)
 
 
 def warn_every():
@@ -283,11 +293,20 @@ def warn_every():
 
 
 def deny_at():
+    """Streak at which the Bash/read notes fire. Historically the deny
+    threshold -- the env var keeps its name, the gate no longer denies."""
     return _int_env("DELEGATION_GATE_DENY_AT", 8)
 
 
 def _empty_state():
-    return {"streak": 0, "warned_at": 0, "max_streak": 0, "warns": 0, "denies": 0}
+    return {
+        "streak": 0,
+        "warned_at": 0,
+        "max_streak": 0,
+        "warns": 0,
+        "denies": 0,  # advisory gate: kept in the schema, never incremented
+        "ro_pending": 0,
+    }
 
 
 def load_state(path):
@@ -312,6 +331,7 @@ def load_state(path):
             "max_streak": int(state.get("max_streak", 0)),
             "warns": int(state.get("warns", 0)),
             "denies": int(state.get("denies", 0)),
+            "ro_pending": int(state.get("ro_pending", 0)),
         }
     except Exception:
         return _empty_state()
@@ -358,13 +378,12 @@ def _edit_target_path(payload, tool_name):
     return path
 
 
-def is_carved_out(payload, tool_name):
-    """True iff this Edit/Write/NotebookEdit targets the orchestrator's
-    own seat (a plan file or the harness auto-memory dir) and is therefore
-    allowed even under guard/enforce. Must be PROVEN from an explicit,
-    resolvable path -- if no path can be determined, this returns False
-    (not carved out, i.e. denied): the exception is never the default.
-    Deliberately does NOT cover /tmp or the scratchpad."""
+def is_exempt_edit(payload, tool_name):
+    """True iff this Edit/Write/NotebookEdit targets the orchestrator's own
+    seat -- a plan file, the harness auto-memory dir, or a scratchpad -- and
+    is therefore not counted toward the streak at all. Must be PROVEN from
+    an explicit, resolvable path: if no path can be determined, this returns
+    False (counts like any other edit); the exemption is never the default."""
     path = _edit_target_path(payload, tool_name)
     if not path:
         return False
@@ -372,15 +391,20 @@ def is_carved_out(payload, tool_name):
         return True
     if MEMORY_DIR_RE.search(path):
         return True
+    if SCRATCHPAD_RE.search(path):
+        return True
     return False
 
 
-def emit_deny(reason):
+def emit_note(text):
+    """The gate is advisory: what used to be a deny is this -- the same
+    text, carried as an allow + additionalContext note. Nothing this hook
+    emits can stop a tool call."""
     print(json.dumps({
         "hookSpecificOutput": {
             "hookEventName": "PreToolUse",
-            "permissionDecision": "deny",
-            "permissionDecisionReason": reason,
+            "permissionDecision": "allow",
+            "additionalContext": text,
         }
     }))
 
@@ -452,17 +476,31 @@ def main():
         state = load_state(state_path)
         state["streak"] = 0
         state["warned_at"] = 0
+        state["ro_pending"] = 0
         save_state(state_path, state)
         return  # no output at all for Agent/Workflow -- never contend with tier-gate
 
     if tool_name == "Bash":
         command = (payload.get("tool_input") or {}).get("command")
         if is_exempt_bash(command):
-            return  # exempt housekeeping: no count, no deny
+            return  # exempt housekeeping: no count, no note
     elif tool_name not in COUNTED_TOOLS:
         return  # not a tool this gate tracks
+    elif tool_name in EDIT_TOOLS and is_exempt_edit(payload, tool_name):
+        return  # plans / memory / scratchpad: the orchestrator's own seat
 
     state = load_state(state_path)
+
+    if tool_name in READONLY_TOOLS:
+        # Half weight: one streak tick per two read-only calls. The odd
+        # call is held in ro_pending and produces nothing -- the streak
+        # did not move, so no threshold can have been crossed.
+        state["ro_pending"] += 1
+        if state["ro_pending"] < 2:
+            save_state(state_path, state)
+            return
+        state["ro_pending"] = 0
+
     state["streak"] += 1
     streak = state["streak"]
     if streak > state["max_streak"]:
@@ -480,7 +518,7 @@ def main():
 
     if express:
         # The lane already says this is a one-edit, few-lookup task: no
-        # denial in any mode, and its own warn instead of the delegation
+        # note in any mode, and its own warn instead of the delegation
         # nudge (which would tell the session to do the opposite of the
         # lane it declared). The watermark is shared with that nudge, so
         # escalating mid-prompt cannot double-warn.
@@ -498,13 +536,17 @@ def main():
     if (
         mode in ("guard", "enforce")
         and is_edit_tool
-        and not is_carved_out(payload, tool_name)
         and lane in ("deep", "unset")
+        and (state["warned_at"] == 0 or streak - state["warned_at"] >= warn_every())
     ):
-        state["denies"] += 1
+        # Advisory, and on the shared cadence: one note per WARN_EVERY
+        # calls, never one per edit -- a note on every Write is the noise
+        # this gate exists to cut.
+        state["warns"] += 1
+        state["warned_at"] = streak
         save_state(state_path, state)
-        emit_deny(
-            f"[delegation-gate {mode}] Implementation edits are the executor's "
+        emit_note(
+            "[delegation-gate] Implementation edits are the executor's "
             "seat — dispatch the slice: `orca-dispatch <bead>` when Orca is "
             "reachable, else Agent(subagent_type=executor, model=<worker "
             "rung>). Either way give it a slice spec (objective, files in "
@@ -519,36 +561,38 @@ def main():
         # costs more. The exempt list above (bd/git/bats/lane/tier-…) is
         # how the session steers and is never counted, so what lands here
         # is recon or editing that belongs in a worker's context.
-        # EVERY lane but express: unlike the edit denial, this one fires in
+        # EVERY lane but express: unlike the edit note, this one fires in
         # lane standard too, because standard is where most sessions run
         # and eight inline shell calls is a streak in any lane. express
         # never reaches here -- its branch above returns first.
-        state["denies"] += 1
+        state["warns"] += 1
+        state["warned_at"] = streak
         save_state(state_path, state)
-        emit_deny(
-            f"[delegation-gate {mode}] {streak} inline calls — this Bash "
+        emit_note(
+            f"[delegation-gate] {streak} inline calls — this Bash "
             "call is recon or editing the orchestrator should not be doing "
             "itself. Recon: Agent(subagent_type=scout) with the question "
             "and the paths. Edits and builds: `orca-dispatch <bead>` when "
             "Orca is reachable, else Agent(subagent_type=executor, "
             "model=<worker rung>), with a slice spec (objective, files, "
             "contract, boundaries). Streak resets on Agent use; `bd`, "
-            "`git`, `bats`, `lane` and `tier-` calls never count."
+            "`git`, `gh`, `bats`, `lane` and `tier-` calls never count."
         )
         return
 
     if mode == "enforce" and not is_edit_tool and streak >= deny_at():
-        state["denies"] += 1
+        state["warns"] += 1
+        state["warned_at"] = streak
         save_state(state_path, state)
-        emit_deny(
-            f"[delegation-gate enforce] {streak} inline calls — batch the "
+        emit_note(
+            f"[delegation-gate] {streak} inline calls — batch the "
             "remaining reads into a scout (Agent tool, subagent_type=scout) and "
             "work from its summary. Streak resets on Agent use."
         )
         return
 
     # warn-only/guard/enforce all share the same repeating warn cadence
-    # for whatever wasn't already denied above.
+    # for whatever did not already draw a note above.
     if streak >= warn_at() and (state["warned_at"] == 0 or streak - state["warned_at"] >= warn_every()):
         state["warned_at"] = streak
         state["warns"] += 1

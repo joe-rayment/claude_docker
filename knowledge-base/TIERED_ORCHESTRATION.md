@@ -241,9 +241,9 @@ orca-wait                                    # …worker_done from a
 Both workers were given the same `WORKER RULES` and the same contract text,
 report through the same `worker_done` channel, and are checked by the same
 `inherit`-model verifier. The vendor is a per-slice choice, not a protocol
-change. Name the spawns `<role>-<agent>-<model-slug>` — `executor-claude-
-sonnet-5`, `executor-opencode-qwen3-coder` — so a glance at Orca says who
-is running what. `/tier worker` rebinds only the seat for the *next*
+change. Spawns are unnamed: a named spawn arrives as a wrapped teammate
+notice and wakes the orchestrator for nothing; the task notification
+carries the result. `/tier worker` rebinds only the seat for the *next*
 dispatch; a worker already running keeps the model it was started with.
 
 ## The v2 binding mechanism — where each tier lives

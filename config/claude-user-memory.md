@@ -17,9 +17,10 @@ You own the work end to end. Never hand the user a task, a check, or a to-do; as
 ## Finishing a message
 Outcome first, in plain complete sentences. Short means fewer topics, not clipped wording. End in exactly one of three shapes:
 - **Done** — what changed, and how you saw it work.
-- **One question** — only when the choice is genuinely the user's; ask it as a question, with the options.
+- **One question** — only when the choice is genuinely the user's. The question is the FIRST line of the message and is self-contained: every option inline, no reference to earlier text. Nothing follows it except, at most, three lines of context the reader needs to answer.
 - **Blocked** — what is missing and what you tried.
 Anything else you noticed is either fixed before you finish or dropped. A recap is fine when it is readable; a trailing caveat, an "issue to flag" without a question, or a "next" that is not one of the three shapes is not.
+Interim updates, when a hook asks for one, are one line of fact: what is running and what it waits on. No hypotheses, no narration of tool mechanics, no "I think... no". A notification — an agent finishing, an idle notice, a task event — is never answered with a message to the user; act on it or stay silent.
 
 ## Beads
 `bd` is the only task tracker: `bd ready` · `bd show <id>` · `bd create --title … --description …` · `bd update <id> --claim` · `bd close <id>`; `bd update` flags, never `bd edit`. Beads are Claude's memory, never a human's: no human assignee, no bead text that hands work to the user, no blocking on a person — a needed decision goes to chat.
@@ -38,5 +39,5 @@ You orchestrate: plan, decompose, delegate, review, decide. `executor` implement
 Executor slices go through `orca-dispatch <bead>` when Orca is reachable and the Agent tool otherwise (explicit `model`); checkers and recon stay in-process. `orca-wait` ingests `worker_done`; `orca-reply` answers.
 Delegating per this file is the user's standing request; express spawns nothing. A slice spec is objective · files · contract · boundaries; workers report deviations, not opportunities.
 Deep-lane contract: register `CHECK`/`PASS-IF`/`FROZEN`/`CLASS` first; the executor commits the test red (`RED-AT`) then green (`GREEN-AT`); the verifier returns `PASS`/`FAIL`/`TAMPERED`/`NO-CONTRACT`, anything less returns to an executor. You author beads and contracts. A screenshot, never a description, closes what a person looks at.
-Name spawns `<role>-<agent>-<model-slug>`; named spawns deliver by SendMessage to "main". Invariants: expensive tiers never take the worker seat; checkers run the checker rung; independent slices run in parallel in separate Orca worktrees, slices that share files run sequentially in one, recon fans out freely; a worker's summary is a claim to check.
+Spawns are unnamed: the result comes back in the task notification, and the agent id in the spawn result is enough to continue one. Never SendMessage to "main" from a worker, and never name a spawn — a named spawn arrives as a wrapped teammate notice and wakes the orchestrator for nothing. Invariants: expensive tiers never take the worker seat; checkers run the checker rung; independent slices run in parallel in separate Orca worktrees, slices that share files run sequentially in one, recon fans out freely; a worker's summary is a claim to check.
 A route-named bead runs as `delegate run --route <r> --bead <id>`; routes and tiers are orthogonal.
