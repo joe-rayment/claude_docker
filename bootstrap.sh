@@ -363,6 +363,8 @@ fi
 HOST="$PROJECT/.claude-dev"
 TEMPLATE_URL="${CLAUDE_ORCA_TEMPLATE_URL:-https://github.com/joe-rayment/claude_orca.git}"
 
+step "Installing the claude_orca template under $HOST/template"
+
 # A .claude-dev THIS template wrote has template/ and claude-orca.json in
 # it. One from an older generation has neither, and installing on top of
 # it leaves two layouts in one directory: the owner's own repo carried a
@@ -370,26 +372,40 @@ TEMPLATE_URL="${CLAUDE_ORCA_TEMPLATE_URL:-https://github.com/joe-rayment/claude_
 # with the current layout written into it as untracked files, and every
 # diagnosis after that had to guess which generation a file belonged to.
 #
-# Refuse, and name the command. Bootstrap is piped into bash, so it cannot
-# ask -- and moving it aside is safe: nothing in there is needed. Beads
-# live in <project>/.beads, not in here.
+# Bootstrap is piped into bash, so it cannot ask -- and it does not need
+# to: moving the old directory aside is safe, because nothing in there is
+# needed (beads live in <project>/.beads, not in here). So move it aside
+# itself, say where it went, and carry on with the install in this same
+# run. The Mac's Trash is preferred over a sibling .claude-dev.old-*: it
+# is reversible by the usual means, and it leaves no untracked directory
+# in the user's own repo -- the gitignore seed only covers .claude-dev/.
 if [ -d "$HOST" ] \
     && [ ! -e "$HOST/claude-orca.json" ] \
     && [ ! -d "$HOST/template" ] \
     && [ -n "$(ls -A "$HOST" 2>/dev/null)" ]; then
-    {
-        echo "Error: $HOST is from an older claude_orca layout."
-        echo "  Installing on top of it would leave two generations in one directory."
-        echo "  Move it aside and re-run this same command:"
-        echo "    mv \"$HOST\" \"$HOST.old-$(date +%Y%m%d-%H%M%S)\""
-        echo "  Nothing in it is needed -- this folder's beads live in $PROJECT/.beads."
-    } >&2
-    exit 1
+    OLD_STAMP="$(date +%Y%m%d-%H%M%S)"
+    if [ -d "${HOME:-/nonexistent}/.Trash" ] && [ -w "${HOME:-/nonexistent}/.Trash" ]; then
+        OLD_DEST="$HOME/.Trash/claude-dev-$(basename "$PROJECT")-$OLD_STAMP"
+    else
+        OLD_DEST="$HOST.old-$OLD_STAMP"
+    fi
+    if mv "$HOST" "$OLD_DEST" 2>/dev/null; then
+        echo "    an older claude_orca layout was in $HOST; moved it to $OLD_DEST (nothing in it is needed -- beads live in $PROJECT/.beads)"
+    else
+        {
+            echo "Error: $HOST is from an older claude_orca layout, and could not be moved aside."
+            echo "  Installing on top of it would leave two generations in one directory."
+            echo "  Move it aside yourself and re-run this same command:"
+            echo "    mv \"$HOST\" \"$HOST.old-$OLD_STAMP\""
+            echo "  Nothing in it is needed -- this folder's beads live in $PROJECT/.beads."
+        } >&2
+        exit 1
+    fi
 fi
 
 mkdir -p "$HOST"
 
-step "Installing the claude_orca template under $HOST/template"
+
 if [ -d "$HOST/template/.git" ]; then
     # The template is a MANAGED clone: bootstrap writes it, --update pulls
     # it, and nothing in it is meant to be edited by hand. But things do

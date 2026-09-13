@@ -425,33 +425,79 @@ shadow_path_without() {
     esac
 }
 
-@test "bootstrap refuses a .claude-dev left by an older layout instead of installing on top of it" {
-    # The owner's own repo carried one: .claude-dev was a git clone of the
-    # PREVIOUS template (claude_docker, docker-compose era) with the v4
-    # layout written into it as untracked files -- two generations in one
-    # directory, and every diagnosis after that had to guess which
-    # generation a file belonged to.
-    mac_env
+# The owner's own repo carried one: .claude-dev was a git clone of the
+# PREVIOUS template (claude_docker, docker-compose era) with the v4
+# layout written into it as untracked files -- two generations in one
+# directory, and every diagnosis after that had to guess which
+# generation a file belonged to. Bootstrap is piped into bash and cannot
+# ask, so it moves the old one aside itself rather than refusing: the
+# Trash on a Mac, a sibling anywhere else.
+old_layout_fixture() {
     mkdir -p "$PROJECT_DIR/.claude-dev"
     git -C "$PROJECT_DIR" init --quiet -b main >/dev/null 2>&1
     git -C "$PROJECT_DIR/.claude-dev" init --quiet -b main >/dev/null 2>&1
     printf 'services:\n' > "$PROJECT_DIR/.claude-dev/docker-compose.yml"
+}
 
-    run bash "$REPO_ROOT/bootstrap.sh" "$PROJECT_DIR"
-    [ "$status" -ne 0 ]
+@test "bootstrap moves a .claude-dev left by an older layout to the Trash and installs" {
+    mac_env
+    mkdir -p "$HOME/.Trash"
+    old_layout_fixture
+
+    run make_project_v3 "$PROJECT_DIR"
+    [ "$status" -eq 0 ]
+
+    # The old generation landed in the Trash, contents and all...
+    moved=""
+    for d in "$HOME"/.Trash/claude-dev-"$(basename "$PROJECT_DIR")"-*; do
+        if [ -d "$d" ]; then moved="$d"; fi
+    done
+    [ -n "$moved" ]
+    [ -f "$moved/docker-compose.yml" ]
+    [ -d "$moved/.git" ]
+
+    # ...the message names where it went...
+    [[ "$output" == *"$moved"* ]]
     case "$output" in
-        *"older claude_orca"*|*"older layout"*) ;;
-        *) printf 'the refusal does not name the cause:\n%s\n' "$output"; return 1 ;;
+        *"older claude_orca layout"*) ;;
+        *) printf 'the move does not name the cause:\n%s\n' "$output"; return 1 ;;
     esac
-    # It has to say the exact command, because bootstrap is piped into
-    # bash and cannot ask a question.
-    case "$output" in
-        *"mv "*) ;;
-        *) printf 'the refusal does not name the way out:\n%s\n' "$output"; return 1 ;;
-    esac
-    # And it must not have started installing over the top.
-    [ ! -e "$PROJECT_DIR/.claude-dev/template" ]
-    [ ! -e "$PROJECT_DIR/claude-dev" ]
+
+    # ...the install carried on in the same run...
+    [ -d "$PROJECT_DIR/.claude-dev/template" ]
+    [ -f "$PROJECT_DIR/.claude-dev/claude-orca.json" ]
+    [ ! -e "$PROJECT_DIR/.claude-dev/docker-compose.yml" ]
+
+    # ...and nothing untracked was left beside it in the user's repo: the
+    # gitignore seed covers .claude-dev/ and nothing else.
+    for d in "$PROJECT_DIR"/.claude-dev.old-*; do
+        if [ -e "$d" ]; then
+            printf 'a sibling was left behind: %s\n' "$d"
+            return 1
+        fi
+    done
+}
+
+@test "bootstrap moves a .claude-dev left by an older layout next to it when there is no Trash" {
+    mac_env
+    [ ! -e "$HOME/.Trash" ]
+    old_layout_fixture
+
+    run make_project_v3 "$PROJECT_DIR"
+    [ "$status" -eq 0 ]
+
+    moved=""
+    for d in "$PROJECT_DIR"/.claude-dev.old-*; do
+        if [ -d "$d" ]; then moved="$d"; fi
+    done
+    [ -n "$moved" ]
+    [ -f "$moved/docker-compose.yml" ]
+    [ -d "$moved/.git" ]
+    [[ "$output" == *"$moved"* ]]
+
+    [ -d "$PROJECT_DIR/.claude-dev/template" ]
+    [ -f "$PROJECT_DIR/.claude-dev/claude-orca.json" ]
+    [ ! -e "$PROJECT_DIR/.claude-dev/docker-compose.yml" ]
 }
 
 @test "a .claude-dev this template wrote is not mistaken for a foreign one" {
