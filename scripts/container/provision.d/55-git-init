@@ -34,7 +34,8 @@ fi
 
 # --- what is here already ---------------------------------------------------
 
-inside="$(git -C "$PROJECT_DIR" rev-parse --is-inside-work-tree 2>&1)"
+# stdout alone: a warning on stderr must not turn "true" into "unreadable".
+inside="$(git -C "$PROJECT_DIR" rev-parse --is-inside-work-tree 2>/dev/null)"
 if [ "$inside" = "true" ]; then
     top="$(git -C "$PROJECT_DIR" rev-parse --show-toplevel 2>/dev/null)"
     here="$(cd "$PROJECT_DIR" && pwd -P)"
@@ -64,7 +65,8 @@ elif [ -e "$PROJECT_DIR/.git" ]; then
     # repository, a gitdir file pointing nowhere. Initialising over it would
     # hide or destroy whatever the user has, so say why, in git's words, and
     # stop.
-    echo "git cannot read the repository at $PROJECT_DIR: $inside" >&2
+    why="$(git -C "$PROJECT_DIR" rev-parse --is-inside-work-tree 2>&1 >/dev/null | head -3)"
+    echo "git cannot read the repository at $PROJECT_DIR: $why" >&2
     exit 1
 else
     if ! git -C "$PROJECT_DIR" init -q -b main >/dev/null 2>&1; then
