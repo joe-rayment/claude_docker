@@ -12,7 +12,8 @@
 #
 # Usage:
 #   tier-set                           # no args -> show (same as `show`)
-#   tier-set show
+#   tier-set show                      # the bound trio + the explanation
+#   tier-set help                      # the explanation alone
 #   tier-set <top>                     # worker/recon auto-derived (capped)
 #   tier-set <top> <worker> [<recon>]  # explicit pin
 #   tier-set overdrive                 # lift the worker cap on the bound top
@@ -237,10 +238,30 @@ show_state() {
     echo "2/3-arg /tier <top> <worker> [<recon>] pins those bindings explicitly; /tier overdrive lifts the worker cap on the bound top."
     echo "the checker (verifier) rung is derived too: the top capped at opus, so a fable top is graded from opus; oracle still inherits the orchestrator's model. /model is the primary in-session lever for the derived default."
     echo "cheap recon on OpenRouter: /tier recon openrouter  binds $TIER_OPENROUTER_RECON_MODEL on the orca backend (opencode)."
+    show_help
+}
+
+# The explanation of the command itself. It used to be the body of
+# config/claude-commands/tier.md, so every /tier <anything> re-read it;
+# now only a bare /tier and /tier help print it, and a binding call prints
+# its bound line and nothing else.
+show_help() {
+    cat <<EOF
+/tier overdrive lifts the worker cap so the executor runs the TOP model (recon stays cheap) and keeps it lifted as /model moves the top; it is expensive, says so on every session-start tier line, and a 1-arg /tier <top> clears it.
+each role (worker · recon · checker) also carries a backend: orca (a supervised Orca worker terminal, dispatched with orca-dispatch) or subagent (the in-process Agent tool). /tier worker openrouter:z-ai/glm-5.3-flash binds OpenRouter's GLM 5.3 Flash run by opencode on the orca backend, /tier worker claude:sonnet an orca-backed Claude worker, /tier worker subagent puts it back in-process on the derived model; recon and checker take the same specs. /tier recon openrouter (bare spec, no model named) binds the role's own OpenRouter default, for recon the flash-class rung $TIER_OPENROUTER_RECON_MODEL.
+a 1-arg /tier <top> resets all three to the defaults: worker orca+claude when the Orca runtime is reachable, else subagent; recon subagent haiku; checker subagent at the derived checker rung (the top capped at opus), so a fable top is graded from opus. An off-ladder top leaves the checker on inherit. With an OpenRouter key in this folder the default worker is the GLM rung on opencode, and every OpenRouter request goes through the in-VM guard, which forces config/provider-policy.json's US/EU provider allowlist; /tier worker claude:sonnet puts the claude rung back.
+an openrouter: bind still saves with no credential in this folder -- it names /tier auth openrouter as the next step, which opens a focused Orca tab that gets a key, validates it and starts the guard; with no Orca runtime it prints the same command to run by hand.
+a binding applies to NEW spawns immediately (tier-gate reads tier.json at spawn time); /model <top> moves THIS session's own model now.
+EOF
 }
 
 if [ $# -eq 0 ] || [ "${1:-}" = "show" ]; then
     show_state
+    exit 0
+fi
+
+if [ "${1:-}" = "help" ]; then
+    show_help
     exit 0
 fi
 
@@ -261,7 +282,7 @@ if [ $# -eq 1 ] && [ "$1" = "overdrive" ]; then
     W=$2; C=$3   # $1 (the resolved top) is discarded: it is not re-bound
     write_state "$top" "$W" "$C" false true || exit 1
     echo "tier bound (overdrive — worker cap LIFTED)  top=$top  →  worker=$W  recon=$C  — a plain /tier <top> clears overdrive"
-    echo "→ the lifted worker binding applies to NEW subagent spawns immediately (tier-gate reads tier.json at spawn time)."
+    echo "→ applies to NEW spawns (tier-gate reads tier.json at spawn time)."
     exit 0
 fi
 
@@ -376,9 +397,9 @@ case "${1:-}" in
             echo "→ run  /tier auth openrouter  to open a sign-in tab now."
         fi
         if [ "$B" = "orca" ]; then
-            echo "→ $role slices now go through  orca-dispatch  (a supervised Orca worker terminal); the Agent tool stays available as the fallback."
+            echo "→ applies to NEW spawns: $role slices go through  orca-dispatch  (the Agent tool stays the fallback)."
         else
-            echo "→ $role spawns use the Claude Code Agent tool; tier-gate injects $M at spawn time."
+            echo "→ applies to NEW spawns: $role runs in the Agent tool, tier-gate injects $M at spawn time."
         fi
         exit 0
         ;;
@@ -401,12 +422,11 @@ if [ $# -eq 1 ]; then
     write_state "$R" "$W" "$C" false false true || exit 1
     merge_model "$R" || exit 1
     if [ "$TIER_EFFECTIVE_WORKER" != "$W" ]; then
-        echo "tier bound  top=$R  →  worker=$TIER_EFFECTIVE_WORKER (opencode)  recon=$C  (this folder has an OpenRouter key, so the worker default is the GLM rung)"
-        echo "→ every OpenRouter request goes through the in-VM guard, which forces config/provider-policy.json's US/EU provider allowlist — no China-hosted provider can serve it. /tier worker claude:sonnet puts the claude rung back."
+        echo "tier bound  top=$R  →  worker=$TIER_EFFECTIVE_WORKER (opencode)  recon=$C  (this folder has an OpenRouter key, so the worker default is the GLM rung; /tier help explains)"
     else
         echo "tier bound  top=$R  →  worker=$W  recon=$C  (worker/recon derived from the top)"
     fi
-    echo "→ run  /model $R  to move THIS session's model now — new sessions pick everything up automatically."
+    echo "→ applies to NEW spawns (tier-gate reads tier.json at spawn time); /model $R moves THIS session now."
     exit 0
 fi
 
@@ -424,5 +444,5 @@ fi
 write_state "$R" "$W" "$C" true false || exit 1
 merge_model "$R" || exit 1
 echo "tier bound (explicit, pinned)  top=$R  worker=$W  recon=$C  — a plain /tier <top> clears the pin"
-echo "→ run  /model $R  to move THIS session's model now — new sessions pick everything up automatically."
+echo "→ applies to NEW spawns (tier-gate reads tier.json at spawn time); /model $R moves THIS session now."
 exit 0

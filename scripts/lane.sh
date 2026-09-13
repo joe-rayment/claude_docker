@@ -24,9 +24,21 @@
 #                                            for that session, remember the id
 #   lane --prime [--short]                   print the pointer to the rubric
 #
+# Token diet (the --short primer): Claude Code fires UserPromptSubmit more
+# than once per turn, and every firing used to print the pointer line. Now
+# --reset records a fingerprint of the prompt it saw; a later firing that
+# carries the SAME prompt is a re-fire, and it leaves a declared lane alone
+# instead of clearing it. --prime --short reads the same hook JSON: it
+# prints when the prompt is new or the lane is still unset, and nothing
+# once the lane is declared -- so the reminder appears once per prompt and
+# never again after the route was taken. The two hooks run in parallel, and
+# both orders work because each decides from the payload, not from the
+# other's write. `lane --prime` (long form) is unchanged and stateless.
+#
 # State lives in $LANE_STATE_DIR (default: the config dir's cache/lane --
 # see lib/paths.sh's claude_config_dir()):
-#   <session_id>.json  current lane for that session
+#   <session_id>.json  current lane for that session (+ "prompt": the
+#                      fingerprint of the prompt --reset last saw)
 #   last-session       id of the session --reset last saw, so plain CLI calls
 #                      still land somewhere when the env var is absent
 #   log.jsonl          append-only declaration log for measurement
@@ -95,6 +107,43 @@ read_lane() {
     printf '%s' "${v:-unset}"
 }
 
+# The prompt fingerprint --reset stored for a session, or "" when none.
+read_prompt() {
+    f="$1"
+    v=""
+    if [ -f "$f" ]; then
+        v=$(sed -n 's/.*"prompt"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$f" 2>/dev/null | head -1)
+    fi
+    printf '%s' "${v:-}"
+}
+
+# Hook JSON on stdin -> PAYLOAD_SID / PAYLOAD_PROMPT (a short fingerprint
+# of the prompt text, never the text itself). Both empty when stdin is a
+# tty, empty, or unparseable. jq and python3 are both optional.
+PAYLOAD_SID=""
+PAYLOAD_PROMPT=""
+read_payload() {
+    [ -t 0 ] && return 0
+    payload=$(cat 2>/dev/null) || return 0
+    [ -n "$payload" ] || return 0
+    fields=""
+    if command -v jq >/dev/null 2>&1; then
+        fields=$(printf '%s' "$payload" | jq -r '((.session_id // "") | tostring), ((.prompt // "") | tostring | gsub("\n"; " "))' 2>/dev/null)
+    elif command -v python3 >/dev/null 2>&1; then
+        fields=$(printf '%s' "$payload" | python3 -c 'import json,sys
+try:
+    d=json.load(sys.stdin)
+    print(str(d.get("session_id") or ""))
+    print(str(d.get("prompt") or "").replace("\n"," "))
+except Exception:
+    pass' 2>/dev/null)
+    fi
+    PAYLOAD_SID=$(sanitize_id "$(printf '%s\n' "$fields" | sed -n 1p)")
+    prompt=$(printf '%s\n' "$fields" | sed -n 2p)
+    [ -n "$prompt" ] && PAYLOAD_PROMPT=$(printf '%s' "$prompt" | cksum | tr -cd '0-9 ' | tr ' ' '-')
+    return 0
+}
+
 resolve_sid() {
     sid="${CLAUDE_CODE_SESSION_ID:-}"
     if [ -z "$sid" ] && [ -f "$STATE_DIR/last-session" ]; then
@@ -128,10 +177,29 @@ prime_short() {
 # ── --prime ──────────────────────────────────────────────────────────────────
 
 if [ "${1:-}" = "--prime" ]; then
-    if [ "${2:-}" = "--short" ]; then
-        prime_short
-    else
+    if [ "${2:-}" != "--short" ]; then
         prime_full
+        exit 0
+    fi
+    # --short: once per prompt, and silent once the lane is declared.
+    read_payload
+    sid="$PAYLOAD_SID"
+    [ -n "$sid" ] || sid=$(resolve_sid)
+    if [ -z "$sid" ]; then
+        prime_short                          # nowhere to look: always remind
+        exit 0
+    fi
+    f=$(state_file "$sid")
+    cur=$(read_lane "$f")
+    if [ "$(lane_rank "$cur")" -eq 0 ]; then
+        prime_short                          # unset: the route is still owed
+        exit 0
+    fi
+    # Declared. A new prompt (fingerprint differs from the one --reset
+    # stored, or none stored yet) still gets the reminder -- the reset
+    # racing beside us is about to clear the lane anyway.
+    if [ -n "$PAYLOAD_PROMPT" ] && [ "$PAYLOAD_PROMPT" != "$(read_prompt "$f")" ]; then
+        prime_short
     fi
     exit 0
 fi
@@ -139,26 +207,21 @@ fi
 # ── --reset (UserPromptSubmit hook; hook JSON on stdin) ──────────────────────
 
 if [ "${1:-}" = "--reset" ]; then
-    [ -t 0 ] && exit 0                      # no piped payload: nothing to do
-    payload=$(cat 2>/dev/null) || exit 0
-    [ -n "$payload" ] || exit 0
-    sid=""
-    if command -v jq >/dev/null 2>&1; then
-        sid=$(printf '%s' "$payload" | jq -r '.session_id // empty' 2>/dev/null)
-    elif command -v python3 >/dev/null 2>&1; then
-        sid=$(printf '%s' "$payload" | python3 -c 'import json,sys
-try:
-    print(json.load(sys.stdin).get("session_id") or "")
-except Exception:
-    pass' 2>/dev/null)
-    fi
-    sid=$(sanitize_id "${sid:-}")
-    [ -n "$sid" ] || exit 0
+    read_payload
+    sid="$PAYLOAD_SID"
+    [ -n "$sid" ] || exit 0                 # no piped payload / no id: nothing to do
     mkdir -p "$STATE_DIR" 2>/dev/null || exit 0
     f=$(state_file "$sid")
     prev=$(read_lane "$f")
-    printf '{"lane":"unset","prev":"%s","ts":%s,"escalated":false}\n' \
-        "$prev" "$(date +%s)" > "$f" 2>/dev/null
+    # A re-fire: same prompt as the last reset, and a lane was declared
+    # since -- the route was taken for this prompt, so keep it.
+    if [ -n "$PAYLOAD_PROMPT" ] && [ "$(lane_rank "$prev")" -gt 0 ] \
+       && [ "$PAYLOAD_PROMPT" = "$(read_prompt "$f")" ]; then
+        printf '%s\n' "$sid" > "$STATE_DIR/last-session" 2>/dev/null
+        exit 0
+    fi
+    printf '{"lane":"unset","prev":"%s","prompt":"%s","ts":%s,"escalated":false}\n' \
+        "$prev" "$PAYLOAD_PROMPT" "$(date +%s)" > "$f" 2>/dev/null
     printf '%s\n' "$sid" > "$STATE_DIR/last-session" 2>/dev/null
     exit 0
 fi
@@ -208,14 +271,15 @@ fi
 mkdir -p "$STATE_DIR" 2>/dev/null || { echo "[lane] no session id — lane not recorded"; exit 0; }
 f=$(state_file "$sid")
 prev=$(read_lane "$f")
+prompt_fp=$(read_prompt "$f")
 
 escalated=false
 [ "$(lane_rank "$prev")" -gt 0 ] && [ "$(lane_rank "$lane")" -gt "$(lane_rank "$prev")" ] && escalated=true
 
 why_json=$(json_escape "$why")
 ts=$(date +%s)
-printf '{"lane":"%s","prev":"%s","why":"%s","ts":%s,"escalated":%s}\n' \
-    "$lane" "$prev" "$why_json" "$ts" "$escalated" > "$f" 2>/dev/null
+printf '{"lane":"%s","prev":"%s","prompt":"%s","why":"%s","ts":%s,"escalated":%s}\n' \
+    "$lane" "$prev" "$prompt_fp" "$why_json" "$ts" "$escalated" > "$f" 2>/dev/null
 
 printf '{"lane":"%s","prev":"%s","why":"%s","ts":%s,"escalated":%s,"session_id":"%s"}\n' \
     "$lane" "$prev" "$why_json" "$ts" "$escalated" "$sid" >> "$LOG" 2>/dev/null

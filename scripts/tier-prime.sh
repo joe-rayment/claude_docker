@@ -8,6 +8,12 @@
 # fallback line instead of erroring.
 #
 # TIER_PRIME_STATE_FILE overrides the tier.json path (test suite).
+#
+# --short (the per-prompt UserPromptSubmit line) is change-gated: it prints
+# only when the line differs from the one it last printed, which it keeps
+# in tier-primed.txt beside tier.json (TIER_PRIME_PRIMED_FILE overrides).
+# The full SessionStart trio always prints. A folder with no run dir has
+# nowhere to remember the line, so it prints every time -- fail open.
 
 set -u
 
@@ -83,7 +89,13 @@ if [ "${1:-}" = "--short" ]; then
     if [ -n "$flags" ]; then
         line="$line (${flags# })"
     fi
+    primed="${TIER_PRIME_PRIMED_FILE:-}"
+    [ -n "$primed" ] || [ -z "$STATE_FILE" ] || primed="$(dirname "$STATE_FILE")/tier-primed.txt"
+    if [ -n "$primed" ] && [ -f "$primed" ] && [ "$(head -1 "$primed" 2>/dev/null)" = "$line" ]; then
+        exit 0                               # same binding as last printed: silent
+    fi
     echo "$line"
+    [ -n "$primed" ] && { printf '%s\n' "$line" > "$primed"; } 2>/dev/null
     exit 0
 fi
 

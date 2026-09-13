@@ -287,6 +287,60 @@ hook_json() { printf '{"session_id":"%s","hook_event_name":"UserPromptSubmit"}' 
     [[ "$output" == *"§ Lanes"* ]]
 }
 
+# ── --prime --short: once per prompt, silent once the lane is declared ───────
+# (token diet) The UserPromptSubmit hook fires more than once per turn.
+# --reset fingerprints the prompt; a re-fire with the same prompt keeps a
+# declared lane, and --prime --short says nothing while a lane is declared.
+
+hook_prompt() { printf '{"session_id":"%s","hook_event_name":"UserPromptSubmit","prompt":"%s"}' "$1" "$2"; }
+
+@test "lane --prime --short: prints on a fresh prompt, nothing on the next firing once the lane is declared" {
+    hook_prompt test-session-1 "fix the bug" | lane --reset
+    run bash "$LANE" --prime --short <<<"$(hook_prompt test-session-1 "fix the bug")"
+    [ "$status" -eq 0 ]
+    [ "$output" = "[lane] route first — lane express|standard|deep · rubric: $CLAUDE_CONFIG_DIR/CLAUDE.md § Lanes" ]
+    lane standard --why "one slice"
+    # the second firing of the same prompt: reset keeps the lane, prime is silent
+    hook_prompt test-session-1 "fix the bug" | lane --reset
+    jq -e '.lane == "standard"' "$STATE"
+    run bash "$LANE" --prime --short <<<"$(hook_prompt test-session-1 "fix the bug")"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+    # and with no hook payload at all (a CLI call), still silent while declared
+    run bash "$LANE" --prime --short </dev/null
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+}
+
+@test "lane --prime --short: the order of the parallel hooks does not matter -- prime before reset on a NEW prompt still prints" {
+    hook_prompt test-session-1 "fix the bug" | lane --reset
+    lane express
+    run bash "$LANE" --prime --short <<<"$(hook_prompt test-session-1 "now the docs")"
+    [ "$status" -eq 0 ]
+    [[ "$output" == "[lane] route first"* ]]
+    hook_prompt test-session-1 "now the docs" | lane --reset
+    jq -e '.lane == "unset"' "$STATE"
+    jq -e '.prev == "express"' "$STATE"
+    run bash "$LANE" --prime --short <<<"$(hook_prompt test-session-1 "now the docs")"
+    [[ "$output" == "[lane] route first"* ]]
+    [ "${#lines[@]}" -eq 1 ]
+}
+
+@test "lane --reset: a payload without a prompt field still clears the lane (the old shape)" {
+    lane deep
+    hook_json test-session-1 | lane --reset
+    jq -e '.lane == "unset"' "$STATE"
+    jq -e '.prev == "deep"' "$STATE"
+}
+
+@test "lane --prime --short: the session id comes from the hook payload, not only the env" {
+    hook_prompt other-session "hello" | lane --reset
+    CLAUDE_CODE_SESSION_ID=other-session lane standard
+    run env -u CLAUDE_CODE_SESSION_ID bash "$LANE" --prime --short <<<"$(hook_prompt other-session "hello")"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+}
+
 @test "lane --prime: needs no session id and writes no state" {
     run env -u CLAUDE_CODE_SESSION_ID bash "$LANE" --prime
     [ "$status" -eq 0 ]

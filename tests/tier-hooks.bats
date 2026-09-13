@@ -825,3 +825,72 @@ STUB
     run grep -qF -- '/tier recon openrouter' "$REPO_ROOT/config/claude-commands/tier.md"
     [ "$status" -eq 0 ]
 }
+
+# ── token diet: tier-prime --short is change-gated; /tier binds print no essay ─
+
+@test "tier-prime --short: prints on the first call, nothing on the next, and again when the binding changes" {
+    "$TSET" fable >/dev/null
+    run "$PRIME" --short
+    [ "$status" -eq 0 ]
+    # the derived worker rung is tier-set's business (pinned elsewhere);
+    # this case is about the gating, so it checks shape, not model
+    [[ "$output" == "[tier] worker="*" recon="* ]]
+    [[ "$output" != *"OVERDRIVE"* ]]
+    [ -f "$CLAUDE_ORCA_ROOT/.claude-dev/run/tier-primed.txt" ]
+    run "$PRIME" --short
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+    "$TSET" overdrive >/dev/null
+    run "$PRIME" --short
+    [ "$status" -eq 0 ]
+    [[ "$output" == "[tier] worker="*" (OVERDRIVE)" ]]
+    run "$PRIME" --short
+    [ -z "$output" ]
+    # the full SessionStart trio is not gated: it prints every time
+    prime
+    [[ "$output" == *"orchestrator=fable"* ]]
+    prime
+    [[ "$output" == *"orchestrator=fable"* ]]
+}
+
+@test "tier-set overdrive / <top> / <role> <spec>: the bound line plus the NEW-spawns line, no explanatory paragraph" {
+    tier_set fable
+    [ "$status" -eq 0 ]
+    [ "${#lines[@]}" -eq 2 ]
+    [[ "${lines[0]}" == "tier bound  top=fable"* ]]
+    [[ "${lines[1]}" == "→ applies to NEW spawns"* ]]
+    tier_set overdrive
+    [ "$status" -eq 0 ]
+    [ "${#lines[@]}" -eq 2 ]
+    [[ "${lines[0]}" == "tier bound (overdrive"* ]]
+    [[ "${lines[1]}" == "→ applies to NEW spawns"* ]]
+    [[ "$output" != *"lifts the worker cap so the executor"* ]]
+    [[ "$output" != *"carries a backend"* ]]
+    tier_set worker claude:sonnet
+    [ "$status" -eq 0 ]
+    [ "${#lines[@]}" -eq 2 ]
+    [[ "${lines[0]}" == "tier role bound  worker = orca:sonnet" ]]
+    [[ "${lines[1]}" == "→ applies to NEW spawns"* ]]
+    tier_set opus sonnet
+    [ "$status" -eq 0 ]
+    [ "${#lines[@]}" -eq 2 ]
+    [[ "${lines[1]}" == "→ applies to NEW spawns"* ]]
+}
+
+@test "tier-set help (and a bare tier-set) carry the explanation the skill file no longer repeats" {
+    tier_set help
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"lifts the worker cap so the executor runs the TOP model"* ]]
+    [[ "$output" == *"/tier recon openrouter"* ]]
+    [[ "$output" == *"/tier auth openrouter"* ]]
+    "$TSET" fable >/dev/null
+    tier_set
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"orchestrator (top)   = fable"* ]]
+    [[ "$output" == *"lifts the worker cap so the executor runs the TOP model"* ]]
+    # the skill body is the passthrough only
+    run grep -c "lifts the worker cap so the executor" "$REPO_ROOT/config/claude-commands/tier.md"
+    [ "$output" = "0" ]
+    run grep -c "verbatim" "$REPO_ROOT/config/claude-commands/tier.md"
+    [ "$output" = "1" ]
+}
