@@ -33,6 +33,10 @@ CONFIG_SYNC() {
     [ -f "$dest/settings.json" ]
     run jq -e . "$dest/settings.json"
     [ "$status" -eq 0 ]
+    # The harness's "user hasn't heard from you" nudge is off in every
+    # folder: it only ever produced a filler line while workers ran.
+    run jq -r '.env.CLAUDE_CODE_SILENT_TURN_REMINDER' "$dest/settings.json"
+    [ "$output" = "false" ]
     [ -f "$dest/CLAUDE.md" ]
     diff "$src/claude-user-memory.md" "$dest/CLAUDE.md"
     [ -x "$dest/statusline.sh" ]
