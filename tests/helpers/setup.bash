@@ -318,6 +318,32 @@ printf '%s\n' "$*" >> "${CONTAINER_STUB_LOG:-/dev/null}"
 state="${CONTAINER_STUB_STATE:-${TMPDIR:-/tmp}/container-stub}"
 mkdir -p "$state/containers" "$state/volumes"
 
+# A container this folder did NOT create -- what an older generation of the
+# template leaves behind under the same name. DOCKER_STUB_PRESET_CONTAINER
+# is <name>:<image>:<mount-src>:<port>, and the image may carry a tag of its
+# own, so the name is read off the front and the port and mount source off
+# the back, leaving everything between as the image ref. Materialized once:
+# a `docker rm` of it must be the end of it, not something the next
+# invocation puts back.
+if [ -n "${DOCKER_STUB_PRESET_CONTAINER:-}" ] && [ ! -f "$state/preset-applied" ]; then
+    : > "$state/preset-applied"
+    p_name="${DOCKER_STUB_PRESET_CONTAINER%%:*}"
+    p_rest="${DOCKER_STUB_PRESET_CONTAINER#*:}"
+    p_port="${p_rest##*:}"
+    p_rest="${p_rest%:*}"
+    p_src="${p_rest##*:}"
+    p_image="${p_rest%:*}"
+    echo running > "$state/containers/$p_name"
+    {
+        printf 'image=%s\n' "$p_image"
+        printf 'imageid=sha256:%s\n' \
+            "0ldd0ldd0ldd0ldd0ldd0ldd0ldd0ldd0ldd0ldd0ldd0ldd0ldd0ldd0ldd0ldd"
+        printf 'mount=%s:/workspace/%s\n' "$p_src" "$(basename "$p_src")"
+        printf 'mount=%s/.claude-dev/home:/home/agent\n' "$p_src"
+        printf 'port=%s:%s\n' "$p_port" "$p_port"
+    } > "$state/containers/$p_name.meta"
+fi
+
 # `docker image inspect REF` -- two words, so it is matched before the
 # one-word dispatch below.
 case "$1 ${2:-}" in
@@ -399,14 +425,46 @@ case "$cmd" in
         rm -f "$state/registry-password" "$state/registry-argv"
         exit 0 ;;
     inspect)
-        # `docker inspect -f '{{.State.Status}}' NAME`: the name is the last
-        # argument, and the state word is what the launcher parses.
+        # `docker inspect -f TEMPLATE NAME`: the name is the last argument.
+        # The state word was the only template the launcher ever asked for;
+        # container_matches asks four more, so the stub answers by template
+        # out of what the `run` below recorded for that container.
         [ "${CLAUDE_ORCA_TEST_SERVICE_DOWN:-0}" = "1" ] && exit 1
-        name=""
-        for a in "$@"; do name="$a"; done
+        name=""; fmt=""; prev=""
+        for a in "$@"; do
+            name="$a"
+            case "$prev" in -f|--format) fmt="$a" ;; esac
+            case "$a" in --format=*) fmt="${a#--format=}" ;; esac
+            prev="$a"
+        done
         [ -n "$name" ] || exit 1
         [ -f "$state/containers/$name" ] || exit 1
-        cat "$state/containers/$name"
+        meta="$state/containers/$name.meta"
+        meta_get() { [ -f "$meta" ] && sed -n "s/^$1=//p" "$meta"; }
+        case "$fmt" in
+            *State.Status*)
+                cat "$state/containers/$name" ;;
+            *Config.Image*)
+                meta_get image ;;
+            *range\ .Mounts*)
+                meta_get mount ;;
+            *NetworkSettings.Ports*)
+                # `{{(index (index .NetworkSettings.Ports "6768/tcp") 0).HostPort}}`
+                # -- and on a container that publishes no such port, real
+                # docker fails the template rather than printing nothing.
+                want="${fmt#*NetworkSettings.Ports \"}"
+                want="${want%%/tcp*}"
+                hostport="$(meta_get port | sed -n "s|:$want\$||p")"
+                if [ -z "$hostport" ]; then
+                    echo "template: :1:2: executing \"\" at <index (index .NetworkSettings.Ports \"$want/tcp\") 0>: error calling index: index of untyped nil" >&2
+                    exit 1
+                fi
+                printf '%s\n' "$hostport" ;;
+            *.Image*)
+                meta_get imageid ;;
+            *)
+                cat "$state/containers/$name" ;;
+        esac
         exit 0 ;;
     run)
         # CLAUDE_ORCA_TEST_RUN_FAIL=1: `docker run` pulling an image that is
@@ -451,6 +509,41 @@ case "$cmd" in
             esac
             prev="$a"
         done
+        # What this container IS, for `inspect` to answer later: the image
+        # it was run from, its mounts and its published port. Real docker
+        # remembers all three; a stub that forgets them cannot tell one
+        # folder's container from another's, which is the whole question
+        # container_matches asks.
+        img=""; skip=0
+        for a in "$@"; do
+            if [ "$skip" = "1" ]; then skip=0; continue; fi
+            case "$a" in
+                --name|-v|--volume|-p|--publish|-e|--env|--dns|--cpus|--memory|--entrypoint|-u|--user|-w|--workdir)
+                    skip=1; continue ;;
+                -*) continue ;;
+                *)  img="$a"; break ;;
+            esac
+        done
+        {
+            printf 'image=%s\n' "$img"
+            if [ -f "$state/image-id" ]; then
+                printf 'imageid=%s\n' "$(cat "$state/image-id")"
+            fi
+            prev=""
+            for a in "$@"; do
+                case "$prev" in
+                    -v|--volume)
+                        # Mounts carry no mode in docker's own inspect.
+                        printf 'mount=%s\n' "${a%:ro}" ;;
+                    -p|--publish)
+                        # "127.0.0.1:6768:6768" or "6768:6768".
+                        pub="${a##*:}"
+                        hostpub="${a%:*}"; hostpub="${hostpub##*:}"
+                        printf 'port=%s:%s\n' "$hostpub" "$pub" ;;
+                esac
+                prev="$a"
+            done
+        } > "$state/containers/$name.meta"
         # Stands in for the entrypoint (scripts/container/entrypoint.sh):
         # Orca comes up and publishes its pairing URL and bound port.
         # CLAUDE_ORCA_TEST_NO_URL: the container starts but never publishes
@@ -471,7 +564,10 @@ case "$cmd" in
         [ -f "$state/containers/$1" ] || exit 1
         echo exited > "$state/containers/$1"; exit 0 ;;
     rm)
-        rm -f "$state/containers/$1"; exit 0 ;;
+        # `docker rm [-f] NAME`: the name is last, and what the container
+        # was goes with it.
+        for a in "$@"; do name="$a"; done
+        rm -f "$state/containers/$name" "$state/containers/$name.meta"; exit 0 ;;
     ps)
         [ "${CLAUDE_ORCA_TEST_SERVICE_DOWN:-0}" = "1" ] && exit 1
         printf '%-38s%s\n' "NAMES" "STATUS"

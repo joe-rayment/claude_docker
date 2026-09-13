@@ -2091,19 +2091,26 @@ container_dns() {
     printf '%s\n' "$dns"
 }
 
+# The image ref THIS folder's container runs. startup v4: a folder with no
+# reachable prebuilt image runs the public base image with the mounted
+# template's entrypoint as its command, so "the image we build" is not the
+# answer for every folder. container_create picks the ref through here and
+# container_matches compares against the same function -- asking image_ref
+# directly would read every runtime-path folder's own container as a
+# stranger's and recreate it on every open.
+folder_image_ref() {
+    if [ "$(image_source "$1")" = "runtime" ]; then
+        printf '%s\n' "$BASE_IMAGE"
+    else
+        image_ref
+    fi
+}
+
 container_create() {
     local dir="$1" name="$2" port="$3" ref src token cpus memory mount theme orkey dns guest
     guest="$(guest_project_dir "$dir")"
-    # startup v4: a folder with no reachable prebuilt image runs the public
-    # base image with the mounted template's entrypoint as its command --
-    # the template clone sits inside the project, which is mounted at its
-    # own absolute path, so the path means the same thing on both sides.
     src="$(image_source "$dir")"
-    if [ "$src" = "runtime" ]; then
-        ref="$BASE_IMAGE"
-    else
-        ref="$(image_ref)"
-    fi
+    ref="$(folder_image_ref "$dir")"
     token="$(gh auth token 2>/dev/null || true)"
     # claude-orca.json's `theme` picks the Orca theme the entrypoint seeds
     # on a folder's first run (dark|light|system); the project name is the
@@ -2226,6 +2233,92 @@ EXTRA
     fi
 }
 
+# A container with the right NAME is not necessarily this folder's
+# container. The name is derived from the folder's basename alone, an
+# older generation of this template used the same one, and bootstrap moves
+# that generation's .claude-dev aside without touching what it left
+# running -- so a fresh bootstrap of a second folder found a container by
+# the right name, reused it, and paired the Mac's Orca.app to a runtime
+# holding someone else's mounts: the project appeared in the sidebar and
+# was empty, no shell, no agents (a real Mac, 2026-09-13).
+#
+# So reuse is conditional on the four things that decide WHICH runtime the
+# app is about to be handed: the image, the project mount, the home mount
+# and the published port. Returns 0 when all four are this folder's, and
+# otherwise prints one line naming the FIRST mismatch and returns 1.
+# It never looks at the state volume -- that is Orca's own user-data dir,
+# it survives a recreate on purpose, and it is keyed by container name.
+container_matches() {
+    local name="$1" dir="$2" port="$3" guest want have want_id have_id mounts m found=""
+    # CTR_RUNTIME=local runs the entrypoint as a host process: no image, no
+    # mounts and no port map exist, and ctr_local's `inspect` answers the
+    # state word to every template whatever it asks for. There is nothing
+    # to compare, so a container by the right name is the right container.
+    if [ "$CTR_RUNTIME" = "local" ]; then
+        return 0
+    fi
+
+    # Image, by name first. A tag that was re-pointed since this container
+    # started (a rebuild under the same IMAGE_TAG) reads as a mismatch by
+    # name and as a match by id, and the id is the one that says whether it
+    # is the same filesystem -- so the name differing only counts once the
+    # id does too. An image inspect that cannot answer at all leaves the
+    # name comparison standing.
+    want="$(folder_image_ref "$dir")"
+    have="$(ctr inspect -f '{{.Config.Image}}' "$name" 2>/dev/null | head -1 | tr -d '[:space:]')"
+    if [ "$have" != "$want" ]; then
+        have_id="$(ctr inspect -f '{{.Image}}' "$name" 2>/dev/null | head -1 | tr -d '[:space:]')"
+        want_id="$(ctr image inspect "$want" --format '{{.Id}}' 2>/dev/null | head -1 | tr -d '[:space:]')"
+        if [ -z "$have_id" ] || [ -z "$want_id" ] || [ "$have_id" != "$want_id" ]; then
+            echo "  container $name is not this folder's (image: ${have:-unknown} vs $want) -- recreating it" >&2
+            return 1
+        fi
+    fi
+
+    # The project mount, then the home mount, each as one source:destination
+    # pair out of the container's own Mounts. A stranger's container is
+    # usually caught here: it mounts ANOTHER folder, or mounts this kind of
+    # folder at a path this generation no longer uses.
+    guest="$(guest_project_dir "$dir")"
+    mounts="$(ctr inspect -f '{{range .Mounts}}{{.Source}}:{{.Destination}}{{"\n"}}{{end}}' "$name" 2>/dev/null || true)"
+    have=""
+    while IFS= read -r m; do
+        [ -n "$m" ] || continue
+        case "$m" in
+            *":$guest") have="${m%:$guest}" ;;
+        esac
+        if [ "$m" = "$dir:$guest" ]; then found=1; fi
+    done <<MOUNTS
+$mounts
+MOUNTS
+    if [ -z "$found" ]; then
+        echo "  container $name is not this folder's (mount: ${have:-none} vs $dir at $guest) -- recreating it" >&2
+        return 1
+    fi
+    found=""
+    while IFS= read -r m; do
+        [ "$m" = "$dir/.claude-dev/home:/home/agent" ] && found=1
+    done <<MOUNTS
+$mounts
+MOUNTS
+    if [ -z "$found" ]; then
+        echo "  container $name is not this folder's (home mount: none vs $dir/.claude-dev/home) -- recreating it" >&2
+        return 1
+    fi
+
+    # The published port. A container that publishes nothing at all makes
+    # the index template error out; that is a mismatch (the URL this folder
+    # is about to open would reach nothing), and the `|| true` is what keeps
+    # a template error from taking the whole script down under errexit.
+    have="$(ctr inspect -f "{{(index (index .NetworkSettings.Ports \"$port/tcp\") 0).HostPort}}" "$name" 2>/dev/null || true)"
+    have="$(printf '%s' "$have" | head -1 | tr -d '[:space:]')"
+    if [ "$have" != "$port" ]; then
+        echo "  container $name is not this folder's (port: ${have:-none} vs $port) -- recreating it" >&2
+        return 1
+    fi
+    return 0
+}
+
 # --- config resync ------------------------------------------------------
 #
 # The image's entrypoint is what normally config-syncs a folder, and on
@@ -2289,9 +2382,23 @@ cmd_open_v3() {
 
     name="$(container_name "$dir")"
     port="$(choose_port "$dir")"
+
+    # Adopt a container only when it is this folder's (container_matches
+    # says which of image, mounts and port is not). A stranger's is stopped
+    # and removed -- never its state volume, which is Orca's user-data dir
+    # and is keyed by the same name -- and the create path below builds
+    # this folder's own. Its run/ results go with it for the same reason
+    # cmd_update_v3 clears them: the pairing URL of a container that is
+    # gone opens nothing.
+    state="$(container_state "$name")"
+    if [ -n "$state" ] && ! container_matches "$name" "$dir" "$port"; then
+        ctr stop "$name" >/dev/null 2>&1 || true
+        ctr rm -f "$name" >/dev/null 2>&1 || true
+        clear_run_results "$dir"
+        state=""
+    fi
     persist_port "$dir" "$port"
 
-    state="$(container_state "$name")"
     case "$state" in
         running)
             echo "Container $name is already running."

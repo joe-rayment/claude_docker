@@ -985,3 +985,113 @@ desktop_fixture() {
     [[ "$output" =~ \[ok[[:space:]]*\][[:space:]]+orca[[:space:]]versions ]]
     [[ ! "$output" =~ \[warn[[:space:]]*\][[:space:]]+orca[[:space:]]versions ]]
 }
+
+# A container by the right name is not proof it is this folder's. A real
+# Mac, 2026-09-13: bootstrapping a second folder moved an older
+# generation's .claude-dev aside, that generation had used the same
+# container name, and `open` adopted what it found -- "Container
+# claude-orca-stocks is already running", Orca up in 0s, and a project in
+# the app's sidebar that was empty, no shell and no agents, because the app
+# was paired to a runtime holding another folder's mounts. Adoption is
+# conditional now: image, project mount, home mount and published port.
+#
+# The `docker` stub records what each container was run from and answers
+# `inspect` out of it; DOCKER_STUB_PRESET_CONTAINER fakes one this folder
+# never created.
+@test "open recreates a running container that was built from a different image" {
+    mkdir -p "$PROJECT_DIR"
+    primary="$(abspath "$PROJECT_DIR")"
+    run make_project_v3 "$primary"
+    [ "$status" -eq 0 ]
+
+    name="claude-orca-$(basename "$primary")"
+    port="$(cat "$primary/.claude-dev/run/port")"
+
+    # Same folder, same port -- only the image is a stranger's, which is
+    # what an older generation of the template leaves behind.
+    rm -f "$CONTAINER_STUB_STATE/preset-applied"
+    export DOCKER_STUB_PRESET_CONTAINER="$name:claude-orca:old:$primary:$port"
+    : > "$CONTAINER_STUB_LOG"
+    : > "$OPEN_STUB_LOG"
+    run bash -c "cd '$primary' && ./claude-dev open"
+    [ "$status" -eq 0 ]
+
+    [[ "$output" == *"is not this folder's"* ]]
+    [[ "$output" == *"image:"* ]]
+    [[ "$output" == *"claude-orca:old"* ]]
+    [[ "$output" != *"already running"* ]]
+
+    # Stopped, removed, and only then a container of this folder's own.
+    stop_at="$(grep -n "^stop $name\$" "$CONTAINER_STUB_LOG" | head -1 | cut -d: -f1)"
+    rm_at="$(grep -n "^rm " "$CONTAINER_STUB_LOG" | head -1 | cut -d: -f1)"
+    run_at="$(grep -n "^run .*--name $name" "$CONTAINER_STUB_LOG" | head -1 | cut -d: -f1)"
+    [ -n "$stop_at" ]
+    [ -n "$rm_at" ]
+    [ -n "$run_at" ]
+    [ "$stop_at" -lt "$rm_at" ]
+    [ "$rm_at" -lt "$run_at" ]
+
+    # The state volume is Orca's own user-data dir and survives a
+    # recreate -- it is keyed by the same container name on purpose.
+    ! grep -q "^volume rm" "$CONTAINER_STUB_LOG"
+
+    # ...and the open still ends where it always does.
+    url="$(cat "$primary/.claude-dev/run/orca-web-url.txt")"
+    [[ "$output" == *"$url"* ]]
+    [[ "$output" == *"./claude-dev shell"* ]]
+}
+
+@test "open recreates a running container whose project mount is another folder" {
+    mkdir -p "$PROJECT_DIR"
+    primary="$(abspath "$PROJECT_DIR")"
+    run make_project_v3 "$primary"
+    [ "$status" -eq 0 ]
+
+    name="claude-orca-$(basename "$primary")"
+    port="$(cat "$primary/.claude-dev/run/port")"
+    # This folder's own image, so the image comparison passes and the
+    # mount is what the mismatch is about.
+    image="$(cat "$CONTAINER_STUB_STATE/image")"
+
+    rm -f "$CONTAINER_STUB_STATE/preset-applied"
+    export DOCKER_STUB_PRESET_CONTAINER="$name:$image:/some/other/dir:$port"
+    : > "$CONTAINER_STUB_LOG"
+    run bash -c "cd '$primary' && ./claude-dev open"
+    [ "$status" -eq 0 ]
+
+    [[ "$output" == *"is not this folder's"* ]]
+    [[ "$output" == *"mount:"* ]]
+    [[ "$output" != *"image:"* ]]
+    [[ "$output" != *"already running"* ]]
+
+    rm_at="$(grep -n "^rm " "$CONTAINER_STUB_LOG" | head -1 | cut -d: -f1)"
+    run_at="$(grep -n "^run .*--name $name" "$CONTAINER_STUB_LOG" | head -1 | cut -d: -f1)"
+    [ -n "$rm_at" ]
+    [ -n "$run_at" ]
+    [ "$rm_at" -lt "$run_at" ]
+
+    # And the new one mounts THIS folder.
+    line="$(ctr_line "run ")"
+    [[ "$line" == *"--volume $primary:/workspace/$(basename "$primary")"* ]]
+}
+
+@test "open reuses a running container that matches" {
+    mkdir -p "$PROJECT_DIR"
+    primary="$(abspath "$PROJECT_DIR")"
+    run make_project_v3 "$primary"
+    [ "$status" -eq 0 ]
+
+    name="claude-orca-$(basename "$primary")"
+    url="$(cat "$primary/.claude-dev/run/orca-web-url.txt")"
+
+    : > "$CONTAINER_STUB_LOG"
+    : > "$OPEN_STUB_LOG"
+    run bash -c "cd '$primary' && ./claude-dev open"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Container $name is already running."* ]]
+    [[ "$output" != *"is not this folder's"* ]]
+    ! grep -q "^run " "$CONTAINER_STUB_LOG"
+    ! grep -q "^stop " "$CONTAINER_STUB_LOG"
+    ! grep -q "^rm " "$CONTAINER_STUB_LOG"
+    [ "$(tail -1 "$OPEN_STUB_LOG")" = "$url" ]
+}
