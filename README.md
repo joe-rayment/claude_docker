@@ -74,6 +74,10 @@ Docker is running, clones this template into
 `./claude-dev` launcher stub, seeds `.claude-dev/claude-orca.json`, builds
 the image, starts the folder's container, and opens Orca — the desktop app
 when this Mac has one, your default browser otherwise. Re-running is safe.
+The folder need not be a git repository: the first start initialises one
+on `main` with a seed commit (`.gitignore`, `orca.yaml`, the tracker),
+because Orca cannot create a workspace without a base branch, and the
+folder's own files stay untracked until you add them.
 To isolate another folder, run the same one-liner from inside it.
 
 **2. Sign in to Claude, inside Orca.** The window (or the browser tab) is
@@ -411,7 +415,9 @@ runs `./claude-dev --update` moves to a new image with the rebuild.
 - `scripts/container/provision-run.sh` and `scripts/container/provision.d/`
   — everything that is about *this folder* rather than about the image:
   the toolchain verify, the config sync, the first-run seeds, the git
-  identity, the tracker, the `orca repo add`, the guard check. They run
+  identity, the tracker, the repository itself (initialised on `main` with
+  a seed commit when the folder is not one, or has no commits yet), the
+  `orca repo add`, the guard check. They run
   **after** the URL is published, one numbered idempotent step at a time,
   each leaving `run/provision/<step>.log` and `run/provision/<step>.status`.
   No step is fatal and the next start re-runs all of them, so a step that

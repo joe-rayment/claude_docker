@@ -1,0 +1,120 @@
+#!/usr/bin/env bash
+#
+# The folder is a git repository with at least one commit on main (or
+# master) before 60-orca-repo-add hands it to Orca. `orca repo add`
+# rejects a folder that is not a repository ("Not a valid git
+# repository"); a `git init`ed one with no commits gets in, and then every
+# "Create worktree" on it fails "No base branch found", because Orca bases
+# a workspace on origin/HEAD, origin/main, origin/master, refs/heads/main
+# or refs/heads/master and nothing else (reproduced 2026-09-13, Orca
+# 1.4.197). Nothing in bootstrap.sh, the launcher, the entrypoint or the
+# steps before this one ever ran `git init` or a first commit, so a folder
+# that was never a repository showed up as a project nobody could open a
+# workspace in.
+#
+# What it never does: commit the user's own files -- only the seeds
+# (.gitignore, orca.yaml, .beads), only those that exist, and by pathspec,
+# so a file the user already staged stays staged and out of the commit;
+# rename a branch that has commits; `git init` over a .git that git cannot
+# read (dubious ownership, corruption -- that is reported and left alone);
+# or reach into a parent folder's repository. Idempotent because a
+# repository with commits is nothing to do.
+
+set -uo pipefail
+. "$(dirname "$0")/../provision-lib.sh"
+
+if [ -z "$PROJECT_DIR" ] || [ ! -d "$PROJECT_DIR" ]; then
+    echo "PROJECT_DIR '$PROJECT_DIR' is not a directory; nothing to initialise" >&2
+    exit 1
+fi
+if ! command -v git >/dev/null 2>&1; then
+    echo "git is not on PATH; cannot make $PROJECT_DIR a repository" >&2
+    exit 1
+fi
+
+# --- what is here already ---------------------------------------------------
+
+# stdout alone: a warning on stderr must not turn "true" into "unreadable".
+inside="$(git -C "$PROJECT_DIR" rev-parse --is-inside-work-tree 2>/dev/null)"
+if [ "$inside" = "true" ]; then
+    top="$(git -C "$PROJECT_DIR" rev-parse --show-toplevel 2>/dev/null)"
+    here="$(cd "$PROJECT_DIR" && pwd -P)"
+    if git -C "$PROJECT_DIR" rev-parse --verify -q HEAD >/dev/null 2>&1; then
+        branch="$(git -C "$PROJECT_DIR" symbolic-ref --short -q HEAD 2>/dev/null || echo 'a detached HEAD')"
+        if [ "$top" = "$here" ]; then
+            echo "$PROJECT_DIR is a git repository with commits on $branch; nothing to do"
+        else
+            echo "$PROJECT_DIR is inside the git repository at $top, which has commits on $branch; nothing to do"
+        fi
+        exit 0
+    fi
+    if [ "$top" != "$here" ]; then
+        echo "$PROJECT_DIR is inside the repository at $top, which has no commits; not touching a repository that is not this folder's" >&2
+        exit 1
+    fi
+    branch="$(git -C "$PROJECT_DIR" symbolic-ref --short -q HEAD 2>/dev/null || true)"
+    case "$branch" in
+        main|master) ;;
+        *)
+            git -C "$PROJECT_DIR" symbolic-ref HEAD refs/heads/main || exit 1
+            echo "moved the unborn HEAD of $PROJECT_DIR from '$branch' to main: Orca only bases worktrees on main or master"
+            ;;
+    esac
+elif [ -e "$PROJECT_DIR/.git" ]; then
+    # A .git is there and git will not read it: dubious ownership, a corrupt
+    # repository, a gitdir file pointing nowhere. Initialising over it would
+    # hide or destroy whatever the user has, so say why, in git's words, and
+    # stop.
+    why="$(git -C "$PROJECT_DIR" rev-parse --is-inside-work-tree 2>&1 >/dev/null | head -3)"
+    echo "git cannot read the repository at $PROJECT_DIR: $why" >&2
+    exit 1
+else
+    if ! git -C "$PROJECT_DIR" init -q -b main >/dev/null 2>&1; then
+        # A git too old for -b (before 2.28): init, then point HEAD at main.
+        git -C "$PROJECT_DIR" init -q || exit 1
+        git -C "$PROJECT_DIR" symbolic-ref HEAD refs/heads/main || exit 1
+    fi
+    echo "initialised $PROJECT_DIR as a git repository on main"
+fi
+
+# --- the seed commit --------------------------------------------------------
+#
+# Only the seeds, by pathspec: `git commit -- <paths>` commits exactly those
+# paths whatever else is staged, so a file the user added before the first
+# start stays staged and out of this commit. `git add` of a .beads whose
+# contents are all ignored exits 1 and must not abort the step; a seed that
+# ends up with nothing tracked under it is dropped from the pathspec.
+
+paths=""
+for p in .gitignore orca.yaml .beads; do
+    [ -e "$PROJECT_DIR/$p" ] || continue
+    git -C "$PROJECT_DIR" add -- "$p" >/dev/null 2>&1 || true
+    if git -C "$PROJECT_DIR" ls-files --error-unmatch -- "$p" >/dev/null 2>&1; then
+        paths="${paths:+$paths }$p"
+    fi
+done
+
+# A configured identity (40-git-identity's seed, the agent's own
+# .gitconfig, the repository's) is never overridden; a folder with none
+# still gets its commit, under a name that says who made it. bd installs
+# hooks into the folder (--no-verify) and there is no signing key in the
+# container (commit.gpgsign=false), whatever the Mac's config says.
+name="$(git -C "$PROJECT_DIR" config user.name 2>/dev/null || true)"
+email="$(git -C "$PROJECT_DIR" config user.email 2>/dev/null || true)"
+[ -n "$name" ] || name="claude_orca"
+[ -n "$email" ] || email="claude_orca@localhost"
+
+if [ -z "$paths" ]; then
+    msg="claude_orca: seed commit (empty)"
+    git -C "$PROJECT_DIR" -c user.name="$name" -c user.email="$email" -c commit.gpgsign=false \
+        commit -q --allow-empty --no-verify -m "$msg" || exit 1
+else
+    msg="claude_orca: seed commit ($paths)"
+    # shellcheck disable=SC2086 -- $paths is a space-separated pathspec list on purpose
+    git -C "$PROJECT_DIR" -c user.name="$name" -c user.email="$email" -c commit.gpgsign=false \
+        commit -q --no-verify -m "$msg" -- $paths || exit 1
+fi
+
+sha="$(git -C "$PROJECT_DIR" rev-parse --short HEAD 2>/dev/null)"
+branch="$(git -C "$PROJECT_DIR" symbolic-ref --short -q HEAD 2>/dev/null)"
+echo "seed commit $sha on $branch: ${paths:-(empty)}"
