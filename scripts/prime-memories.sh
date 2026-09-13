@@ -21,7 +21,7 @@
 # instead of silently dropped or truncated mid-sentence.
 #
 # PRIME_MEMORY_BUDGET overrides the byte budget applied to the memories
-# themselves (default 8000). The shared preamble bd prints above them
+# themselves (default 4000). The shared preamble bd prints above them
 # (banner + section header + explanation) is not counted against it — it
 # always prints in full. Invalid or unset falls back to the default.
 #
@@ -33,9 +33,9 @@ set -u
 
 command -v bd >/dev/null 2>&1 || exit 0
 
-budget="${PRIME_MEMORY_BUDGET:-8000}"
+budget="${PRIME_MEMORY_BUDGET:-4000}"
 case "$budget" in
-    ''|*[!0-9]*) budget=8000 ;;
+    ''|*[!0-9]*) budget=4000 ;;
 esac
 
 raw=$(bd prime --memories-only 2>/dev/null)

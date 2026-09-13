@@ -108,6 +108,33 @@ make_bd_repo() {
     [ "$footer_lines" -eq 1 ]
 }
 
+@test "prime-hook: the default memory budget is 4000 bytes -- memories past it are omitted, and an invalid PRIME_MEMORY_BUDGET falls back to the same default" {
+    local dir="$BATS_TEST_TMPDIR/default-budget-repo"
+    make_bd_repo "$dir"
+    # Six ~700-byte memories: over the 4000-byte default, under the old 8000.
+    local filler i
+    filler=$(printf 'x%.0s' $(seq 1 700))
+    for i in 1 2 3 4 5 6; do
+        (cd "$dir" && bd remember --key "mem-$i" "mem$i: $filler" >/dev/null 2>&1)
+    done
+
+    run bash -c "cd '$dir' && bash '$PRIME_MEMORIES'"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"omitted"* ]]
+    [[ "$output" == *"### mem-1"* ]]
+    [[ "$output" != *"### mem-6"* ]]
+    # Five ~730-byte blocks fit in 4000 bytes and the sixth does not; all
+    # six fitted under the old 8000-byte default, so this pins the halving.
+    local printed
+    printed=$(printf '%s\n' "$output" | grep -c '^### ')
+    [ "$printed" -eq 5 ]
+
+    run bash -c "cd '$dir' && PRIME_MEMORY_BUDGET=not-a-number bash '$PRIME_MEMORIES'"
+    [ "$status" -eq 0 ]
+    printed=$(printf '%s\n' "$output" | grep -c '^### ')
+    [ "$printed" -eq 5 ]
+}
+
 # ── (4) fail-open: bd absent ────────────────────────────────────────────────
 
 @test "prime-hook: prime-memories exits 0 with empty output when bd is absent from PATH" {
