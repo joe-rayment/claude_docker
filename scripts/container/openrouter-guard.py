@@ -9,7 +9,11 @@ edit. That place is here.
 
 The guard is the only process in the VM that holds the real OPENROUTER_API_KEY.
 Clients (OpenCode, Codex, delegate.sh) get a random guard token and the guard's
-loopback base URL instead. For every completion request it:
+loopback base URL instead. It is handed the key over a mode-600 file it reads
+once and unlinks (see read_api_key), because the guard runs as the same uid as
+every agent terminal here: a key in argv or in the environment is a key
+`ps -ef` and /proc/<pid>/environ give away for as long as the guard is up,
+which is this whole design inverted (claude-orca-qa2.25). For every completion request it:
 
   * refuses anything that does not carry the guard token (401), so a leaked
     or guessed client config cannot reach OpenRouter at all;
@@ -29,7 +33,16 @@ Usage:
     openrouter-guard.py [--port 4141] [--policy <file>] [--run-dir <dir>]
 
 Environment:
-    OPENROUTER_API_KEY     the real key (required)
+    CLAUDE_ORCA_GUARD_KEY_FILE  a mode-600 file holding the real key. This is
+                           how the entrypoint and provision.d hand it over:
+                           the guard reads it once and unlinks it, so the key
+                           is on disk for the guard's startup rather than in
+                           /proc/<pid>/environ for its whole uptime
+                           (claude-orca-qa2.25). Named-but-missing, or empty,
+                           is a refusal to start -- never a silent fallback.
+    OPENROUTER_API_KEY     the real key, for a guard started BY HAND with no
+                           key file named. Scrubbed from os.environ at startup
+                           either way, so nothing this process spawns sees it.
     OPENROUTER_GUARD_TOKEN the token clients must present; generated if unset
     OPENROUTER_UPSTREAM    upstream base (default https://openrouter.ai; the
                            test suite points this at a stub server)
@@ -114,6 +127,63 @@ def load_policy(path):
         "allow_fallbacks": bool(force.get("allow_fallbacks", False)),
         "data_collection": force.get("data_collection", "deny"),
     }
+
+
+def read_api_key():
+    """The real key, off disk and gone again (claude-orca-qa2.25).
+
+    Returns (key, problem). `problem` is the sentence to print when there is
+    no key; it always names the key file, because the file is the supported
+    way in and an operator staring at run/openrouter-guard.log needs to know
+    which path to look at.
+
+    Two scrubs, and they are not the same scrub. Popping OPENROUTER_API_KEY
+    out of os.environ keeps the key out of anything this process later spawns
+    or dumps -- but it does NOT rewrite /proc/<pid>/environ, which the kernel
+    fixed at exec and hands to any same-uid reader forever. Only the caller
+    can do that, by never putting the key there: entrypoint.sh and
+    provision.d/70-openrouter-guard start us with `env -u OPENROUTER_API_KEY`
+    and a key file instead.
+    """
+    env_key = (os.environ.pop("OPENROUTER_API_KEY", "") or "").strip()
+    path = (os.environ.pop("CLAUDE_ORCA_GUARD_KEY_FILE", "") or "").strip()
+
+    if not path:
+        if env_key:
+            return env_key, ""
+        return "", (
+            "openrouter-guard: no key file (CLAUDE_ORCA_GUARD_KEY_FILE) and no "
+            "OPENROUTER_API_KEY -- the guard is the only holder of the real key "
+            "and has nothing to forward with; not starting."
+        )
+
+    # Named: authoritative. A guard that cannot read the file its starter
+    # promised must not quietly fall back to an environment every terminal in
+    # this container can read.
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            key = fh.read().strip()
+    except OSError as exc:
+        return "", (
+            "openrouter-guard: cannot read the key file %s (%s) -- the guard is "
+            "the only holder of the real key and has nothing to forward with; "
+            "not starting." % (path, exc)
+        )
+    finally:
+        # Read once. Gone whether it parsed or not: a key file left behind is
+        # the exposure this indirection exists to close.
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+    if not key:
+        return "", (
+            "openrouter-guard: the key file %s is empty -- the guard is the only "
+            "holder of the real key and has nothing to forward with; not "
+            "starting." % path
+        )
+    return key, ""
 
 
 def resolve_token(run_dir):
@@ -340,12 +410,10 @@ def main(argv):
     parser.add_argument("--run-dir", default=default_run_dir())
     args = parser.parse_args(argv)
 
-    api_key = os.environ.get("OPENROUTER_API_KEY", "").strip()
+    api_key, problem = read_api_key()
     if not api_key:
-        sys.stderr.write(
-            "openrouter-guard: OPENROUTER_API_KEY is not set -- the guard is the "
-            "only holder of the real key and has nothing to forward with; not starting.\n"
-        )
+        sys.stderr.write(problem + "\n")
+        sys.stderr.flush()
         return 2
 
     try:

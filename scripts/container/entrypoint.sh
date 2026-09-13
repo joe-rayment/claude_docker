@@ -426,6 +426,12 @@ GUARD_TIMEOUT="${CLAUDE_ORCA_GUARD_TIMEOUT:-30}"
 GUARD_LOG="$RUN_DIR/openrouter-guard.log"
 GUARD_PID_FILE="$RUN_DIR/openrouter-guard.pid"
 GUARD_TOKEN_FILE="$RUN_DIR/openrouter-guard.token"
+# How the real key gets to the guard, and to the guard step, without ever
+# being an argument or an environment variable (claude-orca-qa2.25). Both
+# readers unlink the file as soon as they have read it, so the key is on
+# disk for a startup rather than in /proc/<pid>/environ for an uptime.
+GUARD_KEY_FILE="$RUN_DIR/openrouter-guard.key"
+PROVISION_KEY_FILE="$RUN_DIR/provision-openrouter.key"
 GUARD_BASE_URL="http://127.0.0.1:$GUARD_PORT/api/v1"
 GUARD_PID=""
 GUARD_TOKEN=""
@@ -441,6 +447,17 @@ sys.exit(0 if s.connect_ex(('127.0.0.1', $GUARD_PORT)) == 0 else 1)" \
 # Stable across restarts: the token is seeded into Orca's per-agent env,
 # which is written once, so a fresh random token on every start would leave
 # that seed pointing at a credential the guard no longer accepts.
+# Mode 600 before a byte is in it, and the agent's, because the agent is who
+# reads it. Same uid as every terminal here, so the permission bits are not
+# what makes this safer than an environment variable -- the unlink is.
+write_key_file() {  # write_key_file <path> <key>
+    rm -f "$1"
+    ( umask 077; printf '%s\n' "$2" > "$1" ) || return 1
+    chmod 600 "$1" 2>/dev/null
+    [ "$PRIVDROP" = "1" ] && chown "$AGENT_UID:$AGENT_GID" "$1" 2>/dev/null
+    return 0
+}
+
 guard_token() {
     if [ -s "$GUARD_TOKEN_FILE" ]; then
         head -1 "$GUARD_TOKEN_FILE" | tr -d '\r\n'
@@ -462,13 +479,20 @@ start_openrouter_guard() {
     : > "$GUARD_LOG"
     [ "$PRIVDROP" = "1" ] && chown "$AGENT_UID:$AGENT_GID" "$GUARD_LOG" 2>/dev/null
 
+    if ! write_key_file "$GUARD_KEY_FILE" "$OPENROUTER_REAL_KEY"; then
+        warn "could not write the guard key file $GUARD_KEY_FILE"
+        return 1
+    fi
+
     # agent_exec, not run_as_agent: the exec chain keeps $! the guard's own
-    # pid rather than a wrapper subshell's. The real key is handed over
-    # here and nowhere else.
-    agent_exec env \
-        OPENROUTER_API_KEY="$OPENROUTER_REAL_KEY" \
+    # pid rather than a wrapper subshell's. The key goes over the file and
+    # `env -u` is not belt and braces: the guard's own os.environ scrub
+    # cannot rewrite /proc/<pid>/environ, which the kernel fixes at exec, so
+    # the only way the key is not there is for it never to have been.
+    agent_exec env -u OPENROUTER_API_KEY \
         OPENROUTER_GUARD_TOKEN="$GUARD_TOKEN" \
         CLAUDE_ORCA_RUN_DIR="$RUN_DIR" \
+        CLAUDE_ORCA_GUARD_KEY_FILE="$GUARD_KEY_FILE" \
         python3 "$GUARD_SCRIPT" --port "$GUARD_PORT" --run-dir "$RUN_DIR" \
         >>"$GUARD_LOG" 2>&1 &
     GUARD_PID=$!
@@ -489,6 +513,9 @@ start_openrouter_guard() {
     done
     kill -TERM "$GUARD_PID" 2>/dev/null
     GUARD_PID=""
+    # It never read it, or it died before it could: the file does not
+    # outlive the attempt.
+    rm -f "$GUARD_KEY_FILE"
     return 1
 }
 
@@ -573,13 +600,24 @@ run_provision() {
     fi
 
     # The real key is handed to the runner, which strips it from the
-    # environment every step but the guard's inherits.
+    # environment every step but the guard's inherits. It travels by file
+    # rather than by variable: `run_as_agent env VAR=<key> ...` would put it
+    # in the runner's argv AND its /proc/<pid>/environ, both readable by
+    # every agent terminal, for as long as provisioning takes.
+    provision_key_arg=""
+    if [ -n "${OPENROUTER_REAL_KEY:-}" ] \
+        && write_key_file "$PROVISION_KEY_FILE" "$OPENROUTER_REAL_KEY"; then
+        provision_key_arg="CLAUDE_ORCA_OPENROUTER_KEY_FILE=$PROVISION_KEY_FILE"
+    fi
     run_as_agent env PROJECT_DIR="$PROJECT_DIR" \
         TEMPLATE_ROOT="$TEMPLATE_ROOT" \
         ORCA_BIN="$ORCA_BIN" \
         ORCA_USER_DATA_DIR="$USER_DATA_DIR" \
-        CLAUDE_ORCA_OPENROUTER_REAL_KEY="${OPENROUTER_REAL_KEY:-}" \
+        ${provision_key_arg:+"$provision_key_arg"} \
         bash "$provision_runner"
+    # The runner unlinks it the moment it has read it; this is the case
+    # where it never ran at all.
+    rm -f "$PROVISION_KEY_FILE"
     return 0
 }
 
