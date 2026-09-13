@@ -39,18 +39,10 @@ caller from reading the files itself.
   snippets only when the exact text is load-bearing.
 - State negative results explicitly ("X appears nowhere under src/") — as
   valuable as hits. Flag ambiguity, don't guess.
-- **Answer the question asked, at the size asked**, then stop.
-- Target under ~300 words unless the task is an inventory.
-
-## Never
-
-- Spawn subagents — you are the **leaf tier** and carry no `Agent` tool.
-- Modify anything, render design opinions, or pad with process narration:
-  the caller wants facts, not the story of the hunt.
+- **Answer the question asked, at the size asked**, then stop: facts, not
+  the story of the hunt.
 
 ## Report delivery
 
 Your final message IS the report: it comes back to the caller as the task
-result. Spawns here are unnamed, so do not SendMessage anything to "main"
-and do not wait for a mailbox — say everything you have to say in the
-final message text.
+result, so say everything you have to say there.

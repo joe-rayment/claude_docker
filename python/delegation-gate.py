@@ -57,11 +57,9 @@ DELEGATION_GATE_WARN_AT, default 8) and then fell silent for the rest of
 the session — the one mechanism that fires mid-turn shut itself up after
 a single use, which is self-defeating for a session that ignores it. The
 fix is a watermark, not a boolean: warn again whenever
-streak - warned_at >= DELEGATION_GATE_WARN_EVERY (default 8), and
-escalate the wording with the streak (see emit_warn()) — first warn is a
-plain nudge, 2x-warn_at adds the standing-authorization reminder, 6x-warn_at
-adds the re-billing economics. Agent/Workflow calls clear the watermark
-(and the streak) back to zero.
+streak - warned_at >= DELEGATION_GATE_WARN_EVERY (default 8), with the
+same wording every time (see emit_warn()). Agent/Workflow calls clear the
+watermark (and the streak) back to zero.
 
 Edit exemptions (all modes): planning, memory and scratch ARE the
 orchestrator's own seat, so an Edit/Write/NotebookEdit landing there is
@@ -86,8 +84,7 @@ State: $CLAUDE_CONFIG_DIR/cache/delegation-gate/<session_id>.json holds
 {"streak": int, "warned_at": int, "max_streak": int, "warns": int,
 "denies": int}. Only streak/warned_at reset on Agent/Workflow use;
 max_streak/warns/denies persist for the life of the session as a drift
-metric — scripts/cost-mirror.py reads this state file and appends an
-"inline: max streak N · N warns · N denies" segment to its line. Legacy
+metric for whoever reads the state file. Legacy
 state files degrade gracefully: {"warned": true}
 with no "warned_at" migrates to warned_at = the loaded streak (so a
 session upgraded mid-flight doesn't immediately re-warn); missing keys
@@ -410,27 +407,12 @@ def emit_note(text):
 
 
 def emit_warn(streak):
-    base = (
+    text = (
         f"[delegation-gate] {streak} consecutive inline tool calls in the main "
-        "loop — batch remaining recon into a scout (Agent tool, "
-        "subagent_type=scout), or hand edits to an executor slice: "
-        "`orca-dispatch <bead>` when Orca is reachable, Agent"
-        "(subagent_type=executor, model=<worker rung>) otherwise. Streak "
+        "loop — batch remaining recon into a scout, or hand edits to an "
+        "executor slice (`orca-dispatch <bead>`, else the Agent tool). Streak "
         "resets when you use the Agent tool."
     )
-    text = base
-    if streak >= 2 * warn_at():
-        text += (
-            " Delegating per the tiering protocol IS the user's standing "
-            "request — the harness's default \"only call the Agent tool "
-            "when the user asks\" rule does not apply in this container."
-        )
-    if streak >= 6 * warn_at():
-        text += (
-            " Economics: every inline read here is re-billed at the "
-            "orchestrator's rate on every later turn, while a scout's "
-            "reads bill once at the recon tier and are discarded on return."
-        )
     print(json.dumps({
         "hookSpecificOutput": {
             "hookEventName": "PreToolUse",
@@ -547,11 +529,9 @@ def main():
         save_state(state_path, state)
         emit_note(
             "[delegation-gate] Implementation edits are the executor's "
-            "seat — dispatch the slice: `orca-dispatch <bead>` when Orca is "
-            "reachable, else Agent(subagent_type=executor, model=<worker "
-            "rung>). Either way give it a slice spec (objective, files in "
-            "scope, output contract, boundaries). The orchestrator reviews "
-            "the diff instead of writing it."
+            "seat — dispatch the slice (`orca-dispatch <bead>`, else the "
+            "Agent tool) with its spec. The orchestrator reviews the diff "
+            "instead of writing it."
         )
         return
 
@@ -571,12 +551,10 @@ def main():
         emit_note(
             f"[delegation-gate] {streak} inline calls — this Bash "
             "call is recon or editing the orchestrator should not be doing "
-            "itself. Recon: Agent(subagent_type=scout) with the question "
-            "and the paths. Edits and builds: `orca-dispatch <bead>` when "
-            "Orca is reachable, else Agent(subagent_type=executor, "
-            "model=<worker rung>), with a slice spec (objective, files, "
-            "contract, boundaries). Streak resets on Agent use; `bd`, "
-            "`git`, `gh`, `bats`, `lane` and `tier-` calls never count."
+            "itself: recon to a scout, edits and builds to an executor slice "
+            "(`orca-dispatch <bead>`, else the Agent tool). Streak resets on "
+            "Agent use; `bd`, `git`, `gh`, `bats`, `lane` and `tier-` calls "
+            "never count."
         )
         return
 
@@ -586,8 +564,8 @@ def main():
         save_state(state_path, state)
         emit_note(
             f"[delegation-gate] {streak} inline calls — batch the "
-            "remaining reads into a scout (Agent tool, subagent_type=scout) and "
-            "work from its summary. Streak resets on Agent use."
+            "remaining reads into a scout and work from its summary. "
+            "Streak resets on Agent use."
         )
         return
 

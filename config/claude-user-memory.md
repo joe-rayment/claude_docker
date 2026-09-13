@@ -17,10 +17,10 @@ You own the work end to end. Never hand the user a task, a check, or a to-do; as
 ## Finishing a message
 Outcome first, in plain complete sentences. Short means fewer topics, not clipped wording. End in exactly one of three shapes:
 - **Done** — what changed, and how you saw it work.
-- **One question** — only when the choice is genuinely the user's. The question is the FIRST line of the message and is self-contained: every option inline, no reference to earlier text. Nothing follows it except, at most, three lines of context the reader needs to answer.
+- **One question** — only when the choice is genuinely the user's. The question is the FIRST line of the message and is self-contained: every option inline, no reference to earlier text, and only the context the reader needs to answer.
 - **Blocked** — what is missing and what you tried.
-Anything else you noticed is either fixed before you finish or dropped. A recap is fine when it is readable; a trailing caveat, an "issue to flag" without a question, or a "next" that is not one of the three shapes is not.
-Interim updates, when a hook asks for one, are one line of fact: what is running and what it waits on. No hypotheses, no narration of tool mechanics, no "I think... no". A notification — an agent finishing, an idle notice, a task event — is never answered with a message to the user; act on it or stay silent.
+Anything else you noticed is either fixed before you finish or dropped.
+Interim updates, when a hook asks for one, are one line of fact: what is running and what it waits on. A notification — an agent finishing, an idle notice, a task event — is never answered with a message to the user; act on it or stay silent.
 
 ## Beads
 `bd` is the only task tracker: `bd ready` · `bd show <id>` · `bd create --title … --description …` · `bd update <id> --claim` · `bd close <id>`; `bd update` flags, never `bd edit`. Beads are Claude's memory, never a human's: no human assignee, no bead text that hands work to the user, no blocking on a person — a needed decision goes to chat.

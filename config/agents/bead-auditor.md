@@ -4,13 +4,8 @@ description: >
   Audits recently closed beads issues to catch bogus completions and reopen
   the bad ones. USE PROACTIVELY before declaring a session "done", before
   pushing work, and after any stretch of multiple bead closures. Also use
-  whenever the user asks any of: "audit closed beads", "review recent
-  closures", "check the closed beads", "are you sure those are done",
-  "did we actually test this", "verify completed work", "audit my
-  completions", "double-check what got closed", "review what was closed",
-  "did Claude actually verify", "any of those bogus", or any phrasing
-  questioning the quality of bead closures. Do NOT spawn a generic
-  reviewer for this — this agent owns it.
+  whenever the user questions the quality of a bead closure — whether it was
+  really done, really tested, really verified. This agent owns that review.
 tools:
   - Read
   - Grep
@@ -106,6 +101,4 @@ Held: K (passed sweep)
 ## Report delivery
 
 Your final message IS the report: it comes back to the caller as the task
-result. Spawns here are unnamed, so do not SendMessage anything to "main"
-and do not wait for a mailbox — say everything you have to say in the
-final message text.
+result, so say everything you have to say there.

@@ -208,31 +208,14 @@ bash_call() {
     echo "$output" | jq -e '.hookSpecificOutput.permissionDecision == "allow"'
 }
 
-@test "escalated warn text: tier2 phrase at streak 8, tier3 phrase at streak 24 (WARN_EVERY=1)" {
-    export DELEGATION_GATE_MODE=warn-only
-    export DELEGATION_GATE_WARN_AT=4
-    export DELEGATION_GATE_WARN_EVERY=1
-    for i in $(seq 1 8); do
-        run bash_call s10
-        [ "$status" -eq 0 ]
-    done
-    echo "$output" | jq -e '.hookSpecificOutput.additionalContext | test("standing request")'
-    echo "$output" | jq -e '(.hookSpecificOutput.additionalContext | test("re-billed")) == false'
-    for i in $(seq 9 24); do
-        run bash_call s10
-        [ "$status" -eq 0 ]
-    done
-    echo "$output" | jq -e '.hookSpecificOutput.additionalContext | test("re-billed")'
-}
-
-@test "Agent reset clears the warned_at watermark: next warn after reset is tier-1 text again" {
+@test "Agent reset clears the warned_at watermark: the next streak warns again" {
     export DELEGATION_GATE_MODE=warn-only
     export DELEGATION_GATE_WARN_AT=4
     export DELEGATION_GATE_WARN_EVERY=1
     for i in $(seq 1 8); do
         run bash_call s11
     done
-    echo "$output" | jq -e '.hookSpecificOutput.additionalContext | test("standing request")'
+    echo "$output" | jq -e '.hookSpecificOutput.additionalContext | test("8 consecutive")'
     run sh -c 'jq -cn "{tool_name:\"Agent\",session_id:\"s11\",agent_id:null,tool_input:{subagent_type:\"scout\",prompt:\"p\"}}" | python3 '"$GATE"
     [ "$status" -eq 0 ]
     [ -z "$output" ]
@@ -243,7 +226,6 @@ bash_call() {
     run bash_call s11
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.hookSpecificOutput.additionalContext | test("4 consecutive")'
-    echo "$output" | jq -e '(.hookSpecificOutput.additionalContext | test("standing request")) == false'
 }
 
 # ── advisory: nothing is ever denied ────────────────────────────────────────

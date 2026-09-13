@@ -21,8 +21,7 @@ user can run as-is, plus the exact commands and expected output, handed off
 in chat. (See the Snowflake project context rules — this skill is the
 deploy-shaped case of the same constraint.)
 
-This setup was distilled from a painful trial-and-error session. Package it
-exactly like this and the user's deploy works first try. The CLI is the
+Package it exactly like this and the user's deploy works first try. The CLI is the
 **Snowflake CLI** (`snow`), project format `definition_version: 2`.
 
 ## The four files Claude writes (all required)

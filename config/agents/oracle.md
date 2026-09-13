@@ -59,14 +59,14 @@ Line 1, exactly one of:
     Verdict: BLOCKER
     ROOT CAUSE: <one line>
 
-Then ranked issues, **at most 5**, each with a `file:line` anchor and a
-concrete fix — what to change, not rewritten files; snippets max ~10 lines.
+Then the issues that matter, ranked, each with a `file:line` anchor and a
+concrete fix — what to change, not rewritten files, and snippets not files.
 Close with `Next: <the single most important action>.` and then, mandatory:
 
     Capture: <1-3 sentence reusable distillation, or "nothing reusable">
 
-That capture is how insight paid for once becomes free forever. Keep the
-reply under ~400 words; never restate the plan or diff back.
+That capture is how insight paid for once becomes free forever. Never
+restate the plan or diff back.
 
 If the consult was something the main thread could have answered in
 stride, answer briefly anyway but open with: `This didn't need the oracle
@@ -75,6 +75,4 @@ stride, answer briefly anyway but open with: `This didn't need the oracle
 ## Report delivery
 
 Your final message IS the report: it comes back to the caller as the task
-result. Spawns here are unnamed, so do not SendMessage anything to "main"
-and do not wait for a mailbox — say everything you have to say in the
-final message text.
+result, so say everything you have to say there.

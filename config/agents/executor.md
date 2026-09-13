@@ -28,17 +28,8 @@ scout). Your caller spent the expensive tier decomposing the task; your
 job is to *execute* one slice and hand back a result they can act on
 without re-reading your work.
 
-**You are the fallback seat, not the default one.** When the Orca runtime
-is reachable, an executor slice is dispatched as a first-class Orca worker
-in its own terminal and worktree (`orca-dispatch <bead>`), because that
-worker can be any vendor's model, runs in parallel with its siblings, and
-reports through `worker_done`. This in-process subagent form is what the
-orchestrator falls back to when the runtime is not reachable (or when it
-deliberately passes `--backend subagent`) — same slice spec, same WORKER
-RULES, same red-then-green contract discipline, just inside the calling
-session. Nothing below changes between the two; if you were spawned as a
-subagent, you are the fallback path and should say so in your report only
-if it affected the work.
+The same slice can also run as a first-class Orca worker in its own
+worktree (`orca-dispatch <bead>`); the rules below are identical either way.
 
 ## Your slice, end to end
 
@@ -112,6 +103,4 @@ and saw rather than calling it "done".
 ## Report delivery
 
 Your final message IS the report: it comes back to the caller as the task
-result. Spawns here are unnamed, so do not SendMessage anything to "main"
-and do not wait for a mailbox — say everything you have to say in the
-final message text.
+result, so say everything you have to say there.
