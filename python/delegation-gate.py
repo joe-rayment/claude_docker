@@ -535,7 +535,9 @@ def main():
         )
         return
 
-    if mode in ("guard", "enforce") and tool_name == "Bash" and streak >= deny_at():
+    on_cadence = state["warned_at"] == 0 or streak - state["warned_at"] >= warn_every()
+
+    if mode in ("guard", "enforce") and tool_name == "Bash" and streak >= deny_at() and on_cadence:
         # A non-exempt Bash call is inline work exactly like an Edit --
         # `cat` costs the orchestrator what Read costs, and a grep sweep
         # costs more. The exempt list above (bd/git/bats/lane/tier-…) is
@@ -558,7 +560,7 @@ def main():
         )
         return
 
-    if mode == "enforce" and not is_edit_tool and streak >= deny_at():
+    if mode == "enforce" and not is_edit_tool and streak >= deny_at() and on_cadence:
         state["warns"] += 1
         state["warned_at"] = streak
         save_state(state_path, state)

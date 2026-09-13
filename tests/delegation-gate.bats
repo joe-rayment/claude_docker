@@ -759,3 +759,18 @@ bash_call() {
     [ -z "$output" ]
     [ ! -f "$(state_file s52)" ]
 }
+
+@test "guard: past the threshold the Bash note is on the cadence too -- 24 inline calls draw 3 notes (8, 16, 24), never one per call" {
+    export DELEGATION_GATE_MODE=guard
+    notes=0
+    for i in $(seq 1 24); do
+        run bash_call s-cad
+        [ "$status" -eq 0 ]
+        if [ -n "$output" ]; then
+            echo "$output" | jq -e '.hookSpecificOutput.permissionDecision == "allow"'
+            notes=$((notes + 1))
+            case "$i" in 8|16|24) ;; *) echo "note at call $i"; false ;; esac
+        fi
+    done
+    [ "$notes" -eq 3 ]
+}
