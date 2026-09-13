@@ -34,6 +34,75 @@ _ensure_bash32_have_32() {
     "$1" --version 2>/dev/null | head -1 | grep -q ' version 3\.2'
 }
 
+# bison without root. The folder's container runs as the `agent` user
+# (uid 501) with no sudo password, so `sudo -n apt-get install -y bison`
+# above is a no-op there and the whole shell-entry contract went red for a
+# missing build tool rather than for anything about the shell. apt can
+# still FETCH as an ordinary user as long as its list and cache dirs are
+# ones the user owns, and a .deb is just an archive: unpack bison and its
+# m4 dependency under the bash32 cache and point $PATH and, because the
+# prefix moved, $BISON_PKGDATADIR at the copy. Cached with the bash it is
+# there to build, so this costs one fetch per cache lifetime.
+#
+# Exports nothing globally beyond PATH/BISON_PKGDATADIR for this shell,
+# which is exactly the scope the source build below needs.
+_ensure_bash32_local_bison() {
+    local cache_dir="$1" tools apt_opts deb
+    tools="$cache_dir/tools"
+
+    if _ensure_bash32_have_bison "$tools"; then
+        _ensure_bash32_use_bison "$tools"
+        return 0
+    fi
+
+    command -v apt-get >/dev/null 2>&1 || return 1
+    command -v dpkg-deb >/dev/null 2>&1 || return 1
+
+    rm -rf "$tools"
+    mkdir -p "$tools/debs" "$tools/lists/partial" "$tools/cache/archives/partial" \
+        || return 1
+    apt_opts="-o Dir::State::Lists=$tools/lists -o Dir::Cache=$tools/cache"
+
+    # `apt-get update` is what makes a candidate version visible; it exits 0
+    # with only W: lines when DNS is dead, so the download below is what
+    # actually decides.
+    ( cd "$tools/debs" && apt-get $apt_opts update ) >/dev/null 2>&1
+    ( cd "$tools/debs" && apt-get $apt_opts download bison m4 ) >/dev/null 2>&1
+
+    for deb in "$tools"/debs/*.deb; do
+        [ -f "$deb" ] || continue
+        dpkg-deb -x "$deb" "$tools/root" >/dev/null 2>&1 || return 1
+    done
+
+    if _ensure_bash32_have_bison "$tools"; then
+        _ensure_bash32_use_bison "$tools"
+        return 0
+    fi
+    return 1
+}
+
+_ensure_bash32_have_bison() {
+    [ -x "$1/root/usr/bin/bison" ] || return 1
+    BISON_PKGDATADIR="$1/root/usr/share/bison" \
+        PATH="$1/root/usr/bin:$PATH" \
+        "$1/root/usr/bin/bison" --version >/dev/null 2>&1
+}
+
+# $M4 as well as $PATH: bison shells out to the m4 it was COMPILED against
+# (/usr/bin/m4), not to whatever m4 is first on PATH, so an unpacked bison
+# on a box with no system m4 dies with "m4 subprocess failed: No such file
+# or directory" in the middle of the bash build. $M4 is the override it
+# reads. $BISON_PKGDATADIR is the same story for its skeleton files.
+_ensure_bash32_use_bison() {
+    PATH="$1/root/usr/bin:$PATH"
+    BISON_PKGDATADIR="$1/root/usr/share/bison"
+    export PATH BISON_PKGDATADIR
+    if [ -x "$1/root/usr/bin/m4" ]; then
+        M4="$1/root/usr/bin/m4"
+        export M4
+    fi
+}
+
 _ensure_bash32() {
     local repo_root cache_dir prebuilt tarball_url build_dir src_dir permissive build_triple
 
@@ -73,8 +142,10 @@ _ensure_bash32() {
         sudo -n apt-get install -y bison >/dev/null 2>&1
     fi
     if ! command -v yacc >/dev/null 2>&1 && ! command -v bison >/dev/null 2>&1; then
-        echo "ensure_bash32: no yacc/bison on PATH -- cannot regenerate bash-3.2.57's patched parser" >&2
-        return 1
+        _ensure_bash32_local_bison "$cache_dir" || {
+            echo "ensure_bash32: no yacc/bison on PATH -- cannot regenerate bash-3.2.57's patched parser" >&2
+            return 1
+        }
     fi
 
     build_dir="$(mktemp -d)"

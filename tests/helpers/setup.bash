@@ -12,6 +12,12 @@
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 export REPO_ROOT
 
+# need_root / need_nonroot: one line at the top of a case that cannot run
+# as the other user. Kept in their own file so a test that must not pull in
+# the fixture above can `load helpers/user` on its own.
+# shellcheck source=tests/helpers/user.bash
+. "$(dirname "${BASH_SOURCE[0]}")/user.bash"
+
 # Runs once per bats FILE (bats-core setup_file hook). Vars exported here
 # survive into every test's setup()/body: bats forks a fresh process per
 # test off an environment that already carries them (verified: a var

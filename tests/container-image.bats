@@ -21,6 +21,10 @@
 # clone, so scripts/container/smoke.sh is run by hand (see tests/mac-e2e.sh)
 # rather than gated on a workflow.
 
+# need_nonroot only -- deliberately NOT helpers/setup, whose setup_file
+# builds the bootstrap stub tree this file has no use for.
+load helpers/user
+
 REPO_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)"
 DOCKERFILE="$REPO_ROOT/Dockerfile"
 SETUP="$REPO_ROOT/scripts/container/setup.sh"
@@ -217,6 +221,12 @@ setup_steps() {
 # here, not a static grep.
 @test "setup.sh installs a pinned opencode and --check reports it" {
     [ -f "$SETUP" ]
+
+    # `--phase opencode` below is asserted to REFUSE ("must run as root").
+    # As root it would not refuse: it would npm-install opencode onto the
+    # box running the suite, which is both a failed assertion and a real
+    # side effect.
+    need_nonroot "--phase opencode would really install opencode as root"
 
     # One pin, a version, overridable by env like every other phase's.
     local pin phase

@@ -464,7 +464,20 @@ ctr_local_spawn() {
     # The folder's own home is HOME here, so Orca's user-data dir lands
     # inside the project exactly as it does under /home/agent in the VM.
     # No privilege drop: there is no agent user on this side to drop to.
+    #
+    # And the folder's REAL path everywhere the docker argv spells the
+    # guest one. The container path mounts the folder at /workspace/<name>
+    # and hands the entrypoint PROJECT_DIR=/workspace/<name>; with no
+    # container there is no mount, so those paths name nothing and the
+    # entrypoint stops at "no entrypoint at /workspace/<name>/...". These
+    # go on the END of the argv, after the recorded -e values, because
+    # `env` applies its assignments in order and the last one wins.
     set -- "$@" "HOME=$proj/.claude-dev/home" \
+        "PROJECT_DIR=$proj" \
+        "CLAUDE_ORCA_HOST_PROJECT_DIR=$proj" \
+        "CLAUDE_ORCA_ROOT=$proj" \
+        "BEADS_DIR=$proj/.beads" \
+        "CLAUDE_ORCA_SETUP=$proj/.claude-dev/template/scripts/container/setup.sh" \
         "ORCA_BIN=${CLAUDE_ORCA_ORCA_BIN:-/opt/Orca/orca-ide}" \
         CLAUDE_ORCA_SKIP_SETUP=1 \
         CLAUDE_ORCA_SKIP_BEADS=1 \
@@ -494,8 +507,12 @@ ctr_local_spawn() {
     printf '%s\n' "$name"
 }
 
+# The folder recorded in <name>.project is the one on THIS filesystem.
+# `-e PROJECT_DIR=` carries the guest path (/workspace/<name>), which only
+# means anything behind a mount, so CLAUDE_ORCA_HOST_PROJECT_DIR -- the
+# real path the docker argv passes alongside it -- wins here when present.
 ctr_local_run() {
-    local d name="" proj="" a prev=""
+    local d name="" proj="" host_proj="" a prev=""
     for a in "$@"; do
         case "$prev" in
             --name) name="$a" ;;
@@ -511,11 +528,16 @@ ctr_local_run() {
         case "$prev" in
             -e|--env)
                 printf '%s\n' "$a" >> "$d/$name.env"
-                case "$a" in PROJECT_DIR=*) proj="${a#PROJECT_DIR=}" ;; esac
+                case "$a" in
+                    PROJECT_DIR=*) proj="${a#PROJECT_DIR=}" ;;
+                    CLAUDE_ORCA_HOST_PROJECT_DIR=*)
+                        host_proj="${a#CLAUDE_ORCA_HOST_PROJECT_DIR=}" ;;
+                esac
                 ;;
         esac
         prev="$a"
     done
+    [ -n "$host_proj" ] && proj="$host_proj"
     [ -n "$proj" ] || { echo "local runtime: run needs -e PROJECT_DIR=..." >&2; return 1; }
     printf '%s\n' "$proj" > "$d/$name.project"
     ctr_local_spawn "$name"

@@ -119,7 +119,13 @@ SHIM
 # The chown phase_user actually runs, lifted from setup.sh and pointed at
 # the fixture instead of /home/agent.
 lift_phase_user_chown() {
-    sed -n '/^ *find \/home\/agent -xdev/,/xargs -0 -r chown agent:agent/p' \
+    # The range has to END on the xargs line as setup.sh really spells it,
+    # `chown -h agent:agent`. Matching `chown agent:agent` closed no range
+    # at all, so sed printed from the find line to the end of the file and
+    # the "lifted function" was 236 lines of invalid bash. The -h is
+    # optional in the pattern so the range survives either spelling; that
+    # -h is asserted on its own below.
+    sed -n '/^ *find \/home\/agent -xdev/,/xargs -0 -r chown \(-h \)\{0,1\}agent:agent/p' \
         "$SETUP_SH"
 }
 
