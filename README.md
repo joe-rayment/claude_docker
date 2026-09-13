@@ -88,12 +88,14 @@ On a Mac with the Orca desktop app installed, the desktop path is the
 default. `./claude-dev` starts the container, launches the app — the one
 installed copy, never a second instance and never a private profile — and
 registers the container as a **remote environment** named
-`claude-orca-<folder>` over Orca's own pairing protocol — an end-to-end
+`remote-<folder>` (the container keeps its own name,
+`claude-orca-<folder>`) over Orca's own pairing protocol — an end-to-end
 encrypted websocket to the port the folder already publishes on
 `127.0.0.1`. Nothing needs picking — the app already shows it attached and
 Connected in its **Remote Hosts** pane. The sidebar groups it under a
 **project** named after the folder, and each workspace under that project
-carries a badge with the environment name; open one and you are in the
+carries a badge with the environment name, so a sandboxed workspace reads
+`remote-…` where a local one reads **Local Mac**; open one and you are in the
 container, the app a client exactly as the browser tab is, and nothing it
 runs escapes the container. The one installed Orca is never allowed to
 hold this folder as a **local** project (agents run there with no sandbox

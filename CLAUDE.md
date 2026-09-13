@@ -106,7 +106,10 @@ opt-in now that Orca runs in the container.
 The UI is a client of that runtime, and on a Mac with the Orca desktop app
 installed the client is the app, not a browser tab: the launcher launches it
 and registers the container as a remote environment named
-`claude-orca-<project>` over Orca's pairing protocol (the E2EE websocket to
+`remote-<project>` — the environment name IS the sidebar badge on every
+workspace under the project, and the badge truncates, so the word the user
+reads has to come first; the container itself is still
+`claude-orca-<project>` — over Orca's pairing protocol (the E2EE websocket to
 the published loopback port, keyed by `run/orca-pairing-url.txt` or the web
 URL's `#pairing=` fragment). The `ui` key in `claude-orca.json`
 (`desktop`|`web`, written at register) decides; no app found, or

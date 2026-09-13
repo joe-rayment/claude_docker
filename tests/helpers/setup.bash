@@ -1086,6 +1086,29 @@ STUB
     chmod +x "$1"
 }
 
+# orca_wait_app_gone()'s second half: the app's own PROCESS, not its RPC.
+# Orca flushes orca-data.json in PARALLEL with stopping the RPC at quit,
+# so `status --json` can say "not running" while the store is still being
+# written -- the launcher waits for `pgrep -f <bundle>/Contents/MacOS/` to
+# go quiet as well. The stub answers from the same app-running file the
+# open and osascript stubs already flip, and is silent (exit 1, like a
+# real pgrep with no match) once the quit has landed.
+write_stub_pgrep() {
+    cat > "$1" <<'STUB'
+#!/usr/bin/env bash
+running="${ORCA_STUB_APP_RUNNING:-false}"
+if [ -n "${ORCA_STUB_STATE:-}" ] && [ -f "$ORCA_STUB_STATE/app-running" ]; then
+    running="$(cat "$ORCA_STUB_STATE/app-running")"
+fi
+if [ "$running" = "true" ]; then
+    printf '%s\n' "${ORCA_STUB_APP_PID:-4242}"
+    exit 0
+fi
+exit 1
+STUB
+    chmod +x "$1"
+}
+
 # orca_user_data_dir()'s own discovery path (claude-orca-tgr): a running
 # app's open files, read with `lsof -p <pid> -Fn`. A minimal -Fn shape --
 # the 'p' (pid) header line every lsof answer carries, and one 'n'-prefixed
@@ -1187,6 +1210,7 @@ setup() {
     export OSASCRIPT_STUB_LOG="$BATS_TEST_TMPDIR/osascript.log"
     : > "$OSASCRIPT_STUB_LOG"
     write_stub_osascript "$STUB_BIN/osascript"
+    write_stub_pgrep "$STUB_BIN/pgrep"
     write_stub_lsof "$STUB_BIN/lsof"
     # orca_user_data_dir()'s own fallback path (claude-orca-tgr) --
     # $HOME/Library/Application Support/Orca, standing in for the Mac's

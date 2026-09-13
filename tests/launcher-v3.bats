@@ -641,6 +641,10 @@ desktop_fixture() {
     mkdir -p "$ORCA_STUB_DATA_DIR"
     printf '{"repos":[{"path":"%s"},{"path":"/Users/joe/some-other-project"}]}\n' \
         "$primary" > "$ORCA_STUB_DATA_DIR/orca-data.json"
+    # The precondition the quit is now gated on: the store the launcher
+    # would rewrite has to name this folder, and while the app is running
+    # the way it finds that store is the app's own open files.
+    export ORCA_STUB_LSOF_DIR="$ORCA_STUB_DATA_DIR"
 
     run bash -c "cd '$primary' && ./claude-dev open"
     [ "$status" -eq 0 ]
@@ -649,6 +653,9 @@ desktop_fixture() {
     # no `orca://` protocol handler -- then a single relaunch, not a
     # second instance.
     grep -qF "tell application \"$(basename "$CLAUDE_ORCA_APP" .app)\" to quit" "$OSASCRIPT_STUB_LOG"
+    # ... and guarded on the app already running: an unguarded `quit`
+    # LAUNCHES the app when it is not running (AppleScript semantics).
+    grep -qF "is running" "$OSASCRIPT_STUB_LOG"
     [ "$(wc -l < "$OSASCRIPT_STUB_LOG")" -eq 1 ]
     [ "$(grep -c -- "-a $CLAUDE_ORCA_APP" "$OPEN_STUB_LOG")" -eq 1 ]
 
@@ -672,6 +679,14 @@ desktop_fixture() {
     # re-adding this folder mid-relaunch -- exactly the leak a single
     # self-heal cannot fix.
     export ORCA_STUB_LOCAL_REPOS="$primary"
+    # The store the launcher rewrites is a DIFFERENT file from the one the
+    # CLI stub answers out of, so the strip lands (the quit's precondition
+    # is met and orca-data.json really does stop naming the folder) and
+    # the app goes on claiming it anyway.
+    export ORCA_USER_DATA_PATH="$BATS_TEST_TMPDIR/mac-orca-data"
+    mkdir -p "$ORCA_USER_DATA_PATH"
+    printf '{"repos":[{"path":"%s"}]}\n' "$primary" \
+        > "$ORCA_USER_DATA_PATH/orca-data.json"
 
     run bash -c "cd '$primary' && ./claude-dev open"
     [ "$status" -eq 0 ]
@@ -685,6 +700,107 @@ desktop_fixture() {
     url="$(head -1 "$primary/.claude-dev/run/orca-web-url.txt")"
     [ "$(tail -1 "$OPEN_STUB_LOG")" = "$url" ]
     grep -qF "Orca Web" <<< "$output"
+    [ ! -e "$primary/.claude-dev/run/orca-environment.json" ]
+}
+
+# --- the quit is a last resort, and it is earned ------------------------
+#
+# Quitting the user's Orca is the most destructive thing this launcher
+# does (their open windows, their running agents), and the hand-off used
+# to do it on nothing more than `repo list` saying "local" -- then strip a
+# file that may never have named the folder, relaunch, find it still
+# local, and fall back to the browser anyway. Two checks make it earned:
+# the store the strip rewrites has to name the folder BEFORE anything is
+# quit, and the strip has to have landed before the app is launched.
+
+@test "open with ui desktop never quits the app when orca-data.json does not name this folder" {
+    local primary url data
+    primary="$(desktop_fixture)"
+    export ORCA_STUB_APP_RUNNING=true
+    # The app says this folder is a local project of its own...
+    export ORCA_STUB_LOCAL_REPOS="$primary"
+    # ... and the store the launcher would rewrite to fix that does not
+    # mention it, so no rewrite it could do would change the answer.
+    data="$BATS_TEST_TMPDIR/mac-orca-data"
+    mkdir -p "$data"
+    export ORCA_USER_DATA_PATH="$data"
+    printf '{"repos":[{"path":"/Users/joe/some-other-project"}]}\n' \
+        > "$data/orca-data.json"
+
+    run bash -c "cd '$primary' && ./claude-dev open"
+    [ "$status" -eq 0 ]
+
+    # Not one quit: the app keeps whatever the user had open.
+    ! grep -qF "to quit" "$OSASCRIPT_STUB_LOG"
+    # It says which file it read and what to do by hand instead.
+    grep -qF "$data/orca-data.json" <<< "$output"
+    grep -qF "does not name it" <<< "$output"
+    grep -qF "Remove" <<< "$output"
+
+    # ... and the folder still ends up sandboxed, in the browser.
+    url="$(head -1 "$primary/.claude-dev/run/orca-web-url.txt")"
+    [ "$(tail -1 "$OPEN_STUB_LOG")" = "$url" ]
+    grep -qF "opening Orca Web instead" <<< "$output"
+    [ ! -e "$primary/.claude-dev/run/orca-environment.json" ]
+}
+
+@test "open with ui desktop never launches the app when the strip could not land" {
+    local primary url data
+    if [ "$(id -u)" -eq 0 ]; then
+        skip "a read-only directory does not stop root from writing in it"
+    fi
+    primary="$(desktop_fixture)"
+    # The app is not running (the default) and its store holds this
+    # folder -- but the store cannot be rewritten, so the rename+mv the
+    # strip ends with fails and the folder is still listed afterwards.
+    data="$BATS_TEST_TMPDIR/mac-orca-data"
+    mkdir -p "$data"
+    export ORCA_USER_DATA_PATH="$data"
+    printf '{"repos":[{"path":"%s"}]}\n' "$primary" > "$data/orca-data.json"
+    chmod 555 "$data"
+
+    run bash -c "cd '$primary' && ./claude-dev open"
+    chmod 755 "$data"
+    [ "$status" -eq 0 ]
+
+    grep -qF "still lists" <<< "$output"
+    grep -qF "opening Orca Web instead" <<< "$output"
+
+    # The whole point: no app was started. A launch here would open the
+    # one thing this run cannot take back -- a local, unsandboxed
+    # workspace on this folder.
+    ! grep -q -- "-a $CLAUDE_ORCA_APP" "$OPEN_STUB_LOG"
+    url="$(head -1 "$primary/.claude-dev/run/orca-web-url.txt")"
+    [ "$(tail -1 "$OPEN_STUB_LOG")" = "$url" ]
+    [ ! -e "$primary/.claude-dev/run/orca-environment.json" ]
+}
+
+@test "open with ui desktop falls back to Orca Web without a quit when the launched app re-adds this folder" {
+    local primary url data
+    primary="$(desktop_fixture)"
+    # The app is not running, the store names this folder, and the strip
+    # lands (the file really does stop naming it) -- and the app claims it
+    # again the moment it starts. The old flow answered that with a quit
+    # of the app it had just launched, which is how "./claude-dev opens
+    # Orca and it quits again" happened.
+    data="$BATS_TEST_TMPDIR/mac-orca-data"
+    mkdir -p "$data"
+    export ORCA_USER_DATA_PATH="$data"
+    printf '{"repos":[{"path":"%s"}]}\n' "$primary" > "$data/orca-data.json"
+    export ORCA_STUB_LOCAL_REPOS="$primary"
+
+    run bash -c "cd '$primary' && ./claude-dev open"
+    [ "$status" -eq 0 ]
+
+    # The strip did land, on the file the launcher was pointed at.
+    [ "$(jq --arg d "$primary" '.repos | map(select(.path == $d)) | length' "$data/orca-data.json")" = "0" ]
+    # The app was launched exactly once and never quit.
+    [ "$(grep -c -- "-a $CLAUDE_ORCA_APP" "$OPEN_STUB_LOG")" -eq 1 ]
+    [ ! -s "$OSASCRIPT_STUB_LOG" ]
+
+    grep -qF "re-added this folder as a LOCAL project" <<< "$output"
+    url="$(head -1 "$primary/.claude-dev/run/orca-web-url.txt")"
+    [ "$(tail -1 "$OPEN_STUB_LOG")" = "$url" ]
     [ ! -e "$primary/.claude-dev/run/orca-environment.json" ]
 }
 
@@ -703,7 +819,7 @@ desktop_fixture() {
 @test "open with ui desktop adds the environment with the decoded pairing URL and records its id" {
     local primary name envfile
     primary="$(desktop_fixture)"
-    name="claude-orca-$(basename "$primary")"
+    name="remote-$(basename "$primary")"
 
     # The fragment path, not the file: a folder whose image predates
     # run/orca-pairing-url.txt still has the offer, percent-encoded in the
@@ -731,7 +847,7 @@ desktop_fixture() {
 @test "open with ui desktop removes an existing environment of the same name before adding" {
     local primary name rm_line add_line
     primary="$(desktop_fixture)"
-    name="claude-orca-$(basename "$primary")"
+    name="remote-$(basename "$primary")"
 
     # A folder opened once before: the app already has an environment of
     # this name, saved against the PREVIOUS container's pairing offer. A
@@ -754,11 +870,36 @@ desktop_fixture() {
     [ -s "$primary/.claude-dev/run/orca-environment.json" ]
 }
 
+@test "open with ui desktop also removes the environment saved under the old container name before adding" {
+    local primary legacy_name rm_line add_line
+    primary="$(desktop_fixture)"
+    # The name this folder was saved under before the badge rename. A
+    # folder opened once under it still has that environment in the app,
+    # pointed at a container offer that no longer exists -- leaving it
+    # there is a second, dead entry under the same project.
+    legacy_name="claude-orca-$(basename "$primary")"
+    printf '%s\n' "$legacy_name" > "$ORCA_STUB_STATE/environments"
+    : > "$ORCA_STUB_LOG"
+
+    run bash -c "cd '$primary' && ./claude-dev open"
+    [ "$status" -eq 0 ]
+
+    rm_line="$(grep -n "^environment rm --environment $legacy_name --json$" "$ORCA_STUB_LOG" | head -1 | cut -d: -f1)"
+    add_line="$(grep -n "^environment add --name remote-$(basename "$primary") " "$ORCA_STUB_LOG" | head -1 | cut -d: -f1)"
+    [ -n "$rm_line" ]
+    [ -n "$add_line" ]
+    [ "$rm_line" -lt "$add_line" ]
+
+    # The old name is gone from the app, and only the new one is saved.
+    ! grep -qxF "$legacy_name" "$ORCA_STUB_STATE/environments"
+    grep -qxF "remote-$(basename "$primary")" "$ORCA_STUB_STATE/environments"
+}
+
 @test "open with ui desktop copies the pairing URL to the clipboard when environment add fails" {
     local primary name
     export ORCA_STUB_ADD_FAIL=1
     primary="$(desktop_fixture)"
-    name="claude-orca-$(basename "$primary")"
+    name="remote-$(basename "$primary")"
 
     run bash -c "cd '$primary' && ./claude-dev open"
     # The container is up and the app is running either way: a hand-off
@@ -797,7 +938,7 @@ desktop_fixture() {
 @test "teardown removes the environment and leaves no profile dir behind" {
     local primary name legacy
     primary="$(desktop_fixture)"
-    name="claude-orca-$(basename "$primary")"
+    name="remote-$(basename "$primary")"
     # A profile left behind by claude-orca-qhq (4a1882c), before that
     # decision was reversed.
     legacy="$primary/.claude-dev/state/orca-profile"
