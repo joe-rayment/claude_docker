@@ -19,7 +19,7 @@ set -euo pipefail
 
 # The single pin. `npm view @anthropic-ai/claude-code version` moves this;
 # nothing else in the template names a Claude Code version.
-CLAUDE_CODE_VERSION="2.1.261"
+CLAUDE_CODE_VERSION="2.1.271"
 
 _resolve_script_path() {
     local src="${BASH_SOURCE[0]}"

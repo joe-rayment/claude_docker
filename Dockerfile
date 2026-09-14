@@ -26,7 +26,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 # The two pins the build takes as arguments (image.yml passes neither
 # today, so these defaults are what ships); setup.sh reads them as env.
-ARG CLAUDE_CODE_VERSION=2.1.261
+ARG CLAUDE_CODE_VERSION=2.1.271
 ARG ORCA_VERSION=1.4.197
 
 # The apt half (setup.sh's IMAGE_PHASES: base, node, gh, Orca's runtime
