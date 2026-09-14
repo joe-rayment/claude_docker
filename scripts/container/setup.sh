@@ -23,6 +23,16 @@
 
 set -Eeuo pipefail
 
+# Recorded before the default below can hide it: phase_claude and --check
+# both need to know whether CLAUDE_CODE_VERSION rode in as a build-arg (the
+# Dockerfile passes whatever scripts/launcher.sh resolved) or is unset,
+# meaning phase_claude should resolve "latest" itself, lazily, rather than
+# install whatever this line's literal says.
+CLAUDE_CODE_VERSION_EXPLICIT=0
+if [ -n "${CLAUDE_CODE_VERSION:-}" ]; then
+    CLAUDE_CODE_VERSION_EXPLICIT=1
+fi
+
 ORCA_VERSION="${ORCA_VERSION:-1.4.197}"
 CLAUDE_CODE_VERSION="${CLAUDE_CODE_VERSION:-2.1.271}"
 OPENCODE_VERSION="${OPENCODE_VERSION:-1.18.25}"
@@ -297,28 +307,56 @@ phase_dolt() {
 
 # --- Claude Code, pinned native install ---------------------------------
 #
-# Keep in lockstep with scripts/install-claude.sh's CLAUDE_CODE_VERSION.
+# Keep in lockstep with scripts/install-claude.sh's CLAUDE_CODE_VERSION,
+# which is the FALLBACK floor now, not the installed version -- see
+# resolve_claude_latest below.
+#
+# When CLAUDE_CODE_VERSION was not given as a build-arg (scripts/launcher.sh
+# resolves it OUTSIDE the build via scripts/resolve-claude-version.sh, the
+# same script the Dockerfile's ARG is fed from), resolve "latest" here
+# instead, lazily -- called only from phase_claude, never at parse time,
+# because a network call at the top of this file would put a stall or a
+# captive-portal hang in `--check` and `--list`, neither of which needs a
+# network. It never fails: a blip falls back to the pin above, the same
+# way scripts/resolve-claude-version.sh does (setup.sh is COPYed into the
+# image alone, so it cannot source that script and duplicates the logic).
+resolve_claude_latest() {
+    local base body
+    base="https://downloads.claude.ai/claude-code-releases"
+    body="$(curl -fsSL --max-time 10 "${base}/latest" 2>/dev/null)" || body=""
+    body="$(printf '%s' "$body" | tr -d '[:space:]')"
+    if [ -n "$body" ] && echo "$body" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+        printf '%s\n' "$body"
+    else
+        printf '%s\n' "$CLAUDE_CODE_VERSION"
+    fi
+}
+
 phase_claude() {
     need_root claude
-    if [ "$(stamp /opt/claude/VERSION || true)" = "$CLAUDE_CODE_VERSION" ] \
+    local want="$CLAUDE_CODE_VERSION"
+    if [ "$CLAUDE_CODE_VERSION_EXPLICIT" != "1" ]; then
+        want="$(resolve_claude_latest)"
+    fi
+    if [ "$(stamp /opt/claude/VERSION || true)" = "$want" ] \
         && [ -x /opt/claude/claude ]; then
-        say "claude: ${CLAUDE_CODE_VERSION} already present"
+        say "claude: ${want} already present"
         return 0
     fi
-    say "claude: installing ${CLAUDE_CODE_VERSION}"
+    say "claude: installing ${want}"
     local platform base manifest checksum
     platform="linux-$(claude_arch)"
     base="https://downloads.claude.ai/claude-code-releases"
-    manifest="$(curl -fsSL "${base}/${CLAUDE_CODE_VERSION}/manifest.json")"
+    manifest="$(curl -fsSL "${base}/${want}/manifest.json")"
     checksum="$(echo "$manifest" | jq -r ".platforms[\"${platform}\"].checksum // empty")"
     echo "$checksum" | grep -Eq '^[a-f0-9]{64}$' \
-        || die "no ${platform} in manifest for ${CLAUDE_CODE_VERSION}"
+        || die "no ${platform} in manifest for ${want}"
     mkdir -p /opt/claude
-    curl -fsSL -o /opt/claude/claude "${base}/${CLAUDE_CODE_VERSION}/${platform}/claude"
+    curl -fsSL -o /opt/claude/claude "${base}/${want}/${platform}/claude"
     echo "${checksum}  /opt/claude/claude" | sha256sum -c -
     chmod +x /opt/claude/claude
     ln -sf /opt/claude/claude /usr/local/bin/claude
-    echo "${CLAUDE_CODE_VERSION}" > /opt/claude/VERSION
+    echo "${want}" > /opt/claude/VERSION
     # Claude Code is a Bun binary and Bun reads /proc/self at startup, so
     # running it needs a mounted /proc -- which an image build has and the
     # chroot verify-rootfs.sh uses does not (`mount` is not permitted
@@ -672,11 +710,24 @@ run_checks() {
         ck_fail "dolt: want ${DOLT_VERSION}, got ${v:-none}"
     fi
 
+    # An explicit CLAUDE_CODE_VERSION (the build-arg path) is checked for
+    # equality; otherwise phase_claude resolved "latest" itself, and a
+    # `--check` run a day after the build could re-resolve to something
+    # newer -- so this only asks for a valid semver stamp and an
+    # executable, never the exact string.
     v="$(stamp /opt/claude/VERSION 2>/dev/null || true)"
-    if [ "$v" = "$CLAUDE_CODE_VERSION" ] && [ -x /opt/claude/claude ]; then
-        ck_ok "claude ${v} (/opt/claude/claude)"
+    if [ "$CLAUDE_CODE_VERSION_EXPLICIT" = "1" ]; then
+        if [ "$v" = "$CLAUDE_CODE_VERSION" ] && [ -x /opt/claude/claude ]; then
+            ck_ok "claude ${v} (/opt/claude/claude)"
+        else
+            ck_fail "claude: want ${CLAUDE_CODE_VERSION} in /opt/claude/VERSION, got ${v:-none}"
+        fi
     else
-        ck_fail "claude: want ${CLAUDE_CODE_VERSION} in /opt/claude/VERSION, got ${v:-none}"
+        if printf '%s' "$v" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' && [ -x /opt/claude/claude ]; then
+            ck_ok "claude ${v} (/opt/claude/claude)"
+        else
+            ck_fail "claude: want a valid semver in /opt/claude/VERSION with an executable claude, got ${v:-none}"
+        fi
     fi
 
     v="$(installed_opencode 2>/dev/null || true)"

@@ -665,22 +665,33 @@ BUILD_STALL="${CLAUDE_ORCA_BUILD_STALL:-180}"
 
 try_build() {
     local ref="$1" ctx="$2" log rc=0 pid waited=0 quiet=0 last="" line="" said_how=0
-    local ver=""
+    local ver="" cver="" default_cver="" args=()
     log="${CTR_RUN_DIR:-${TMPDIR:-/tmp}}/build.log"
     : > "$log" 2>/dev/null || log="${TMPDIR:-/tmp}/claude-orca-build.log"
-    # The app decides the version (S4/claude-orca-8uo.5) -- and only the
-    # app. With no app on this host there is no build arg at all: the
+    # The app decides the ORCA_VERSION (S4/claude-orca-8uo.5) -- and only
+    # the app. With no app on this host there is no build arg at all: the
     # Dockerfile's own default is the answer, and passing it back in would
     # be a second place for that pin to be wrong.
+    #
+    # CLAUDE_CODE_VERSION is resolved HERE, outside the build
+    # (scripts/resolve-claude-version.sh -- a RUN step that resolved
+    # "latest" would be cached forever, which is the bug claude-orca-7a0
+    # fixes), and passed the same way: only when it disagrees with the
+    # Dockerfile's own baked-in default, so a build with nothing new to
+    # say stays byte-identical to one that never asked.
     #
     # --tag stays the FIRST flag: `docker build --tag <ref>` is what every
     # reader of the command line here greps for, the suite included.
     ver="$(app_orca_version)"
     if [ -n "$ver" ]; then
-        ctr build --tag "$ref" --build-arg "ORCA_VERSION=$ver" "$ctx" > "$log" 2>&1 &
-    else
-        ctr build --tag "$ref" "$ctx" > "$log" 2>&1 &
+        args+=(--build-arg "ORCA_VERSION=$ver")
     fi
+    cver="$(bash "$SCRIPT_DIR/resolve-claude-version.sh")"
+    default_cver="$(sed -n 's/^ARG CLAUDE_CODE_VERSION=\([^ ]*\).*$/\1/p' "$ctx/Dockerfile" | head -1)"
+    if [ -n "$cver" ] && [ "$cver" != "$default_cver" ]; then
+        args+=(--build-arg "CLAUDE_CODE_VERSION=$cver")
+    fi
+    ctr build --tag "$ref" ${args[@]+"${args[@]}"} "$ctx" > "$log" 2>&1 &
     pid=$!
     while kill -0 "$pid" 2>/dev/null; do
         sleep 1

@@ -17,8 +17,14 @@
 
 set -euo pipefail
 
-# The single pin. `npm view @anthropic-ai/claude-code version` moves this;
-# nothing else in the template names a Claude Code version.
+# The shared FALLBACK floor, not a pin the image installs -- the image
+# build resolves the newest release itself (scripts/resolve-claude-
+# version.sh, called from scripts/launcher.sh outside the docker build) and
+# only falls back to this literal on a network blip. This copy is dead
+# code (nothing execs this file; see its own header), but
+# tests/container-image.bats and tests/container-entrypoint.bats assert it
+# stays identical, character for character, to setup.sh's and resolve-
+# claude-version.sh's fallback, so the floor can never quietly drift.
 CLAUDE_CODE_VERSION="2.1.271"
 
 _resolve_script_path() {
