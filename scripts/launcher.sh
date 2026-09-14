@@ -665,7 +665,7 @@ BUILD_STALL="${CLAUDE_ORCA_BUILD_STALL:-180}"
 
 try_build() {
     local ref="$1" ctx="$2" log rc=0 pid waited=0 quiet=0 last="" line="" said_how=0
-    local ver="" cver="" default_cver="" args=()
+    local ver="" cver="" args=()
     log="${CTR_RUN_DIR:-${TMPDIR:-/tmp}}/build.log"
     : > "$log" 2>/dev/null || log="${TMPDIR:-/tmp}/claude-orca-build.log"
     # The app decides the ORCA_VERSION (S4/claude-orca-8uo.5) -- and only
@@ -676,9 +676,17 @@ try_build() {
     # CLAUDE_CODE_VERSION is resolved HERE, outside the build
     # (scripts/resolve-claude-version.sh -- a RUN step that resolved
     # "latest" would be cached forever, which is the bug claude-orca-7a0
-    # fixes), and passed the same way: only when it disagrees with the
-    # Dockerfile's own baked-in default, so a build with nothing new to
-    # say stays byte-identical to one that never asked.
+    # fixes), and passed UNCONDITIONALLY, unlike ORCA_VERSION: this was
+    # tried as "only when it disagrees with the Dockerfile's own default"
+    # to spare a parse of the Dockerfile's ARG line, but that made a test's
+    # outcome depend on whether upstream's latest happened to equal this
+    # repo's stale pin on the day it ran -- true today, false two days
+    # later when 2.1.271 shipped, with no code change either side. Passing
+    # the value unconditionally when it already equals the default yields
+    # an identical cache key and an identical image, so there is no cost
+    # to always passing it. The resolver call is guarded (`|| true`): a
+    # missing/non-executable resolve-claude-version.sh must degrade to the
+    # Dockerfile default, not kill the build under `set -e`.
     #
     # --tag stays the FIRST flag: `docker build --tag <ref>` is what every
     # reader of the command line here greps for, the suite included.
@@ -686,9 +694,8 @@ try_build() {
     if [ -n "$ver" ]; then
         args+=(--build-arg "ORCA_VERSION=$ver")
     fi
-    cver="$(bash "$SCRIPT_DIR/resolve-claude-version.sh")"
-    default_cver="$(sed -n 's/^ARG CLAUDE_CODE_VERSION=\([^ ]*\).*$/\1/p' "$ctx/Dockerfile" | head -1)"
-    if [ -n "$cver" ] && [ "$cver" != "$default_cver" ]; then
+    cver="$(bash "$SCRIPT_DIR/resolve-claude-version.sh" 2>/dev/null)" || cver=""
+    if [ -n "$cver" ]; then
         args+=(--build-arg "CLAUDE_CODE_VERSION=$cver")
     fi
     ctr build --tag "$ref" ${args[@]+"${args[@]}"} "$ctx" > "$log" 2>&1 &
