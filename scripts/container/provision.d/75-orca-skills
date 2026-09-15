@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+#
+# Install Orca's bundled "orchestration" skill for this folder, once.
+#
+# claude-orca-riu.3 already decided this: native Orca orchestration on by
+# default for newly registered folders. It shipped against an OLDER
+# architecture -- a Mac-side sandbox.json {"orca":{"cli":true}} flag threaded
+# through a socket bridge, because Orca ran unsandboxed on the Mac while the
+# sandboxed agent needed a socket to reach it. The 8uo epic moved Orca
+# INSIDE the same container as the agent (this file's CLAUDE.md), so there
+# is no socket to expose and no flag to set -- but nothing ever ported
+# riu.3's actual installation step onto the mechanism that replaced it. This
+# step is that port: it restores the already-decided default through
+# `orca skills install`, it does not decide it again. The old sandbox.json
+# path is dead code; nothing reads it any more.
+#
+# A real network call (npx hitting a registry) -- exactly the shape
+# 60-orca-repo-add and 70-openrouter-guard already are -- which is why this
+# lives here in provision.d and not in the early-sync path claude-orca-0jn
+# added, which is reserved for fast, non-network, must-not-race work.
+#
+# --local, and never the bare command's default: every other piece of state
+# in this codebase is scoped to the folder that started it (one container
+# per folder, no central install -- CLAUDE.md's Architecture Overview). The
+# plain command installs GLOBALLY, for every project on the host sharing
+# this Orca -- the one thing in this whole system that would reach outside
+# the folder it started in. Do not drop it.
+#
+# Idempotent: `orca skills installed` is asked first, and install only runs
+# when "orchestration" is not already in what it lists -- never on every
+# boot.
+#
+# Non-fatal like every sibling step: a failed install (offline, npx
+# missing, registry down) is logged and this step exits non-zero so
+# `provision status` surfaces it at the next prompt -- provision-run.sh's
+# own "no step is fatal" contract is what keeps the boot going from there;
+# this step does not swallow the failure into a false success to get there.
+
+set -uo pipefail
+. "$(dirname "$0")/../provision-lib.sh"
+
+AGENT_HOME="${HOME:-/home/agent}"
+ORCA_BIN="${ORCA_BIN:-/opt/orca/orca-ide}"
+
+# Resolved exactly the way 60-orca-repo-add and 65-worktree-sweep resolve
+# it: same binary, same candidates, so a folder that registered with one
+# copy of Orca asks that same copy about its skills.
+resolve_cli() {
+    if [ -n "${ORCA_CLI:-}" ]; then
+        printf '%s\n' "$ORCA_CLI"
+        return 0
+    fi
+    for candidate in \
+        "$(dirname "$ORCA_BIN")/resources/bin/orca-ide" \
+        "$AGENT_HOME/.local/bin/orca-ide" \
+        "$AGENT_HOME/.local/bin/orca"
+    do
+        [ -x "$candidate" ] && { printf '%s\n' "$candidate"; return 0; }
+    done
+    for name in orca orca-ide; do
+        found="$(command -v "$name" 2>/dev/null)"
+        [ -n "$found" ] && { printf '%s\n' "$found"; return 0; }
+    done
+    return 1
+}
+
+cli="$(resolve_cli || true)"
+if [ -z "$cli" ]; then
+    echo "no Orca CLI found; skipping the orchestration skill install" >&2
+    exit 0
+fi
+
+installed="$("$cli" skills installed 2>/dev/null)"
+case "$installed" in
+    *orchestration*)
+        echo "the orchestration skill is already installed; nothing to do"
+        exit 0
+        ;;
+esac
+
+echo "installing Orca's orchestration skill: $cli skills install --skill orchestration --local"
+if "$cli" skills install --skill orchestration --local; then
+    echo "orchestration skill installed"
+    exit 0
+fi
+echo "orchestration skill install failed -- the next start will retry it" >&2
+exit 1
