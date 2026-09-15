@@ -394,6 +394,62 @@ USER_DATA_DIR="${ORCA_USER_DATA_DIR:-$AGENT_HOME/.config/orca}"
 mkdir -p "$USER_DATA_DIR"
 [ "$PRIVDROP" = "1" ] && chown_agent_tree "$USER_DATA_DIR"
 
+# --- early config sync (claude-orca-0jn) --------------------------------
+#
+# (a) WHY: settings.json's statusLine key is written only by config-sync,
+# and config-sync used to run exclusively from provision.d, AFTER the web
+# URL is published and the Mac side's browser opens. Claude Code reads
+# statusLine once, at process start, and never catches up mid-session -- so
+# a session opened against a first-ever boot could read a settings.json
+# that did not exist yet, or existed without statusLine, and would carry
+# that gap for its entire life. Running the sync once here, before serve
+# is even started, closes that window.
+#
+# (b) WHY NOT FATAL: provision.d/20-config-sync (checksum-gated, so this
+# is a no-op on its second call within the same boot) still runs on the
+# normal schedule after the URL, and is still the retry path. A failure
+# here changes nothing about claude-orca-dbu.4's anti-silent-failure
+# property -- no exit, no die, and the folder still gets a logged,
+# retried attempt exactly as before this existed. It is a pure improvement
+# to how soon the FIRST attempt happens, never the last one.
+#
+# (c) WHY TIMED: this is local file I/O against a template that is already
+# on disk -- near-instant in the success case -- so it is bounded rather
+# than trusted, the same way every other step here is: a hang must not
+# delay serve past a bounded window, whatever caused it.
+#
+# The three-way fallback is copied verbatim from provision.d/20-config-sync
+# (do not let the two drift): the folder's own template clone wins when it
+# carries a config/, then TEMPLATE_ROOT's parent when TEMPLATE_ROOT itself
+# is named "template", then the image's baked copy under HOST_DIR.
+early_sync_host=""
+if [ -d "$PROJECT_DIR/.claude-dev/template/config" ]; then
+    early_sync_host="$PROJECT_DIR/.claude-dev"
+elif [ "$(basename "$TEMPLATE_ROOT")" = "template" ] && [ -d "$TEMPLATE_ROOT/config" ]; then
+    early_sync_host="$(dirname "$TEMPLATE_ROOT")"
+elif [ -d "$HOST_DIR/template/config" ]; then
+    early_sync_host="$HOST_DIR"
+fi
+
+if [ -z "$early_sync_host" ]; then
+    warn "early config sync: no template config found (looked in $PROJECT_DIR/.claude-dev/template, $TEMPLATE_ROOT, $HOST_DIR); skipping -- provision.d/20-config-sync will retry after the URL"
+else
+    early_sync_timeout="${CLAUDE_ORCA_EARLY_SYNC_TIMEOUT:-30}"
+    if command -v timeout >/dev/null 2>&1; then
+        run_as_agent timeout "$early_sync_timeout" bash "$SCRIPT_DIR/../config-sync.sh" \
+            --project "$PROJECT_DIR" --host "$early_sync_host"
+    else
+        run_as_agent bash "$SCRIPT_DIR/../config-sync.sh" \
+            --project "$PROJECT_DIR" --host "$early_sync_host"
+    fi
+    early_sync_rc=$?
+    if [ "$early_sync_rc" = "0" ]; then
+        log "early config sync from $early_sync_host/template/config: ok"
+    else
+        warn "early config sync from $early_sync_host/template/config failed (exit $early_sync_rc); provision.d/20-config-sync will retry after the URL"
+    fi
+fi
+
 # --- what used to be here (claude-orca-dbu.4) ---------------------------
 #
 # The config sync, the git identity, the Claude Code first-run seed and the
