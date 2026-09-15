@@ -94,19 +94,57 @@ fi
 
 # Exact-name idempotency check -- see the file header for why this can
 # never be a substring match. already_installed stays 1 (attempt the
-# install) unless one of the two checks below confidently says yes.
+# install) unless one of the checks below confidently says yes.
+#
+# --json is AUTHORITATIVE: once it exits 0 AND its output actually parses
+# as JSON, that answer is final in BOTH directions and the plain fallback
+# below is never consulted, whether it found a match or not (claude-orca-
+# 01u, superseding claude-orca-4gx). A confident "not installed" from
+# --json must not be overruled by a fuzzy plain-text match, and a zero
+# exit carrying non-JSON garbage must not count as confident either --
+# hence the separate `jq -e .` parse check before ever asking the
+# .result.skills[] question.
 already_installed=1
 json_output="$("$cli" skills installed --json 2>/dev/null)"
 json_rc=$?
+json_authoritative=1
 if [ "$json_rc" -eq 0 ] && command -v jq >/dev/null 2>&1 \
-    && printf '%s' "$json_output" | jq -e '.result.skills[] | select(.name == "orchestration")' >/dev/null 2>&1
+    && printf '%s' "$json_output" | jq -e . >/dev/null 2>&1
 then
-    already_installed=0
-else
+    json_authoritative=0
+    if printf '%s' "$json_output" \
+        | jq -e '.result.skills[] | select(.name == "orchestration")' >/dev/null 2>&1
+    then
+        already_installed=0
+    fi
+fi
+
+if [ "$json_authoritative" -ne 0 ]; then
+    # --json didn't give a confident answer (unsupported, non-zero exit,
+    # or a zero exit that didn't even parse) -- fall through to the
+    # plain-text fallback. A selector line BEGINS with the skill's name;
+    # prose, warnings and locations do not, so the match anchors to the
+    # start of the line rather than floating anywhere in it (this is what
+    # closed the (b)/(d) holes: a flush-left "Note: ... orchestration ..."
+    # or "warning: orchestration index stale" line used to satisfy an
+    # unanchored whole-token match anywhere on the line).
+    #
+    # ndy's frozen case-2 fixture predates the real two-line selector/
+    # description shape and prints one flush-left line of bare
+    # space-separated names with no parens and no prose punctuation
+    # ("beads orchestration snowpark-deploy"), where orchestration is not
+    # first, so the start anchor alone would miss it. That shape is
+    # handled as an explicit separate alternative -- a flush-left line
+    # made up ONLY of bare, space-separated name tokens -- rather than by
+    # loosening the anchor for every flush-left line, which is exactly
+    # what reopened the prose/warning hole above.
     plain_output="$("$cli" skills installed 2>/dev/null)"
-    if printf '%s\n' "$plain_output" \
-        | grep -v -E '^[[:space:]]' \
-        | grep -qE '(^|[[:space:]])orchestration([[:space:]]|\(|$)'
+    flush_left="$(printf '%s\n' "$plain_output" | grep -v -E '^[[:space:]]')"
+    if printf '%s\n' "$flush_left" | grep -qE '^orchestration([[:space:]]|\(|$)'; then
+        already_installed=0
+    elif printf '%s\n' "$flush_left" \
+        | grep -xE '[[:alnum:]_.-]+([[:space:]]+[[:alnum:]_.-]+)+' \
+        | grep -qE '(^|[[:space:]])orchestration([[:space:]]|$)'
     then
         already_installed=0
     fi
