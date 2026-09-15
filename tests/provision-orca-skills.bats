@@ -193,3 +193,69 @@ EOF
     [ -f "$bindir/install.log" ]
     grep -q -- "--local" "$bindir/install.log"
 }
+
+# ---------------------------------------------------------------------
+# claude-orca-01u: cases 9-13. --json becomes AUTHORITATIVE in both
+# directions (exit 0 AND parses as JSON -> that answer is final, plain
+# fallback never consulted either way), and the plain-text fallback
+# anchors to the START of the line (a selector line begins with the
+# name; prose, warnings and locations do not). Every assertion here is
+# on CAPTURED ARGV (was `skills install` actually invoked?), never on
+# exit code alone -- a wrongful skip exits 0.
+# ---------------------------------------------------------------------
+
+@test "case 9: --json unsupported; plain has no orchestration selector but a flush-left PROSE line mentions it -> MUST INSTALL" {
+    local proj="$BATS_TEST_TMPDIR/proj9" bindir="$BATS_TEST_TMPDIR/bin9" cli
+    mkdir -p "$proj"
+    local plain
+    plain=$'Note: orchestration features are documented separately.\nbeads (aaaa1111)\n    Bead tracking and issue management.'
+    cli="$(stub_orca_json "$bindir" "UNSUPPORTED" "$plain")"
+    run orca_skills_step "$proj" "$cli"
+    [ -f "$bindir/install.log" ]
+    grep -q -- "--skill orchestration" "$bindir/install.log"
+}
+
+@test "case 10: --json unsupported; plain has no orchestration selector but a flush-left WARNING line mentions it -> MUST INSTALL" {
+    local proj="$BATS_TEST_TMPDIR/proj10" bindir="$BATS_TEST_TMPDIR/bin10" cli
+    mkdir -p "$proj"
+    local plain
+    plain=$'warning: orchestration index stale\nbeads (aaaa1111)\n    Bead tracking and issue management.'
+    cli="$(stub_orca_json "$bindir" "UNSUPPORTED" "$plain")"
+    run orca_skills_step "$proj" "$cli"
+    [ -f "$bindir/install.log" ]
+    grep -q -- "--skill orchestration" "$bindir/install.log"
+}
+
+@test "case 11: --json exits 0 but prints non-JSON garbage; nothing indicates orchestration is installed -> MUST INSTALL" {
+    local proj="$BATS_TEST_TMPDIR/proj11" bindir="$BATS_TEST_TMPDIR/bin11" cli
+    mkdir -p "$proj"
+    local plain
+    plain=$'beads (aaaa1111)\n    Bead tracking and issue management.'
+    cli="$(stub_orca_json "$bindir" "not json at all, just some plain text {[" "$plain")"
+    run orca_skills_step "$proj" "$cli"
+    [ -f "$bindir/install.log" ]
+    grep -q -- "--skill orchestration" "$bindir/install.log"
+}
+
+@test "case 12: --json exits 0 with VALID JSON listing orchestration installed, plain does not mention it at all -> MUST NOT INSTALL (json authoritative, positive)" {
+    local proj="$BATS_TEST_TMPDIR/proj12" bindir="$BATS_TEST_TMPDIR/bin12" cli
+    mkdir -p "$proj"
+    local json='{"result":{"skills":[{"name":"beads"},{"name":"orchestration"}]}}'
+    local plain
+    plain=$'beads (aaaa1111)\n    Bead tracking and issue management.'
+    cli="$(stub_orca_json "$bindir" "$json" "$plain")"
+    run orca_skills_step "$proj" "$cli"
+    [ ! -e "$bindir/install.log" ]
+}
+
+@test "case 13: --json exits 0 with VALID JSON that does NOT list orchestration, plain has a flush-left line mentioning it -> MUST INSTALL (json authoritative, negative; fallback never overrules it)" {
+    local proj="$BATS_TEST_TMPDIR/proj13" bindir="$BATS_TEST_TMPDIR/bin13" cli
+    mkdir -p "$proj"
+    local json='{"result":{"skills":[{"name":"beads"}]}}'
+    local plain
+    plain=$'orchestration diagnostic: skill index rebuilding, not yet installed.\nbeads (aaaa1111)\n    Bead tracking and issue management.'
+    cli="$(stub_orca_json "$bindir" "$json" "$plain")"
+    run orca_skills_step "$proj" "$cli"
+    [ -f "$bindir/install.log" ]
+    grep -q -- "--skill orchestration" "$bindir/install.log"
+}
