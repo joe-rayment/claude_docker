@@ -57,7 +57,13 @@ EOF
 @test "orchestration already in 'skills installed' -> the step does not call install again" {
     local proj="$BATS_TEST_TMPDIR/proj2" bindir="$BATS_TEST_TMPDIR/bin2" cli
     mkdir -p "$proj"
-    cli="$(stub_orca "$bindir" "beads orchestration snowpark-deploy")"
+    # Real `orca skills installed` shape (mirroring case 6): a name (hash)
+    # selector line at column 0 per skill, with an indented prose
+    # description line under it -- never a flush-left space-separated list
+    # of bare names, which Orca does not emit.
+    local listing
+    listing=$'beads (aaaa1111)\n    Bead tracking and issue management.\norchestration (cccc3333)\n    Enables native multi-agent orchestration.'
+    cli="$(stub_orca "$bindir" "$listing")"
     run orca_skills_step "$proj" "$cli"
     [ "$status" -eq 0 ]
     [ ! -e "$bindir/install.log" ]
@@ -255,6 +261,59 @@ EOF
     local plain
     plain=$'orchestration diagnostic: skill index rebuilding, not yet installed.\nbeads (aaaa1111)\n    Bead tracking and issue management.'
     cli="$(stub_orca_json "$bindir" "$json" "$plain")"
+    run orca_skills_step "$proj" "$cli"
+    [ -f "$bindir/install.log" ]
+    grep -q -- "--skill orchestration" "$bindir/install.log"
+}
+
+# ---------------------------------------------------------------------
+# claude-orca-8v9: cases 14-17. The loose "flush-left line of bare
+# space-separated tokens" branch that satisfied ndy's now-corrected case 2
+# is indistinguishable from ordinary unpunctuated English prose mentioning
+# "orchestration" -- these are the probes that branch always failed.
+# Every assertion here is on CAPTURED ARGV (was `skills install` actually
+# invoked?), never on exit code alone.
+# ---------------------------------------------------------------------
+
+@test "case 14: plain fallback, flush-left UNPUNCTUATED prose 'pairs with the orchestration skill' -> MUST INSTALL" {
+    local proj="$BATS_TEST_TMPDIR/proj14" bindir="$BATS_TEST_TMPDIR/bin14" cli
+    mkdir -p "$proj"
+    local plain
+    plain=$'pairs with the orchestration skill\nbeads (aaaa1111)\n    Bead tracking and issue management.'
+    cli="$(stub_orca_json "$bindir" "UNSUPPORTED" "$plain")"
+    run orca_skills_step "$proj" "$cli"
+    [ -f "$bindir/install.log" ]
+    grep -q -- "--skill orchestration" "$bindir/install.log"
+}
+
+@test "case 15: plain fallback, flush-left 'requires the orchestration skill present' -> MUST INSTALL" {
+    local proj="$BATS_TEST_TMPDIR/proj15" bindir="$BATS_TEST_TMPDIR/bin15" cli
+    mkdir -p "$proj"
+    local plain
+    plain=$'requires the orchestration skill present\nbeads (aaaa1111)\n    Bead tracking and issue management.'
+    cli="$(stub_orca_json "$bindir" "UNSUPPORTED" "$plain")"
+    run orca_skills_step "$proj" "$cli"
+    [ -f "$bindir/install.log" ]
+    grep -q -- "--skill orchestration" "$bindir/install.log"
+}
+
+@test "case 16: plain fallback, a line that is exactly 'orchestration' with no paren and nothing else -> MUST INSTALL (not a selector line)" {
+    local proj="$BATS_TEST_TMPDIR/proj16" bindir="$BATS_TEST_TMPDIR/bin16" cli
+    mkdir -p "$proj"
+    local plain
+    plain=$'orchestration\nbeads (aaaa1111)\n    Bead tracking and issue management.'
+    cli="$(stub_orca_json "$bindir" "UNSUPPORTED" "$plain")"
+    run orca_skills_step "$proj" "$cli"
+    [ -f "$bindir/install.log" ]
+    grep -q -- "--skill orchestration" "$bindir/install.log"
+}
+
+@test "case 17: plain fallback, 'orchestration index stale' flush-left, no paren -> MUST INSTALL" {
+    local proj="$BATS_TEST_TMPDIR/proj17" bindir="$BATS_TEST_TMPDIR/bin17" cli
+    mkdir -p "$proj"
+    local plain
+    plain=$'orchestration index stale\nbeads (aaaa1111)\n    Bead tracking and issue management.'
+    cli="$(stub_orca_json "$bindir" "UNSUPPORTED" "$plain")"
     run orca_skills_step "$proj" "$cli"
     [ -f "$bindir/install.log" ]
     grep -q -- "--skill orchestration" "$bindir/install.log"
