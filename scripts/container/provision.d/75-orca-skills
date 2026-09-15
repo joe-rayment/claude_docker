@@ -28,7 +28,29 @@
 #
 # Idempotent: `orca skills installed` is asked first, and install only runs
 # when "orchestration" is not already in what it lists -- never on every
-# boot.
+# boot. That check must match the skill's NAME exactly, never a substring
+# over the whole output (claude-orca-4gx, superseding claude-orca-ndy):
+# `orca skills installed` prints a name (hash) selector line AND an
+# indented prose description per skill, and Orca's bundled descriptions
+# cross-reference each other by name ("pairs with the orchestration
+# skill..."), so an unanchored `*orchestration*` match on another skill's
+# description alone claims orchestration is installed and skips forever,
+# with a green status row every boot. The primary check is therefore
+# `skills installed --json`'s structured name field via jq -e, exact
+# equality; the fallback (jq missing, or --json unsupported by an older
+# Orca) drops indented lines first -- the prose description is always the
+# indented one, per the real two-line shape above -- then requires
+# "orchestration" as a whole, space/paren-bounded token on what is left,
+# never a bare substring anywhere in the stream. (ndy's own frozen fixture
+# predates the real two-line shape and lists bare names space-separated on
+# one line with no indentation and no hash suffix; the same two-stage
+# check reads that shape correctly too, because it is still a whole-token
+# match on a non-indented line, not a substring.) If neither check can
+# give a confident yes, this step falls through to attempting the install
+# rather than skipping it:
+# skills install is itself idempotent, so a redundant install only costs
+# one network call, while a wrongful skip costs the whole feature,
+# silently.
 #
 # Non-fatal like every sibling step: a failed install (offline, npx
 # missing, registry down) is logged and this step exits non-zero so
@@ -70,13 +92,30 @@ if [ -z "$cli" ]; then
     exit 0
 fi
 
-installed="$("$cli" skills installed 2>/dev/null)"
-case "$installed" in
-    *orchestration*)
-        echo "the orchestration skill is already installed; nothing to do"
-        exit 0
-        ;;
-esac
+# Exact-name idempotency check -- see the file header for why this can
+# never be a substring match. already_installed stays 1 (attempt the
+# install) unless one of the two checks below confidently says yes.
+already_installed=1
+json_output="$("$cli" skills installed --json 2>/dev/null)"
+json_rc=$?
+if [ "$json_rc" -eq 0 ] && command -v jq >/dev/null 2>&1 \
+    && printf '%s' "$json_output" | jq -e '.result.skills[] | select(.name == "orchestration")' >/dev/null 2>&1
+then
+    already_installed=0
+else
+    plain_output="$("$cli" skills installed 2>/dev/null)"
+    if printf '%s\n' "$plain_output" \
+        | grep -v -E '^[[:space:]]' \
+        | grep -qE '(^|[[:space:]])orchestration([[:space:]]|\(|$)'
+    then
+        already_installed=0
+    fi
+fi
+
+if [ "$already_installed" -eq 0 ]; then
+    echo "the orchestration skill is already installed; nothing to do"
+    exit 0
+fi
 
 echo "installing Orca's orchestration skill: $cli skills install --skill orchestration --local"
 if "$cli" skills install --skill orchestration --local; then
