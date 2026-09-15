@@ -36,9 +36,56 @@ fresh_project() {
     grep -qxF 'attachments/' "$d/.gitignore"
     [ -d "$d/attachments" ]
     [ -f "$d/orca.yaml" ]
-    grep -q 'scripts:' "$d/orca.yaml"
-    grep -q 'setup:' "$d/orca.yaml"
-    grep -q 'seed-project.sh' "$d/orca.yaml"
+    # claude-orca-8jb: a scripts.setup key here makes Orca open a second,
+    # redundant terminal on workspace creation -- provision.d/50-seed-project
+    # already runs this same seeding invisibly. The seeded file is comments
+    # only now.
+    run grep -c 'scripts:' "$d/orca.yaml"
+    [ "$output" = "0" ]
+    run grep -c 'setup:' "$d/orca.yaml"
+    [ "$output" = "0" ]
+    run grep -c 'seed-project.sh' "$d/orca.yaml"
+    [ "$output" = "0" ]
+}
+
+# claude-orca-8jb: the exact content the template used to seed, byte for
+# byte, kept here so the migration case below can reproduce it. This is
+# NOT the current seeded content -- it is history, for the safety check.
+PREVIOUSLY_SEEDED_ORCA_YAML='# Orca reads this file from the repo root. `scripts.setup` runs in a
+# terminal when a workspace is created, so the work below is watchable and
+# is not on the critical path of the container'"'"'s boot.
+#
+# Seeded by claude_orca on this folder'"'"'s first start, and yours from here
+# on -- nothing rewrites it. The script it calls is idempotent.
+scripts:
+  setup: bash /opt/claude-orca/scripts/container/seed-project.sh 2>/dev/null || bash .claude-dev/template/scripts/container/seed-project.sh
+'
+
+@test "MIGRATION: an orca.yaml byte-identical to the previously-seeded content is replaced" {
+    local d
+    d="$(fresh_project)"
+    printf '%s' "$PREVIOUSLY_SEEDED_ORCA_YAML" > "$d/orca.yaml"
+    seed "$d" >/dev/null
+    run grep -c 'scripts:' "$d/orca.yaml"
+    [ "$output" = "0" ]
+    run grep -c 'setup:' "$d/orca.yaml"
+    [ "$output" = "0" ]
+}
+
+@test "NEVER-CLOBBER, harder: previously-seeded content plus one extra line is left byte-identical" {
+    local d before after
+    d="$(fresh_project)"
+    printf '%s' "$PREVIOUSLY_SEEDED_ORCA_YAML" > "$d/orca.yaml"
+    printf '  extra: true\n' >> "$d/orca.yaml"
+    before="$(cat "$d/orca.yaml")"
+    run seed "$d"
+    [ "$status" -eq 0 ]
+    after="$(cat "$d/orca.yaml")"
+    [ "$before" = "$after" ]
+    case "$output" in
+        *"left alone"*) ;;
+        *) echo "expected it to log that the file was left alone: $output"; return 1 ;;
+    esac
 }
 
 @test "running it twice changes nothing the second time" {
