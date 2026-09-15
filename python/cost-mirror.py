@@ -499,6 +499,12 @@ LIFETIME_VERSION = 4  # bumped from 3 for the ROW LEDGER (bd-8dg): rows are
 # it -- this slice needed both bumped, that doesn't mean they're coupled.
 COUNTER_KEYS = ("in", "out", "cr", "w5", "w1")
 
+# msg_segment's finishing-message word cap, overridable via
+# CLAUDE_ORCA_MSG_CAP -- kept as one module constant so config/claude-user-
+# memory.md's "≤ 100 words" rule and this readout can never drift apart
+# (see tests/message-cap.bats's lockstep case).
+MSG_CAP_DEFAULT = 100
+
 # De-dup ring size for scan_file's per-message.id state (see _dedup_seen/
 # _dedup_note below): duplicate rows sharing a message.id are contiguous in
 # the OVERWHELMING common case, so a short ring is enough to survive an
@@ -1722,6 +1728,64 @@ def summarise_dollars(total, bucket_total, billing_mode="api", overdrive=False, 
         top_short = top.replace("claude-", "")
         clause += f" · ~{fmt_usd(at_top)} at {top_short} → saved ~{fmt_usd(saved)}"
     return clause
+
+
+def msg_segment(transcript_path):
+    """"msg: last <N>w (cap <cap>) · over <over>/<total>" for this
+    transcript's top-level assistant text messages, or "" when there is no
+    assistant text yet (or anything about the read goes wrong).
+
+    Streams the file line by line -- never loads it whole, never prints
+    transcript content. A "message" is every row sharing one message.id
+    (see the module docstring's de-dup section / session-cost.py's field
+    notes): rows with isSidechain true, or entry.type != "assistant", are
+    skipped entirely, never counted and never allowed to become "last".
+    Word count sums len(text.split()) across each row's .type == "text"
+    content blocks, added onto that message.id's running total -- so a
+    response split across several jsonl lines is counted once, not once
+    per line. "last" is the most recently STARTED message.id in file
+    order; "over" counts how many of this transcript's messages so far
+    exceed the cap.
+
+    Fails open like the rest of this hook: any exception, or a missing
+    transcript_path, returns "" rather than raising -- a broken readout
+    must never cost the rest of the [cost-mirror] line."""
+    if not transcript_path:
+        return ""
+    try:
+        cap = int(os.environ.get("CLAUDE_ORCA_MSG_CAP", str(MSG_CAP_DEFAULT)))
+        order = []  # message.id (or a per-row placeholder) in first-seen order
+        words_by_id = {}
+        with open(transcript_path) as fh:
+            for raw in fh:
+                raw = raw.strip()
+                if not raw:
+                    continue
+                row = json.loads(raw)
+                if row.get("type") != "assistant" or row.get("isSidechain"):
+                    continue
+                msg = row.get("message") or {}
+                content = msg.get("content")
+                if not isinstance(content, list):
+                    continue
+                text = " ".join(
+                    b.get("text", "") for b in content
+                    if isinstance(b, dict) and b.get("type") == "text"
+                )
+                if not text:
+                    continue
+                key = msg.get("id") or object()  # no id: never grouped with another row
+                if key not in words_by_id:
+                    order.append(key)
+                    words_by_id[key] = 0
+                words_by_id[key] += len(text.split())
+        if not order:
+            return ""
+        last_words = words_by_id[order[-1]]
+        over = sum(1 for k in order if words_by_id[k] > cap)
+        return f"msg: last {last_words}w (cap {cap}) · over {over}/{len(order)}"
+    except Exception:
+        return ""
 
 
 def delegation_drift_segment(session_id):
@@ -3095,6 +3159,9 @@ def main():
         lane = lane_segment(event.get("session_id"))
         if lane:
             line = f"{line} | {lane}"
+        msg = msg_segment(tp)
+        if msg:
+            line = f"{line} | {msg}"
         print(f"[cost-mirror] this session — {line}")
 
 

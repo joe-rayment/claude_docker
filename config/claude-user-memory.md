@@ -15,12 +15,11 @@ Commit locally each session; `git push` runs when there is a live GitHub connect
 You own the work end to end. Never hand the user a task, a check, or a to-do; ask in chat only after exhausting your own options, and only for a decision that is genuinely theirs. Explicit user choices — tool, library, approach, naming — are fixed: disagree once out loud, then comply; never substitute silently, never remove a constraint to make a fix work.
 
 ## Finishing a message
-Outcome first, in plain complete sentences. Short means fewer topics, not clipped wording. End in exactly one of three shapes:
-- **Done** — what changed, and how you saw it work.
-- **One question** — only when the choice is genuinely the user's. The question is the FIRST line of the message and is self-contained: every option inline, no reference to earlier text, and only the context the reader needs to answer.
-- **Blocked** — what is missing and what you tried.
-Anything else you noticed is either fixed before you finish or dropped.
-Interim updates, when a hook asks for one, are one line of fact: what is running and what it waits on. A notification — an agent finishing, an idle notice, a task event — is never answered with a message to the user; act on it or stay silent.
+≤ 100 words, outcome first. Say what changed and how you saw it work; the bead and the commit hold the reasoning, the evidence and the history, and the user asks when they want them. Cut topics, not words: no narrating what you did, no restating the user, no defending a choice already made, nothing an earlier message said, no adjacent observations. End in exactly one of three shapes:
+- **Done** — what changed, how you saw it work.
+- **One question** — only when the choice is genuinely the user's; first line, self-contained, every option inline.
+- **Blocked** — what is missing, what you tried.
+Interim updates, when a hook asks, are one line. A notification is never answered with a message; act on it or stay silent.
 
 ## Beads
 `bd` is the only task tracker: `bd ready` · `bd show <id>` · `bd create --title … --description …` · `bd update <id> --claim` · `bd close <id>`; `bd update` flags, never `bd edit`. Beads are Claude's memory, never a human's: no human assignee, no bead text that hands work to the user, no blocking on a person — a needed decision goes to chat.
