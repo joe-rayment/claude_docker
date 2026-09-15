@@ -202,3 +202,26 @@ scripts:
     [ "$status" -eq 0 ]
     grep -qF 'kept' "$d/.beads/issues.jsonl"
 }
+
+@test "an orca.yaml that is a SYMLINK is never followed or written through" {
+    local d outside
+    d="$(fresh_project)"
+    outside="$BATS_TEST_TMPDIR/outside-target.yaml"
+    # The target holds exactly the content the migration replaces, so the
+    # only thing standing between it and a rewrite is the symlink guard
+    # (claude-orca-bbd, from claude-orca-8jb's verifier probe 7). This
+    # folder's tooling writes inside this folder, never through a link
+    # out of it.
+    printf '%s' "$PREVIOUSLY_SEEDED_ORCA_YAML" > "$outside"
+    cp "$outside" "$outside.before"
+    ln -s "$outside" "$d/orca.yaml"
+
+    seed "$d" >/dev/null
+
+    [ -L "$d/orca.yaml" ]
+    # cmp, not a string compare: "$(cat ...)" strips the trailing newline
+    # the fixture carries, so a string compare fails on an UNCHANGED file
+    # and would have passed on a rewritten one that happened to differ
+    # only by that byte. Compare the bytes.
+    cmp -s "$outside" "$outside.before"
+}
