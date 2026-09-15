@@ -1205,6 +1205,201 @@ export_guard_test_env() {  # export_guard_test_env <project> <user-data-dir>
     [ "$output" = "folder memory" ]
 }
 
+# --- early config sync (claude-orca-0jn) ---------------------------------
+#
+# config-sync used to run only from provision.d, after the web URL is
+# published -- which meant a Claude Code session started the moment the
+# workspace opened could read a settings.json that did not exist yet, or
+# existed without statusLine, and Claude Code only reads statusLine at
+# process start. These three cases pin the fix: a first sync BEFORE serve
+# is even started, never fatal, never a second source of truth for the
+# checksum gate.
+
+@test "entrypoint syncs config before serve announces its web URL, on a brand-new project" {
+    [ -x "$ENTRYPOINT" ]
+    command -v jq >/dev/null 2>&1
+
+    local proj="$TMP/project" tcfg settingsfile urlfile fifo port
+    mkdir -p "$proj"
+    tcfg="$proj/.claude-dev/template/config"
+    mkdir -p "$tcfg"
+    cat > "$tcfg/claude-settings.json" <<'JSON'
+{"statusLine": {"type": "command", "command": "__HOST__/template/bin/statusline"}, "hooks": {}}
+JSON
+    printf 'folder memory\n' > "$tcfg/claude-user-memory.md"
+    printf '#!/bin/sh\necho hi\n' > "$tcfg/statusline.sh"
+
+    mkdir -p "$TMP/bin"
+    fifo="$TMP/orca.fifo"
+    mkfifo "$fifo"
+    port="$(free_port)"
+
+    # A stub Orca that blocks on the fifo before it says anything: while it
+    # is blocked, serve has been TOLD to start but has announced nothing,
+    # so a settings.json seen now proves the sync ran before serve spoke,
+    # not merely before the test happened to look.
+    cat > "$TMP/bin/orca-ide" <<STUB
+#!/usr/bin/env bash
+port=""
+prev=""
+for arg in "\$@"; do
+    [ "\$prev" = "--port" ] && port="\$arg"
+    prev="\$arg"
+done
+cat "$fifo" > /dev/null
+echo "Web client URL: http://127.0.0.1:\${port}/web-index.html#pairing=x"
+exec sleep 300
+STUB
+    chmod +x "$TMP/bin/orca-ide"
+
+    export HOME="$TMP/home"
+    export PROJECT_DIR="$proj"
+    export ORCA_PORT="$port"
+    export ORCA_BIN="$TMP/bin/orca-ide"
+    export ORCA_CLI=/bin/true
+    export CLAUDE_ORCA_SKIP_SETUP=1
+    export CLAUDE_ORCA_SKIP_BEADS=1
+    export CLAUDE_ORCA_ENTRYPOINT_NO_PRIVDROP=1
+    export CLAUDE_ORCA_WEBURL_TIMEOUT=30
+
+    start_entrypoint_bg
+
+    settingsfile="$proj/.claude-dev/home/.claude/settings.json"
+    urlfile="$proj/.claude-dev/run/orca-web-url.txt"
+    if ! wait_for_file "$settingsfile" 30; then
+        cat "$TMP/entrypoint.out" >&2 || true
+        false
+    fi
+
+    run jq -r '.statusLine.command // empty' "$settingsfile"
+    [ "$status" -eq 0 ]
+    [ -n "$output" ]
+    [ ! -e "$urlfile" ]
+
+    echo go > "$fifo" &
+    if ! wait_for_file "$urlfile" 30; then
+        cat "$TMP/entrypoint.out" >&2 || true
+        false
+    fi
+}
+
+@test "a failing early config sync does not stop serve: orca-web-url.txt is still written" {
+    [ -x "$ENTRYPOINT" ]
+
+    local proj="$TMP/project" urlfile port
+    make_project "$proj"
+    # A template config directory that exists but is missing every file
+    # config-sync.sh actually needs -- a real failure, not a stand-in.
+    mkdir -p "$proj/.claude-dev/template/config"
+
+    mkdir -p "$TMP/bin"
+    port="$(free_port)"
+    cat > "$TMP/bin/orca-ide" <<'STUB'
+#!/usr/bin/env bash
+port=""
+prev=""
+for arg in "$@"; do
+    [ "$prev" = "--port" ] && port="$arg"
+    prev="$arg"
+done
+echo "Web client URL: http://127.0.0.1:${port}/web-index.html#pairing=x"
+exec sleep 300
+STUB
+    chmod +x "$TMP/bin/orca-ide"
+
+    export HOME="$TMP/home"
+    export PROJECT_DIR="$proj"
+    export ORCA_PORT="$port"
+    export ORCA_BIN="$TMP/bin/orca-ide"
+    export ORCA_CLI=/bin/true
+    export CLAUDE_ORCA_SKIP_SETUP=1
+    export CLAUDE_ORCA_SKIP_BEADS=1
+    export CLAUDE_ORCA_ENTRYPOINT_NO_PRIVDROP=1
+    export CLAUDE_ORCA_WEBURL_TIMEOUT=30
+
+    start_entrypoint_bg
+
+    urlfile="$proj/.claude-dev/run/orca-web-url.txt"
+    if ! wait_for_file "$urlfile" 40; then
+        cat "$TMP/entrypoint.out" >&2 || true
+        false
+    fi
+
+    run cat "$urlfile"
+    [ "$status" -eq 0 ]
+    [ "$output" = "http://127.0.0.1:${port}/web-index.html#pairing=x" ]
+
+    # Not silent: named as the early sync, and named as retried later --
+    # exactly the pattern every other non-fatal step here follows.
+    grep -qF 'early config sync' "$TMP/entrypoint.out"
+    grep -qF 'will retry after the URL' "$TMP/entrypoint.out"
+}
+
+@test "the early config sync and the later provision.d/20-config-sync do not double-run destructively" {
+    [ -x "$ENTRYPOINT" ]
+
+    local proj="$TMP/project" tcfg fifo hashfile urlfile pdir port mtime1 mtime2
+    make_project "$proj"
+    tcfg="$proj/.claude-dev/template/config"
+    mkdir -p "$tcfg/claude-commands"
+    printf '{"hooks":{}}\n'        > "$tcfg/claude-settings.json"
+    printf 'folder memory\n'       > "$tcfg/claude-user-memory.md"
+    printf '#!/bin/sh\necho hi\n'  > "$tcfg/statusline.sh"
+    printf 'marker\n'              > "$tcfg/claude-commands/marker.md"
+
+    mkdir -p "$TMP/bin"
+    fifo="$TMP/orca.fifo"
+    mkfifo "$fifo"
+    port="$(free_port)"
+    cat > "$TMP/bin/orca-ide" <<STUB
+#!/usr/bin/env bash
+port=""
+prev=""
+for arg in "\$@"; do
+    [ "\$prev" = "--port" ] && port="\$arg"
+    prev="\$arg"
+done
+cat "$fifo" > /dev/null
+echo "Web client URL: http://127.0.0.1:\${port}/web-index.html#pairing=x"
+exec sleep 300
+STUB
+    chmod +x "$TMP/bin/orca-ide"
+
+    export HOME="$TMP/home"
+    export PROJECT_DIR="$proj"
+    export ORCA_PORT="$port"
+    export ORCA_BIN="$TMP/bin/orca-ide"
+    export ORCA_CLI=/bin/true
+    export CLAUDE_ORCA_SKIP_SETUP=1
+    export CLAUDE_ORCA_SKIP_BEADS=1
+    export CLAUDE_ORCA_ENTRYPOINT_NO_PRIVDROP=1
+    export CLAUDE_ORCA_WEBURL_TIMEOUT=30
+
+    start_entrypoint_bg
+
+    hashfile="$proj/.claude-dev/run/config-hash"
+    urlfile="$proj/.claude-dev/run/orca-web-url.txt"
+    if ! wait_for_file "$hashfile" 30; then
+        cat "$TMP/entrypoint.out" >&2 || true
+        false
+    fi
+    # The hash landed while Orca is still blocked on the fifo: it is the
+    # EARLY sync's write, not provision.d's later one.
+    [ ! -e "$urlfile" ]
+    mtime1="$(stat -c %Y "$hashfile")"
+    sleep 2
+
+    echo go > "$fifo" &
+    pdir="$proj/.claude-dev/run/provision"
+    if ! wait_for_file "$pdir/20-config-sync.status" 60; then
+        cat "$TMP/entrypoint.out" >&2 || true
+        false
+    fi
+    [ "$(cat "$pdir/20-config-sync.status" | tr -d '[:space:]')" = "0" ]
+    mtime2="$(stat -c %Y "$hashfile")"
+    [ "$mtime1" = "$mtime2" ]
+}
+
 # --- provision.d (claude-orca-dbu.4) -------------------------------------
 #
 # The project-shaped work -- the toolchain verify, the config sync, the
