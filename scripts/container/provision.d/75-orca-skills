@@ -38,14 +38,10 @@
 # with a green status row every boot. The primary check is therefore
 # `skills installed --json`'s structured name field via jq -e, exact
 # equality; the fallback (jq missing, or --json unsupported by an older
-# Orca) drops indented lines first -- the prose description is always the
-# indented one, per the real two-line shape above -- then requires
-# "orchestration" as a whole, space/paren-bounded token on what is left,
-# never a bare substring anywhere in the stream. (ndy's own frozen fixture
-# predates the real two-line shape and lists bare names space-separated on
-# one line with no indentation and no hash suffix; the same two-stage
-# check reads that shape correctly too, because it is still a whole-token
-# match on a non-indented line, not a substring.) If neither check can
+# Orca) requires the real selector shape exactly -- "orchestration" at
+# column 0 followed by a space and an open paren, the one thing every
+# other line Orca prints (indented descriptions, warnings, prose) is not
+# (claude-orca-8v9, superseding claude-orca-01u). If neither check can
 # give a confident yes, this step falls through to attempting the install
 # rather than skipping it:
 # skills install is itself idempotent, so a redundant install only costs
@@ -122,30 +118,22 @@ fi
 if [ "$json_authoritative" -ne 0 ]; then
     # --json didn't give a confident answer (unsupported, non-zero exit,
     # or a zero exit that didn't even parse) -- fall through to the
-    # plain-text fallback. A selector line BEGINS with the skill's name;
-    # prose, warnings and locations do not, so the match anchors to the
-    # start of the line rather than floating anywhere in it (this is what
-    # closed the (b)/(d) holes: a flush-left "Note: ... orchestration ..."
-    # or "warning: orchestration index stale" line used to satisfy an
-    # unanchored whole-token match anywhere on the line).
-    #
-    # ndy's frozen case-2 fixture predates the real two-line selector/
-    # description shape and prints one flush-left line of bare
-    # space-separated names with no parens and no prose punctuation
-    # ("beads orchestration snowpark-deploy"), where orchestration is not
-    # first, so the start anchor alone would miss it. That shape is
-    # handled as an explicit separate alternative -- a flush-left line
-    # made up ONLY of bare, space-separated name tokens -- rather than by
-    # loosening the anchor for every flush-left line, which is exactly
-    # what reopened the prose/warning hole above.
+    # plain-text fallback. A real selector line is a name (hash) pair at
+    # column 0 -- "orchestration (<hash>)" -- with its prose description
+    # indented beneath it; nothing else Orca prints is both flush-left AND
+    # followed immediately by an open paren. Requiring the paren, not just
+    # the start-of-line anchor, is what rejects "warning: orchestration
+    # index stale", a bare "orchestration" line, and unpunctuated prose
+    # like "pairs with the orchestration skill" or "requires the
+    # orchestration skill present" -- all of them either lack the name at
+    # column 0, or have it without the paren that only a real selector
+    # entry carries (claude-orca-8v9, superseding claude-orca-01u). Any
+    # input this does not confidently recognise falls through to
+    # attempting the install rather than skipping it: a redundant install
+    # costs one idempotent network call, a wrongful skip costs the whole
+    # feature, silently, forever.
     plain_output="$("$cli" skills installed 2>/dev/null)"
-    flush_left="$(printf '%s\n' "$plain_output" | grep -v -E '^[[:space:]]')"
-    if printf '%s\n' "$flush_left" | grep -qE '^orchestration([[:space:]]|\(|$)'; then
-        already_installed=0
-    elif printf '%s\n' "$flush_left" \
-        | grep -xE '[[:alnum:]_.-]+([[:space:]]+[[:alnum:]_.-]+)+' \
-        | grep -qE '(^|[[:space:]])orchestration([[:space:]]|$)'
-    then
+    if printf '%s\n' "$plain_output" | grep -qE '^orchestration \('; then
         already_installed=0
     fi
 fi
