@@ -126,14 +126,21 @@ if [ "$json_authoritative" -ne 0 ]; then
     # index stale", a bare "orchestration" line, and unpunctuated prose
     # like "pairs with the orchestration skill" or "requires the
     # orchestration skill present" -- all of them either lack the name at
-    # column 0, or have it without the paren that only a real selector
-    # entry carries (claude-orca-8v9, superseding claude-orca-01u). Any
+    # column 0, or have it without the parenthesised hex id that only a
+    # real selector entry carries.
+    #
+    # The paren alone was not enough, and that cost a fourth pass: a
+    # flush-left "orchestration (see docs)" -- an Orca notice, a changelog
+    # line, a "(deprecated)" banner, a description whose first word is the
+    # skill name -- is parenthesised prose, not an entry. Real entries
+    # carry a hex id ("beads (4fd0b6c853425a56)"), so the id is what is
+    # matched (claude-orca-clw, superseding claude-orca-8v9). Any
     # input this does not confidently recognise falls through to
     # attempting the install rather than skipping it: a redundant install
     # costs one idempotent network call, a wrongful skip costs the whole
     # feature, silently, forever.
     plain_output="$("$cli" skills installed 2>/dev/null)"
-    if printf '%s\n' "$plain_output" | grep -qE '^orchestration \('; then
+    if printf '%s\n' "$plain_output" | grep -qE '^orchestration \([0-9a-f]{6,}\)$'; then
         already_installed=0
     fi
 fi
