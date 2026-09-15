@@ -129,6 +129,15 @@ EOF
     # (the heredoc above and the file read below), so a byte-for-byte
     # match here means a byte-for-byte match once the trailing newline is
     # restored by printf '%s\n' on write.
+    # A symlink is left entirely alone, before anything reads or writes
+    # it: `[ -e ]`, `cat` and `>` all resolve a link, so without this the
+    # migration below would rewrite whatever the link points AT, outside
+    # the project (claude-orca-bbd). A folder's tooling touches that
+    # folder. Someone pointing orca.yaml at a shared config keeps it.
+    if [ -L "$yaml" ]; then
+        log "$yaml is a symlink; left alone"
+        return 0
+    fi
     if [ ! -e "$yaml" ]; then
         printf '%s\n' "$new_content" > "$yaml" 2>/dev/null || return 0
         log "seeded $yaml (comment-only; no scripts.setup)"
