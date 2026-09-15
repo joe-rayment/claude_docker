@@ -80,3 +80,116 @@ EOF
     [ "$status" -eq 0 ]
     [ "$(cat "$bindir/install.log")" = "skills install --skill orchestration --local" ]
 }
+
+# ---------------------------------------------------------------------
+# claude-orca-4gx: cases 5-8, re-frozen at this bead's RED-AT. Cases 1-4
+# above are ndy's, kept verbatim.
+#
+# A richer stub than stub_orca(): `skills installed --json` and
+# `skills installed` (plain) can be scripted to answer differently, and
+# --json can be made to fail outright (an older Orca that predates it).
+# ---------------------------------------------------------------------
+
+# stub_orca_json <dir> <json-or-UNSUPPORTED> <plain-listing> [install-exit]
+#
+# <json-or-UNSUPPORTED> is either the literal JSON body `skills installed
+# --json` should print (exit 0), or the literal string UNSUPPORTED, in
+# which case `--json` prints an error to stderr and exits non-zero, the
+# way an Orca predating the flag would.
+stub_orca_json() {
+    local dir="$1" json="$2" plain="$3" install_exit="${4:-0}"
+    mkdir -p "$dir"
+    printf '%s\n' "$plain" > "$dir/installed.plain"
+    if [ "$json" = "UNSUPPORTED" ]; then
+        : > "$dir/installed.json.unsupported"
+    else
+        printf '%s\n' "$json" > "$dir/installed.json"
+    fi
+    cat > "$dir/orca" <<EOF
+#!/usr/bin/env bash
+if [ "\$1" = "skills" ] && [ "\$2" = "installed" ]; then
+    if [ "\$3" = "--json" ]; then
+        if [ -f "$dir/installed.json.unsupported" ]; then
+            echo "unknown flag: --json" >&2
+            exit 2
+        fi
+        cat "$dir/installed.json"
+        exit 0
+    fi
+    cat "$dir/installed.plain"
+    exit 0
+fi
+if [ "\$1" = "skills" ] && [ "\$2" = "install" ]; then
+    printf '%s\n' "\$*" >> "$dir/install.log"
+    exit $install_exit
+fi
+exit 1
+EOF
+    chmod +x "$dir/orca"
+    printf '%s\n' "$dir/orca"
+}
+
+@test "case 5 (the regression case): another skill's DESCRIPTION mentions 'orchestration' in prose, but no skill is NAMED orchestration -> the step still installs" {
+    local proj="$BATS_TEST_TMPDIR/proj5" bindir="$BATS_TEST_TMPDIR/bin5" cli
+    mkdir -p "$proj"
+    local json='{"result":{"skills":[{"name":"beads"},{"name":"snowpark-deploy"}]}}'
+    local plain
+    plain=$'beads (aaaa1111)\n    Bead tracking and issue management.\nsnowpark-deploy (bbbb2222)\n    Pairs with the orchestration skill for coordinated Snowpark deploys.'
+    cli="$(stub_orca_json "$bindir" "$json" "$plain")"
+    run orca_skills_step "$proj" "$cli"
+    [ "$status" -eq 0 ]
+    [ -f "$bindir/install.log" ]
+    grep -q -- "--skill orchestration" "$bindir/install.log"
+}
+
+@test "case 6: orchestration genuinely present as a NAME (real selector entry) -> install is not invoked" {
+    local proj="$BATS_TEST_TMPDIR/proj6" bindir="$BATS_TEST_TMPDIR/bin6" cli
+    mkdir -p "$proj"
+    local json='{"result":{"skills":[{"name":"beads"},{"name":"orchestration"}]}}'
+    local plain
+    plain=$'beads (aaaa1111)\n    Bead tracking and issue management.\norchestration (cccc3333)\n    Enables native multi-agent orchestration.'
+    cli="$(stub_orca_json "$bindir" "$json" "$plain")"
+    run orca_skills_step "$proj" "$cli"
+    [ "$status" -eq 0 ]
+    [ ! -e "$bindir/install.log" ]
+}
+
+@test "case 7: --json unsupported -> the anchored plain-text fallback is used and still discriminates the regression case correctly" {
+    local proj="$BATS_TEST_TMPDIR/proj7" bindir="$BATS_TEST_TMPDIR/bin7" cli
+    mkdir -p "$proj"
+    local plain
+    plain=$'beads (aaaa1111)\n    Bead tracking and issue management.\nsnowpark-deploy (bbbb2222)\n    Pairs with the orchestration skill for coordinated Snowpark deploys.'
+    cli="$(stub_orca_json "$bindir" "UNSUPPORTED" "$plain")"
+    run orca_skills_step "$proj" "$cli"
+    [ "$status" -eq 0 ]
+    [ -f "$bindir/install.log" ]
+    grep -q -- "--skill orchestration" "$bindir/install.log"
+}
+
+@test "case 8: every install invocation carries --local, across every case that installs (missing, regression, and json-unsupported-fallback)" {
+    local proj bindir cli
+
+    proj="$BATS_TEST_TMPDIR/proj8a" bindir="$BATS_TEST_TMPDIR/bin8a"
+    mkdir -p "$proj"
+    cli="$(stub_orca "$bindir" "beads snowpark-deploy")"
+    run orca_skills_step "$proj" "$cli"
+    [ -f "$bindir/install.log" ]
+    grep -q -- "--local" "$bindir/install.log"
+
+    proj="$BATS_TEST_TMPDIR/proj8b" bindir="$BATS_TEST_TMPDIR/bin8b"
+    mkdir -p "$proj"
+    local json='{"result":{"skills":[{"name":"beads"}]}}'
+    local plain
+    plain=$'beads (aaaa1111)\n    Mentions orchestration in passing.'
+    cli="$(stub_orca_json "$bindir" "$json" "$plain")"
+    run orca_skills_step "$proj" "$cli"
+    [ -f "$bindir/install.log" ]
+    grep -q -- "--local" "$bindir/install.log"
+
+    proj="$BATS_TEST_TMPDIR/proj8c" bindir="$BATS_TEST_TMPDIR/bin8c"
+    mkdir -p "$proj"
+    cli="$(stub_orca_json "$bindir" "UNSUPPORTED" "$plain")"
+    run orca_skills_step "$proj" "$cli"
+    [ -f "$bindir/install.log" ]
+    grep -q -- "--local" "$bindir/install.log"
+}
