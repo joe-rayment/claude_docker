@@ -318,3 +318,18 @@ EOF
     [ -f "$bindir/install.log" ]
     grep -q -- "--skill orchestration" "$bindir/install.log"
 }
+
+@test "case 18: plain fallback, flush-left PROSE 'orchestration (see docs)' -- parenthesised but not a hash -> MUST INSTALL" {
+    local proj="$BATS_TEST_TMPDIR/proj18" bindir="$BATS_TEST_TMPDIR/bin18" cli
+    mkdir -p "$proj"
+    # A paren alone never proved selector-ness: an Orca notice, a changelog
+    # line or a '(deprecated)' banner can start with the skill name and
+    # parenthesise the next word. Only the hex id a real entry carries does
+    # (claude-orca-clw, from claude-orca-8v9's verifier probe 5).
+    local plain
+    plain=$'orchestration (see docs)\nbeads (aaaa1111)\n    Bead tracking and issue management.'
+    cli="$(stub_orca_json "$bindir" "UNSUPPORTED" "$plain")"
+    run orca_skills_step "$proj" "$cli"
+    [ -f "$bindir/install.log" ]
+    grep -q -- "--skill orchestration" "$bindir/install.log"
+}
