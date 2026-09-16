@@ -682,3 +682,51 @@ wait_tcp_closed() {  # wait_tcp_closed <port>
 
     kill -KILL "$pid2" 2>/dev/null || true
 }
+
+# --- claude-orca-8tx: fail closed when the client config still points at
+# the guard but no key exists to start one ---------------------------------
+#
+# config-sync copies opencode.json into every folder unconditionally
+# (scripts/config-sync.sh:216-219) -- its baseURL names the guard whether
+# or not a key exists to start one. Before this bead, a folder with no key
+# reported "nothing to guard" and exited 0, even though opencode is
+# already configured to call a guard that will never come up: every
+# opencode request in that folder fails ECONNREFUSED with no row anywhere
+# saying why.
+
+@test "the guard step fails closed when opencode.json names the guard and there is no key" {
+    [ -x "$GUARD_STEP" ]
+
+    local proj="$TMP/project-noguard" home port
+    make_project "$proj"
+    home="$TMP/home-noguard"
+    port="$(free_port)"
+    mkdir -p "$home/.config/opencode"
+    printf '{"provider":{"openrouter":{"options":{"baseURL":"http://127.0.0.1:%s/api/v1"}}}}\n' \
+        "$port" > "$home/.config/opencode/opencode.json"
+
+    run env -u OPENROUTER_API_KEY HOME="$home" PROJECT_DIR="$proj" \
+        CLAUDE_ORCA_GUARD_PORT="$port" \
+        CLAUDE_ORCA_GUARD_SCRIPT="$GUARD_PY" \
+        bash "$GUARD_STEP"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"opencode.json"* ]]
+    [[ "$output" == *"./claude-dev key openrouter"* ]]
+}
+
+@test "the guard step still says there is nothing to guard when opencode has no guard configured" {
+    [ -x "$GUARD_STEP" ]
+
+    local proj="$TMP/project-noopencode" home port
+    make_project "$proj"
+    home="$TMP/home-noopencode"
+    port="$(free_port)"
+    mkdir -p "$home"
+
+    run env -u OPENROUTER_API_KEY HOME="$home" PROJECT_DIR="$proj" \
+        CLAUDE_ORCA_GUARD_PORT="$port" \
+        CLAUDE_ORCA_GUARD_SCRIPT="$GUARD_PY" \
+        bash "$GUARD_STEP"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"nothing to guard"* ]]
+}
