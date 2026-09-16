@@ -1218,6 +1218,263 @@ export_guard_test_env() {  # export_guard_test_env <project> <user-data-dir>
     [[ "$output" == *"no OPENROUTER_API_KEY"* ]]
 }
 
+# --- claude-orca-b30: opencode's own login is the third and last source -
+#
+# 'opencode auth login openrouter' already writes the real key to
+# $AGENT_HOME/.local/share/opencode/auth.json (opencode's own auth store)
+# inside the container. A fresh folder that only ever ran that login --
+# never './claude-dev key openrouter', never a folder-side .openrouter.key
+# -- must still get a working guard. The chain claude-orca-376 built grows
+# a third rung, read fresh every boot and never mirrored to
+# $AGENT_HOME/.openrouter.key: a cached copy would go stale the moment the
+# user logs in again.
+
+write_opencode_auth() {  # write_opencode_auth <path> <type> <key>
+    mkdir -p "$(dirname "$1")"
+    if [ -z "${3:-}" ]; then
+        printf '{"openrouter":{"type":"%s"}}\n' "$2" > "$1"
+    else
+        printf '{"openrouter":{"type":"%s","key":"%s"}}\n' "$2" "$3" > "$1"
+    fi
+}
+
+@test "the entrypoint starts the guard from opencode's own auth.json when no OPENROUTER_API_KEY and no key file exist (claude-orca-b30)" {
+    [ -x "$ENTRYPOINT" ]
+    command -v jq >/dev/null 2>&1
+
+    local proj="$TMP/project-auth-only" gport authfile
+    make_project "$proj"
+    mkdir -p "$TMP/home" "$TMP/bin"
+    write_env_dump_orca "$TMP/bin/orca-ide"
+    gport="$(free_port)"
+    authfile="$TMP/home/.local/share/opencode/auth.json"
+
+    export_guard_test_env "$proj" "$TMP/ud"
+    export CLAUDE_ORCA_GUARD_PORT="$gport"
+    unset OPENROUTER_API_KEY
+    export OPENROUTER_UPSTREAM="http://127.0.0.1:1"
+    [ ! -e "$TMP/home/.openrouter.key" ]
+    write_opencode_auth "$authfile" api "$REAL_KEY"
+
+    boot_entrypoint keep
+
+    [ -s "$proj/.claude-dev/run/openrouter-guard.pid" ]
+    wait_tcp_port "$gport"
+    grep -qF 'openrouter-guard: listening' "$proj/.claude-dev/run/openrouter-guard.log"
+
+    run grep -c -- "$REAL_KEY" "$ORCA_ENV_DUMP"
+    [ "$output" = "0" ]
+    grep -qxF "OPENROUTER_BASE_URL=http://127.0.0.1:$gport/api/v1" "$ORCA_ENV_DUMP"
+
+    stop_entrypoint
+
+    # auth.json is read-only input: still there, still exactly what opencode
+    # wrote, never a cached copy at .openrouter.key
+    [ -f "$authfile" ]
+    run jq -r '.openrouter.key' "$authfile"
+    [ "$output" = "$REAL_KEY" ]
+    [ ! -e "$TMP/home/.openrouter.key" ]
+}
+
+@test "CLAUDE_ORCA_OPENCODE_AUTH overrides where the entrypoint looks for opencode's auth.json (claude-orca-b30)" {
+    [ -x "$ENTRYPOINT" ]
+    command -v jq >/dev/null 2>&1
+
+    local proj="$TMP/project-auth-override" gport authfile
+    make_project "$proj"
+    mkdir -p "$TMP/home" "$TMP/bin" "$TMP/altauth"
+    write_env_dump_orca "$TMP/bin/orca-ide"
+    gport="$(free_port)"
+    authfile="$TMP/altauth/auth.json"
+
+    export_guard_test_env "$proj" "$TMP/ud"
+    export CLAUDE_ORCA_GUARD_PORT="$gport"
+    export CLAUDE_ORCA_OPENCODE_AUTH="$authfile"
+    unset OPENROUTER_API_KEY
+    export OPENROUTER_UPSTREAM="http://127.0.0.1:1"
+    write_opencode_auth "$authfile" api "$REAL_KEY"
+    # the default location is absent -- only the override should be read
+    [ ! -e "$TMP/home/.local/share/opencode/auth.json" ]
+
+    boot_entrypoint keep
+
+    [ -s "$proj/.claude-dev/run/openrouter-guard.pid" ]
+    wait_tcp_port "$gport"
+
+    stop_entrypoint
+}
+
+@test "AGENT_HOME/.openrouter.key wins over opencode's auth.json (claude-orca-b30)" {
+    [ -x "$ENTRYPOINT" ]
+    command -v jq >/dev/null 2>&1
+
+    local proj="$TMP/project-keyfile-over-auth" gport upport rec keyfile_key token base
+    make_project "$proj"
+    mkdir -p "$TMP/home" "$TMP/bin" "$TMP/rec"
+    rec="$TMP/rec"
+    write_env_dump_orca "$TMP/bin/orca-ide"
+    write_upstream_stub
+    gport="$(free_port)"
+    upport="$(free_port)"
+
+    UPSTREAM_REC="$rec" python3 "$TMP/upstream.py" "$upport" \
+        > "$TMP/upstream.log" 2>&1 &
+    wait_tcp_port "$upport"
+
+    export_guard_test_env "$proj" "$TMP/ud"
+    export CLAUDE_ORCA_GUARD_PORT="$gport"
+    unset OPENROUTER_API_KEY
+    export OPENROUTER_UPSTREAM="http://127.0.0.1:$upport"
+    keyfile_key="sk-or-v1-keyfile-wins-over-auth-json-000"
+    printf '%s\n' "$keyfile_key" > "$TMP/home/.openrouter.key"
+    chmod 600 "$TMP/home/.openrouter.key"
+    # a DIFFERENT key in auth.json; the durable folder key file must win
+    write_opencode_auth "$TMP/home/.local/share/opencode/auth.json" api "$REAL_KEY"
+
+    boot_entrypoint keep
+    wait_tcp_port "$gport"
+
+    token="$(sed -n 's/^OPENROUTER_API_KEY=//p' "$ORCA_ENV_DUMP")"
+    base="$(sed -n 's/^OPENROUTER_BASE_URL=//p' "$ORCA_ENV_DUMP")"
+    [ -n "$token" ]
+
+    run curl -s -o "$TMP/resp.json" -w '%{http_code}' --max-time 30 \
+        -X POST "$base/chat/completions" \
+        -H "Authorization: Bearer $token" \
+        -H 'Content-Type: application/json' \
+        --data-binary '{"model":"z-ai/glm-5.3","messages":[{"role":"user","content":"hi"}]}'
+    [ "$status" -eq 0 ]
+    [ "$output" = "200" ]
+
+    [ -f "$rec/headers.txt" ]
+    grep -qxF "authorization: Bearer $keyfile_key" "$rec/headers.txt"
+    run grep -c -- "$REAL_KEY" "$rec/headers.txt"
+    [ "$output" = "0" ]
+
+    stop_entrypoint
+    pkill -f -- "$TMP/upstream.py" 2>/dev/null || true
+}
+
+@test "OPENROUTER_API_KEY wins over both AGENT_HOME/.openrouter.key and opencode's auth.json (claude-orca-b30)" {
+    [ -x "$ENTRYPOINT" ]
+    command -v jq >/dev/null 2>&1
+
+    local proj="$TMP/project-env-over-both" gport upport rec env_key token base
+    make_project "$proj"
+    mkdir -p "$TMP/home" "$TMP/bin" "$TMP/rec"
+    rec="$TMP/rec"
+    write_env_dump_orca "$TMP/bin/orca-ide"
+    write_upstream_stub
+    gport="$(free_port)"
+    upport="$(free_port)"
+
+    UPSTREAM_REC="$rec" python3 "$TMP/upstream.py" "$upport" \
+        > "$TMP/upstream.log" 2>&1 &
+    wait_tcp_port "$upport"
+
+    export_guard_test_env "$proj" "$TMP/ud"
+    export CLAUDE_ORCA_GUARD_PORT="$gport"
+    env_key="sk-or-v1-env-wins-over-both-0000000000"
+    export OPENROUTER_API_KEY="$env_key"
+    export OPENROUTER_UPSTREAM="http://127.0.0.1:$upport"
+    printf '%s\n' "sk-or-v1-keyfile-loses-here-000000000" > "$TMP/home/.openrouter.key"
+    chmod 600 "$TMP/home/.openrouter.key"
+    write_opencode_auth "$TMP/home/.local/share/opencode/auth.json" api "$REAL_KEY"
+
+    boot_entrypoint keep
+    wait_tcp_port "$gport"
+
+    token="$(sed -n 's/^OPENROUTER_API_KEY=//p' "$ORCA_ENV_DUMP")"
+    base="$(sed -n 's/^OPENROUTER_BASE_URL=//p' "$ORCA_ENV_DUMP")"
+    [ -n "$token" ]
+
+    run curl -s -o "$TMP/resp.json" -w '%{http_code}' --max-time 30 \
+        -X POST "$base/chat/completions" \
+        -H "Authorization: Bearer $token" \
+        -H 'Content-Type: application/json' \
+        --data-binary '{"model":"z-ai/glm-5.3","messages":[{"role":"user","content":"hi"}]}'
+    [ "$status" -eq 0 ]
+    [ "$output" = "200" ]
+
+    [ -f "$rec/headers.txt" ]
+    grep -qxF "authorization: Bearer $env_key" "$rec/headers.txt"
+    run grep -c -- "$REAL_KEY" "$rec/headers.txt"
+    [ "$output" = "0" ]
+
+    stop_entrypoint
+    pkill -f -- "$TMP/upstream.py" 2>/dev/null || true
+}
+
+@test "opencode's auth.json degrades quietly to the no-key path when absent, malformed, empty-key, or not type api (claude-orca-b30)" {
+    [ -x "$ENTRYPOINT" ]
+    command -v jq >/dev/null 2>&1
+
+    local proj gport authfile case
+
+    for case in absent malformed emptykey wrongtype; do
+        proj="$TMP/project-auth-$case"
+        make_project "$proj"
+        rm -rf "$TMP/home"
+        mkdir -p "$TMP/home" "$TMP/bin"
+        write_env_dump_orca "$TMP/bin/orca-ide"
+        gport="$(free_port)"
+        authfile="$TMP/home/.local/share/opencode/auth.json"
+
+        export_guard_test_env "$proj" "$TMP/ud-$case"
+        export CLAUDE_ORCA_GUARD_PORT="$gport"
+        unset OPENROUTER_API_KEY
+        export OPENROUTER_UPSTREAM="http://127.0.0.1:1"
+
+        case "$case" in
+            absent)    ;;
+            malformed) mkdir -p "$(dirname "$authfile")"; printf '{not json' > "$authfile" ;;
+            emptykey)  write_opencode_auth "$authfile" api "" ;;
+            wrongtype) write_opencode_auth "$authfile" oauth "$REAL_KEY" ;;
+        esac
+
+        boot_entrypoint
+        [ ! -s "$proj/.claude-dev/run/openrouter-guard.pid" ]
+        run grep -c '^OPENROUTER_BASE_URL=' "$ORCA_ENV_DUMP"
+        [ "$output" = "0" ]
+        run cat "$TMP/entrypoint.out"
+        [[ "$output" == *"no OPENROUTER_API_KEY"* ]]
+    done
+}
+
+@test "opencode's auth.json is never written, moved, or unlinked by the entrypoint (claude-orca-b30)" {
+    [ -x "$ENTRYPOINT" ]
+    command -v jq >/dev/null 2>&1
+
+    local proj="$TMP/project-auth-readonly" gport authfile dir before after
+    make_project "$proj"
+    mkdir -p "$TMP/home" "$TMP/bin"
+    write_env_dump_orca "$TMP/bin/orca-ide"
+    gport="$(free_port)"
+    authfile="$TMP/home/.local/share/opencode/auth.json"
+    dir="$(dirname "$authfile")"
+
+    export_guard_test_env "$proj" "$TMP/ud"
+    export CLAUDE_ORCA_GUARD_PORT="$gport"
+    unset OPENROUTER_API_KEY
+    export OPENROUTER_UPSTREAM="http://127.0.0.1:1"
+    write_opencode_auth "$authfile" api "$REAL_KEY"
+    chmod 644 "$authfile"
+    before="$(cksum < "$authfile")"
+
+    boot_entrypoint keep
+    wait_tcp_port "$gport"
+    stop_entrypoint
+
+    [ -f "$authfile" ]
+    after="$(cksum < "$authfile")"
+    [ "$before" = "$after" ]
+    run stat -c '%a' "$authfile"
+    [ "$output" = "644" ]
+    # no sibling temp/backup file left behind
+    run ls -1 "$dir"
+    [ "$output" = "auth.json" ]
+}
+
 @test "a completion request from inside the VM reaches upstream with the real key and the forced provider allowlist" {
     [ -x "$ENTRYPOINT" ]
     command -v jq >/dev/null 2>&1

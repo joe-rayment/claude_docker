@@ -717,6 +717,30 @@ wait_tcp_closed() {  # wait_tcp_closed <port>
     [[ "$output" == *"./claude-dev key openrouter"* ]]
 }
 
+# --- claude-orca-b30: the message leads with the login that already ran --
+
+@test "the guard step's no-key message names 'opencode auth login openrouter' as the primary remedy (claude-orca-b30)" {
+    [ -x "$GUARD_STEP" ]
+
+    local proj="$TMP/project-noguard-b30" home port
+    make_project "$proj"
+    home="$TMP/home-noguard-b30"
+    port="$(free_port)"
+    mkdir -p "$home/.config/opencode"
+    printf '{"provider":{"openrouter":{"options":{"baseURL":"http://127.0.0.1:%s/api/v1"}}}}\n' \
+        "$port" > "$home/.config/opencode/opencode.json"
+
+    run env -u OPENROUTER_API_KEY HOME="$home" PROJECT_DIR="$proj" \
+        CLAUDE_ORCA_GUARD_PORT="$port" \
+        CLAUDE_ORCA_GUARD_SCRIPT="$GUARD_PY" \
+        bash "$GUARD_STEP"
+    [ "$status" -ne 0 ]
+    # the login is named, and named before the folder-key/Mac-command
+    # fallback -- a restart is required either way, and the message says why
+    [[ "$output" == *"opencode auth login openrouter"*"$home/.openrouter.key"* ]]
+    [[ "$output" == *"restart"* ]]
+}
+
 @test "the guard step still says there is nothing to guard when opencode has no guard configured" {
     [ -x "$GUARD_STEP" ]
 

@@ -220,6 +220,35 @@ openrouter_guard_row() {
     contains "$line" "./claude-dev key openrouter"
 }
 
+@test "verify-folder's openrouter guard FAIL row names 'opencode auth login openrouter' as the primary remedy (claude-orca-b30)" {
+    local home port line
+    home="$BATS_TEST_TMPDIR/home-noguard-b30"
+    port="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')"
+    mkdir -p "$home/.config/opencode"
+    printf '{"provider":{"openrouter":{"options":{"baseURL":"http://127.0.0.1:%s/api/v1"}}}}\n' \
+        "$port" > "$home/.config/opencode/opencode.json"
+
+    run env -u OPENROUTER_API_KEY -u OPENROUTER_BASE_URL \
+        PROJECT_DIR="$BATS_TEST_TMPDIR/nowhere" HOME="$home" \
+        bash "$VERIFY_SH"
+
+    line="$(openrouter_guard_row)"
+    [ -n "$line" ]
+    case "$line" in
+        FAIL*) ;;
+        *) echo "expected a FAIL row for openrouter guard: $line"; return 1 ;;
+    esac
+    # the login is named before the folder-key/Mac-command fallback, and
+    # the row says a restart is needed
+    contains "$line" "opencode auth login openrouter"
+    contains "$line" "$home/.openrouter.key"
+    contains "$line" "restart"
+    case "$line" in
+        *"opencode auth login openrouter"*"$home/.openrouter.key"*) ;;
+        *) echo "expected the login to come before the key-file fallback: $line"; return 1 ;;
+    esac
+}
+
 @test "verify-folder still says n/a for openrouter guard when opencode names no guard" {
     local home line
     home="$BATS_TEST_TMPDIR/home-noopencode"
