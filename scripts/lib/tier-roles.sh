@@ -27,7 +27,7 @@
 #   agents:   claude | opencode | codex | gemini
 
 # tier_role <state-file> <worker|recon|checker>
-# Prints "<backend>\t<agent>\t<model>\t<pinned>" -- always exits 0; an
+# Prints "<backend>\t<agent>\t<model>\t<pinned>\t<variant>" -- always exits 0; an
 # absent/unreadable file yields the subagent+claude defaults with an empty
 # model (checker: "inherit" -- a v1 file predates the derived checker rung,
 # and "inherit" is what it meant; a v2 file written by tier-set carries the
@@ -36,8 +36,8 @@ tier_role() {
     local f="${1:-}" r="${2:-}"
     if [ -z "$f" ] || [ ! -f "$f" ] || ! command -v jq >/dev/null 2>&1; then
         case "$r" in
-            checker) printf 'subagent\tclaude\tinherit\tfalse\n' ;;
-            *)       printf 'subagent\tclaude\t\tfalse\n' ;;
+            checker) printf 'subagent\tclaude\tinherit\tfalse\t\n' ;;
+            *)       printf 'subagent\tclaude\t\tfalse\t\n' ;;
         esac
         return 0
     fi
@@ -49,16 +49,17 @@ tier_role() {
         | [ (.backend // "subagent"),
             (.agent // "claude"),
             (.model // $v1),
-            (if (.pinned // false) == true then "true" else "false" end) ]
+            (if (.pinned // false) == true then "true" else "false" end),
+            (.variant // "") ]
         | @tsv' "$f" 2>/dev/null || {
         case "$r" in
-            checker) printf 'subagent\tclaude\tinherit\tfalse\n' ;;
-            *)       printf 'subagent\tclaude\t\tfalse\n' ;;
+            checker) printf 'subagent\tclaude\tinherit\tfalse\t\n' ;;
+            *)       printf 'subagent\tclaude\t\tfalse\t\n' ;;
         esac
     }
 }
 
-# tier_role_field <state-file> <role> <backend|agent|model|pinned>
+# tier_role_field <state-file> <role> <backend|agent|model|pinned|variant>
 tier_role_field() {
     local line n
     line="$(tier_role "$1" "$2")"
@@ -67,6 +68,7 @@ tier_role_field() {
         agent)   n=2 ;;
         model)   n=3 ;;
         pinned)  n=4 ;;
+        variant) n=5 ;;
         *)       return 1 ;;
     esac
     printf '%s' "$line" | awk -F'\t' -v n="$n" '{printf "%s", $n}'
@@ -77,13 +79,17 @@ tier_role_field() {
 # only when it is not the default (claude), so a plain Anthropic binding
 # reads as "subagent:sonnet".
 tier_role_label() {
-    local b="${1:-subagent}" a="${2:-claude}" m="${3:-}"
+    local b="${1:-subagent}" a="${2:-claude}" m="${3:-}" v="${4:-}"
     [ -n "$m" ] || m="<unbound>"
     if [ "$a" = "claude" ]; then
         printf '%s:%s' "$b" "$m"
     else
         printf '%s:%s:%s' "$b" "$a" "$m"
     fi
+    # A reasoning-effort variant (roles.<role>.variant, claude-orca-1w8)
+    # reads as "@high" on the end -- the same spelling /tier accepts.
+    [ -n "$v" ] && printf '@%s' "$v"
+    return 0
 }
 
 # The default worker vendor when this folder has an OpenRouter key
