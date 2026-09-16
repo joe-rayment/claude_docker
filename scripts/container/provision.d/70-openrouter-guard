@@ -82,7 +82,7 @@ opencode_names_this_guard() {
 
 if [ -z "$REAL_KEY" ]; then
     if opencode_names_this_guard; then
-        echo "no OPENROUTER_API_KEY in this folder, but $OPENCODE_CONFIG already names the guard at 127.0.0.1:$GUARD_PORT -- opencode will fail closed until a key is set: write it to $AGENT_HOME/.openrouter.key (mode 600) from any terminal in this container and restart, or run './claude-dev key openrouter' on the Mac (same file)" >&2
+        echo "no OPENROUTER_API_KEY in this folder, but $OPENCODE_CONFIG already names the guard at 127.0.0.1:$GUARD_PORT -- opencode will fail closed until a key is set: run 'opencode auth login openrouter' in any terminal in this container, then restart the container (Orca's environment is fixed at exec, so a guard started later cannot reach terminals Orca already spawned); or write the key to $AGENT_HOME/.openrouter.key (mode 600) and restart, or run './claude-dev key openrouter' on the Mac (same file)" >&2
         exit 1
     fi
     echo "no OPENROUTER_API_KEY in this folder; there is nothing to guard"

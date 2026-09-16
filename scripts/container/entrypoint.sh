@@ -494,6 +494,11 @@ PROVISION_KEY_FILE="$RUN_DIR/provision-openrouter.key"
 # Unlike GUARD_KEY_FILE/PROVISION_KEY_FILE this one is never unlinked; it
 # is the folder's key, not a one-shot handoff.
 OPENROUTER_KEY_FILE="${CLAUDE_ORCA_OPENROUTER_KEY_FILE:-$AGENT_HOME/.openrouter.key}"
+# The third and last source (claude-orca-b30): 'opencode auth login
+# openrouter' already writes the real key to opencode's own auth store.
+# Read fresh on every boot and never mirrored to OPENROUTER_KEY_FILE -- a
+# cached copy would go stale the moment the user logs in again.
+OPENCODE_AUTH_FILE="${CLAUDE_ORCA_OPENCODE_AUTH:-${XDG_DATA_HOME:-$AGENT_HOME/.local/share}/opencode/auth.json}"
 GUARD_BASE_URL="http://127.0.0.1:$GUARD_PORT/api/v1"
 GUARD_PID=""
 GUARD_TOKEN=""
@@ -518,6 +523,21 @@ write_key_file() {  # write_key_file <path> <key>
     chmod 600 "$1" 2>/dev/null
     [ "$PRIVDROP" = "1" ] && chown "$AGENT_UID:$AGENT_GID" "$1" 2>/dev/null
     return 0
+}
+
+# Read-only: nothing here writes, chmods, moves or unlinks the auth store.
+# jq missing, the file absent, malformed JSON, no '.openrouter', an empty
+# '.key', or a '.type' other than "api" all degrade quietly to the caller's
+# existing no-key path -- none of them is an error, none aborts the boot.
+opencode_auth_key() {
+    local auth_type auth_key
+    command -v jq >/dev/null 2>&1 || return 1
+    [ -f "$OPENCODE_AUTH_FILE" ] || return 1
+    auth_type="$(jq -r '.openrouter.type // empty' "$OPENCODE_AUTH_FILE" 2>/dev/null)" || return 1
+    [ "$auth_type" = "api" ] || return 1
+    auth_key="$(jq -r '.openrouter.key // empty' "$OPENCODE_AUTH_FILE" 2>/dev/null)" || return 1
+    [ -n "$auth_key" ] || return 1
+    printf '%s\n' "$auth_key"
 }
 
 guard_token() {
@@ -584,6 +604,9 @@ start_openrouter_guard() {
 OPENROUTER_REAL_KEY="${OPENROUTER_API_KEY:-}"
 if [ -z "$OPENROUTER_REAL_KEY" ] && [ -s "$OPENROUTER_KEY_FILE" ]; then
     OPENROUTER_REAL_KEY="$(head -1 "$OPENROUTER_KEY_FILE" | tr -d '\r\n')"
+fi
+if [ -z "$OPENROUTER_REAL_KEY" ]; then
+    OPENROUTER_REAL_KEY="$(opencode_auth_key || true)"
 fi
 if [ -n "$OPENROUTER_REAL_KEY" ]; then
     GUARD_TOKEN="$(guard_token)"
