@@ -271,25 +271,69 @@ orch_fallback() {
 # .options.baseURL to http://127.0.0.1:4141/api/v1, so changing
 # CLAUDE_ORCA_GUARD_PORT alone does not move where opencode talks to.
 
-# orca_opencode_command <model> <run_dir> -- the command string for
-# `terminal create --command`, on stdout. Pure given its two arguments plus
+# orca_opencode_command <model> <run_dir> [<variant>] -- the command string
+# for `terminal create --command`, on stdout. Pure given its arguments plus
 # CLAUDE_ORCA_GUARD_PORT: no Orca calls.
+#
+# A role's reasoning-effort variant (tier.json roles.<role>.variant,
+# claude-orca-1w8) has no CLI flag on the opencode TUI -- verified in this
+# container on opencode 1.18.25 (2026-09-16): only a config file naming
+# provider.openrouter.models.<vendor/model>.options.reasoning.effort turns
+# reasoning tokens on. So whenever a variant is given OR a guard token
+# exists, a per-launch config is written under <run_dir>/opencode-launch/
+# and OPENCODE_CONFIG is added to the same env file the guard token rides
+# in -- no variant and no token stays the original bare command, no files.
 orca_opencode_command() {
-    local model="$1" run_dir="$2" token_file token env_file port
+    local model="$1" run_dir="$2" variant="${3:-}"
+    local token_file token="" port env_file slug cfg_dir cfg vendor_model
+    local base_url="" api_key_json="null"
+
     token_file="$run_dir/openrouter-guard.token"
     if [ -s "$token_file" ]; then
         token="$(cat "$token_file" 2>/dev/null)"
-        if [ -n "$token" ]; then
-            port="${CLAUDE_ORCA_GUARD_PORT:-4141}"
-            env_file="$run_dir/openrouter-guard.env"
-            ( umask 077 && printf "OPENROUTER_API_KEY='%s'\nOPENROUTER_BASE_URL='http://127.0.0.1:%s/api/v1'\n" \
-                "$token" "$port" >"$env_file" )
-            chmod 600 "$env_file"
-            printf "set -a; . '%s'; set +a; opencode --model %s" "$env_file" "$model"
-            return 0
-        fi
     fi
-    printf 'opencode --model %s' "$model"
+
+    if [ -z "$token" ] && [ -z "$variant" ]; then
+        printf 'opencode --model %s' "$model"
+        return 0
+    fi
+
+    port="${CLAUDE_ORCA_GUARD_PORT:-4141}"
+    env_file="$run_dir/openrouter-guard.env"
+    vendor_model="${model#openrouter/}"
+
+    slug="$(printf '%s' "$model" | tr '/:' '-')"
+    [ -n "$variant" ] && slug="${slug}-${variant}"
+    cfg_dir="$run_dir/opencode-launch"
+    mkdir -p "$cfg_dir"
+    cfg="$cfg_dir/$slug.json"
+
+    if [ -n "$token" ]; then
+        base_url="http://127.0.0.1:${port}/api/v1"
+        api_key_json='{"apiKey":"{env:OPENROUTER_API_KEY}","baseURL":"'"$base_url"'"}'
+    fi
+
+    ( umask 077 && jq -n \
+        --argjson options "$api_key_json" \
+        --arg vm "$vendor_model" --arg eff "$variant" --argjson havemodels "$([ -n "$variant" ] && echo true || echo false)" \
+        '{"$schema": "https://opencode.ai/config.json",
+          provider: { openrouter: (
+            { }
+            + (if $options != null then { options: $options } else {} end)
+            + (if $havemodels then { models: { ($vm): { options: { reasoning: { effort: $eff } } } } } else {} end)
+          ) } }' >"$cfg" )
+    chmod 600 "$cfg"
+
+    {
+        if [ -n "$token" ]; then
+            printf "OPENROUTER_API_KEY='%s'\n" "$token"
+            printf "OPENROUTER_BASE_URL='http://127.0.0.1:%s/api/v1'\n" "$port"
+        fi
+        printf "OPENCODE_CONFIG='%s'\n" "$cfg"
+    } > "$env_file"
+    chmod 600 "$env_file"
+
+    printf "set -a; . '%s'; set +a; opencode --model %s" "$env_file" "$model"
 }
 
 # --- small portability helpers -------------------------------------------

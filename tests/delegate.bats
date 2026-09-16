@@ -305,7 +305,8 @@ route_line() {
     repo="$BATS_TEST_TMPDIR/repo"
     make_repo "$repo" openrouter.ai api.openai.com generativelanguage.googleapis.com
 
-    schema="bead,branch,exit_code,finished_at,job,model,route,started_at,tokens_in,tokens_out,usd,wall_seconds"
+    # claude-orca-dav added the "variant" receipt field (null when unset).
+    schema="bead,branch,exit_code,finished_at,job,model,route,started_at,tokens_in,tokens_out,usd,variant,wall_seconds"
 
     while read -r route runner model_arg full_model; do
         run env DELEGATE_REPO="$repo" \
@@ -692,7 +693,8 @@ STUB
     [ "$status" -eq 0 ]
 
     # claude-orca-8a0.2 added the two flash-class scout routes.
-    [ "$(jq -r '.routes | keys | join(",")' "$SHIPPED_ROUTES")" = "codex,deepseek,deepseek-flash,gemini,glm,glm-flash,local,qwen-coder" ]
+    # claude-orca-dav added the luna/luna-high reasoning-variant demo routes.
+    [ "$(jq -r '.routes | keys | join(",")' "$SHIPPED_ROUTES")" = "codex,deepseek,deepseek-flash,gemini,glm,glm-flash,local,luna,luna-high,qwen-coder" ]
     [ "$(jq -r '.routes.glm.runner' "$SHIPPED_ROUTES")" = "opencode" ]
     [ "$(jq -r '.routes.glm.model' "$SHIPPED_ROUTES")" = "openrouter/z-ai/glm-5.3" ]
     [ "$(jq -r '.routes.glm.pin.order | join(",")' "$SHIPPED_ROUTES")" = "deepinfra,parasail" ]
