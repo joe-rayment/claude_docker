@@ -205,15 +205,28 @@ else
     bad "network" "cannot reach api.github.com; check the folder's dns setting"
 fi
 
-# --- OpenRouter, only when the folder has a key -------------------------
+# --- OpenRouter: opencode's own synced config decides, not process env --
+#
+# OPENROUTER_API_KEY/OPENROUTER_BASE_URL are Orca agentDefaultEnv vars
+# (scripts/container/seed-orca-state.sh): visible inside a terminal Orca
+# starts, never inside the fresh `docker exec` this script actually runs
+# under (claude-dev verify). Gating this row on them read n/a in every
+# real run, guard running or not. config-sync copies opencode.json into
+# every folder unconditionally, so its baseURL is the signal this script
+# can actually see (claude-orca-8tx).
 
-if [ -z "${OPENROUTER_API_KEY:-}" ]; then
-    skip "openrouter guard" "no key in this folder (./claude-dev key openrouter)"
-elif [ -n "${OPENROUTER_BASE_URL:-}" ] \
-     && curl -fsS -o /dev/null --max-time 5 "${OPENROUTER_BASE_URL%/api/v1}/" 2>/dev/null; then
-    ok "openrouter guard" "listening on $OPENROUTER_BASE_URL; agents hold its token, not the key"
+opencode_cfg="$AGENT_HOME/.config/opencode/opencode.json"
+guard_url=""
+if command -v jq >/dev/null 2>&1 && [ -f "$opencode_cfg" ]; then
+    guard_url="$(jq -r '.provider.openrouter.options.baseURL // empty' "$opencode_cfg" 2>/dev/null)"
+fi
+
+if [ -z "$guard_url" ]; then
+    skip "openrouter guard" "opencode is not configured to use one"
+elif curl -fsS --max-time 5 "${guard_url%/api/v1}/" >/dev/null 2>&1; then
+    ok "openrouter guard" "listening on $guard_url; agents hold its token, not the key"
 else
-    bad "openrouter guard" "a key is set but the guard is not answering on ${OPENROUTER_BASE_URL:-<unset>}"
+    bad "openrouter guard" "opencode.json names the guard at $guard_url but nothing answers there (./claude-dev key openrouter)"
 fi
 
 exit "$FAILED"

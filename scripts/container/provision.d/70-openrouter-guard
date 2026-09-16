@@ -34,6 +34,8 @@ GUARD_LOG="$RUN_DIR/openrouter-guard.log"
 GUARD_PID_FILE="$RUN_DIR/openrouter-guard.pid"
 GUARD_TOKEN_FILE="$RUN_DIR/openrouter-guard.token"
 GUARD_KEY_FILE="$RUN_DIR/openrouter-guard.key"
+AGENT_HOME="${HOME:-/home/agent}"
+OPENCODE_CONFIG="${CLAUDE_ORCA_OPENCODE_CONFIG:-$AGENT_HOME/.config/opencode/opencode.json}"
 REAL_KEY="${CLAUDE_ORCA_OPENROUTER_REAL_KEY:-}"
 # The second caller this step has is a person re-running it by hand
 # (`provision run 70-openrouter-guard`), who should not have to put a key
@@ -62,7 +64,27 @@ sys.exit(0 if s.connect_ex(('127.0.0.1', $GUARD_PORT)) == 0 else 1)" \
         >/dev/null 2>&1
 }
 
+# config-sync copies opencode.json into every folder unconditionally
+# (scripts/config-sync.sh), so its baseURL naming this guard is not a
+# signal that a key was ever set -- it is just the template. When no key
+# exists to start the guard, but opencode is already configured to call
+# it, silently exiting 0 here is the exact gap that left opencode
+# reporting nothing but ECONNREFUSED with no folder-side row to explain
+# it (claude-orca-8tx).
+opencode_names_this_guard() {
+    command -v jq >/dev/null 2>&1 || return 1
+    [ -f "$OPENCODE_CONFIG" ] || return 1
+    case "$(jq -r '.provider.openrouter.options.baseURL // empty' "$OPENCODE_CONFIG" 2>/dev/null)" in
+        *"127.0.0.1:$GUARD_PORT"*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 if [ -z "$REAL_KEY" ]; then
+    if opencode_names_this_guard; then
+        echo "no OPENROUTER_API_KEY in this folder, but $OPENCODE_CONFIG already names the guard at 127.0.0.1:$GUARD_PORT -- opencode will fail closed until a key is set: ./claude-dev key openrouter" >&2
+        exit 1
+    fi
     echo "no OPENROUTER_API_KEY in this folder; there is nothing to guard"
     exit 0
 fi
