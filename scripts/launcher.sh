@@ -2214,15 +2214,6 @@ container_create() {
     if [ -n "$dns" ]; then
         set -- "$@" --dns "$dns"
     fi
-    # Docker Desktop's default bridge gives the container no IPv6 route,
-    # and Bun -- which opencode runs on -- dials a resolved IPv6 address
-    # first and fails with "Unable to connect" where curl would fall back
-    # to IPv4. Disable IPv6 in the container's own namespace; sysctls are
-    # set at container creation, which is here. Skipped on the local
-    # runtime, where there is no docker to hand the flag to.
-    if [ "$CTR_RUNTIME" != "local" ]; then
-        set -- "$@" --sysctl net.ipv6.conf.all.disable_ipv6=1
-    fi
 
     cpus="$(json_get "$dir" '.cpus')"
     if [ -n "$cpus" ]; then
