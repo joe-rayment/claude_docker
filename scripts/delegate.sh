@@ -272,10 +272,13 @@ extract_usage_obj() {
     printf '%s' "$obj"
 }
 
-# generate_runner_config <job_dir> <provider> <model_id> <route> -- only
-# opencode reads a config file; codex and gemini take the model on argv.
+# generate_runner_config <job_dir> <provider> <model_id> <route> <variant> --
+# only opencode reads a config file; codex and gemini take the model on
+# argv. <variant> (a role's reasoning-effort, claude-orca-1w8) adds
+# options.reasoning.effort under the model when set; empty means no such
+# key at all.
 generate_runner_config() {
-    local job_dir="$1" provider="$2" model_id="$3" route="$4"
+    local job_dir="$1" provider="$2" model_id="$3" route="$4" variant="${5:-}"
     local cfg="$job_dir/config/opencode/opencode.json"
     case "$provider" in
         openrouter)
@@ -287,6 +290,7 @@ generate_runner_config() {
                 --arg base "$OPENROUTER_BASE_URL" \
                 --argjson order "$order_json" \
                 --argjson allow_fallbacks "$allow_fb" \
+                --arg variant "$variant" \
                 '{
                     "$schema": "https://opencode.ai/config.json",
                     provider: {
@@ -294,12 +298,10 @@ generate_runner_config() {
                             options: { apiKey: "{env:OPENROUTER_API_KEY}", baseURL: $base },
                             models: {
                                 ($model): {
-                                    options: {
-                                        provider: {
-                                            order: $order,
-                                            allow_fallbacks: $allow_fallbacks
-                                        }
-                                    }
+                                    options: (
+                                        { provider: { order: $order, allow_fallbacks: $allow_fallbacks } }
+                                        + (if $variant != "" then { reasoning: { effort: $variant } } else {} end)
+                                    )
                                 }
                             }
                         }
@@ -358,7 +360,7 @@ PROMPT
 cmd_run() {
     require_routes_file
 
-    local route="" bead="" prompt="" prompt_file=""
+    local route="" bead="" prompt="" prompt_file="" variant=""
     local have_bead=0 have_prompt=0 have_prompt_file=0
     while [ $# -gt 0 ]; do
         case "$1" in
@@ -366,6 +368,7 @@ cmd_run() {
             --bead) bead="${2:-}"; have_bead=1; shift 2 ;;
             --prompt) prompt="${2:-}"; have_prompt=1; shift 2 ;;
             --prompt-file) prompt_file="${2:-}"; have_prompt_file=1; shift 2 ;;
+            --variant) variant="${2:-}"; shift 2 ;;
             *) die "run: unknown argument '$1'" ;;
         esac
     done
@@ -379,6 +382,10 @@ cmd_run() {
         known_routes | sed 's/^/  - /' >&2
         exit 1
     fi
+
+    # CLI --variant beats the route's own "variant" (a role's reasoning
+    # effort, claude-orca-1w8); neither is a requirement.
+    [ -n "$variant" ] || variant="$(route_field "$route" '.variant // empty')"
 
     local grade
     grade="$(route_field "$route" ".grade")"
@@ -434,7 +441,7 @@ cmd_run() {
     fi
 
     if [ "$runner" = "opencode" ]; then
-        generate_runner_config "$job_dir" "$provider" "$model_id" "$route"
+        generate_runner_config "$job_dir" "$provider" "$model_id" "$route" "$variant"
     fi
 
     local started_at start_epoch
@@ -521,6 +528,7 @@ cmd_run() {
         --argjson exit_code "$exit_code" \
         --arg started_at "$started_at" \
         --arg finished_at "$finished_at" \
+        --arg variant "$variant" \
         '{
             job: $job, route: $route, model: $model,
             bead: (if $bead == "" then null else $bead end),
@@ -528,7 +536,8 @@ cmd_run() {
             tokens_in: $tokens_in, tokens_out: $tokens_out,
             wall_seconds: $wall_seconds, usd: $usd,
             exit_code: $exit_code,
-            started_at: $started_at, finished_at: $finished_at
+            started_at: $started_at, finished_at: $finished_at,
+            variant: (if $variant == "" then null else $variant end)
         }' > "$job_dir/receipt.json"
 
     redact_secret "$job_dir/receipt.json" "$key_value"

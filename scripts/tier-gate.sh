@@ -167,7 +167,10 @@ elif [ -n "$STATE_FILE" ] && [ -f "$STATE_FILE" ]; then
         # the orchestrator's tier.
         RM=$(tier_role_field "$STATE_FILE" "$SLOT" model)
         RA=$(tier_role_field "$STATE_FILE" "$SLOT" agent)
-        ORCA_NOTE=" ${SLOT} backend is orca (${RA} ${RM}) — prefer orca-dispatch for this slice."
+        RV=$(tier_role_field "$STATE_FILE" "$SLOT" variant)
+        RM_LABEL="$RM"
+        [ -n "$RV" ] && RM_LABEL="${RM}@${RV}"
+        ORCA_NOTE=" ${SLOT} backend is orca (${RA} ${RM_LABEL}) — prefer orca-dispatch for this slice."
         if [ "$RA" = "claude" ]; then
             TARGET_ID="$RM"
             # An off-ladder/unrankable model (or the bare "inherit") is not
@@ -189,7 +192,7 @@ elif [ -n "$STATE_FILE" ] && [ -f "$STATE_FILE" ]; then
             # claude-agent orca role can still hit both, at different
             # times) are tracked independently.
             if _tier_gate_announce_once "$SLOT.orca"; then
-                jq -cn --arg slot "$SLOT" --arg m "$RM" --arg a "$RA" \
+                jq -cn --arg slot "$SLOT" --arg m "$RM_LABEL" --arg a "$RA" \
                    '{systemMessage: ("tier-gate: " + $slot + " backend is orca (" + $a + " " + $m + ") — prefer orca-dispatch for this slice; the Agent-tool spawn was allowed and runs on the orchestrator'"'"'s own model.")}' \
                    2>/dev/null || exit 0
             fi

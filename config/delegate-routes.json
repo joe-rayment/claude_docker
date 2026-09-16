@@ -26,6 +26,17 @@
       "model": "openrouter/qwen/qwen3-coder",
       "grade": "executor"
     },
+    "luna": {
+      "runner": "opencode",
+      "model": "openrouter/openai/gpt-5.6-luna",
+      "grade": "executor"
+    },
+    "luna-high": {
+      "runner": "opencode",
+      "model": "openrouter/openai/gpt-5.6-luna",
+      "grade": "executor",
+      "variant": "high"
+    },
     "local": {
       "runner": "opencode",
       "model": "ollama/qwen3-coder:30b",

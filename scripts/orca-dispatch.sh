@@ -60,7 +60,7 @@ SCRIPT_DIR="$(cd "$(dirname "$(_resolve_script_path)")" && pwd)"
 note() { printf '%s\n' "$*" >&2; }
 die()  { printf 'orca-dispatch: %s\n' "$*" >&2; exit "${2:-2}"; }
 
-BEAD=""; ROLE="worker"; BACKEND=""; AGENT=""; MODEL=""; WORKTREE=""
+BEAD=""; ROLE="worker"; BACKEND=""; AGENT=""; MODEL=""; WORKTREE=""; VARIANT=""
 FROM=""; TIMEOUT_MS="${CLAUDE_ORCA_DISPATCH_TIMEOUT_MS:-90000}"
 TASK_ID=""; TASK_DEPS=""
 
@@ -73,6 +73,7 @@ while [ "$#" -gt 0 ]; do
         --agent)    AGENT="${2:-}"; shift ;;
         --model)    MODEL="${2:-}"; shift ;;
         --worktree) WORKTREE="${2:-}"; shift ;;
+        --variant) VARIANT="${2:-}"; shift ;;
         --task)     TASK_ID="${2:-}"; shift ;;
         --task-deps) TASK_DEPS="${2:-}"; shift ;;
         --from)     FROM="${2:-}"; shift ;;
@@ -118,6 +119,7 @@ fi
 [ -n "$BACKEND" ] || BACKEND="orca"
 [ -n "$AGENT" ]   || AGENT="claude"
 [ -n "$WORKTREE" ] || WORKTREE="path:$ROOT"
+[ -n "$VARIANT" ] || VARIANT="$(tier_role_field "$STATE_FILE" "$ROLE" variant)"
 
 # An openrouter/… model is opencode's business whatever the binding says.
 case "$MODEL" in
@@ -239,7 +241,7 @@ case "$AGENT" in
         ;;
     opencode)
         [ -n "$MODEL" ] || die "--agent opencode needs --model <provider/model>"
-        COMMAND="$(orca_opencode_command "$MODEL" "$ROOT/.claude-dev/run")"
+        COMMAND="$(orca_opencode_command "$MODEL" "$ROOT/.claude-dev/run" "$VARIANT")"
         new_terminal "$COMMAND" "$BEAD $MODEL"
         orca_call terminal wait --terminal "$TERMINAL" --for tui-idle \
             --timeout-ms 30000 --json >/dev/null 2>&1 ||
@@ -315,15 +317,16 @@ RECEIPT="$(jq -n -c --arg bead "$BEAD" --arg run "$RUN_ID" --arg task "$TASK_ID"
     --arg model "$MODEL" --arg term "$TERMINAL" --arg wt "$WORKTREE" \
     --arg state "$STATE" --arg cmd "$COMMAND" --arg wtp "$WORKTREE_PATH" \
     --argjson started "$STARTED_AT" --argjson tail "$LAUNCH_TAIL" \
-    --arg reason "$REASON" \
+    --arg reason "$REASON" --arg variant "$VARIANT" \
     '{bead: $bead, run_id: $run, task_id: $task, dispatch_id: $disp,
       backend: $backend, agent: $agent, model: $model, terminal: $term,
       worktree: $wt, worktree_path: $wtp, state: $state, command: $cmd,
-      started_at: $started, launch_tail: $tail, reason: $reason}')"
+      started_at: $started, launch_tail: $tail, reason: $reason,
+      variant: (if $variant == "" then null else $variant end)}')"
 
 printf '%s' "$RECEIPT" >"$(orch_disp_file "$ROOT" "$DISPATCH_ID")"
 orch_note_bead "$ROOT" "$BEAD" \
-    "ORCA DISPATCH run=$RUN_ID task=$TASK_ID dispatch=$DISPATCH_ID agent=$AGENT model=${MODEL:-none} state=$STATE"
+    "ORCA DISPATCH run=$RUN_ID task=$TASK_ID dispatch=$DISPATCH_ID agent=$AGENT model=${MODEL:-none} state=$STATE variant=${VARIANT:-none}"
 
 # Same contract as the unreachable-runtime path: the fallback spec on
 # stdout and exit 3, so the orchestrator re-runs the slice in-process now
