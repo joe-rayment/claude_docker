@@ -921,7 +921,7 @@ cmd_key_v3() {
     ( umask 077; printf '%s\n' "$key" > "$file" )
     chmod 600 "$file"
     echo "Saved the OpenRouter key to .claude-dev/home/.openrouter.key (mode 600)."
-    echo "It rides into the container as OPENROUTER_API_KEY next time you run ./claude-dev."
+    echo "That file is /home/agent/.openrouter.key inside the container; the entrypoint reads it there next time you run ./claude-dev."
 }
 
 # --- the desktop Orca on the Mac (S2, claude-orca-8uo.3) -----------------
@@ -2125,7 +2125,7 @@ folder_image_ref() {
 }
 
 container_create() {
-    local dir="$1" name="$2" port="$3" ref src token cpus memory mount theme orkey dns guest
+    local dir="$1" name="$2" port="$3" ref src token cpus memory mount theme dns guest
     guest="$(guest_project_dir "$dir")"
     src="$(image_source "$dir")"
     ref="$(folder_image_ref "$dir")"
@@ -2196,13 +2196,14 @@ container_create() {
         done
     fi
 
-    # qa2.7: only when the folder has a key -- an empty OPENROUTER_API_KEY
-    # would read as "set" to the delegate routes. The value is in argv for
-    # this one call; the log mirror redacts it.
-    orkey="$(openrouter_key_value "$dir")"
-    if [ -n "$orkey" ]; then
-        set -- "$@" -e "OPENROUTER_API_KEY=$orkey"
-    fi
+    # claude-orca-376: no -e OPENROUTER_API_KEY here any more.
+    # .claude-dev/home and /home/agent are the same directory inside the
+    # container (same device, same inode), so a key
+    # `claude-dev key openrouter` wrote to .claude-dev/home/.openrouter.key
+    # is already on the mount the entrypoint reads -- putting it in the
+    # docker-run argv too just put it in PID 1's /proc/<pid>/environ for
+    # the whole container uptime, which is the exact exposure the guard
+    # exists to prevent.
 
     # The VM's resolver. A real Mac run on 2026-09-06 booted a VM whose
     # own resolv.conf answered nothing, so the toolchain install died on

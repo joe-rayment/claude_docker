@@ -488,6 +488,12 @@ GUARD_TOKEN_FILE="$RUN_DIR/openrouter-guard.token"
 # disk for a startup rather than in /proc/<pid>/environ for an uptime.
 GUARD_KEY_FILE="$RUN_DIR/openrouter-guard.key"
 PROVISION_KEY_FILE="$RUN_DIR/provision-openrouter.key"
+# The folder's own durable key (claude-orca-376): $AGENT_HOME IS
+# .claude-dev/home -- same device, same inode -- so the file
+# `claude-dev key openrouter` writes on the Mac is already readable here.
+# Unlike GUARD_KEY_FILE/PROVISION_KEY_FILE this one is never unlinked; it
+# is the folder's key, not a one-shot handoff.
+OPENROUTER_KEY_FILE="${CLAUDE_ORCA_OPENROUTER_KEY_FILE:-$AGENT_HOME/.openrouter.key}"
 GUARD_BASE_URL="http://127.0.0.1:$GUARD_PORT/api/v1"
 GUARD_PID=""
 GUARD_TOKEN=""
@@ -576,6 +582,9 @@ start_openrouter_guard() {
 }
 
 OPENROUTER_REAL_KEY="${OPENROUTER_API_KEY:-}"
+if [ -z "$OPENROUTER_REAL_KEY" ] && [ -s "$OPENROUTER_KEY_FILE" ]; then
+    OPENROUTER_REAL_KEY="$(head -1 "$OPENROUTER_KEY_FILE" | tr -d '\r\n')"
+fi
 if [ -n "$OPENROUTER_REAL_KEY" ]; then
     GUARD_TOKEN="$(guard_token)"
     # From this line on the real key exists only in the guard's own

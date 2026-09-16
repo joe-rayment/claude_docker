@@ -226,7 +226,7 @@ if [ -z "$guard_url" ]; then
 elif curl -fsS --max-time 5 "${guard_url%/api/v1}/" >/dev/null 2>&1; then
     ok "openrouter guard" "listening on $guard_url; agents hold its token, not the key"
 else
-    bad "openrouter guard" "opencode.json names the guard at $guard_url but nothing answers there (./claude-dev key openrouter)"
+    bad "openrouter guard" "opencode.json names the guard at $guard_url but nothing answers there -- set a key at $AGENT_HOME/.openrouter.key (mode 600) and restart, or run './claude-dev key openrouter' on the Mac (same file)"
 fi
 
 exit "$FAILED"
