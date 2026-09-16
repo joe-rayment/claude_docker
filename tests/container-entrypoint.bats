@@ -1103,6 +1103,121 @@ export_guard_test_env() {  # export_guard_test_env <project> <user-data-dir>
     [ "$status" -eq 0 ]
 }
 
+# --- claude-orca-376: the key file IS the container's own home ----------
+#
+# $AGENT_HOME/.openrouter.key (the same file `claude-dev key openrouter`
+# writes on the Mac, since .claude-dev/home and /home/agent are the same
+# directory) is now something the entrypoint can read for itself, so the
+# Mac no longer has to put the key in the docker-run argv for the guard to
+# start.
+
+@test "the entrypoint starts the guard from AGENT_HOME/.openrouter.key when OPENROUTER_API_KEY is unset (claude-orca-376)" {
+    [ -x "$ENTRYPOINT" ]
+
+    local proj="$TMP/project-keyfile-only" gport
+    make_project "$proj"
+    mkdir -p "$TMP/home" "$TMP/bin"
+    write_env_dump_orca "$TMP/bin/orca-ide"
+    gport="$(free_port)"
+
+    export_guard_test_env "$proj" "$TMP/ud"
+    export CLAUDE_ORCA_GUARD_PORT="$gport"
+    unset OPENROUTER_API_KEY
+    export OPENROUTER_UPSTREAM="http://127.0.0.1:1"
+    printf '%s\n' "$REAL_KEY" > "$TMP/home/.openrouter.key"
+    chmod 600 "$TMP/home/.openrouter.key"
+
+    boot_entrypoint keep
+
+    [ -s "$proj/.claude-dev/run/openrouter-guard.pid" ]
+    wait_tcp_port "$gport"
+    grep -qF 'openrouter-guard: listening' "$proj/.claude-dev/run/openrouter-guard.log"
+
+    # the real key never reaches Orca's own environment (what a terminal
+    # inherits), only the guard's token and base URL do
+    run grep -c -- "$REAL_KEY" "$ORCA_ENV_DUMP"
+    [ "$output" = "0" ]
+    grep -qxF "OPENROUTER_BASE_URL=http://127.0.0.1:$gport/api/v1" "$ORCA_ENV_DUMP"
+
+    # the durable key file is not the one-shot handoff file: it survives
+    [ -f "$TMP/home/.openrouter.key" ]
+
+    stop_entrypoint
+}
+
+@test "an explicit OPENROUTER_API_KEY still wins over AGENT_HOME/.openrouter.key (claude-orca-376)" {
+    [ -x "$ENTRYPOINT" ]
+    command -v jq >/dev/null 2>&1
+
+    local proj="$TMP/project-keyfile-override" gport upport rec other_key token base
+    make_project "$proj"
+    mkdir -p "$TMP/home" "$TMP/bin" "$TMP/rec"
+    rec="$TMP/rec"
+    write_env_dump_orca "$TMP/bin/orca-ide"
+    write_upstream_stub
+    gport="$(free_port)"
+    upport="$(free_port)"
+
+    UPSTREAM_REC="$rec" python3 "$TMP/upstream.py" "$upport" \
+        > "$TMP/upstream.log" 2>&1 &
+    wait_tcp_port "$upport"
+
+    export_guard_test_env "$proj" "$TMP/ud"
+    export CLAUDE_ORCA_GUARD_PORT="$gport"
+    other_key="sk-or-v1-explicit-env-wins-0000000000000"
+    export OPENROUTER_API_KEY="$other_key"
+    export OPENROUTER_UPSTREAM="http://127.0.0.1:$upport"
+    # the file names a DIFFERENT key; the explicit env var must win
+    printf '%s\n' "$REAL_KEY" > "$TMP/home/.openrouter.key"
+    chmod 600 "$TMP/home/.openrouter.key"
+
+    boot_entrypoint keep
+    wait_tcp_port "$gport"
+
+    token="$(sed -n 's/^OPENROUTER_API_KEY=//p' "$ORCA_ENV_DUMP")"
+    base="$(sed -n 's/^OPENROUTER_BASE_URL=//p' "$ORCA_ENV_DUMP")"
+    [ -n "$token" ]
+    [ "$base" = "http://127.0.0.1:$gport/api/v1" ]
+
+    run curl -s -o "$TMP/resp.json" -w '%{http_code}' --max-time 30 \
+        -X POST "$base/chat/completions" \
+        -H "Authorization: Bearer $token" \
+        -H 'Content-Type: application/json' \
+        --data-binary '{"model":"z-ai/glm-5.3","messages":[{"role":"user","content":"hi"}]}'
+    [ "$status" -eq 0 ]
+    [ "$output" = "200" ]
+
+    [ -f "$rec/headers.txt" ]
+    grep -qxF "authorization: Bearer $other_key" "$rec/headers.txt"
+    run grep -c -- "$REAL_KEY" "$rec/headers.txt"
+    [ "$output" = "0" ]
+
+    stop_entrypoint
+    pkill -f -- "$TMP/upstream.py" 2>/dev/null || true
+}
+
+@test "no OPENROUTER_API_KEY and no key file leaves the guard off, unchanged (claude-orca-376)" {
+    [ -x "$ENTRYPOINT" ]
+
+    local proj="$TMP/project-nokey" gport
+    make_project "$proj"
+    mkdir -p "$TMP/home" "$TMP/bin"
+    write_env_dump_orca "$TMP/bin/orca-ide"
+    gport="$(free_port)"
+
+    export_guard_test_env "$proj" "$TMP/ud"
+    export CLAUDE_ORCA_GUARD_PORT="$gport"
+    unset OPENROUTER_API_KEY
+    [ ! -e "$TMP/home/.openrouter.key" ]
+
+    boot_entrypoint
+    [ ! -s "$proj/.claude-dev/run/openrouter-guard.pid" ]
+    run grep -c '^OPENROUTER_BASE_URL=' "$ORCA_ENV_DUMP"
+    [ "$output" = "0" ]
+    run cat "$TMP/entrypoint.out"
+    [[ "$output" == *"no OPENROUTER_API_KEY"* ]]
+}
+
 @test "a completion request from inside the VM reaches upstream with the real key and the forced provider allowlist" {
     [ -x "$ENTRYPOINT" ]
     command -v jq >/dev/null 2>&1

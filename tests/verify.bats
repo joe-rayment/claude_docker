@@ -214,6 +214,9 @@ openrouter_guard_row() {
         FAIL*) ;;
         *) echo "expected a FAIL row for openrouter guard: $line"; return 1 ;;
     esac
+    # claude-orca-376: names the in-container file first, the Mac command
+    # only as the alternative that writes the same file.
+    contains "$line" "$home/.openrouter.key"
     contains "$line" "./claude-dev key openrouter"
 }
 

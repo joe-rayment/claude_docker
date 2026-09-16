@@ -711,6 +711,9 @@ wait_tcp_closed() {  # wait_tcp_closed <port>
         bash "$GUARD_STEP"
     [ "$status" -ne 0 ]
     [[ "$output" == *"opencode.json"* ]]
+    # claude-orca-376: the primary instruction names the in-container file
+    # -- writable from any terminal here -- not a Mac-side command.
+    [[ "$output" == *"$home/.openrouter.key"* ]]
     [[ "$output" == *"./claude-dev key openrouter"* ]]
 }
 

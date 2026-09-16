@@ -37,7 +37,14 @@ KEY="sk-or-v1-testkey0123456789abcdefghijklmnop"
     ! grep -rqF "$KEY" "$primary/.claude-dev/run" 2>/dev/null
 }
 
-@test "open passes OPENROUTER_API_KEY into the container when the key file exists and redacts it in run/container.log" {
+# claude-orca-376 supersedes this test's original assertion: the key file
+# (.claude-dev/home/.openrouter.key) IS /home/agent/.openrouter.key inside
+# the container -- same device, same inode -- so the entrypoint reads it
+# for itself now. Putting it in the docker-run argv too was the exact
+# round trip claude-orca-376 removes: an unpoliced key sitting in
+# /proc/<pid>/environ for the whole container uptime, readable by every
+# terminal, for a file already on a mount that terminal can already read.
+@test "open does not pass OPENROUTER_API_KEY into the container even when the key file exists (claude-orca-376)" {
     mkdir -p "$PROJECT_DIR"
     primary="$(abspath "$PROJECT_DIR")"
     make_project_v3 "$primary" >/dev/null
@@ -50,7 +57,8 @@ KEY="sk-or-v1-testkey0123456789abcdefghijklmnop"
     printf '%s\n' "$KEY" > "$BATS_TEST_TMPDIR/key-input"
     bash -c "cd '$primary' && CLAUDE_ORCA_KEY_INPUT='$BATS_TEST_TMPDIR/key-input' ./claude-dev key openrouter" >/dev/null
 
-    # A fresh container picks it up.
+    # A fresh container: the key file exists, but the argv still carries
+    # nothing about it -- the entrypoint reads the mounted file itself.
     rm -f "$CONTAINER_STUB_STATE/containers/$name"
     : > "$CONTAINER_STUB_LOG"
     : > "$primary/.claude-dev/run/container.log"
@@ -58,14 +66,11 @@ KEY="sk-or-v1-testkey0123456789abcdefghijklmnop"
     [ "$status" -eq 0 ]
 
     line="$(grep "^run " "$CONTAINER_STUB_LOG" | head -1)"
-    [[ "$line" == *"-e OPENROUTER_API_KEY=$KEY"* ]]
+    [[ "$line" != *"OPENROUTER_API_KEY"* ]]
 
-    # The on-disk mirror keeps the shape and drops the value, like GH_TOKEN.
     log="$primary/.claude-dev/run/container.log"
     [ -s "$log" ]
-    ! grep -qF "$KEY" "$log"
-    grep -qF "OPENROUTER_API_KEY=***" "$log"
-    grep -qF "GH_TOKEN=***" "$log"
+    ! grep -qF "OPENROUTER_API_KEY" "$log"
     [[ "$output" != *"$KEY"* ]]
 }
 
