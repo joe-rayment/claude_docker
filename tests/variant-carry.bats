@@ -244,7 +244,7 @@ EOF
     [ "$(jq -r '.routes.luna.runner' "$SHIPPED")" = "opencode" ]
     [ "$(jq -r '.routes.luna.model' "$SHIPPED")" = "openrouter/openai/gpt-5.6-luna" ]
     [ "$(jq -r '.routes.luna.grade' "$SHIPPED")" = "executor" ]
-    [ "$(jq -r '.routes.luna | has("variant")')" = "false" ]
+    [ "$(jq -r '.routes.luna | has("variant")' "$SHIPPED")" = "false" ]
     [ "$(jq -r '.routes["luna-high"].runner' "$SHIPPED")" = "opencode" ]
     [ "$(jq -r '.routes["luna-high"].model' "$SHIPPED")" = "openrouter/openai/gpt-5.6-luna" ]
     [ "$(jq -r '.routes["luna-high"].variant' "$SHIPPED")" = "high" ]
