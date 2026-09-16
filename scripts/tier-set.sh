@@ -39,6 +39,20 @@
 # TIER_DERIVE overrides the tier-derive lookup (default: alongside this
 # script, i.e. the sibling scripts/tier-derive.sh, or tier-derive on PATH).
 #
+# claude-orca-2j2 (claude-orca-1w8 slice A): a positional trio or a per-role
+# spec may now be a PHRASE -- a short route name from
+# config/delegate-routes.json (TIER_ROUTES_FILE), a bare OpenRouter
+# vendor/model id, or a free-text query resolved against an OpenRouter model
+# catalogue (TIER_MODELS_FILE, default <run dir>/openrouter-models.json,
+# fetched from https://openrouter.ai/api/v1/models unless TIER_MODELS_FETCH=0)
+# -- each optionally carrying a reasoning-effort variant as
+# name@effort/name (effort)/name(effort), or a trailing bare effort word. A
+# single argument containing a comma or whitespace is re-split into the trio
+# before anything else runs (config/claude-commands/tier.md passes
+# "$ARGUMENTS" quoted so this survives the shell). See resolve_worker_recon_
+# phrase, parse_effort and catalogue_lookup below, and tier.md's
+# argument-hint for the accepted forms.
+#
 # Deliberately dropped from the old design, out of S4's scope: probing
 # candidates against a live `claude -p` round trip (unsuitable for hermetic
 # tests, and not asked for here), and the `cost` subcommand (cost-mirror is
@@ -80,6 +94,16 @@ STATE_FILE="${TIER_STATE_FILE:-}"
 LOCAL_SETTINGS="${TIER_SETTINGS_LOCAL:-}"
 [ -n "$LOCAL_SETTINGS" ] || LOCAL_SETTINGS="$(claude_config_dir)/settings.local.json"
 
+# The route table a short worker/recon name resolves against (claude-orca-2j2).
+# TIER_ROUTES_FILE overrides it; default = <repo>/config/delegate-routes.json,
+# found the same way DERIVE is: via lib/paths.sh's template_dir when this is
+# the repo checkout, falling back to a path relative to this script.
+ROUTES_FILE="${TIER_ROUTES_FILE:-}"
+if [ -z "$ROUTES_FILE" ]; then
+    _tier_set_root="$(template_dir 2>/dev/null)" || _tier_set_root="$SCRIPT_DIR/.."
+    ROUTES_FILE="$_tier_set_root/config/delegate-routes.json"
+fi
+
 # An alias is already the value we want: Claude Code resolves "fable",
 # "opus", "sonnet" and "haiku" to the newest model of that family, so the
 # bound value never has to be bumped when a new version ships. Only the
@@ -115,6 +139,73 @@ valid_model_ref() {
         ''|*[!a-zA-Z0-9._/\[\]-]*) return 1 ;;
         *) return 0 ;;
     esac
+}
+
+# --- phrases and reasoning-effort variants (claude-orca-2j2) ---------------
+
+trim() {  # trim <string> -- strips leading/trailing whitespace
+    local s="$1"
+    s="${s#"${s%%[![:space:]]*}"}"
+    s="${s%"${s##*[![:space:]]}"}"
+    printf '%s' "$s"
+}
+
+valid_effort() {
+    case "$1" in
+        none|minimal|low|medium|high|xhigh|max) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# parse_effort <phrase> -- prints "<name>\n<effort>" (effort line empty if
+# none present, or the word was literally "none"). Recognises three forms:
+# name@effort, "name (effort)"/"name(effort)" (trailing parenthetical), and a
+# trailing bare word when the phrase has more than one whitespace-separated
+# word (a comma-phrase carrying internal spaces, or a per-role form's joined
+# 2nd+3rd token). Only @ makes an unrecognised word an ERROR -- the other two
+# forms silently leave the phrase whole when the trailing bit isn't a known
+# effort word (it is then just part of the name/query).
+parse_effort() {
+    local phrase="$1" name="" effort="" rest cand
+    case "$phrase" in
+        *@*)
+            name="${phrase%%@*}"
+            effort="${phrase#*@}"
+            if ! valid_effort "$effort"; then
+                echo "tier-set: unknown effort word '$effort' in '$phrase' -- want one of: none minimal low medium high xhigh max; nothing bound" >&2
+                return 1
+            fi
+            ;;
+        *")")
+            rest="${phrase%)}"
+            case "$rest" in
+                *"("*)
+                    cand="${rest##*(}"
+                    if valid_effort "$cand"; then
+                        name="$(trim "${rest%(*}")"
+                        effort="$cand"
+                    else
+                        name="$phrase"
+                    fi
+                    ;;
+                *) name="$phrase" ;;
+            esac
+            ;;
+        *) name="$phrase" ;;
+    esac
+    if [ -z "$effort" ]; then
+        case "$phrase" in
+            *" "*)
+                cand="${phrase##* }"
+                if valid_effort "$cand"; then
+                    name="${phrase% *}"
+                    effort="$cand"
+                fi
+                ;;
+        esac
+    fi
+    [ "$effort" = "none" ] && effort=""
+    printf '%s\n%s\n' "$name" "$effort"
 }
 
 # write_state <top> <worker> <recon> <pinned:true|false> <overdrive:true|false>
@@ -165,7 +256,45 @@ write_state() {
     fi
 }
 
-# write_role <role> <backend> <agent> <model> <pinned:true|false>
+# write_state_v3 <top> <wb> <wa> <wm> <wv> <cb> <ca> <cm> <cv> <pinned> <overdrive>
+# The phrase-aware sibling of write_state (claude-orca-2j2): the trio form
+# now resolves worker/recon through resolve_worker_recon_phrase first, so
+# their backend/agent/model (and an optional variant) are already decided by
+# the caller -- this just writes them, plus the derived checker rung, the
+# same way write_state does. Used by the 2/3-arg positional form only; the
+# 1-arg auto-derive path keeps using write_state.
+write_state_v3() {
+    local top="$1" wb="$2" wa="$3" wm="$4" wv="$5" cb="$6" ca="$7" cm="$8" cv="$9" pinned="${10}" overdrive="${11}"
+    [ -n "$STATE_FILE" ] || { echo "tier-set: cannot determine the project's tier state file (not inside a bootstrapped project; set CLAUDE_ORCA_ROOT or TIER_STATE_FILE) -- nothing bound" >&2; return 1; }
+    mkdir -p "$(dirname "$STATE_FILE")" 2>/dev/null
+    local ck tmp
+    ck=$("$DERIVE" --checker "$top" 2>/dev/null) || ck=""
+    [ -n "$ck" ] || ck=inherit
+    tmp=$(mktemp "$STATE_FILE.XXXXXX") || return 1
+    if jq -n --arg t "$top" \
+          --arg wb "$wb" --arg wa "$wa" --arg wm "$wm" --arg wv "$wv" \
+          --arg cb "$cb" --arg ca "$ca" --arg cm "$cm" --arg cv "$cv" \
+          --arg ck "$ck" --argjson p "$pinned" --argjson o "$overdrive" \
+          --arg u "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+          '{top: $t, worker: $wm, recon: $cm,
+            roles: {
+              worker:  (if $wv != "" then {backend:$wb, agent:$wa, model:$wm, pinned:true, variant:$wv}
+                        else {backend:$wb, agent:$wa, model:$wm, pinned:true} end),
+              recon:   (if $cv != "" then {backend:$cb, agent:$ca, model:$cm, pinned:true, variant:$cv}
+                        else {backend:$cb, agent:$ca, model:$cm, pinned:true} end),
+              checker: {backend:"subagent", agent:"claude", model:$ck}
+            },
+            pinned: $p, overdrive: $o, updated: $u}' \
+          > "$tmp" 2>/dev/null && jq -e . "$tmp" >/dev/null 2>&1; then
+        mv "$tmp" "$STATE_FILE"
+    else
+        rm -f "$tmp"
+        echo "tier-set: failed to write $STATE_FILE" >&2
+        return 1
+    fi
+}
+
+# write_role <role> <backend> <agent> <model> <pinned:true|false> [<variant>]
 # Patches ONE role into an existing tier.json, mirroring the model back into
 # the v1 .worker/.recon key so every reader (including a v1-era one) agrees.
 # A spec that names its own model outright (openrouter:/codex:/gemini:/an
@@ -184,9 +313,10 @@ write_role() {
         printf '%s' "$base" | jq -e . >/dev/null 2>&1 || { echo "tier-set: $STATE_FILE is not valid JSON -- run /tier <top> to rebind it; nothing bound" >&2; return 1; }
     fi
     tmp=$(mktemp "$STATE_FILE.XXXXXX") || return 1
-    if printf '%s' "$base" | jq --arg r "$1" --arg b "$2" --arg a "$3" --arg m "$4" --argjson p "$5" \
+    if printf '%s' "$base" | jq --arg r "$1" --arg b "$2" --arg a "$3" --arg m "$4" --argjson p "$5" --arg v "${6:-}" \
           --arg u "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-          '.roles = ((.roles // {}) | .[$r] = {backend: $b, agent: $a, model: $m, pinned: $p})
+          '.roles = ((.roles // {}) | .[$r] = (if $v != "" then {backend: $b, agent: $a, model: $m, pinned: $p, variant: $v}
+                                                else {backend: $b, agent: $a, model: $m, pinned: $p} end))
            | (if $r == "worker" then .worker = $m elif $r == "recon" then .recon = $m else . end)
            | .updated = $u' > "$tmp" 2>/dev/null && jq -e . "$tmp" >/dev/null 2>&1; then
         mv "$tmp" "$STATE_FILE"
@@ -255,15 +385,59 @@ a binding applies to NEW spawns immediately (tier-gate reads tier.json at spawn 
 EOF
 }
 
+# --- argument normalisation (claude-orca-2j2) -------------------------------
+#
+# Exactly one argument containing a comma or whitespace is re-split BEFORE
+# anything below looks at $#/$1 -- on commas when any are present (each
+# phrase trimmed), else on whitespace. An empty single argument behaves like
+# no args (show). config/claude-commands/tier.md passes "$ARGUMENTS" quoted
+# so a phrase like "fable, GLM 5.3 flash, GPT-5.6 Luna (high)" arrives here
+# whole.
+if [ $# -eq 1 ]; then
+    _tier_raw="$1"
+    if [ -z "$_tier_raw" ]; then
+        set --
+    else
+        case "$_tier_raw" in
+            *,*)
+                _tier_oldifs="$IFS"
+                IFS=','
+                set -f; set -- $_tier_raw; set +f
+                IFS="$_tier_oldifs"
+                _tier_trimmed=()
+                for _tier_tok in "$@"; do
+                    _tier_tok="$(trim "$_tier_tok")"
+                    [ -n "$_tier_tok" ] && _tier_trimmed+=("$_tier_tok")
+                done
+                set -- "${_tier_trimmed[@]+"${_tier_trimmed[@]}"}"
+                ;;
+            *[[:space:]]*)
+                set -f; set -- $_tier_raw; set +f
+                ;;
+        esac
+    fi
+fi
+
 if [ $# -eq 0 ] || [ "${1:-}" = "show" ]; then
     show_state
     exit 0
 fi
 
-if [ "${1:-}" = "help" ]; then
-    show_help
-    exit 0
-fi
+case "${1:-}" in
+    help|-h|--help)
+        show_help
+        exit 0
+        ;;
+esac
+
+for _tier_arg in "$@"; do
+    case "$_tier_arg" in
+        -*)
+            echo "tier-set: unrecognized option '$_tier_arg' -- nothing bound" >&2
+            exit 1
+            ;;
+    esac
+done
 
 # --- overdrive ---------------------------------------------------------------
 
@@ -351,8 +525,227 @@ derived_role_model() {
     esac
 }
 
+# --- the OpenRouter model catalogue (claude-orca-2j2) -----------------------
+
+# models_file -- TIER_MODELS_FILE, else <run dir>/openrouter-models.json
+# (next to tier.json), else beside STATE_FILE when run_dir can't resolve.
+models_file() {
+    if [ -n "${TIER_MODELS_FILE:-}" ]; then
+        printf '%s\n' "$TIER_MODELS_FILE"
+        return 0
+    fi
+    local d
+    d="$(run_dir 2>/dev/null)" || d=""
+    if [ -z "$d" ] && [ -n "$STATE_FILE" ]; then
+        d="$(dirname "$STATE_FILE")"
+    fi
+    [ -n "$d" ] || d="."
+    printf '%s\n' "$d/openrouter-models.json"
+}
+
+# ensure_catalogue <file> -- fetches the catalogue when it is missing or
+# older than 24h, unless TIER_MODELS_FETCH=0. A failed fetch (no curl, no
+# network, bad JSON) silently keeps whatever is already on disk -- never an
+# error, since the caller decides what an absent/stale file means.
+ensure_catalogue() {
+    local file="$1" now mtime age tmp
+    [ "${TIER_MODELS_FETCH:-1}" = "0" ] && return 0
+    now=$(date +%s)
+    if [ -f "$file" ]; then
+        mtime=$(stat -c %Y "$file" 2>/dev/null || stat -f %m "$file" 2>/dev/null || echo 0)
+        age=$(( now - mtime ))
+        [ "$age" -lt 86400 ] && return 0
+    fi
+    command -v curl >/dev/null 2>&1 || return 0
+    mkdir -p "$(dirname "$file")" 2>/dev/null
+    tmp=$(mktemp "$file.XXXXXX" 2>/dev/null) || return 0
+    if curl -sf -m 10 "https://openrouter.ai/api/v1/models" -o "$tmp" 2>/dev/null \
+          && jq -e . "$tmp" >/dev/null 2>&1; then
+        mv "$tmp" "$file"
+    else
+        rm -f "$tmp"
+    fi
+    return 0
+}
+
+# build_words_json <query> -- lowercase, whitespace-split, each word
+# stripped to [a-z0-9], as a JSON array (empty words dropped).
+build_words_json() {
+    local q="$1"
+    # the trailing \n matters: without it, `read` hits EOF on the LAST word
+    # (no newline after it) and the while loop's condition fails before its
+    # body runs, silently dropping that word.
+    printf '%s\n' "$q" | tr 'A-Z' 'a-z' | tr -s '[:space:]' '\n' | while IFS= read -r w; do
+        [ -n "$w" ] || continue
+        printf '%s' "$w" | tr -cd 'a-z0-9'
+        printf '\n'
+    done | jq -R -s 'split("\n") | map(select(length > 0))'
+}
+
+# catalogue_match <file> <query> -- TSV candidate lines "id\tname\tprompt\t
+# completion", every word of <query> a substring of the candidate's
+# normalised id+name; a ':'-bearing id (batch/free/exacto variants) is
+# excluded unless <query> itself contains ':'.
+catalogue_match() {
+    local file="$1" query="$2" words_json has_colon=false
+    case "$query" in *:*) has_colon=true ;; esac
+    words_json="$(build_words_json "$query")"
+    [ "$words_json" = "[]" ] && return 0
+    jq -r --argjson words "$words_json" --argjson hascolon "$has_colon" '
+      def norm: ascii_downcase | gsub("[^a-z0-9]"; "");
+      [ .data[]?
+        | select($hascolon or ((.id // "") | contains(":") | not))
+        | . as $m
+        | (($m.id // "") | norm) as $nid
+        | (($m.name // "") | norm) as $nname
+        | ($nid + $nname) as $hay
+        | select( ($words | length) > 0 and ([ $words[] as $w | ($hay | contains($w)) ] | all) )
+        | [$m.id, ($m.name // ""), ($m.pricing.prompt // "0"), ($m.pricing.completion // "0")]
+      ] | .[] | @tsv
+    ' "$file" 2>/dev/null
+}
+
+# pick_prefix_id <newline-separated ids> -- the id that is a string prefix of
+# every id in the list (itself included), or nothing if there isn't one.
+pick_prefix_id() {
+    local ids="$1" cand other ok
+    while IFS= read -r cand; do
+        [ -n "$cand" ] || continue
+        ok=true
+        while IFS= read -r other; do
+            [ -n "$other" ] || continue
+            case "$other" in
+                "$cand"*) ;;
+                *) ok=false ;;
+            esac
+        done <<<"$ids"
+        if [ "$ok" = true ]; then
+            printf '%s\n' "$cand"
+            return 0
+        fi
+    done <<<"$ids"
+    return 1
+}
+
+# catalogue_lookup <query> -- prints the bare (no "openrouter/" prefix)
+# matched id on success; on ambiguity or absence, prints an explanation to
+# stderr and returns 1. See scripts/tier-set.sh's header / claude-orca-2j2's
+# bead for the exact matching/prefix/candidate-listing rules.
+catalogue_lookup() {
+    local query="$1" file matches count ids chosen
+    file="$(models_file)"
+    ensure_catalogue "$file"
+    if [ ! -s "$file" ]; then
+        echo "tier-set: no OpenRouter model catalogue available (set TIER_MODELS_FETCH=1, or provide TIER_MODELS_FILE, or the fetch failed) -- name the vendor/model explicitly instead, e.g. worker openrouter:vendor/model; nothing bound" >&2
+        return 1
+    fi
+    matches="$(catalogue_match "$file" "$query")"
+    count=0
+    [ -n "$matches" ] && count=$(printf '%s\n' "$matches" | grep -c .)
+    if [ "$count" -eq 0 ]; then
+        echo "tier-set: no catalogue match for '$query' -- nothing bound" >&2
+        return 1
+    fi
+    if [ "$count" -eq 1 ]; then
+        printf '%s\n' "$matches" | cut -f1
+        return 0
+    fi
+    ids="$(printf '%s\n' "$matches" | cut -f1)"
+    chosen="$(pick_prefix_id "$ids")"
+    if [ -n "$chosen" ]; then
+        printf '%s\n' "$chosen"
+        return 0
+    fi
+    {
+        echo "tier-set: ambiguous model query '$query' -- candidates:"
+        printf '%s\n' "$matches" | head -10 | awk -F'\t' '{printf "  %s  %s  $%s/$%s per M\n", $1, $2, $3, $4}'
+        echo "tier-set: nothing bound"
+    } >&2
+    return 1
+}
+
+# resolve_worker_recon_phrase <worker|recon> <name> <positional|role>
+# The shared resolver behind both the trio positional form and the per-role
+# `tier-set worker|recon <spec>` form -- <name> already has any @effort
+# suffix stripped by parse_effort. Prints "<backend>\t<agent>\t<model>" on
+# success; an error (unknown/unsafe spec, catalogue ambiguity/absence) goes
+# to stderr and this returns 1, nothing bound.
+#
+# Resolution order (claude-orca-2j2, bead SPEC point 4):
+#   a. a Claude alias/id -- backend follows <ctx> (see below)
+#   b. an existing explicit spec: openrouter[:.../], claude:, codex:/gemini:,
+#      orca, subagent, inherit -- unchanged from the single-role grammar
+#   c. a route NAME in $ROUTES_FILE -- its .model, backend orca/opencode
+#   d. a phrase containing '/' -- an explicit OpenRouter id (a leading
+#      "openrouter/" is optional and normalised in)
+#   e. otherwise, an OpenRouter catalogue lookup
+#
+# <ctx>: "positional" reproduces write_state's own rule for a Claude WORKER
+# (orca when tier_orca_reachable, else subagent; recon stays subagent, as it
+# always has); "role" is the per-role form's rule -- always subagent+claude,
+# regardless of role or Orca reachability (unchanged from the pre-existing
+# single-role grammar).
+resolve_worker_recon_phrase() {
+    local role="$1" name="$2" ctx="$3" b a m rest bare
+    case "$name" in
+        fable|Fable|FABLE|opus|Opus|OPUS|sonnet|Sonnet|SONNET|haiku|Haiku|HAIKU|claude-*)
+            m="$(alias_id "$name")"
+            a=claude
+            if [ "$ctx" = "positional" ] && [ "$role" = "worker" ]; then
+                b=subagent; tier_orca_reachable && b=orca
+            else
+                b=subagent
+            fi
+            ;;
+        openrouter)
+            b=orca; a=opencode; m="$(tier_openrouter_role_default "$role")" ;;
+        openrouter:*)
+            rest="${name#openrouter:}"
+            [ -n "$rest" ] || { echo "tier-set: 'openrouter:' needs a <vendor/model>, e.g. openrouter:qwen/qwen3-coder -- nothing bound" >&2; return 1; }
+            b=orca; a=opencode; m="openrouter/$rest" ;;
+        claude:*)
+            rest="${name#claude:}"
+            b=orca; a=claude
+            if [ -n "$rest" ]; then m="$(alias_id "$rest")"
+            else m="$(derived_role_model "$role")" || return 1; fi ;;
+        codex:*|gemini:*)
+            a="${name%%:*}"; rest="${name#*:}"
+            [ -n "$rest" ] || { echo "tier-set: '$a:' needs a model id -- nothing bound" >&2; return 1; }
+            b=orca; m="$rest" ;;
+        orca)
+            b=orca; a=claude; m="$(derived_role_model "$role")" || return 1 ;;
+        subagent)
+            b=subagent; a=claude; m="$(derived_role_model "$role")" || return 1 ;;
+        inherit)
+            b=subagent; a=claude; m=inherit ;;
+        *)
+            bare=""
+            if [ -n "$ROUTES_FILE" ] && [ -f "$ROUTES_FILE" ]; then
+                bare="$(jq -r --arg n "$name" '.routes[$n].model // empty' "$ROUTES_FILE" 2>/dev/null)"
+            fi
+            if [ -n "$bare" ]; then
+                b=orca; a=opencode; m="$bare"
+            else
+                case "$name" in
+                    */*)
+                        rest="$name"
+                        case "$rest" in openrouter/*) rest="${rest#openrouter/}" ;; esac
+                        b=orca; a=opencode; m="openrouter/$rest"
+                        ;;
+                    *)
+                        bare="$(catalogue_lookup "$name")" || return 1
+                        b=orca; a=opencode; m="openrouter/$bare"
+                        ;;
+                esac
+            fi
+            ;;
+    esac
+    valid_model_ref "$m" || { echo "tier-set: unknown or unsafe model reference for '$role': '$name' -- nothing bound" >&2; return 1; }
+    printf '%s\t%s\t%s\n' "$b" "$a" "$m"
+}
+
 case "${1:-}" in
-    worker|recon|checker)
+    checker)
         role=$1
         if [ $# -lt 2 ]; then
             echo "tier-set: '$role' needs a backend/model spec -- e.g. /tier $role openrouter:qwen/qwen3-coder | claude:sonnet | subagent; nothing bound" >&2
@@ -403,7 +796,89 @@ case "${1:-}" in
         fi
         exit 0
         ;;
+    worker|recon)
+        role=$1
+        shift
+        if [ $# -lt 1 ]; then
+            echo "tier-set: '$role' needs a phrase or backend/model spec -- e.g. /tier $role openrouter:qwen/qwen3-coder | claude:sonnet | subagent | glm-flash | luna@high; nothing bound" >&2
+            exit 1
+        fi
+        # A recognised effort word as the 2nd remaining token joins with the
+        # 1st into one phrase (the per-role bare-trailing-word form, e.g.
+        # "recon luna high"); otherwise it (and anything past it) is just
+        # ignored, as extra args always have been here.
+        if [ $# -ge 2 ] && valid_effort "$2"; then
+            role_spec="$1 $2"
+            [ $# -gt 2 ] && echo "tier: extra args ignored (dropped: ${*:3})" >&2
+        else
+            role_spec="$1"
+            [ $# -gt 1 ] && echo "tier: extra args ignored (dropped: ${*:2})" >&2
+        fi
+        role_out="$(parse_effort "$role_spec")" || exit 1
+        role_name="$(printf '%s\n' "$role_out" | sed -n 1p)"
+        role_effort="$(printf '%s\n' "$role_out" | sed -n 2p)"
+        role_line="$(resolve_worker_recon_phrase "$role" "$role_name" role)" || exit 1
+        IFS=$'\t' read -r B A M <<<"$role_line"
+        role_note=""
+        if [ -n "$role_effort" ] && [ "$A" != "opencode" ]; then
+            role_note="tier: effort '$role_effort' applies to OpenRouter roles only -- ignored for $role"
+            role_effort=""
+        fi
+        write_role "$role" "$B" "$A" "$M" true "$role_effort" || exit 1
+        echo "tier role bound  $role = $(tier_role_label "$B" "$A" "$M" "$role_effort")"
+        [ -n "$role_note" ] && echo "$role_note"
+        if [ "$A" = "opencode" ] && ! tier_openrouter_ready; then
+            echo "→ not authenticated yet -- this binding is saved but cannot run until OpenRouter is set up in this folder."
+            echo "→ run  /tier auth openrouter  to open a sign-in tab now."
+        fi
+        if [ "$B" = "orca" ]; then
+            echo "→ applies to NEW spawns: $role slices go through  orca-dispatch  (the Agent tool stays the fallback)."
+        else
+            echo "→ applies to NEW spawns: $role runs in the Agent tool, tier-gate injects $M at spawn time."
+        fi
+        exit 0
+        ;;
 esac
+
+# --- models: tier-set models [<words>] --------------------------------------
+
+if [ "${1:-}" = "models" ]; then
+    shift
+    words="$*"
+    if [ -z "$words" ]; then
+        if [ -f "$ROUTES_FILE" ]; then
+            jq -r '.routes | to_entries[] | "\(.key)\t\(.value.model // "")"' "$ROUTES_FILE" 2>/dev/null |
+                while IFS=$'\t' read -r rn rm; do
+                    [ -n "$rn" ] && echo "route  $rn -> $rm"
+                done
+        else
+            echo "no routes file at $ROUTES_FILE"
+        fi
+        mfile="$(models_file)"
+        if [ -s "$mfile" ]; then
+            mcount=$(jq -r '(.data | length) // 0' "$mfile" 2>/dev/null)
+            mmtime=$(stat -c %Y "$mfile" 2>/dev/null || stat -f %m "$mfile" 2>/dev/null || echo 0)
+            mage=$(( $(date +%s) - mmtime ))
+            echo "catalogue: $mcount models, ${mage}s old ($mfile)"
+        else
+            echo "catalogue: no file at $mfile"
+        fi
+        exit 0
+    fi
+    mfile="$(models_file)"
+    ensure_catalogue "$mfile"
+    if [ ! -s "$mfile" ]; then
+        echo "tier-set: no catalogue available at $mfile" >&2
+        exit 1
+    fi
+    matches="$(catalogue_match "$mfile" "$words")"
+    if [ -z "$matches" ]; then
+        echo "no catalogue match for '$words'"
+        exit 0
+    fi
+    printf '%s\n' "$matches" | awk -F'\t' '{printf "%s  %s  $%s/$%s per M\n", $1, $2, $3, $4}'
+    exit 0
+fi
 
 # --- 1-arg (auto-derive) or 2/3-arg (explicit pin) --------------------------
 
@@ -430,19 +905,49 @@ if [ $# -eq 1 ]; then
     exit 0
 fi
 
-R="$(alias_id "$1")"; W="$(alias_id "$2")"
+# --- 2/3-arg positional pin: each arg is now a PHRASE (claude-orca-2j2) ----
+
+top_out="$(parse_effort "$1")" || exit 1
+top_name="$(printf '%s\n' "$top_out" | sed -n 1p)"
+top_effort="$(printf '%s\n' "$top_out" | sed -n 2p)"
+R="$(alias_id "$top_name")"
 valid_id "$R" || { echo "tier-set: unknown or unsafe top model id: '$1' -- nothing bound" >&2; exit 1; }
-valid_id "$W" || { echo "tier-set: unknown or unsafe worker model id: '$2' -- nothing bound" >&2; exit 1; }
-if [ $# -ge 3 ]; then
-    C="$(alias_id "$3")"
-    valid_id "$C" || { echo "tier-set: unknown or unsafe recon model id: '$3' -- nothing bound" >&2; exit 1; }
-    [ $# -gt 3 ] && echo "tier: extra args ignored (dropped: ${*:4})" >&2
-else
-    C=$W   # 2-arg form: a 2-level config — recon shares the worker model
+top_note=""
+[ -n "$top_effort" ] && top_note="tier: effort '$top_effort' applies to OpenRouter roles only -- ignored for top"
+
+worker_out="$(parse_effort "$2")" || exit 1
+worker_name="$(printf '%s\n' "$worker_out" | sed -n 1p)"
+worker_effort="$(printf '%s\n' "$worker_out" | sed -n 2p)"
+worker_line="$(resolve_worker_recon_phrase worker "$worker_name" positional)" || exit 1
+IFS=$'\t' read -r WB WA WM <<<"$worker_line"
+worker_note=""
+if [ -n "$worker_effort" ] && [ "$WA" != "opencode" ]; then
+    worker_note="tier: effort '$worker_effort' applies to OpenRouter roles only -- ignored for worker"
+    worker_effort=""
 fi
 
-write_state "$R" "$W" "$C" true false || exit 1
+if [ $# -ge 3 ]; then
+    [ $# -gt 3 ] && echo "tier: extra args ignored (dropped: ${*:4})" >&2
+    recon_out="$(parse_effort "$3")" || exit 1
+    recon_name="$(printf '%s\n' "$recon_out" | sed -n 1p)"
+    recon_effort="$(printf '%s\n' "$recon_out" | sed -n 2p)"
+    recon_line="$(resolve_worker_recon_phrase recon "$recon_name" positional)" || exit 1
+    IFS=$'\t' read -r CB CA CM <<<"$recon_line"
+    recon_note=""
+    if [ -n "$recon_effort" ] && [ "$CA" != "opencode" ]; then
+        recon_note="tier: effort '$recon_effort' applies to OpenRouter roles only -- ignored for recon"
+        recon_effort=""
+    fi
+else
+    # 2-arg form: a 2-level config -- recon shares the worker binding whole.
+    CB="$WB"; CA="$WA"; CM="$WM"; recon_effort="$worker_effort"; recon_note=""
+fi
+
+write_state_v3 "$R" "$WB" "$WA" "$WM" "$worker_effort" "$CB" "$CA" "$CM" "$recon_effort" true false || exit 1
 merge_model "$R" || exit 1
-echo "tier bound (explicit, pinned)  top=$R  worker=$W  recon=$C  — a plain /tier <top> clears the pin"
+echo "tier bound (explicit, pinned)  top=$R  worker=$(tier_role_label "$WB" "$WA" "$WM" "$worker_effort")  recon=$(tier_role_label "$CB" "$CA" "$CM" "$recon_effort")  — a plain /tier <top> clears the pin"
+[ -n "$top_note" ] && echo "$top_note"
+[ -n "$worker_note" ] && echo "$worker_note"
+[ -n "$recon_note" ] && echo "$recon_note"
 echo "→ applies to NEW spawns (tier-gate reads tier.json at spawn time); /model $R moves THIS session now."
 exit 0

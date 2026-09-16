@@ -60,7 +60,8 @@ if [ -n "$STATE_FILE" ] && [ -f "$STATE_FILE" ] && command -v jq >/dev/null 2>&1
         _b="$(printf '%s' "$_line" | awk -F'\t' '{printf "%s", $1}')"
         _a="$(printf '%s' "$_line" | awk -F'\t' '{printf "%s", $2}')"
         _m="$(printf '%s' "$_line" | awk -F'\t' '{printf "%s", $3}')"
-        _label="$(tier_role_label "$_b" "$_a" "$_m")"
+        _v="$(printf '%s' "$_line" | awk -F'\t' '{printf "%s", $5}')"
+        _label="$(tier_role_label "$_b" "$_a" "$_m" "$_v")"
         backends="$backends $_r=$_label"
         case "$_r" in
             worker) bk_worker="$_b"; lb_worker="$_label" ;;
