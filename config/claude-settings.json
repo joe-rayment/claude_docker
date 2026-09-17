@@ -12,6 +12,10 @@
     "command": "__HOST__/template/bin/statusline",
     "padding": 0
   },
+  "subagentStatusLine": {
+    "type": "command",
+    "command": "__HOST__/template/bin/statusline-subagent"
+  },
   "permissions": {
     "allow": [
       "Bash(*)",
