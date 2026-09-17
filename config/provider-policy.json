@@ -6,7 +6,7 @@
       "provider.only": "string[] -- the ONLY providers allowed for the request. The guard sets this to [.allow[].slug] on every completion request, which is what makes the allowlist default-deny.",
       "provider.allow_fallbacks": "boolean, OpenRouter default true -- whether a backup provider may serve the request. Forced to false (.force.allow_fallbacks) so a failed allowlisted provider is an error, never a silent hop somewhere else.",
       "provider.data_collection": "\"allow\" | \"deny\", OpenRouter default \"allow\" -- forced to \"deny\" (.force.data_collection) so providers that may store prompts are skipped.",
-      "provider.order": "string[] -- providers to try in order. A client-supplied order is KEPT only when every entry is in .allow; otherwise it is dropped and logged.",
+      "provider.order": "string[] -- providers to try in order. A client-supplied order is KEPT only when every entry is in .allow; otherwise (missing, empty, or naming a provider outside .allow) it is dropped and logged, and the guard forces this policy's own .order instead -- an empty order left OpenRouter free to try only its default pick inside .only, which stayed 429 for 15+ minutes on 2026-09-17 (claude-orca-c6b) while a named fallback provider answered at once.",
       "provider.ignore": "string[] -- providers to skip. Not used: with provider.only set to the allowlist, everything else is already excluded. .deny below is documentation of WHY a host is out, and the source for the guard's log and the docs.",
       "source": "https://openrouter.ai/docs/features/provider-routing (field table), verified 2026-09-06"
     },
@@ -18,6 +18,11 @@
     "allow_fallbacks": false,
     "data_collection": "deny"
   },
+  "order": [
+    "baseten", "fireworks", "together", "parasail", "coreweave", "crusoe",
+    "deepinfra", "nebius", "groq", "cerebras", "google-vertex",
+    "amazon-bedrock", "azure", "mistral", "venice", "digitalocean"
+  ],
   "allow": [
     { "slug": "amazon-bedrock", "name": "Amazon Bedrock", "country": "US" },
     { "slug": "azure", "name": "Azure", "country": "US" },

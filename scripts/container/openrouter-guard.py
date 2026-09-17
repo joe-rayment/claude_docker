@@ -176,9 +176,31 @@ def load_policy(path):
             "openrouter-guard: %s allows providers with no country note (%s) -- "
             "refusing to start" % (path, ", ".join(missing))
         )
+
+    # claude-orca-c6b: an empty client order left OpenRouter free to try only
+    # its own default pick inside .only, which sat on a single rate-limited
+    # provider for 15+ minutes. The policy's explicit order is what the guard
+    # forces whenever the client didn't send a usable one of its own, so it
+    # has to name only allowlisted slugs -- a slug outside .allow here would
+    # never be selectable anyway, and is far more likely a typo than intent.
+    order = policy.get("order") or []
+    order_fallback = False
+    if order:
+        bad = [p for p in order if p not in allow]
+        if bad:
+            raise SystemExit(
+                "openrouter-guard: %s order names providers not in allow (%s) -- "
+                "refusing to start" % (path, ", ".join(bad))
+            )
+    else:
+        order = list(allow)
+        order_fallback = True
+
     force = policy.get("force", {})
     return {
         "allow": allow,
+        "order": order,
+        "order_fallback": order_fallback,
         "allow_fallbacks": bool(force.get("allow_fallbacks", False)),
         "data_collection": force.get("data_collection", "deny"),
     }
@@ -265,13 +287,21 @@ def presented_token(headers):
 
 
 def force_provider(body_bytes, policy):
-    """Rewrite the request body. Returns (bytes, model, forced, order_dropped)."""
+    """Rewrite the request body.
+
+    Returns (bytes, model, forced, order_dropped, order_source). order_source
+    is "client" when every entry of a client-supplied order was allowlisted
+    and kept as sent, or "policy" when the client sent no usable order (none
+    at all, or one naming a provider outside the allowlist) and the policy's
+    own explicit order (config/provider-policy.json .order, falling back to
+    .allow when that is empty) was forced instead -- see claude-orca-c6b.
+    """
     try:
         payload = json.loads(body_bytes.decode("utf-8"))
     except (ValueError, UnicodeDecodeError):
-        return body_bytes, None, False, False
+        return body_bytes, None, False, False, None
     if not isinstance(payload, dict):
-        return body_bytes, None, False, False
+        return body_bytes, None, False, False, None
 
     client = payload.get("provider")
     client = client if isinstance(client, dict) else {}
@@ -284,13 +314,19 @@ def force_provider(body_bytes, policy):
         else:
             order_dropped = True
 
+    if keep_order is not None:
+        forced_order = keep_order
+        order_source = "client"
+    else:
+        forced_order = list(policy["order"])
+        order_source = "policy"
+
     provider = {
         "only": list(policy["allow"]),
         "allow_fallbacks": policy["allow_fallbacks"],
         "data_collection": policy["data_collection"],
+        "order": forced_order,
     }
-    if keep_order is not None:
-        provider["order"] = keep_order
     payload["provider"] = provider
 
     model = payload.get("model")
@@ -299,6 +335,7 @@ def force_provider(body_bytes, policy):
         model if isinstance(model, str) else None,
         True,
         order_dropped,
+        order_source,
     )
 
 
@@ -373,9 +410,10 @@ class Guard(BaseHTTPRequestHandler):
         model = None
         forced = False
         order_dropped = False
+        order_source = None
         path = urllib.parse.urlsplit(self.path).path
         if method == "POST" and path in COMPLETION_PATHS:
-            body, model, forced, order_dropped = force_provider(body, cfg["policy"])
+            body, model, forced, order_dropped, order_source = force_provider(body, cfg["policy"])
 
         headers = {}
         for key, value in self.headers.items():
@@ -402,6 +440,7 @@ class Guard(BaseHTTPRequestHandler):
                     model=model,
                     providers_forced=forced,
                     client_order_dropped=order_dropped,
+                    order_source=order_source,
                     status=502,
                     error=str(exc),
                 )
@@ -426,6 +465,7 @@ class Guard(BaseHTTPRequestHandler):
                 model=model,
                 providers_forced=forced,
                 client_order_dropped=order_dropped,
+                order_source=order_source,
                 retry=attempt,
                 status=response.status,
                 sleep_s=sleep_s,
@@ -438,6 +478,7 @@ class Guard(BaseHTTPRequestHandler):
             model=model,
             providers_forced=forced,
             client_order_dropped=order_dropped,
+            order_source=order_source,
             status=response.status,
         )
         if exhausted:
@@ -530,6 +571,12 @@ def main(argv):
         "retry_max": retry_max,
         "retry_base_s": retry_base_s,
     }
+
+    if policy["order_fallback"]:
+        sys.stderr.write(
+            "openrouter-guard: policy order missing/empty -- falling back to "
+            "the allow list order\n"
+        )
 
     sys.stderr.write(
         "openrouter-guard: listening on http://127.0.0.1:%d/api/v1 -> %s; "
