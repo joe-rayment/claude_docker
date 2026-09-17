@@ -107,6 +107,48 @@ JSON
     [ "$(cat "$dest/settings.local.json")" = "$local_before" ]
 }
 
+@test "bypass-permissions acceptance survives a full wholesale resync (claude-orca-az5)" {
+    # provision.d/30-claude-first-run seeds skipDangerousModePermissionPrompt
+    # into settings.json ONCE, right after the first config-sync -- but
+    # config-sync itself is also invoked later and independently (the host
+    # side's post-URL resync, or a typed /config-resync), and its rewrite
+    # (`sed ... "$TEMPLATE_CONFIG/claude-settings.json" >
+    # "$CONFIG_DIR/settings.json"`) is a wholesale overwrite from the
+    # template, not a merge with what is already on disk. A key seeded only
+    # by the provision step and absent from the template itself is wiped
+    # out by that second sync, and Claude Code shows the interactive
+    # Bypass Permissions dialog again -- which an unattended Orca worker
+    # cannot answer, so worker-start sees the process die. The key belongs
+    # in the template so every rewrite, not just the first, carries it.
+    make_project "$PROJECT_DIR"
+    primary="$(abspath "$PROJECT_DIR")"
+    dest="$primary/.claude-dev/home/.claude"
+
+    run CONFIG_SYNC --project "$primary" --host "$ORCA_HOST"
+    [ "$status" -eq 0 ]
+    run jq -r '.skipDangerousModePermissionPrompt' "$dest/settings.json"
+    [ "$output" = "true" ]
+
+    # Force a second, unconditional sync -- the checksum gate would
+    # otherwise mask a template-only regression by skipping the rewrite.
+    rm -f "$primary/.claude-dev/run/config-hash"
+    run CONFIG_SYNC --project "$primary" --host "$ORCA_HOST"
+    [ "$status" -eq 0 ]
+    run jq -r '.skipDangerousModePermissionPrompt' "$dest/settings.json"
+    [ "$output" = "true" ]
+
+    # settings.local.json remains the one sanctioned override channel: a
+    # folder that wants the dialog back can still ask for it explicitly.
+    cat > "$dest/settings.local.json" <<'JSON'
+{"skipDangerousModePermissionPrompt": false}
+JSON
+    rm -f "$primary/.claude-dev/run/config-hash"
+    run CONFIG_SYNC --project "$primary" --host "$ORCA_HOST"
+    [ "$status" -eq 0 ]
+    run jq -r '.skipDangerousModePermissionPrompt' "$dest/settings.json"
+    [ "$output" = "false" ]
+}
+
 @test "unchanged checksum → no rewrite; changed → rewrite" {
     make_project "$PROJECT_DIR"
     primary="$(abspath "$PROJECT_DIR")"
