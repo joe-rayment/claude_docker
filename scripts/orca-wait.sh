@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 #
 # orca-wait.sh -- the coordinator's mailbox, split so the orchestrator never
-# runs the poll loop in its own turns (claude-orca-n3e; the original rolling
-# wait was claude-orca-qa2.13, the stall watch claude-orca-8a0.1).
+# runs the poll loop in its own turns (claude-orca-mg8, redo of n3e; the
+# original rolling wait was claude-orca-qa2.13, the stall watch
+# claude-orca-8a0.1).
 #
 #   orca-wait              print and consume the unread receipt lines in
 #                          run/orchestration/inbox.jsonl (the read cursor is
