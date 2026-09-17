@@ -658,7 +658,7 @@ catalogue_lookup() {
     fi
     {
         echo "tier-set: ambiguous model query '$query' -- candidates:"
-        printf '%s\n' "$matches" | head -10 | awk -F'\t' '{printf "  %s  %s  $%s/$%s per M\n", $1, $2, $3, $4}'
+        printf '%s\n' "$matches" | head -10 | awk -F'\t' '{printf "  %s  %s  $%.2f/$%.2f per M tokens\n", $1, $2, $3*1000000, $4*1000000}'
         echo "tier-set: nothing bound"
     } >&2
     return 1
@@ -876,7 +876,7 @@ if [ "${1:-}" = "models" ]; then
         echo "no catalogue match for '$words'"
         exit 0
     fi
-    printf '%s\n' "$matches" | awk -F'\t' '{printf "%s  %s  $%s/$%s per M\n", $1, $2, $3, $4}'
+    printf '%s\n' "$matches" | awk -F'\t' '{printf "%s  %s  $%.2f/$%.2f per M tokens\n", $1, $2, $3*1000000, $4*1000000}'
     exit 0
 fi
 
