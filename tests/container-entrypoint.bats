@@ -470,6 +470,23 @@ STUB
     mkdir -p "$home" "$TMP/bin"
     port="$(free_port)"
 
+    # This box bakes /opt/claude-orca, which would otherwise win the
+    # entrypoint's template-root race (see "where the template is" in
+    # entrypoint.sh) and provision from the IMAGE's frozen provision.d
+    # instead of the repo under test -- so an unintended sixth CLI call
+    # added to a provision.d step here would never show up. Give the
+    # folder's own template an executable setup.sh (the same tiebreak
+    # case 14 exercises) so TEMPLATE_ROOT picks $proj/.claude-dev/template;
+    # it carries no provision-run.sh of its own, so the entrypoint's
+    # fallback (provision_runner="$SCRIPT_DIR/provision-run.sh") runs
+    # THIS repo's provision-run.sh, whose own provision.d is next to it --
+    # exactly the tree this test edits. CLAUDE_ORCA_SKIP_SETUP=1 below
+    # means that stub setup.sh is never actually executed; it only has to
+    # exist and be +x for the template-root check.
+    mkdir -p "$proj/.claude-dev/template/scripts/container"
+    : > "$proj/.claude-dev/template/scripts/container/setup.sh"
+    chmod +x "$proj/.claude-dev/template/scripts/container/setup.sh"
+
     # A stub Orca that speaks serve's two log lines and then stays up. It
     # reads --port off its own argv, so the entrypoint failing to pass the
     # port through is itself a failure here.
@@ -504,6 +521,7 @@ STUB
     export ORCA_CLI="$TMP/bin/orca"
     export CLAUDE_ORCA_ENTRYPOINT_NO_PRIVDROP=1
     export CLAUDE_ORCA_WEBURL_TIMEOUT=30
+    export CLAUDE_ORCA_SKIP_SETUP=1
 
     start_entrypoint_bg
 
