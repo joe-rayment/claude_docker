@@ -14,6 +14,8 @@ The install **is** the folder now, so teardown removes it whole:
 - The marker-delimited block in `~/.zprofile`, `~/.zshrc` and
   `~/.bash_profile`, if a folder upgraded from v2 still carries one. v3
   installs no shell hook; teardown only cleans up after the old one.
+- Orca's own on-disk state: its linked worktrees under
+  `<project>/.orca-worktrees/` and its `<project>/.orca/` drops.
 - The lines `claude-dev register` seeded into `.gitignore`, and nothing
   else in that file. Your own patterns come back byte-identical, marker
   block included.

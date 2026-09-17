@@ -195,7 +195,8 @@ gitignore_unseed() {
             return l == ".claude-dev/" || l == ".claude-dev-snapshots/" || \
                    l == "/claude-dev" || l == "Orca.app/" || \
                    l == ".mcp.json" || l == "attachments/" || \
-                   l == ".claude/logs/"
+                   l == ".claude/logs/" || l == ".orca/" || \
+                   l == ".orca-worktrees/"
         }
         $0 == marker {
             skip = 1
@@ -3029,6 +3030,24 @@ cmd_teardown_v3() {
     remove_host_dir "$dir/.claude-dev" \
         || echo "Warning: $dir/.claude-dev is still there; remove it by hand once Docker has settled" >&2
     rm -f "$dir/claude-dev"
+    # Orca's on-disk residue (claude-orca-aeu): the linked worktrees under
+    # .orca-worktrees/ carry a .git FILE each, which `git add -A` stages as
+    # embedded-repo gitlinks and a push then rejects, and root .orca/ is
+    # Orca's drop state. Removing them through `git worktree remove` first
+    # keeps the worktree metadata (.git/worktrees, the branch itself) sane;
+    # prune clears the entries whose directory a user deleted by hand. A
+    # folder that is not a git repo gets the plain rm only, silently.
+    if [ -d "$dir/.orca-worktrees" ] || [ -d "$dir/.orca" ]; then
+        if git -C "$dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+            for wt_dir in "$dir"/.orca-worktrees/*/; do
+                [ -d "$wt_dir" ] || continue
+                git -C "$dir" worktree remove --force "${wt_dir%/}" >/dev/null 2>&1 || true
+            done
+            git -C "$dir" worktree prune >/dev/null 2>&1 || true
+        fi
+        rm -rf "$dir/.orca-worktrees" "$dir/.orca"
+        echo "Removed .orca-worktrees and .orca from $dir"
+    fi
     gitignore_unseed "$dir"
 
     # A folder upgraded from v2 may still carry the shell hook, and v3

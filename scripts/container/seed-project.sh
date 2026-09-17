@@ -70,7 +70,8 @@ seed_gitignore() {
         } >> "$gitignore"
     fi
     for pattern in '.claude-dev/' '.claude-dev-snapshots/' '/claude-dev' \
-                   'Orca.app/' '.mcp.json' 'attachments/' '.claude/logs/'; do
+                   'Orca.app/' '.mcp.json' 'attachments/' '.claude/logs/' \
+                   '.orca/' '.orca-worktrees/'; do
         grep -qxF "$pattern" "$gitignore" 2>/dev/null || echo "$pattern" >> "$gitignore"
     done
 }
