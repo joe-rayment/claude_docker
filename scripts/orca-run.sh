@@ -379,7 +379,7 @@ dispatch_bead() {
 run_wait() {
     local out line mtype bead outcome task did wargs
     WAIT_GOT=0
-    wargs=(--timeout-ms "$TIMEOUT_MS")
+    wargs=(--poll-loop --timeout-ms "$TIMEOUT_MS")
     [ -n "$HANDLE" ] && wargs=("${wargs[@]}" --from "$HANDLE")
     out="$("$WAIT_SH" "${wargs[@]}" </dev/null 3>&-)"
     while IFS= read -r line; do

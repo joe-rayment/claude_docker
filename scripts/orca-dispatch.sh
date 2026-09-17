@@ -361,5 +361,46 @@ if [ "$STATE" = "failed" ]; then
     exit 3
 fi
 
+# --- the mailbox spooler (claude-orca-n3e) --------------------------------
+#
+# The orchestrator must not run the mailbox poll loop in its own turns:
+# right after the dispatch record is written, make sure ONE detached
+# spooler (orca-wait --spool) is running for this Run. It appends every
+# receipt to run/orchestration/inbox.jsonl, which the orchestrator reads
+# with bare `orca-wait` / `orca-wait --until <s>` -- a file read, never a
+# poll on Orca. A live pid in spool.pid means no second start; the spooler
+# itself exits once no dispatch record is live any more, and the next
+# dispatch starts a fresh one. CLAUDE_ORCA_SPOOL_CMD overrides the command
+# (split on whitespace) for tests.
+
+ODIR="$(orch_dir "$ROOT")"
+SPOOL_PID_FILE="$ODIR/spool.pid"
+mkdir -p "$ODIR" 2>/dev/null || true
+sp_live=0
+if [ -f "$SPOOL_PID_FILE" ]; then
+    sp_pid="$(tr -dc '0-9' <"$SPOOL_PID_FILE" 2>/dev/null)"
+    if [ -n "$sp_pid" ] && kill -0 "$sp_pid" 2>/dev/null; then
+        sp_live=1
+        note "spooler already running (pid $sp_pid)"
+    fi
+fi
+if [ "$sp_live" -eq 0 ]; then
+    SPOOL_FROM_ARGS=()
+    [ -n "$HANDLE" ] && SPOOL_FROM_ARGS=(--from "$HANDLE")
+    if [ -n "${CLAUDE_ORCA_SPOOL_CMD:-}" ]; then
+        nohup $CLAUDE_ORCA_SPOOL_CMD \
+            ${SPOOL_FROM_ARGS[@]+"${SPOOL_FROM_ARGS[@]}"} \
+            </dev/null >>"$ODIR/spool.log" 2>&1 &
+    else
+        nohup "$SCRIPT_DIR/orca-wait.sh" --spool \
+            ${SPOOL_FROM_ARGS[@]+"${SPOOL_FROM_ARGS[@]}"} \
+            </dev/null >>"$ODIR/spool.log" 2>&1 &
+    fi
+    sp_pid=$!
+    disown "$sp_pid" 2>/dev/null || true
+    printf '%s\n' "$sp_pid" >"$SPOOL_PID_FILE"
+    note "spooler started (pid $sp_pid, log $ODIR/spool.log)"
+fi
+
 note "dispatched $BEAD -> $AGENT${MODEL:+ ($MODEL)} in $TERMINAL [$STATE]"
 printf '%s\n' "$RECEIPT"

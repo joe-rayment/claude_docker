@@ -47,7 +47,7 @@ worker_done_msg() {  # <disp> <term>
           state:"running", started_at:$s, worktree_path:""}')"
     orca_stub_reply_nth orchestration-check 1 "$(worker_done_msg x1 term_x1)"
 
-    run "$WAIT" --timeout-ms 1 --poll 1 --stall-after 60
+    run "$WAIT" --poll-loop --timeout-ms 1 --poll 1 --stall-after 60
     [ "$status" -eq 0 ]
     out="$output"
 
@@ -71,7 +71,7 @@ worker_done_msg() {  # <disp> <term>
           state:"running", started_at:$s, worktree_path:""}')"
     orca_stub_reply_nth orchestration-check 1 "$(worker_done_msg x2 term_x2)"
 
-    run "$WAIT" --timeout-ms 1 --poll 1 --stall-after 60 --keep
+    run "$WAIT" --poll-loop --timeout-ms 1 --poll 1 --stall-after 60 --keep
     [ "$status" -eq 0 ]
 
     [ -z "$(orca_stub_calls 'terminal close')" ]
@@ -89,7 +89,7 @@ worker_done_msg() {  # <disp> <term>
           state:"running", started_at:$s, worktree_path:""}')"
     orca_stub_reply_nth orchestration-check 1 "$(worker_done_msg x3 term_x3)"
 
-    run "$WAIT" --timeout-ms 1 --poll 1 --stall-after 60
+    run "$WAIT" --poll-loop --timeout-ms 1 --poll 1 --stall-after 60
     [ "$status" -eq 0 ]
     out="$output"
 
