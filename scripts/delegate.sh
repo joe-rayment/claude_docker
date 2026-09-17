@@ -86,6 +86,8 @@ _resolve_script_path() {
 SCRIPT_DIR="$(cd "$(dirname "$(_resolve_script_path)")" && pwd)"
 # shellcheck source=lib/paths.sh
 . "$SCRIPT_DIR/lib/paths.sh"
+# shellcheck source=lib/frozen-hook.sh
+. "$SCRIPT_DIR/lib/frozen-hook.sh"
 
 ROUTES_FILE="${DELEGATE_ROUTES:-$SCRIPT_DIR/../config/delegate-routes.json}"
 
@@ -429,6 +431,14 @@ cmd_run() {
             > "$job_dir/worktree-add.log" 2>&1; then
         cat "$job_dir/worktree-add.log" >&2
         die "run: failed to create worktree for job '$job_id'"
+    fi
+
+    # Frozen contract (claude-orca-ljl): a --bead job's FROZEN files are
+    # guarded in git, not by spec text -- the runner may have no Claude-side
+    # hooks. Prompt-only jobs have no bead to read the contract from.
+    if [ "$have_bead" -eq 1 ]; then
+        install_frozen_hook "$job_dir/worktree" "$bead" ||
+            err "frozen-hook: could not install pre-commit hook into $job_dir/worktree"
     fi
 
     local final_prompt
