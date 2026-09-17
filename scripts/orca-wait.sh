@@ -117,6 +117,37 @@ rec_touch() {
     return 0
 }
 
+# rec_set <dispatch-id> <jq args...> -- apply a jq filter (with its options)
+# to the dispatch's record atomically; a record that does not exist is left
+# alone.
+rec_set() {
+    local id="$1" f tmp
+    [ -n "$id" ] || return 0
+    shift
+    f="$(orch_disp_file "$ROOT" "$id")"
+    [ -f "$f" ] || return 0
+    tmp="$f.tmp"
+    jq "$@" "$f" >"$tmp" 2>/dev/null &&
+        mv "$tmp" "$f"
+    rm -f "$tmp"
+    return 0
+}
+
+# rec_mark_done <dispatch-id> <outcome> <released> -- a finished dispatch
+# leaves its record done, so the stall scan never scans it again.
+rec_mark_done() {
+    local f
+    [ -n "${1:-}" ] || return 0
+    f="$(orch_disp_file "$ROOT" "$1")"
+    [ -f "$f" ] || return 0
+    rec_set "$1" \
+        --arg o "${2:-unknown}" --argjson r "${3:-false}" \
+        --argjson n "$(date +%s)" \
+        '.state = "done" | .outcome = $o | .finished_at = $n |
+         .released = $r'
+    return 0
+}
+
 # rec_activity <record file> -- the newest epoch second that says this
 # worker is alive: started_at, its last message, the worktree's HEAD commit,
 # or the newest mtime among the files git reports as changed there.
@@ -181,10 +212,24 @@ stall_scan() {
         nudged="$(jq -r '.nudged_at // 0' "$f" 2>/dev/null)"
         case "$nudged" in ''|*[!0-9]*) nudged=0 ;; esac
 
+        # A bead that is already closed means its worker reported and the
+        # record was missed (an old orca-wait): mark it done, never nudge.
+        bj=""
+        if [ -n "$bead" ]; then
+            bj="$(orch_bead_json "$ROOT" "$bead")" || bj=""
+            if [ -n "$bj" ] &&
+               [ "$(printf '%s' "$bj" | jq -r '.status // ""')" = "closed" ]; then
+                note "$disp (${bead:-no bead}): bead is closed -- marking the dispatch done"
+                rec_set "$disp" --argjson n "$now" \
+                    '.state = "done" | .finished_at = $n |
+                     .note = "bead closed; dispatch marked done by stall scan"'
+                continue
+            fi
+        fi
+
         if [ "$nudged" -gt 0 ]; then
             spec=""
-            bj="$(orch_bead_json "$ROOT" "$bead")" &&
-                spec="$(orch_spec "$bj" "$bead")"
+            [ -n "$bj" ] && spec="$(orch_spec "$bj" "$bead")"
             note "$disp (${bead:-no bead}) is still quiet ${idle}s after its nudge -- falling back to an in-process executor"
             jq -n -c --arg bead "$bead" --arg disp "$disp" --arg term "$term" \
                 --argjson idle "$idle" --arg wt "$wt" \
@@ -192,7 +237,16 @@ stall_scan() {
                 '{type: "stalled", bead: $bead, dispatch_id: $disp,
                   terminal: $term, idle_s: $idle, nudged: true,
                   worktree_path: $wt, fallback: $fb}'
-            return 3
+            # scanned no more, and the wait only ends if nothing else is live
+            rec_set "$disp" '.state = "stalled"'
+            local g gs other=0
+            for g in "$DISP_DIR"/*.json; do
+                [ -f "$g" ] || continue
+                gs="$(jq -r '.state // ""' "$g" 2>/dev/null)"
+                case "$gs" in ready|running|dispatched) other=1; break ;; esac
+            done
+            [ "$other" -eq 0 ] && return 3
+            return 0
         fi
 
         text="claude-orca stall watch: you have been quiet for ${idle}s. Continue your slice now, report with orchestration send --type worker_done when it is done or you are blocked, and send a heartbeat at once: orca-ide orchestration send --type heartbeat --subject alive --dispatch-id $disp --json"
@@ -272,6 +326,9 @@ $subject: $body"
                     note "worker-release $disp_id: $(orca_error "$rel")"
                 fi
             fi
+            # a finished dispatch never goes back under the stall watch
+            [ -n "$disp_id" ] && [ -f "$drec" ] &&
+                rec_mark_done "$disp_id" "${outcome:-unknown}" "$released"
         fi
 
         note "$mtype from ${agent:-$from_h}${bead:+ [$bead]}: ${subject:-(no subject)}"
