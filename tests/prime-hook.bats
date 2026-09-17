@@ -27,6 +27,11 @@ CLAUDE_MD="$REPO_DIR/CLAUDE.md"
 USER_MEMORY="$REPO_DIR/config/claude-user-memory.md"
 
 setup() {
+    # Inside the container BEADS_DIR points at the workspace's own
+    # tracker, and make_bd_repo's throwaway `bd init` refuses to run
+    # while some other tracker holds that variable. These tests only
+    # ever mean the throwaway one.
+    unset BEADS_DIR
     export TMPDIR="$BATS_TEST_TMPDIR"
     command -v bd  >/dev/null 2>&1 || skip "bd not installed"
     command -v jq  >/dev/null 2>&1 || skip "jq not installed"
