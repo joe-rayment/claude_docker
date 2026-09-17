@@ -188,10 +188,21 @@ http.server.HTTPServer(('127.0.0.1', $port),
     [ "$(stat -c '%a' "$RUN_DIR/openrouter-guard.env")" = "600" ]
 }
 
-@test "an opencode dispatch is unchanged when no guard token exists" {
+@test "an opencode dispatch without a guard token carries no credential, only the permission config" {
+    # Since claude-orca-gh9 every launch writes a per-launch opencode config
+    # (permission allow-all, git push denied) and an env file naming it, so
+    # the command is never the bare one; what "no token" means is that the
+    # env file carries no OPENROUTER_API_KEY and the config no baseURL.
     run bash -c ". '$REPO_ROOT/scripts/lib/orca-orch.sh'; orca_opencode_command 'openrouter/z-ai/glm-5.3-flash' '$RUN_DIR'"
     [ "$status" -eq 0 ]
-    [ "$output" = "opencode --model openrouter/z-ai/glm-5.3-flash" ]
+    [[ "$output" == *"opencode --model openrouter/z-ai/glm-5.3-flash" ]]
+    [ -f "$RUN_DIR/openrouter-guard.env" ]
+    run grep -c 'OPENROUTER_API_KEY' "$RUN_DIR/openrouter-guard.env"
+    [ "$output" = "0" ]
+    cfg="$(sed -n "s/^OPENCODE_CONFIG='\(.*\)'/\1/p" "$RUN_DIR/openrouter-guard.env")"
+    [ -f "$cfg" ]
+    [ "$(jq -r '.permission["*"]' "$cfg")" = "allow" ]
+    [ "$(jq -r '.provider.openrouter.options.baseURL // "none"' "$cfg")" = "none" ]
 }
 
 @test "the guard token is not passed on the command line" {
