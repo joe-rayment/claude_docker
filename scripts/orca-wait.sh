@@ -133,8 +133,9 @@ rec_set() {
     return 0
 }
 
-# rec_mark_done <dispatch-id> <outcome> <released> -- a finished dispatch
-# leaves its record done, so the stall scan never scans it again.
+# rec_mark_done <dispatch-id> <outcome> <released> <terminal-closed> -- a
+# finished dispatch leaves its record done, so the stall scan never scans
+# it again.
 rec_mark_done() {
     local f
     [ -n "${1:-}" ] || return 0
@@ -142,9 +143,10 @@ rec_mark_done() {
     [ -f "$f" ] || return 0
     rec_set "$1" \
         --arg o "${2:-unknown}" --argjson r "${3:-false}" \
+        --argjson c "${4:-false}" \
         --argjson n "$(date +%s)" \
         '.state = "done" | .outcome = $o | .finished_at = $n |
-         .released = $r'
+         .released = $r | .terminal_closed = $c'
     return 0
 }
 
@@ -275,6 +277,7 @@ stall_scan() {
 process_batch() {
     local msgs msg mtype mid subject body from_h payload pj
     local task_id disp_id outcome files bead model agent drec released rel
+    local term rel_state terminal_closed
     msgs="$TMPD/msgs.jsonl"
     printf '%s' "$1" | jq -c '.result.messages[]?' >"$msgs" 2>/dev/null
     while IFS= read -r msg; do
@@ -318,17 +321,42 @@ process_batch() {
                     "ORCA WORKER_DONE outcome=${outcome:-unknown} task=$task_id dispatch=$disp_id files=$(printf '%s' "$files" | jq -r 'join(",")')
 $subject: $body"
             fi
+            term=""
+            if [ -f "$drec" ]; then
+                term="$(jq -r '.terminal // ""' "$drec")"
+            fi
+            terminal_closed=false
             if [ "$KEEP" -eq 0 ] && [ -n "$disp_id" ]; then
                 if rel="$(orca_call orchestration worker-release --dispatch "$disp_id" --json)"; then
-                    released=true
-                    note "released $disp_id ($(orca_field "$rel" '.result.state'))"
+                    rel_state="$(orca_field "$rel" '.result.state')"
+                    case "$rel_state" in
+                        released|closed|gone)
+                            released=true
+                            note "released $disp_id ($rel_state)"
+                            ;;
+                        *)
+                            # A non-terminal release state (e.g. "retained")
+                            # leaves the finished worker resident (~1 GB per
+                            # idle opencode TUI) -- close its terminal.
+                            if [ -n "$term" ] &&
+                               orca_call terminal close --terminal "$term" \
+                                   --json >/dev/null 2>&1; then
+                                released=true
+                                terminal_closed=true
+                                note "closed $term (worker-release left it retained)"
+                            else
+                                note "worker-release left $disp_id in state '$rel_state' and terminal close ${term:-<no terminal>} failed -- the worker may stay resident"
+                            fi
+                            ;;
+                    esac
                 else
                     note "worker-release $disp_id: $(orca_error "$rel")"
                 fi
             fi
             # a finished dispatch never goes back under the stall watch
             [ -n "$disp_id" ] && [ -f "$drec" ] &&
-                rec_mark_done "$disp_id" "${outcome:-unknown}" "$released"
+                rec_mark_done "$disp_id" "${outcome:-unknown}" "$released" \
+                    "$terminal_closed"
         fi
 
         note "$mtype from ${agent:-$from_h}${bead:+ [$bead]}: ${subject:-(no subject)}"
@@ -337,11 +365,12 @@ $subject: $body"
             --arg disp "$disp_id" --arg bead "$bead" --arg agent "$agent" \
             --arg model "$model" --arg outcome "$outcome" \
             --argjson files "$files" --argjson released "$released" \
+            --argjson closed "$terminal_closed" \
             --arg reply "orca-reply $mid <text>" '
             {type: $type, msg_id: $id, from: $from, subject: $subject,
              body: $body, task_id: $task, dispatch_id: $disp, bead: $bead,
              agent: $agent, model: $model, outcome: $outcome, files: $files,
-             released: $released}
+             released: $released, terminal_closed: $closed}
             + (if $type == "worker_done" then {} else {reply_with: $reply} end)'
     done <"$msgs"
     return 0
