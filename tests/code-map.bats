@@ -1124,3 +1124,55 @@ EOF
     [ "$detached" -eq 1 ]
     [ "$(grep -c '^status-start$' "$calls")" -eq 1 ]
 }
+
+# ── 3fp: one graph set — no dated snapshot dirs under graphify-out ───────────
+# The engine has been seen to write a dated YYYY-MM-DD copy next to the root
+# set on build/update. These stubs do exactly that; build/refresh must sweep
+# them so only the root set survives.
+
+dated_stub_engine() {
+    local dir=$1 out=$2
+    mkdir -p "$dir"
+    cat > "$dir/graphify" <<STUB
+#!/bin/sh
+printf '{}' > "$out/graph.json"
+printf 'report' > "$out/GRAPH_REPORT.md"
+mkdir -p "$out/2026-09-05" "$out/cache"
+printf '{}' > "$out/2026-09-05/graph.json"
+printf '{}' > "$out/cache/e.json"
+STUB
+    chmod +x "$dir/graphify"
+}
+
+@test "3fp build: a dated snapshot dir under graphify-out is pruned; the root set stays" {
+    ws="$BATS_TEST_TMPDIR/ws-build"
+    mkdir -p "$ws" && (cd "$ws" && git init -q .)
+    out="$ws/graphify-out"
+    dated_stub_engine "$BATS_TEST_TMPDIR/engine-3fp" "$out"
+    export CODE_MAP_ENGINE="$BATS_TEST_TMPDIR/engine-3fp/graphify"
+    cd "$ws"
+
+    run --separate-stderr bash "$REPO_ROOT/scripts/code-map.sh" build
+    [ "$status" -eq 0 ]
+    [ ! -d "$out/2026-09-05" ]
+    [ -f "$out/graph.json" ]
+    [ -f "$out/GRAPH_REPORT.md" ]
+    [ -f "$out/cache/e.json" ]
+}
+
+@test "3fp refresh: a dated snapshot dir under graphify-out is pruned; the root set stays" {
+    ws="$BATS_TEST_TMPDIR/ws-refresh"
+    mkdir -p "$ws" && (cd "$ws" && git init -q .)
+    out="$ws/graphify-out"
+    dated_stub_engine "$BATS_TEST_TMPDIR/engine-3fp" "$out"
+    export CODE_MAP_ENGINE="$BATS_TEST_TMPDIR/engine-3fp/graphify"
+    mkdir -p "$out/2026-09-08"
+    printf '{}' > "$out/graph.json"
+    printf '{}' > "$out/2026-09-08/manifest.json"
+    cd "$ws"
+
+    run --separate-stderr bash "$REPO_ROOT/scripts/code-map.sh" refresh
+    [ "$status" -eq 0 ]
+    [ ! -d "$out/2026-09-08" ]
+    [ -f "$out/graph.json" ]
+}
