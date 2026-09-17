@@ -40,7 +40,7 @@ record() {
         '{bead:"b1", dispatch_id:"d1", task_id:"t1", terminal:"term_w1",
           state:"running", started_at:$s, worktree_path:"", model:"sonnet"}')"
 
-    run "$WAIT" --timeout-ms 1 --poll 1 --stall-after 60 --no-nudge
+    run "$WAIT" --poll-loop --timeout-ms 1 --poll 1 --stall-after 60 --no-nudge
     [ "$status" -eq 0 ]
     out="$output"
 
@@ -65,7 +65,7 @@ record() {
         '{bead:"b1", dispatch_id:"d2", task_id:"t1", terminal:"term_w2",
           state:"ready", started_at:$s, worktree_path:""}')"
 
-    run "$WAIT" --timeout-ms 1 --poll 1 --stall-after 60
+    run "$WAIT" --poll-loop --timeout-ms 1 --poll 1 --stall-after 60
     [ "$status" -eq 0 ]
 
     sends="$(orca_stub_calls 'terminal send')"
@@ -90,7 +90,7 @@ record() {
           state:"running", started_at:$s, nudged_at:$n, worktree_path:$wt,
           model:"sonnet"}')"
 
-    run "$WAIT" --timeout-ms 1 --poll 1 --stall-after 60
+    run "$WAIT" --poll-loop --timeout-ms 1 --poll 1 --stall-after 60
     [ "$status" -eq 0 ]
     out="$output"
 
@@ -120,7 +120,7 @@ record() {
           {"type":"heartbeat","id":"m1","subject":"alive","from_handle":"term_h1",
            "payload":{"taskId":"t1","dispatchId":"h1"}}]}}'
 
-    run "$WAIT" --timeout-ms 1 --poll 1 --stall-after 60
+    run "$WAIT" --poll-loop --timeout-ms 1 --poll 1 --stall-after 60
     [ "$status" -eq 0 ]
     out="$output"
     [ -z "$(stalled_line "$out")" ]
@@ -138,7 +138,7 @@ record() {
     record h2 "$(jq -n -c --argjson s "$((NOW - 1000))" --arg wt "$wtb" \
         '{bead:"b1", dispatch_id:"h2", task_id:"t1", terminal:"term_h2",
           state:"running", started_at:$s, worktree_path:$wt}')"
-    run "$WAIT" --timeout-ms 1 --poll 1 --stall-after 60
+    run "$WAIT" --poll-loop --timeout-ms 1 --poll 1 --stall-after 60
     [ "$status" -eq 0 ]
     [ -z "$(stalled_line "$output")" ]
 
@@ -150,7 +150,7 @@ record() {
     record h3 "$(jq -n -c --argjson s "$((NOW - 1000))" --arg wt "$wtc" \
         '{bead:"b1", dispatch_id:"h3", task_id:"t1", terminal:"term_h3",
           state:"running", started_at:$s, worktree_path:$wt}')"
-    run "$WAIT" --timeout-ms 1 --poll 1 --stall-after 60
+    run "$WAIT" --poll-loop --timeout-ms 1 --poll 1 --stall-after 60
     [ "$status" -eq 0 ]
     [ -z "$(stalled_line "$output")" ]
 }
@@ -165,7 +165,7 @@ record() {
            "from_handle":"term_q1",
            "payload":{"taskId":"t1","dispatchId":"q1"}}]}}'
 
-    run "$WAIT" --timeout-ms 1 --poll 1 --stall-after 60
+    run "$WAIT" --poll-loop --timeout-ms 1 --poll 1 --stall-after 60
     [ "$status" -eq 0 ]
     ! printf '%s\n' "$output" | grep -q -e 'unbound variable'
 

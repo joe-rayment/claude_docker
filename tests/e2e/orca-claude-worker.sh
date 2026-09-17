@@ -208,7 +208,7 @@ RECEIPTS="$PROJ/receipts.jsonl"
 START="$(date +%s)"
 DONE=""
 while [ "$(( $(date +%s) - START ))" -lt "$DEADLINE_S" ]; do
-    bash "$REPO_ROOT/scripts/orca-wait.sh" --timeout-ms "$WAIT_WINDOW_MS" \
+    bash "$REPO_ROOT/scripts/orca-wait.sh" --poll-loop --timeout-ms "$WAIT_WINDOW_MS" \
         --from "$COORD" 2>>"$PROJ/wait.err" >>"$RECEIPTS"
     DONE="$(jq -c -s --arg d "$DID" \
         '[.[] | select(.type == "worker_done" and .dispatch_id == $d)][0] // empty' \

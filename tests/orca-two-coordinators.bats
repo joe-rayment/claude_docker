@@ -91,7 +91,7 @@ receipt() { printf '%s\n' "$1" | tail -1; }
     mkdir -p "$RUNS"
     printf '%s\n' '{"run_id":"runA","coordinator_handle":"term_A"}' >"$RUNS/term_A.json"
 
-    run "$WAIT" --timeout-ms 1 --poll 1 --from term_A
+    run "$WAIT" --poll-loop --timeout-ms 1 --poll 1 --from term_A
     [ "$status" -eq 0 ]
     calls="$(orca_stub_calls 'orchestration check')"
     printf '%s\n' "$calls" | grep -q -F -e '--run runA'
@@ -103,7 +103,7 @@ receipt() { printf '%s\n' "$1" | tail -1; }
     printf '%s\n' '{"run_id":"runA","coordinator_handle":"term_A"}' >"$ODIR/run.json"
     printf '%s\n' '{"run_id":"runB","coordinator_handle":"term_B"}' >"$RUNS/term_B.json"
     : >"$ORCA_STUB_LOG"
-    run "$WAIT" --timeout-ms 1 --poll 1 --from term_B
+    run "$WAIT" --poll-loop --timeout-ms 1 --poll 1 --from term_B
     [ "$status" -eq 0 ]
     calls="$(orca_stub_calls 'orchestration check')"
     printf '%s\n' "$calls" | grep -q -F -e '--run runB'
@@ -117,7 +117,7 @@ receipt() { printf '%s\n' "$1" | tail -1; }
     printf '%s\n' '{"run_id":"runLegacy","coordinator_handle":"term_legacy"}' \
         >"$ODIR/run.json"
 
-    run "$WAIT" --timeout-ms 1 --poll 1
+    run "$WAIT" --poll-loop --timeout-ms 1 --poll 1
     [ "$status" -eq 0 ]
     printf '%s\n' "$(orca_stub_calls 'orchestration check')" |
         grep -q -F -e '--run runLegacy'

@@ -137,8 +137,10 @@ provider rule and the default Fable + GLM stack are in
 One bead, one worker, one receipt:
 
 ```
-orca-dispatch <bead-id>            # Task from the bead + WORKER RULES, worker started
-orca-wait [--timeout-ms N]         # blocks; ingests worker_done / question / escalation
+orca-dispatch <bead-id>            # Task from the bead + WORKER RULES, worker started,
+                                   #   and its spooler for this Run if none is live
+orca-wait [--until <s>]            # reader: print+consume inbox.jsonl; --until
+                                   #   blocks <=s s in the background for new lines
 orca-reply <msg_id> "<answer>"     # unblocks a worker that asked instead of guessing
 orca-workers                       # worker-list ⋈ task-list --brief, one table
 verifier                           # fresh context, against the bead's own contract
@@ -152,9 +154,18 @@ verifier                           # fresh context, against the bead's own contr
   adopting it with `worker-start --terminal`, `bash` as a context-only
   dispatch — records the task and dispatch ids on the bead, and prints one
   JSON receipt.
-- **`orca-wait`** is the rolling `check --wait`. A `worker_done` is appended
-  to its bead and the worker terminal is released (`worker-release`) unless
-  `--keep`; a `question` or `escalation` is left for the orchestrator to
+- **`orca-wait`** splits the mailbox so the orchestrator never runs the poll
+  loop in its own turns (claude-orca-mg8). `orca-dispatch` starts one
+  detached spooler per Run (`orca-wait --spool`, pid file
+  `run/orchestration/spool.pid`): it runs the old rolling `check --wait`,
+  appends every receipt to `run/orchestration/inbox.jsonl`, does the
+  release/bead-note/stall work itself, and exits once no dispatch is live.
+  Bare `orca-wait` prints and consumes the unread lines (cursor in
+  `inbox.cursor`); `orca-wait --until <s>` blocks at most `s` seconds for
+  the file to grow — run it in the background so a worker message wakes you
+  through a task notification. A `worker_done` is appended to its bead and
+  the worker terminal released (`worker-release`) unless `--keep` was given
+  to the spooler; a `question` or `escalation` lands in the inbox for you to
   answer. The whole batch is acked only after every message is processed, so
   a crash mid-batch replays rather than loses.
 - **A `worker_done` is a claim, not a verdict.** The bead closes after a
@@ -233,9 +244,9 @@ orca-dispatch epic-42.a                      # worker 1: claude:sonnet in the ep
 /tier worker openrouter:qwen/qwen3-coder     # rebind again: opencode on OpenRouter
 orca-dispatch epic-42.b                      # worker 2: same Run, same worktree family
 orca-workers                                 # both rows, both agents
-orca-wait                                    # …worker_done from b; a question from a
+orca-wait                                    # (reader) worker_done from b; a question from a
 orca-reply <msg_id> "yes — keep the old flag name"
-orca-wait                                    # …worker_done from a
+orca-wait                                    # (reader) worker_done from a
 ```
 
 Both workers were given the same `WORKER RULES` and the same contract text,

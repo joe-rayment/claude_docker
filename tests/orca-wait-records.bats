@@ -44,7 +44,7 @@ worker_done_msg() {  # <disp> <term>
           state:"running", started_at:$s, worktree_path:""}')"
     orca_stub_reply_nth orchestration-check 1 "$(worker_done_msg x1 term_x1)"
 
-    run "$WAIT" --timeout-ms 1 --poll 1 --stall-after 60
+    run "$WAIT" --poll-loop --timeout-ms 1 --poll 1 --stall-after 60
     [ "$status" -eq 0 ]
 
     run jq -e '.state == "done" and .outcome == "succeeded"' \
@@ -61,7 +61,7 @@ worker_done_msg() {  # <disp> <term>
           state:"running", started_at:$s, worktree_path:""}')"
     orca_stub_reply_nth orchestration-check 1 "$(worker_done_msg x2 term_x2)"
 
-    run "$WAIT" --timeout-ms 1 --poll 1 --stall-after 60 --keep
+    run "$WAIT" --poll-loop --timeout-ms 1 --poll 1 --stall-after 60 --keep
     [ "$status" -eq 0 ]
 
     run jq -e '.state == "done" and .released == false' \
@@ -80,7 +80,7 @@ worker_done_msg() {  # <disp> <term>
         '{bead:"b1", dispatch_id:"z1", task_id:"t1", terminal:"term_z1",
           state:"ready", started_at:$s, worktree_path:""}')"
 
-    run "$WAIT" --timeout-ms 2000 --poll 1 --stall-after 60
+    run "$WAIT" --poll-loop --timeout-ms 2000 --poll 1 --stall-after 60
     [ "$status" -eq 0 ]
     out="$output"
 
@@ -109,7 +109,7 @@ worker_done_msg() {  # <disp> <term>
           state:"running", started_at:$s, nudged_at:$n, worktree_path:$wt,
           model:"sonnet"}')"
 
-    run "$WAIT" --timeout-ms 5000 --poll 1 --stall-after 60
+    run "$WAIT" --poll-loop --timeout-ms 5000 --poll 1 --stall-after 60
     [ "$status" -eq 0 ]
     out="$output"
 
@@ -128,7 +128,7 @@ worker_done_msg() {  # <disp> <term>
         '{bead:"b1", dispatch_id:"c1", task_id:"t1", terminal:"term_c1",
           state:"ready", started_at:$s, worktree_path:""}')"
 
-    run "$WAIT" --timeout-ms 1 --poll 1 --stall-after 60
+    run "$WAIT" --poll-loop --timeout-ms 1 --poll 1 --stall-after 60
     [ "$status" -eq 0 ]
     wait_out="$output"
 
@@ -146,7 +146,7 @@ worker_done_msg() {  # <disp> <term>
         '{bead:"bx", dispatch_id:"c2", task_id:"t1", terminal:"term_c2",
           state:"ready", started_at:$s, worktree_path:""}')"
 
-    run "$WAIT" --timeout-ms 1 --poll 1 --stall-after 60 --no-nudge
+    run "$WAIT" --poll-loop --timeout-ms 1 --poll 1 --stall-after 60 --no-nudge
     [ "$status" -eq 0 ]
 
     run jq -e '.state == "ready"' "$ODIR/dispatch/c2.json"

@@ -44,9 +44,16 @@ dispatch ids back on the bead, and print one JSON receipt per call:
   [--agent claude|opencode|codex|gemini] [--model <id>] [--worktree …]` — hand
   ONE bead to ONE worker. Exits 3 without dispatching when the runtime is
   unreachable, printing the equivalent in-process Agent-tool spec instead.
-- `orca-wait [--timeout-ms N] [--keep]` — one rolling `check --wait`; appends
-  each `worker_done` to its bead, releases the settled worker, and hands
-  `question`/`escalation` back to you.
+- `orca-wait` — three modes (claude-orca-mg8). Bare `orca-wait` is a cheap
+  reader: prints and consumes the unread receipt lines in
+  `.claude-dev/run/orchestration/inbox.jsonl` (cursor in `inbox.cursor`),
+  returns immediately, never calls Orca. `orca-wait --until <sec>` blocks at
+  most that long for the inbox to grow — run it in the background so a
+  worker message wakes you through a task notification instead of a polling
+  turn. The spooler, `orca-wait --spool`, is detached and started once per
+  Run by `orca-dispatch`; it does the release/close/bead-note/stall work and
+  appends every receipt to the inbox, exiting when no dispatch is live.
+  `orca-wait --poll-loop` is the old blocking wait (orca-run's use).
 - `orca-reply <msg_id> "<text>"` — answer a worker blocked in `ask`.
 - `orca-workers` — `worker-list` joined to `task-list --brief`, one table.
 - `orca-run --epic <id> [--epic …] [--max-parallel N]` — waves: every ready

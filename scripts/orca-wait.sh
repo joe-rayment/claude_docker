@@ -1,14 +1,31 @@
 #!/usr/bin/env bash
 #
-# orca-wait.sh -- the coordinator's rolling wait on its Run mailbox, with a
-# stall watch over the workers it dispatched (claude-orca-qa2.13, stall
-# watch claude-orca-8a0.1).
+# orca-wait.sh -- the coordinator's mailbox, split so the orchestrator never
+# runs the poll loop in its own turns (claude-orca-n3e; the original rolling
+# wait was claude-orca-qa2.13, the stall watch claude-orca-8a0.1).
 #
-#   orca-wait [--timeout-ms N] [--keep] [--types a,b] [--from <handle>]
-#             [--stall-after <sec>] [--poll <sec>] [--no-nudge]
+#   orca-wait              print and consume the unread receipt lines in
+#                          run/orchestration/inbox.jsonl (the read cursor is
+#                          inbox.cursor). A cheap file read: returns
+#                          immediately, never calls Orca. Exit 0.
+#   orca-wait --until <s>  block up to <s> seconds for the inbox to grow,
+#                          polling the file (never Orca); prints and
+#                          consumes the new lines, exit 0 -- or exit 4 with
+#                          no output when nothing arrived in time.
+#   orca-wait --spool      the spooler: run the rolling loop below forever,
+#                          detached (nohup is the starter's job -- orca-
+#                          dispatch starts one per Run), doing the release/
+#                          close/bead-note/stall work itself and appending
+#                          every receipt line to inbox.jsonl. Exits when no
+#                          dispatch record has been live for
+#                          CLAUDE_ORCA_SPOOL_IDLE_S seconds (default 1800).
+#                          Pid file: run/orchestration/spool.pid.
+#   orca-wait --poll-loop  the original blocking wait, kept for orca-run and
+#                          the e2e: the loop below with receipts on stdout,
+#                          ending on the first receipt or --timeout-ms.
 #
-# It loops on `orchestration check --wait` in --poll-sized waits until the
-# overall --timeout-ms is spent, and per message:
+# The loop (spooler and --poll-loop) runs on `orchestration check --wait`
+# in --poll-sized waits, and per message:
 #
 #   worker_done          appends the outcome and the files to the bead the
 #                        Dispatch came from, releases the worker terminal
@@ -32,9 +49,11 @@
 # a bound Run replays the same Delivery until it is acked, so acking late
 # is what makes a crash mid-batch harmless.
 #
-# One single-line JSON receipt per message on stdout (a timeout prints
+# One single-line JSON receipt per message; in --spool they are appended to
+# inbox.jsonl, otherwise they go to stdout (a --poll-loop timeout prints
 # {"type":"timeout",…}); human notes on stderr. Exit 0 when the wait
-# completed, 2 usage, 3 no reachable runtime / no Run bound yet.
+# completed, 2 usage, 3 no reachable runtime / no Run bound yet, 4 an
+# --until that ran out of seconds.
 #
 # bash 3.2 clean (scripts/lint-bash32.sh scans all of scripts/).
 
@@ -66,6 +85,7 @@ KEEP=0; FROM=""
 STALL_AFTER="${CLAUDE_ORCA_STALL_AFTER_S:-600}"
 POLL="${CLAUDE_ORCA_WAIT_POLL_S:-60}"
 NUDGE=1
+SPOOL=0; POLL_LOOP=0; UNTIL_S=""
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -76,11 +96,75 @@ while [ "$#" -gt 0 ]; do
         --poll)        POLL="${2:-}"; shift ;;
         --no-nudge)    NUDGE=0 ;;
         --keep)        KEEP=1 ;;
-        -h|--help)     sed -n '3,37p' "$(_resolve_script_path)"; exit 0 ;;
+        --spool)       SPOOL=1 ;;
+        --poll-loop)   POLL_LOOP=1 ;;
+        --until)       UNTIL_S="${2:-}"; shift ;;
+        -h|--help)     sed -n '3,47p' "$(_resolve_script_path)"; exit 0 ;;
         *)             die "unknown argument: $1" ;;
     esac
     shift
 done
+
+# The reader and --until are file reads; they never reach the runtime and
+# never need a Run binding, so they are handled before those checks.
+MODE="reader"
+[ -n "$UNTIL_S" ] && MODE="until"
+[ "$SPOOL" -eq 1 ] && MODE="spool"
+[ "$POLL_LOOP" -eq 1 ] && MODE="classic"
+if [ "$SPOOL" -eq 1 ] && { [ "$POLL_LOOP" -eq 1 ] || [ -n "$UNTIL_S" ]; }; then
+    die "--spool cannot be combined with --poll-loop or --until"
+fi
+[ "$POLL_LOOP" -eq 1 ] && [ -n "$UNTIL_S" ] &&
+    die "--poll-loop cannot be combined with --until"
+
+ROOT="$(orch_root)" || die "no project root: set CLAUDE_ORCA_ROOT"
+ODIR="$(orch_dir "$ROOT")"
+INBOX="$ODIR/inbox.jsonl"
+CURSOR="$ODIR/inbox.cursor"
+
+if [ -n "$UNTIL_S" ]; then
+    case "$UNTIL_S" in ''|*[!0-9]*) die "--until wants whole seconds" ;; esac
+fi
+
+# emit_unread -- print every complete inbox line past the cursor and move
+# the cursor past the last one. Returns 0 when something was printed.
+# A trailing partial line (a mid-append writer) is left for the next read.
+emit_unread() {
+    [ -f "$INBOX" ] || return 1
+    local cursor=0 size end
+    [ -f "$CURSOR" ] && cursor="$(tr -dc '0-9' <"$CURSOR" 2>/dev/null)"
+    case "$cursor" in ''|*[!0-9]*) cursor=0 ;; esac
+    size="$(wc -c <"$INBOX" 2>/dev/null | tr -d '[:space:]')"
+    case "$size" in ''|*[!0-9]*) return 1 ;; esac
+    # a file smaller than the cursor was truncated or rotated: replay it all
+    [ "$size" -ge "$cursor" ] || cursor=0
+    [ "$size" -gt "$cursor" ] || return 1
+    end="$size"
+    if [ -n "$(tail -c 1 "$INBOX" 2>/dev/null)" ]; then
+        # no trailing newline: stop before the partial last line
+        end="$(LC_ALL=C awk '{e += length($0) + 1}
+                             END { print e - length($0) - 1 }' "$INBOX")"
+        case "$end" in ''|*[!0-9]*) end="$size" ;; esac
+    fi
+    [ "$end" -gt "$cursor" ] || return 1
+    tail -c "+$(( cursor + 1 ))" "$INBOX" 2>/dev/null |
+        head -c "$(( end - cursor ))"
+    printf '%s\n' "$end" >"$CURSOR.tmp" && mv -f "$CURSOR.tmp" "$CURSOR"
+    return 0
+}
+
+if [ "$MODE" = "reader" ] || [ "$MODE" = "until" ]; then
+    if emit_unread; then exit 0; fi
+    if [ "$MODE" = "until" ]; then
+        deadline=$(( $(date +%s) + UNTIL_S ))
+        while [ "$(date +%s)" -lt "$deadline" ]; do
+            sleep "${CLAUDE_ORCA_UNTIL_POLL_S:-0.2}"
+            emit_unread && exit 0
+        done
+        exit 4
+    fi
+    exit 0
+fi
 
 case "$STALL_AFTER" in ''|*[!0-9]*) die "--stall-after wants whole seconds" ;; esac
 case "$POLL" in ''|*[!0-9]*) die "--poll wants whole seconds" ;; esac
@@ -100,7 +184,39 @@ orca_reachable || die "no Orca runtime is reachable" 3
 
 DISP_DIR="$(orch_dir "$ROOT")/dispatch"
 TMPD="$(mktemp -d "${TMPDIR:-/tmp}/orca-wait.XXXXXX")" || die "no temp dir"
-trap 'rm -rf "$TMPD"' EXIT
+SPOOL_PID_FILE="$ODIR/spool.pid"
+cleanup() {
+    rm -rf "$TMPD"
+    if [ "$MODE" = "spool" ] && [ -f "$SPOOL_PID_FILE" ] &&
+       [ "$(cat "$SPOOL_PID_FILE" 2>/dev/null)" = "$$" ]; then
+        rm -f "$SPOOL_PID_FILE"
+    fi
+}
+trap cleanup EXIT
+
+# In spool mode this process IS the Run's mailbox spooler: refuse a second
+# one (the pid file is orca-dispatch's quick gate; this is the real one) and
+# put our pid in it so the next dispatch sees a live spooler.
+if [ "$MODE" = "spool" ]; then
+    mkdir -p "$ODIR"
+    other="$(tr -dc '0-9' <"$SPOOL_PID_FILE" 2>/dev/null)"
+    if [ -n "$other" ] && [ "$other" != "$$" ] &&
+       kill -0 "$other" 2>/dev/null; then
+        note "spooler already running (pid $other) -- exiting"
+        exit 0
+    fi
+    printf '%s\n' "$$" >"$SPOOL_PID_FILE"
+fi
+
+# emit_receipt <one-line json> -- receipts land in the inbox for the spooler
+# (the orchestrator reads the file) and on stdout for the classic wait.
+emit_receipt() {
+    if [ "$MODE" = "spool" ]; then
+        printf '%s\n' "$1" >>"$INBOX"
+    else
+        printf '%s\n' "$1"
+    fi
+}
 
 TERM_ARGS=()
 [ -n "$HANDLE" ] && TERM_ARGS=(--terminal "$HANDLE")
@@ -236,12 +352,12 @@ stall_scan() {
             spec=""
             [ -n "$bj" ] && spec="$(orch_spec "$bj" "$bead")"
             note "$disp (${bead:-no bead}) is still quiet ${idle}s after its nudge -- falling back to an in-process executor"
-            jq -n -c --arg bead "$bead" --arg disp "$disp" --arg term "$term" \
+            emit_receipt "$(jq -n -c --arg bead "$bead" --arg disp "$disp" --arg term "$term" \
                 --argjson idle "$idle" --arg wt "$wt" \
                 --arg fb "$(orch_fallback "$spec" "$model")" \
                 '{type: "stalled", bead: $bead, dispatch_id: $disp,
                   terminal: $term, idle_s: $idle, nudged: true,
-                  worktree_path: $wt, fallback: $fb}'
+                  worktree_path: $wt, fallback: $fb}')"
             # scanned no more, and the wait only ends if nothing else is live
             rec_set "$disp" '.state = "stalled"'
             local g gs other=0
@@ -257,10 +373,10 @@ stall_scan() {
         text="claude-orca stall watch: you have been quiet for ${idle}s. Continue your slice now, report with orchestration send --type worker_done when it is done or you are blocked, and send a heartbeat at once: orca-ide orchestration send --type heartbeat --subject alive --dispatch-id $disp --json"
         cmd="orca terminal send --terminal $term --text \"$text\" --enter"
         note "$disp (${bead:-no bead}) has been idle ${idle}s"
-        jq -n -c --arg bead "$bead" --arg disp "$disp" --arg term "$term" \
+        emit_receipt "$(jq -n -c --arg bead "$bead" --arg disp "$disp" --arg term "$term" \
             --argjson idle "$idle" --arg nudge "$cmd" \
             '{type: "stalled", bead: $bead, dispatch_id: $disp,
-              terminal: $term, idle_s: $idle, nudge: $nudge}'
+              terminal: $term, idle_s: $idle, nudge: $nudge}')"
 
         [ "$NUDGE" -eq 1 ] || continue
         [ -n "$term" ] || continue
@@ -365,7 +481,7 @@ $subject: $body"
         fi
 
         note "$mtype from ${agent:-$from_h}${bead:+ [$bead]}: ${subject:-(no subject)}"
-        jq -n -c --arg type "$mtype" --arg id "$mid" --arg from "$from_h" \
+        emit_receipt "$(jq -n -c --arg type "$mtype" --arg id "$mid" --arg from "$from_h" \
             --arg subject "$subject" --arg body "$body" --arg task "$task_id" \
             --arg disp "$disp_id" --arg bead "$bead" --arg agent "$agent" \
             --arg model "$model" --arg outcome "$outcome" \
@@ -376,7 +492,7 @@ $subject: $body"
              body: $body, task_id: $task, dispatch_id: $disp, bead: $bead,
              agent: $agent, model: $model, outcome: $outcome, files: $files,
              released: $released, terminal_closed: $closed}
-            + (if $type == "worker_done" then {} else {reply_with: $reply} end)'
+            + (if $type == "worker_done" then {} else {reply_with: $reply} end)')"
     done <"$msgs"
     return 0
 }
@@ -385,16 +501,40 @@ $subject: $body"
 #
 # SPENT is the nominal time asked of the runtime, WALL the clock; the wait
 # ends on whichever is larger, so a burst of heartbeats cannot spin the loop
-# and a blocking check cannot overrun the caller's budget.
+# and a blocking check cannot overrun the caller's budget. In spool mode
+# there is no budget: the loop runs until no dispatch record has been live
+# for SPOOL_IDLE_S seconds.
 
 case "$TIMEOUT_MS" in ''|*[!0-9]*) die "--timeout-ms wants whole milliseconds" ;; esac
+SPOOL_IDLE_S="${CLAUDE_ORCA_SPOOL_IDLE_S:-1800}"
+case "$SPOOL_IDLE_S" in ''|*[!0-9]*) die "CLAUDE_ORCA_SPOOL_IDLE_S wants whole seconds" ;; esac
+
+# live_records -- how many dispatch records are still ready/running/
+# dispatched; the spooler's idle clock is reset whenever this is > 0.
+live_records() {
+    local f s n=0
+    for f in "$DISP_DIR"/*.json; do
+        [ -f "$f" ] || continue
+        s="$(jq -r '.state // ""' "$f" 2>/dev/null)"
+        case "$s" in ready|running|dispatched) n=$(( n + 1 )) ;; esac
+    done
+    printf '%s' "$n"
+}
+
 START_S="$(date +%s)"
 SPENT=0; ELAPSED=0
+LAST_LIVE="$(date +%s)"
 
-while [ "$ELAPSED" -lt "$TIMEOUT_MS" ]; do
-    REMAINING=$(( TIMEOUT_MS - ELAPSED ))
+while :; do
+    if [ "$MODE" != "spool" ]; then
+        [ "$ELAPSED" -lt "$TIMEOUT_MS" ] || break
+    fi
+    ITER_START="$(date +%s)"
     WAIT_MS=$(( POLL * 1000 ))
-    [ "$WAIT_MS" -gt "$REMAINING" ] && WAIT_MS="$REMAINING"
+    if [ "$MODE" != "spool" ]; then
+        REMAINING=$(( TIMEOUT_MS - ELAPSED ))
+        [ "$WAIT_MS" -gt "$REMAINING" ] && WAIT_MS="$REMAINING"
+    fi
     [ "$WAIT_MS" -gt 0 ] || WAIT_MS=1
 
     out="$(orca_call orchestration check --wait --types "$TYPES" \
@@ -416,10 +556,30 @@ while [ "$ELAPSED" -lt "$TIMEOUT_MS" ]; do
                 note "could not acknowledge delivery $DELIVERY"
         fi
     fi
-    [ "$REAL_COUNT" -gt 0 ] && exit 0
+    if [ "$REAL_COUNT" -gt 0 ] && [ "$MODE" != "spool" ]; then
+        exit 0
+    fi
 
     stall_scan
-    [ "$?" -eq 3 ] && exit 0
+    if [ "$?" -eq 3 ] && [ "$MODE" != "spool" ]; then
+        exit 0
+    fi
+
+    if [ "$MODE" = "spool" ]; then
+        # Pace the loop: a check that returns instantly (a queued message,
+        # a stub) must not become a busy spin on the runtime. One second of
+        # wall clock per iteration, at most ~1s of added receipt latency.
+        iter_ms=$(( ( $(date +%s) - ITER_START ) * 1000 ))
+        if [ "$iter_ms" -lt 1000 ]; then
+            sleep "0.$(printf '%03d' "$(( 1000 - iter_ms ))")"
+        fi
+        if [ "$(live_records)" -gt 0 ]; then
+            LAST_LIVE="$(date +%s)"
+        elif [ $(( $(date +%s) - LAST_LIVE )) -ge "$SPOOL_IDLE_S" ]; then
+            note "no live dispatch for ${SPOOL_IDLE_S}s -- spooler exiting"
+            exit 0
+        fi
+    fi
 
     SPENT=$(( SPENT + WAIT_MS ))
     ELAPSED=$(( ( $(date +%s) - START_S ) * 1000 ))
