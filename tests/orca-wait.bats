@@ -155,6 +155,28 @@ record() {
     [ -z "$(stalled_line "$output")" ]
 }
 
+@test "orca-wait prints a question receipt instead of dying on terminal_closed (claude-orca-1mu)" {
+    record q1 "$(jq -n -c --argjson s "$((NOW - 100))" \
+        '{bead:"b1", dispatch_id:"q1", task_id:"t1", terminal:"term_q1",
+          state:"running", started_at:$s, worktree_path:""}')"
+    orca_stub_reply_nth orchestration-check 1 \
+        '{"ok":true,"result":{"count":1,"deliveryId":"del1","messages":[
+          {"type":"question","id":"m1","subject":"need input","body":"which way?",
+           "from_handle":"term_q1",
+           "payload":{"taskId":"t1","dispatchId":"q1"}}]}}'
+
+    run "$WAIT" --timeout-ms 1 --poll 1 --stall-after 60
+    [ "$status" -eq 0 ]
+    ! printf '%s\n' "$output" | grep -q -e 'unbound variable'
+
+    line="$(printf '%s\n' "$output" | grep -e '"type":"question"' | head -1)"
+    [ -n "$line" ]
+    run jq -e '.type == "question" and .msg_id == "m1"' <<<"$line"
+    [ "$status" -eq 0 ]
+    run jq -e '.reply_with | test("orca-reply m1")' <<<"$line"
+    [ "$status" -eq 0 ]
+}
+
 @test "the worker rules tell the worker to heartbeat" {
     # shellcheck source=../scripts/lib/orca-orch.sh
     . "$REPO_ROOT/scripts/lib/orca-orch.sh"

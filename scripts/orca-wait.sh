@@ -282,6 +282,8 @@ process_batch() {
     printf '%s' "$1" | jq -c '.result.messages[]?' >"$msgs" 2>/dev/null
     while IFS= read -r msg; do
         [ -n "$msg" ] || continue
+        released=false
+        terminal_closed=false
         mtype="$(printf '%s' "$msg" | jq -r '.type // ""')"
         mid="$(printf '%s' "$msg" | jq -r '.id // ""')"
         subject="$(printf '%s' "$msg" | jq -r '.subject // ""')"
