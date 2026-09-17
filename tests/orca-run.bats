@@ -27,6 +27,9 @@ REPO_ROOT="${BATS_TEST_DIRNAME:-.}"
 REPO_ROOT="$(cd "$REPO_ROOT/.." && pwd)"
 
 setup_file() {
+    # The container points BEADS_DIR at the workspace's own tracker; the
+    # throwaway project below must init its own, not refuse to.
+    unset BEADS_DIR
     command -v xvfb-run >/dev/null 2>&1 || skip "xvfb-run is not installed"
     command -v jq >/dev/null 2>&1 || skip "jq is not installed"
     command -v bd >/dev/null 2>&1 || skip "bd is not installed"

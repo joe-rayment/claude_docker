@@ -134,6 +134,15 @@ wait_for_file() {
 }
 
 setup() {
+    # A terminal inside this container inherits the live runtime's own
+    # exports -- the guard's OPENROUTER_* pair, the opencode launch
+    # config, and CLAUDE_ORCA_SETUP pointing at the folder this terminal
+    # was spawned from. Every case here stages its own key state, CLI
+    # and setup path; anything ambient that survives into the entrypoint
+    # makes the same case pass here and fail on a clean box (and vice
+    # versa). Strip the four that change behaviour; the rest are inert.
+    unset OPENROUTER_API_KEY OPENROUTER_BASE_URL OPENCODE_CONFIG \
+        CLAUDE_ORCA_SETUP
     TMP="$(short_tmpdir)"
     export TMP
     export EP_PGID_FILE="$TMP/ep.pgid"
@@ -461,6 +470,23 @@ STUB
     mkdir -p "$home" "$TMP/bin"
     port="$(free_port)"
 
+    # This box bakes /opt/claude-orca, which would otherwise win the
+    # entrypoint's template-root race (see "where the template is" in
+    # entrypoint.sh) and provision from the IMAGE's frozen provision.d
+    # instead of the repo under test -- so an unintended sixth CLI call
+    # added to a provision.d step here would never show up. Give the
+    # folder's own template an executable setup.sh (the same tiebreak
+    # case 14 exercises) so TEMPLATE_ROOT picks $proj/.claude-dev/template;
+    # it carries no provision-run.sh of its own, so the entrypoint's
+    # fallback (provision_runner="$SCRIPT_DIR/provision-run.sh") runs
+    # THIS repo's provision-run.sh, whose own provision.d is next to it --
+    # exactly the tree this test edits. CLAUDE_ORCA_SKIP_SETUP=1 below
+    # means that stub setup.sh is never actually executed; it only has to
+    # exist and be +x for the template-root check.
+    mkdir -p "$proj/.claude-dev/template/scripts/container"
+    : > "$proj/.claude-dev/template/scripts/container/setup.sh"
+    chmod +x "$proj/.claude-dev/template/scripts/container/setup.sh"
+
     # A stub Orca that speaks serve's two log lines and then stays up. It
     # reads --port off its own argv, so the entrypoint failing to pass the
     # port through is itself a failure here.
@@ -495,6 +521,7 @@ STUB
     export ORCA_CLI="$TMP/bin/orca"
     export CLAUDE_ORCA_ENTRYPOINT_NO_PRIVDROP=1
     export CLAUDE_ORCA_WEBURL_TIMEOUT=30
+    export CLAUDE_ORCA_SKIP_SETUP=1
 
     start_entrypoint_bg
 
@@ -517,8 +544,22 @@ STUB
     run grep -c "repo add --path $proj" "$TMP/cli.log"
     [ "$status" -eq 0 ]
     [ "$output" = "1" ]
-    run wc -l < "$TMP/cli.log"
-    [ "$(printf '%s' "$output" | tr -d '[:space:]')" = "1" ]
+
+    # And the CLI is called by exactly the provision steps that need it,
+    # in exactly this order: repo add (60-orca-repo-add), the one
+    # reachable probe (65-worktree-sweep), then the skill's --json
+    # check, plain-text fallback and install (75-orca-skills). A sixth
+    # line -- or any reordering -- means some step grew a call it must
+    # not make.
+    cat > "$TMP/expected-cli.log" <<EXPECTED
+repo add --path $proj --json
+status --json
+skills installed --json
+skills installed
+skills install --skill orchestration --local
+EXPECTED
+    run diff -u "$TMP/expected-cli.log" "$TMP/cli.log"
+    [ "$status" -eq 0 ]
 
     stop_entrypoint
 
@@ -823,9 +864,15 @@ STUB
     make_project "$proj"
 
     # The prebuilt image carries the template at /opt/claude-orca; a base
-    # image has only the folder's own mounted clone. Whichever this box is,
-    # the entrypoint must name the one that is there.
-    if [ -d /opt/claude-orca ]; then
+    # image has only the folder's own mounted clone. The entrypoint's rule
+    # (entrypoint.sh, "where the template is"): the folder's template wins
+    # when it carries an executable setup.sh, then the baked copy, then
+    # the folder clone bare. expect_root follows that same rule, so the
+    # case holds on a base image, on the baked image, and on a project
+    # that has pulled its own template clone -- whichever this box is.
+    if [ -x "$proj/.claude-dev/template/scripts/container/setup.sh" ]; then
+        expect_root="$proj/.claude-dev/template"
+    elif [ -d /opt/claude-orca ]; then
         expect_root="/opt/claude-orca"
     else
         expect_root="$proj/.claude-dev/template"
@@ -2001,15 +2048,26 @@ run_entrypoint_managed() {
     run cat "$managed"
     [ "$output" = "not json at all" ]
 
-    # No override and no root: silent skip, and nothing lands in /etc.
+    # No override and no root: silent skip, and /etc keeps whatever it
+    # had. The image bakes a managed-settings.json, so "the file must
+    # not exist" is the wrong assertion on this box -- the right one is
+    # "the run changed nothing": byte-identical when the file pre-exists,
+    # still absent when it did not.
     if [ "$(id -u)" != "0" ]; then
+        if [ -f /etc/claude-code/managed-settings.json ]; then
+            cp /etc/claude-code/managed-settings.json "$TMP/etc-managed.before"
+        fi
         run env HOME="$home" PROJECT_DIR="$proj" \
             ORCA_BIN="$TMP/bin/no-such-orca" CLAUDE_ORCA_SKIP_SETUP=1 \
             CLAUDE_ORCA_SKIP_BEADS=1 CLAUDE_ORCA_ENTRYPOINT_NO_PRIVDROP=1 \
             bash "$ENTRYPOINT"
         [ "$status" -ne 0 ]
         [[ "$output" == *"ORCA_BIN is not executable"* ]]
-        [ ! -f /etc/claude-code/managed-settings.json ]
+        if [ -f /etc/claude-code/managed-settings.json ]; then
+            cmp -s "$TMP/etc-managed.before" /etc/claude-code/managed-settings.json
+        else
+            [ ! -e /etc/claude-code/managed-settings.json ]
+        fi
     fi
 }
 
