@@ -48,6 +48,35 @@ fresh_project() {
     [ "$output" = "0" ]
 }
 
+# claude-orca-e8m: the local-only artefacts Orca and the tooling leave in a
+# folder -- Orca's own state and per-project config, graphify output, Python
+# caches -- must be in the seeded .gitignore, so a seeded folder can stage
+# everything or push to GitHub without shipping any of them.
+@test "the seeded .gitignore carries .orca-worktrees/, .orca/, orca.yaml, graphify-out/ and __pycache__/" {
+    local d
+    d="$(fresh_project)"
+    run seed "$d"
+    [ "$status" -eq 0 ]
+    for pattern in '.orca-worktrees/' '.orca/' 'orca.yaml' 'graphify-out/' '__pycache__/'; do
+        grep -qxF "$pattern" "$d/.gitignore"
+    done
+
+    # And they work: in a git-inited seeded folder that has been through
+    # the seed commit (55-git-init), none of them shows up as untracked.
+    mkdir -p "$d/.orca" "$d/.orca-worktrees" "$d/graphify-out" "$d/__pycache__"
+    : > "$d/.orca/x"
+    : > "$d/.orca-worktrees/x"
+    : > "$d/graphify-out/x"
+    : > "$d/__pycache__/x"
+    printf 'scripts: {}\n' > "$d/orca.yaml"
+    git -C "$d" add .gitignore
+    git -C "$d" -c user.name=t -c user.email=t@example.com -c commit.gpgsign=false \
+        commit -q --no-verify -m seed -- .gitignore
+    run git -C "$d" status --short
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+}
+
 # claude-orca-8jb: the exact content the template used to seed, byte for
 # byte, kept here so the migration case below can reproduce it. This is
 # NOT the current seeded content -- it is history, for the safety check.
