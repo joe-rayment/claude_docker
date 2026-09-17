@@ -842,6 +842,45 @@ PRUNE
     fi
 }
 
+# The tagged refs a BUILT update supersedes -- the version-less
+# claude-orca:latest a pre-S4 folder was built at most of all -- are
+# invisible to prune_old_images, which collects <none> layers only, so
+# they sit on the Mac for GBs. After a successful build at R, every OTHER
+# ref of our repository is garbage unless a container still uses it, and
+# `docker ps -a` -- stopped ones included -- is what "in use" means: the
+# Image column carries the ref a container was run from, or its image id
+# when the tag it was run from has since moved. The rmi goes by ref, and
+# a refusal (an image some container still references behind its last
+# tag) is a normal answer -- skipped, never fatal, like prune_old_images.
+# One log line per removal; silence when there is nothing to remove.
+prune_old_refs() {
+    local ref="$1" repo="" ntag="" used="" rt="" id=""
+    [ "$CTR_RUNTIME" = "local" ] && return 0
+    repo="${ref%:*}"
+    ntag="${ref##*:}"
+    used="$(ctr ps -a --format '{{.Image}}' 2>/dev/null || true)"
+    while read -r rt id || [ -n "$rt" ]; do
+        [ -n "$id" ] || continue
+        case "$rt" in *:*) ;; *) continue ;; esac
+        [ "${rt%:*}" = "$repo" ] || continue
+        [ "${rt##*:}" = "$ntag" ] && continue
+        [ "${rt##*:}" = "<none>" ] && continue
+        id="${id#sha256:}"
+        # Exact lines -- claude-orca:latest is a PREFIX of every
+        # claude-orca:latest-orca<v>, so a substring match here would
+        # spare an image its container moved off long ago.
+        if printf '%s\n' "$used" | grep -Fxq -e "$rt" -e "sha256:$id" \
+                -e "${id:0:12}"; then
+            continue
+        fi
+        if ctr rmi "$rt" >/dev/null 2>&1; then
+            echo "  removed old image ref $rt"
+        fi
+    done <<PRUNE
+$(ctr images --format '{{.Repository}}:{{.Tag}} {{.ID}}' 2>/dev/null || true)
+PRUNE
+}
+
 # run/ holds RESULTS (CLAUDE.md: state/ holds authority), and every one of
 # them belongs to the container that wrote it: the pairing URL most of all
 # -- opening a previous session's URL is opening nothing. So a folder that
@@ -2964,6 +3003,7 @@ cmd_update_v3() {
         # superseded image stayed on disk.
         if [ "$(image_source "$dir")" = "built" ]; then
             prune_old_images "$ref" "$img_after"
+            prune_old_refs "$ref"
         fi
     fi
 
