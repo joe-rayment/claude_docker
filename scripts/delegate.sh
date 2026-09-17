@@ -267,7 +267,8 @@ extract_usage_obj() {
         split("\n")
         | map(select(length > 0))
         | map(try fromjson catch empty)
-        | map(select(. != null and (has("usage") or has("cost"))))
+        | map(select(. != null and ((has("usage") or has("cost"))
+              or ((.part // {}) | (has("tokens") or has("cost"))))))
         | last // {}
     ' "$log" 2>/dev/null) || obj='{}'
     [ -z "$obj" ] && obj='{}'
@@ -289,12 +290,14 @@ generate_runner_config() {
             allow_fb="$(route_field "$route" ".pin.allow_fallbacks // false")"
             jq -n \
                 --arg model "$model_id" \
+                --arg small "$provider/$model_id" \
                 --arg base "$OPENROUTER_BASE_URL" \
                 --argjson order "$order_json" \
                 --argjson allow_fallbacks "$allow_fb" \
                 --arg variant "$variant" \
                 '{
                     "$schema": "https://opencode.ai/config.json",
+                    small_model: $small,
                     provider: {
                         openrouter: {
                             options: { apiKey: "{env:OPENROUTER_API_KEY}", baseURL: $base },
@@ -313,9 +316,11 @@ generate_runner_config() {
         ollama)
             jq -n \
                 --arg model "$model_id" \
+                --arg small "$provider/$model_id" \
                 --arg base "$OLLAMA_BASE_URL/v1" \
                 '{
                     "$schema": "https://opencode.ai/config.json",
+                    small_model: $small,
                     provider: {
                         ollama: {
                             npm: "@ai-sdk/openai-compatible",
@@ -521,9 +526,9 @@ cmd_run() {
 
     local usage_obj tokens_in tokens_out usd
     usage_obj="$(extract_usage_obj "$log")"
-    tokens_in="$(jq -r '(.usage.inputTokens // .usage.input_tokens // .usage.promptTokens // .tokens.input) // "null"' <<<"$usage_obj")"
-    tokens_out="$(jq -r '(.usage.outputTokens // .usage.output_tokens // .usage.completionTokens // .tokens.output) // "null"' <<<"$usage_obj")"
-    usd="$(jq -r '(.usage.cost // .cost) // "null"' <<<"$usage_obj")"
+    tokens_in="$(jq -r '(.usage.inputTokens // .usage.input_tokens // .usage.promptTokens // .tokens.input // .part.tokens.input) // "null"' <<<"$usage_obj")"
+    tokens_out="$(jq -r '(.usage.outputTokens // .usage.output_tokens // .usage.completionTokens // .tokens.output // .part.tokens.output) // "null"' <<<"$usage_obj")"
+    usd="$(jq -r '(.usage.cost // .cost // .part.cost) // "null"' <<<"$usage_obj")"
 
     jq -n \
         --arg job "$job_id" \
