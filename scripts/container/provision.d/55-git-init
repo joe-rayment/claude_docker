@@ -13,7 +13,8 @@
 # workspace in.
 #
 # What it never does: commit the user's own files -- only the seeds
-# (.gitignore, orca.yaml, .beads), only those that exist, and by pathspec,
+# (.gitignore, .beads; orca.yaml is ignored since claude-orca-e8m, so it is
+# not in the pathspec), only those that exist, and by pathspec,
 # so a file the user already staged stays staged and out of the commit;
 # rename a branch that has commits; `git init` over a .git that git cannot
 # read (dubious ownership, corruption -- that is reported and left alone);
@@ -86,7 +87,7 @@ fi
 # ends up with nothing tracked under it is dropped from the pathspec.
 
 paths=""
-for p in .gitignore orca.yaml .beads; do
+for p in .gitignore .beads; do
     [ -e "$PROJECT_DIR/$p" ] || continue
     git -C "$PROJECT_DIR" add -- "$p" >/dev/null 2>&1 || true
     if git -C "$PROJECT_DIR" ls-files --error-unmatch -- "$p" >/dev/null 2>&1; then
@@ -106,8 +107,17 @@ email="$(git -C "$PROJECT_DIR" config user.email 2>/dev/null || true)"
 
 if [ -z "$paths" ]; then
     msg="claude_orca: seed commit (empty)"
-    git -C "$PROJECT_DIR" -c user.name="$name" -c user.email="$email" -c commit.gpgsign=false \
-        commit -q --allow-empty --no-verify -m "$msg" || exit 1
+    # Nothing of ours to commit, but the promise above still holds: a file
+    # the user already staged must stay staged and out of this commit. A
+    # plain `git commit --allow-empty` would commit the whole index, so the
+    # commit is built from a throwaway empty index instead and the real
+    # one is never touched.
+    empty_index="$PROJECT_DIR/.git/claude_orca_empty_index"
+    GIT_INDEX_FILE="$empty_index" git -C "$PROJECT_DIR" read-tree --empty 2>/dev/null || rm -f "$empty_index"
+    GIT_INDEX_FILE="$empty_index" git -C "$PROJECT_DIR" -c user.name="$name" \
+        -c user.email="$email" -c commit.gpgsign=false \
+        commit -q --allow-empty --no-verify -m "$msg" || { rm -f "$empty_index"; exit 1; }
+    rm -f "$empty_index"
 else
     msg="claude_orca: seed commit ($paths)"
     # shellcheck disable=SC2086 -- $paths is a space-separated pathspec list on purpose
