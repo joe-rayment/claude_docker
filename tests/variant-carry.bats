@@ -115,14 +115,29 @@ opencode_config_from_env() {
     [ "$status" -eq 0 ]
 }
 
-@test "orca_opencode_command: no variant, no token -- unchanged bare command, no files" {
+@test "orca_opencode_command: no variant, no token -- sources an env file naming a permission-only config, no models, no baseURL" {
+    # Edited for claude-orca-gh9 (permission block now written on every
+    # launch so a dispatched worker never stalls on opencode's interactive
+    # "ask" default) -- coordinator-authorised one-case change to this
+    # closed bead's (claude-orca-y0y) frozen file; see claude-orca-gh9 notes.
     RUN_DIR="$BATS_TEST_TMPDIR/run3"
     mkdir -p "$RUN_DIR"
     run bash -c ". '$ORCA_ORCH'; orca_opencode_command 'openrouter/openai/gpt-5.6-luna' '$RUN_DIR'"
     [ "$status" -eq 0 ]
-    [ "$output" = "opencode --model openrouter/openai/gpt-5.6-luna" ]
-    [ ! -f "$RUN_DIR/openrouter-guard.env" ]
-    [ ! -d "$RUN_DIR/opencode-launch" ]
+    [[ "$output" == *"opencode --model openrouter/openai/gpt-5.6-luna"* ]]
+    [[ "$output" == *"openrouter-guard.env"* ]]
+
+    env_file="$RUN_DIR/openrouter-guard.env"
+    [ -f "$env_file" ]
+    grep -q '^OPENCODE_CONFIG=' "$env_file"
+    cfg="$(opencode_config_from_env "$env_file")"
+    [ -f "$cfg" ]
+    run jq -e '.permission != null' "$cfg"
+    [ "$status" -eq 0 ]
+    run jq -e '.provider.openrouter.models == null' "$cfg"
+    [ "$status" -eq 0 ]
+    run jq -e '.provider.openrouter.options == null' "$cfg"
+    [ "$status" -eq 0 ]
 }
 
 @test "orca_opencode_command: the per-launch config file is mode 600" {
