@@ -157,6 +157,28 @@ exclude_hygiene() {
     echo "exclude: added $_entry to .git/info/exclude"
 }
 
+# Only one graph set may live under graphify-out/: the root set (graph.json,
+# graph.html, GRAPH_REPORT.md, manifest.json, cache/). The engine has been
+# seen to also write a dated snapshot directory (YYYY-MM-DD) next to it on
+# build/update — a full duplicate nobody reads. Sweep those after every
+# engine call that writes, so build/refresh can never leave one behind.
+# (disk-cleanup.sh removes any that predate this fix.) Depth-1 directory
+# names matching YYYY-MM-DD exactly; nothing else is touched.
+prune_dated_out() {
+    _out=$1
+    [ -d "$_out" ] || return 0
+    for _d in "$_out"/*/; do
+        [ -d "$_d" ] || continue
+        _base=$(basename "$_d")
+        case "$_base" in
+            [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9])
+                rm -rf "$_d"
+                echo "code-map: removed dated snapshot dir $_base"
+                ;;
+        esac
+    done
+}
+
 cmd_build() {
     engine=$(resolve_engine)
     root=$(resolve_root)
@@ -176,6 +198,7 @@ cmd_build() {
     fi
 
     stamp_commit "$out/graph.json"
+    prune_dated_out "$out"
     exclude_hygiene "$out"
 }
 
@@ -193,6 +216,7 @@ cmd_refresh() {
     echo "code-map refresh: $root"
     "$engine" update "$root" "$@"
     stamp_commit "$out/graph.json"
+    prune_dated_out "$out"
 }
 
 cmd_status() {
