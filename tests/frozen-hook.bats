@@ -8,6 +8,8 @@ bats_require_minimum_version 1.5.0
 # is missing).
 
 LIB="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)/scripts/lib/frozen-hook.sh"
+# shellcheck source=../scripts/lib/frozen-hook.sh
+. "$LIB"
 
 setup() {
     export TMPDIR="$BATS_TEST_TMPDIR"
