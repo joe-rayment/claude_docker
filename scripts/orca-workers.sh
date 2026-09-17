@@ -35,10 +35,11 @@ SCRIPT_DIR="$(cd "$(dirname "$(_resolve_script_path)")" && pwd)"
 
 die() { printf 'orca-workers: %s\n' "$*" >&2; exit "${2:-2}"; }
 
-RUN_ID=""; AS_JSON=0
+RUN_ID=""; FROM=""; AS_JSON=0
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --run)  RUN_ID="${2:-}"; shift ;;
+        --from) FROM="${2:-}"; shift ;;
         --json) AS_JSON=1 ;;
         -h|--help) sed -n '3,13p' "$(_resolve_script_path)"; exit 0 ;;
         *) die "unknown argument: $1" ;;
@@ -49,7 +50,11 @@ done
 command -v jq >/dev/null 2>&1 || die "jq is required"
 ROOT="$(orch_root)" || die "no project root: set CLAUDE_ORCA_ROOT"
 if [ -z "$RUN_ID" ]; then
-    RUN_FILE="$(orch_run_file "$ROOT")"
+    # This coordinator's Run: the keyed record for its handle when it has
+    # one, the legacy run.json otherwise (claude-orca-fyv).
+    HANDLE="$(orch_handle "$FROM")"
+    RUN_FILE="$(orch_run_state_file "$ROOT" "$HANDLE")" ||
+        die "refusing coordinator handle with / or ..: $HANDLE" 2
     [ -f "$RUN_FILE" ] || die "no Run bound yet -- run orca-dispatch first" 3
     RUN_ID="$(jq -r '.run_id // ""' "$RUN_FILE")"
 fi

@@ -88,10 +88,13 @@ case "$POLL" in ''|*[!0-9]*) die "--poll wants whole seconds" ;; esac
 
 command -v jq >/dev/null 2>&1 || die "jq is required"
 ROOT="$(orch_root)" || die "no project root: set CLAUDE_ORCA_ROOT"
-RUN_FILE="$(orch_run_file "$ROOT")"
+HANDLE="$(orch_handle "$FROM")"
+# My coordinator's Run record: the keyed file for this handle when it has
+# one, the legacy run.json otherwise (claude-orca-fyv).
+RUN_FILE="$(orch_run_state_file "$ROOT" "$HANDLE")" ||
+    die "refusing coordinator handle with / or ..: $HANDLE" 2
 [ -f "$RUN_FILE" ] || die "no Run bound yet -- run orca-dispatch first ($RUN_FILE)" 3
 RUN_ID="$(jq -r '.run_id // ""' "$RUN_FILE")"
-HANDLE="$(orch_handle "$FROM")"
 [ -n "$HANDLE" ] || HANDLE="$(jq -r '.coordinator_handle // ""' "$RUN_FILE")"
 orca_reachable || die "no Orca runtime is reachable" 3
 

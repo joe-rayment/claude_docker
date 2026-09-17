@@ -11,9 +11,10 @@
 #                 [--from <handle>] [--timeout-ms <n>]
 #
 # What it does, in order: resolve the coordinator handle -> ensure ONE Run
-# per coordinator (<root>/.claude-dev/run/orchestration/run.json, reused by
-# run-use) -> compose the Task spec from `bd show` (title, description,
-# acceptance contract, WORKER RULES) -> start the worker per agent:
+# per coordinator (the keyed record runs/<handle>.json, reused by run-use;
+# the legacy run.json stays a mirror of it, claude-orca-fyv) -> compose the
+# Task spec from `bd show` (title, description, acceptance contract, WORKER
+# RULES) -> start the worker per agent:
 #
 #   claude|codex|gemini  worker-start --agent <a> --model <m>   (Orca launches
 #                        the TUI in a worktree and injects the spec)
