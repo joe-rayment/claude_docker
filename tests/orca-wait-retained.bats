@@ -25,7 +25,7 @@ setup() {
         >"$ODIR/run.json"
     orca_stub_reply orchestration-check \
         '{"ok":true,"result":{"count":0,"messages":[],"deliveryId":""}}'
-    orca_stub_reply worker-release \
+    orca_stub_reply orchestration-worker-release \
         '{"ok":true,"result":{"state":"retained"}}'
     NOW="$(date +%s)"
 }
@@ -82,7 +82,7 @@ worker_done_msg() {  # <disp> <term>
 }
 
 @test "a terminal release state (released) closes nothing: released=true, terminal_closed=false" {
-    orca_stub_reply worker-release \
+    orca_stub_reply orchestration-worker-release \
         '{"ok":true,"result":{"state":"released"}}'
     record x3 "$(jq -n -c --argjson s "$((NOW - 100))" \
         '{bead:"b1", dispatch_id:"x3", task_id:"t1", terminal:"term_x3",
