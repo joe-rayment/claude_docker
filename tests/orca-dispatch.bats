@@ -62,6 +62,8 @@ setup_file() {
     # claude config there is nothing to trust and case 3 fails on its own.
     if command -v jq >/dev/null 2>&1 && [ -n "${HOME:-}" ] &&
             [ -f "$HOME/.claude.json" ]; then
+        export ORCA_CLAUDE_JSON_BACKUP="$BATS_FILE_TMPDIR/claude.json.orig"
+        cp -f "$HOME/.claude.json" "$ORCA_CLAUDE_JSON_BACKUP"
         cfg_tmp="$(mktemp "$HOME/.claude.json.hjkXXXXXX")"
         jq --arg p "$proj" '.projects[$p].hasTrustDialogAccepted = true' \
             "$HOME/.claude.json" >"$cfg_tmp" 2>/dev/null &&
@@ -125,6 +127,13 @@ s.close()')"
 }
 
 teardown_file() {
+    # Restore the real ~/.claude.json unconditionally, before anything below
+    # can fail and skip it -- setup_file's trust seeding (case 3) must never
+    # leave a residue key behind in the user's actual config.
+    if [ -f "$BATS_FILE_TMPDIR/claude.json.orig" ] && [ -n "${HOME:-}" ]; then
+        cp -f "$BATS_FILE_TMPDIR/claude.json.orig" "$HOME/.claude.json"
+    fi
+
     [ -f "$BATS_FILE_TMPDIR/env" ] || return 0
     # shellcheck disable=SC1091
     . "$BATS_FILE_TMPDIR/env"
