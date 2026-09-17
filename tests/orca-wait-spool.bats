@@ -33,6 +33,11 @@ setup() {
         '{"ok":true,"result":{"count":0,"messages":[],"deliveryId":""}}'
     orca_stub_reply orchestration-worker-release \
         '{"ok":true,"result":{"state":"released"}}'
+    # what orch_ensure_run / orca-dispatch's Task step need from the stub
+    orca_stub_reply orchestration-run-create \
+        '{"ok":true,"result":{"run":{"id":"run_x","coordinator_handle":"term_coord"}}}'
+    orca_stub_reply orchestration-task-create \
+        '{"ok":true,"result":{"task":{"id":"task_x"}}}'
     NOW="$(date +%s)"
     INBOX="$ODIR/inbox.jsonl"
     CURSOR="$ODIR/inbox.cursor"
