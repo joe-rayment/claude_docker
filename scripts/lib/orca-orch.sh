@@ -15,7 +15,13 @@
 #   ORCA_USER_DATA_PATH                   which runtime to talk to
 #
 # Run state lives at <root>/.claude-dev/run/orchestration/:
-#   run.json                    {run_id, coordinator_handle, created}
+#   runs/<handle>.json          per-coordinator Run record
+#                               {run_id, coordinator_handle, created}
+#                               (claude-orca-fyv: two coordinators in one
+#                               folder each get their own record; the legacy
+#                               run.json below stays a mirror of the newest
+#                               one so pre-fix readers keep working)
+#   run.json                    legacy/empty-handle Run record, same shape
 #   dispatch/<dispatch_id>.json {bead, run_id, task_id, dispatch_id, agent,
 #                                model, backend, terminal, worktree}
 # run/ holds results, state/ holds authority (CLAUDE.md) -- these are
@@ -103,7 +109,39 @@ orch_dir()      { printf '%s/.claude-dev/run/orchestration' "$1"; }
 orch_epic_file() {
     printf '%s/.claude-dev/run/orchestration/epics/%s.json' "$1" "$2"
 }
-orch_run_file() { printf '%s/.claude-dev/run/orchestration/run.json' "$1"; }
+# orch_run_file <root> [<handle>] -- which file names a coordinator's Run
+# record. With a non-empty handle, the per-coordinator file
+# runs/<handle>.json (claude-orca-fyv: one shared run.json let a second
+# coordinator's orca-dispatch overwrite the first one's Run under its
+# feet); with an empty handle, the legacy run.json. A handle holding / or
+# .. would name a file outside runs/ and is refused: exit 1, no output.
+orch_run_file() {
+    local root="$1" handle="${2:-}"
+    case "$handle" in
+        */*|*..*) return 1 ;;
+    esac
+    if [ -n "$handle" ]; then
+        printf '%s/.claude-dev/run/orchestration/runs/%s.json' "$root" "$handle"
+        return 0
+    fi
+    printf '%s/.claude-dev/run/orchestration/run.json' "$root"
+}
+
+# orch_run_state_file <root> <handle> -- which run record this coordinator
+# READS: the keyed file when its handle has one, the legacy run.json
+# otherwise (a pre-fix folder, or an empty handle, keep working;
+# claude-orca-fyv). A bad handle is refused.
+orch_run_state_file() {
+    local root="$1" handle="$2" keyed
+    if [ -n "$handle" ]; then
+        keyed="$(orch_run_file "$root" "$handle")" || return 1
+        if [ -f "$keyed" ]; then
+            printf '%s' "$keyed"
+            return 0
+        fi
+    fi
+    orch_run_file "$root"
+}
 orch_disp_file() {
     printf '%s/.claude-dev/run/orchestration/dispatch/%s.json' "$1" "$2"
 }
@@ -126,21 +164,43 @@ orch_handle() {
 # orch_ensure_run <root> <handle> -- the Run id on stdout, human notes on
 # stderr; exit 1 if the runtime would not give us one.
 #
-# run.json is the coordinator's memory of its Run. It is reused whenever
-# the runtime still knows that Run AND it belongs to this coordinator, so
-# orca-dispatch and orca-run land in the same Run and orca-wait has one
-# mailbox to watch. `run-use` is the reachability test: a Run from a dead
-# runtime fails it and we make a new one.
+# The coordinator's Run record (the keyed file, run.json when the handle is
+# empty) is its memory of its Run. It is reused whenever the runtime still
+# knows that Run AND it belongs to this coordinator, so orca-dispatch and
+# orca-run land in the same Run and orca-wait has one mailbox to watch.
+# `run-use` is the reachability test: a Run from a dead runtime fails it
+# and we make a new one. Two coordinators never share a record again --
+# each handle reads and writes only its own keyed file (claude-orca-fyv).
 orch_ensure_run() {
     local root="$1" handle="$2"
-    local odir run_file prev_run prev_coord out run_id coord
-    local from_args
+    local odir run_file legacy_file prev_run prev_coord out run_id coord
+    local state from_args
     odir="$(orch_dir "$root")"
-    run_file="$(orch_run_file "$root")"
-    mkdir -p "$odir/dispatch" || { printf 'cannot write %s\n' "$odir" >&2; return 1; }
+    run_file="$(orch_run_file "$root" "$handle")" || {
+        printf 'refusing coordinator handle with / or ..: %s\n' "$handle" >&2
+        return 1
+    }
+    legacy_file="$(orch_run_file "$root")"
+    mkdir -p "$odir/dispatch" "$odir/runs" || {
+        printf 'cannot write %s\n' "$odir" >&2
+        return 1
+    }
 
     from_args=()
     [ -n "$handle" ] && from_args=(--from "$handle")
+
+    # A folder dispatched before the fix kept its Run in the legacy file
+    # alone: adopt it when it belongs to this coordinator, so the upgrade
+    # does not strand a reachable Run. Another coordinator's run is never
+    # adopted -- that shared slot was the whole bug.
+    if [ -n "$handle" ] && [ "$run_file" != "$legacy_file" ] &&
+       [ ! -f "$run_file" ] && [ -f "$legacy_file" ]; then
+        prev_coord="$(jq -r '.coordinator_handle // ""' "$legacy_file" 2>/dev/null)"
+        if [ "$prev_coord" = "$handle" ]; then
+            cp -f "$legacy_file" "$run_file" 2>/dev/null || true
+            printf 'adopted the pre-keying Run from %s\n' "$legacy_file" >&2
+        fi
+    fi
 
     if [ -f "$run_file" ]; then
         prev_run="$(jq -r '.run_id // ""' "$run_file" 2>/dev/null)"
@@ -150,6 +210,11 @@ orch_ensure_run() {
             if out="$(orca_call orchestration run-use --id "$prev_run" \
                         ${from_args[@]+"${from_args[@]}"} --json)"; then
                 printf 'reusing Run %s for this coordinator\n' "$prev_run" >&2
+                if [ -n "$handle" ] && [ "$run_file" != "$legacy_file" ]; then
+                    # the legacy file stays a mirror of the newest keyed
+                    # record, for readers that have not learned about runs/
+                    cp -f "$run_file" "$legacy_file" 2>/dev/null || true
+                fi
                 printf '%s' "$prev_run"
                 return 0
             fi
@@ -168,9 +233,13 @@ orch_ensure_run() {
     [ -n "$run_id" ] || { printf 'run-create returned no run id\n' >&2; return 1; }
     coord="$(orca_field "$out" '.result.run.coordinator_handle')"
     [ -n "$coord" ] || coord="$handle"
-    jq -n --arg r "$run_id" --arg c "$coord" \
+    state="$(jq -n --arg r "$run_id" --arg c "$coord" \
         --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-        '{run_id: $r, coordinator_handle: $c, created: $t}' >"$run_file"
+        '{run_id: $r, coordinator_handle: $c, created: $t}')"
+    printf '%s\n' "$state" >"$run_file"
+    if [ -n "$handle" ] && [ "$run_file" != "$legacy_file" ]; then
+        cp -f "$run_file" "$legacy_file" 2>/dev/null || true
+    fi
     printf 'created Run %s\n' "$run_id" >&2
     printf '%s' "$run_id"
 }

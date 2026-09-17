@@ -61,8 +61,14 @@ orca_reachable || die "no Orca runtime is reachable" 3
 
 ROOT="$(orch_root)" || ROOT=""
 HANDLE="$(orch_handle "$FROM")"
-if [ -z "$HANDLE" ] && [ -n "$ROOT" ] && [ -f "$(orch_run_file "$ROOT")" ]; then
-    HANDLE="$(jq -r '.coordinator_handle // ""' "$(orch_run_file "$ROOT")")"
+if [ -z "$HANDLE" ] && [ -n "$ROOT" ]; then
+    # No handle of our own: read whoever's record is bound to this folder
+    # (the keyed file for an env handle was already used above; an empty
+    # handle falls through to the legacy run.json, claude-orca-fyv).
+    run_file="$(orch_run_state_file "$ROOT" "")"
+    if [ -f "$run_file" ]; then
+        HANDLE="$(jq -r '.coordinator_handle // ""' "$run_file")"
+    fi
 fi
 FROM_ARGS=()
 [ -n "$HANDLE" ] && FROM_ARGS=(--from "$HANDLE")
