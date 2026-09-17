@@ -185,20 +185,29 @@ JSON
 # (OPENCODE_CONFIG, pointed at this path by seed-orca-state.sh). That file
 # is template-owned like the rest of the agent home, so it is config-sync's
 # to write -- under the same checksum gate, from config/opencode/.
-@test "the home opencode config carries the OpenRouter provider and is synced from config/opencode" {
+@test "the home opencode config pins no provider and is synced from config/opencode" {
     make_project "$PROJECT_DIR"
     primary="$(abspath "$PROJECT_DIR")"
     src="$ORCA_HOST/template/config/opencode/opencode.json"
     dest="$primary/.claude-dev/home/.config/opencode/opencode.json"
 
-    # The source: real JSON, the OpenRouter provider, and the key read from
-    # the env the VM already carries (claude-orca-qa2.7) -- never a literal
-    # key. No `model`: the model is per worker, chosen on argv.
+    # The source: real JSON, and NO provider override at all (2c3c003).
+    # It used to pin provider.openrouter.options.baseURL at the guard on
+    # 127.0.0.1:4141 for every folder, whether or not a guard would ever
+    # answer there -- and on a fresh folder none does, so opencode's every
+    # call was ECONNREFUSED on loopback and read as a network fault. The
+    # guard is not gone; it is no longer assumed. Re-pinning it is
+    # claude-orca-bqj's switch, and this case is what fails if the pin
+    # creeps back in by default.
+    # No `model` either: the model is per worker, chosen on argv.
     [ -f "$src" ]
     run jq -e . "$src"
     [ "$status" -eq 0 ]
     [ "$(jq -r '."$schema"' "$src")" = "https://opencode.ai/config.json" ]
-    [ "$(jq -r '.provider.openrouter.options.apiKey' "$src")" = "{env:OPENROUTER_API_KEY}" ]
+    run jq -e 'has("provider")' "$src"
+    [ "$status" -ne 0 ]
+    run grep -qF '4141' "$src"
+    [ "$status" -ne 0 ]
     run jq -e 'has("model")' "$src"
     [ "$status" -ne 0 ]
     run grep -qE 'sk-[A-Za-z0-9]|or-v1-' "$src"
