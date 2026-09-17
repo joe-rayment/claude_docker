@@ -130,13 +130,14 @@ worker_done_msg() {  # <disp> <term>
 
     run "$WAIT" --timeout-ms 1 --poll 1 --stall-after 60
     [ "$status" -eq 0 ]
+    wait_out="$output"
 
     # never nudged: the record is marked done on sight of the closed bead
     [ -z "$(orca_stub_calls 'terminal send')" ]
     run jq -e '.state == "done" and (.finished_at // 0) > 0' \
         "$ODIR/dispatch/c1.json"
     [ "$status" -eq 0 ]
-    printf '%s\n' "$output" | grep -q "bead is closed -- marking the dispatch done"
+    printf '%s\n' "$wait_out" | grep -q "bead is closed -- marking the dispatch done"
 }
 
 @test "a failed bd lookup leaves a record alone" {
