@@ -354,33 +354,75 @@ show_state() {
     pinned="$(state_field pinned)"; overdrive="$(state_field overdrive)"
 
     if [ -z "$top" ] && [ -z "$worker" ] && [ -z "$recon" ]; then
-        echo "no tier bound yet -- run /tier <top> (e.g. /tier opus) to bind one"
+        echo "no tier bound yet -- run /tier <top> <worker> <recon> (e.g. /tier fable glm-flash luna@high) or /tier <top> (e.g. /tier opus)"
     else
         echo "orchestrator (top)   = $top"
-        echo "worker / executor    = $worker"
-        echo "recon / scout        = $recon"
-        echo "backends             = worker=$(tier_role_label "$(tier_role_field "$STATE_FILE" worker backend)" "$(tier_role_field "$STATE_FILE" worker agent)" "$worker") recon=$(tier_role_label "$(tier_role_field "$STATE_FILE" recon backend)" "$(tier_role_field "$STATE_FILE" recon agent)" "$recon") checker=$(tier_role_label "$(tier_role_field "$STATE_FILE" checker backend)" "$(tier_role_field "$STATE_FILE" checker agent)" "$(tier_role_field "$STATE_FILE" checker model)")"
-        echo "rebind one role: /tier worker openrouter:<vendor/model> | claude:<alias> | subagent  (same for recon/checker)"
-        [ "$pinned" = "true" ] && echo "explicit pin: ON — worker/recon were set manually (tier-set <top> <worker> [<recon>]); a plain /tier <top> clears it."
+        echo "worker / executor    = $(role_line worker)"
+        echo "recon / scout        = $(role_line recon)"
+        echo "checker / verifier   = $(role_line checker)"
+        [ "$pinned" = "true" ] && echo "explicit pin: ON — worker/recon were set by hand; a plain /tier <top> clears it."
         [ "$overdrive" = "true" ] && echo "overdrive: ON — the worker cap is LIFTED (executor runs the top model); a plain /tier <top> clears it."
     fi
-    echo "1-arg /tier auto-derives worker/recon: worker = one rung down capped at sonnet-class, recon = one below the worker (fable>opus>sonnet>haiku, floored)."
-    echo "2/3-arg /tier <top> <worker> [<recon>] pins those bindings explicitly; /tier overdrive lifts the worker cap on the bound top."
-    echo "the checker (verifier) rung is derived too: the top capped at opus, so a fable top is graded from opus; oracle still inherits the orchestrator's model. /model is the primary in-session lever for the derived default."
-    echo "cheap recon on OpenRouter: /tier recon openrouter  binds $TIER_OPENROUTER_RECON_MODEL on the orca backend (opencode)."
-    show_help
+    echo
+    show_guide
 }
 
-# The explanation of the command itself. It used to be the body of
+# role_line <role> -- "<backend>:<agent>:<model>@<variant>" for the show
+# table, from the roles block (the v1 top-level keys carry no variant).
+role_line() {
+    local line
+    line="$(tier_role "$STATE_FILE" "$1")"
+    tier_role_label "$(printf '%s' "$line" | cut -f1)" "$(printf '%s' "$line" | cut -f2)" \
+        "$(printf '%s' "$line" | cut -f3)" "$(printf '%s' "$line" | cut -f5)"
+}
+
+# The short guide: every way to set the tier, on one screen, the
+# OpenRouter+effort form first because it is the one nobody can guess
+# (claude-orca-1w8). A bare /tier prints the state and then this; /tier help
+# prints this and then the long explanation in show_help.
+show_guide() {
+    local routes
+    routes=""
+    if [ -n "$ROUTES_FILE" ] && [ -f "$ROUTES_FILE" ] && command -v jq >/dev/null 2>&1; then
+        routes="$(jq -r '.routes | to_entries[] | select(.value.runner == "opencode" and (.value.model | startswith("openrouter/"))) | .key' "$ROUTES_FILE" 2>/dev/null | tr '\n' ' ')"
+    fi
+    [ -n "$routes" ] || routes="glm glm-flash luna luna-high deepseek deepseek-flash qwen-coder"
+    cat <<EOF
+HOW TO SET IT -- always in this order: top, worker, recon
+  /tier fable glm-flash luna@high
+  /tier fable, GLM 5.3 flash, GPT-5.6 Luna (high)          free text: commas between the roles
+  /tier fable z-ai/glm-5.3-flash openai/gpt-5.6-luna@high  exact OpenRouter ids
+  /tier recon luna high                                    one role at a time: worker | recon | checker
+  /tier opus                                               one Claude model; worker and recon are derived from it
+NAMES
+  Claude:     fable  opus  sonnet  haiku
+  OpenRouter: ${routes}(the short names are the routes in config/delegate-routes.json)
+              any other name is looked up in OpenRouter's catalogue; when it matches several models
+              nothing is bound and the candidates are listed -- /tier models <words> previews that lookup
+EFFORT -- OpenRouter models only (a Claude role ignores it)
+  none  minimal  low  medium  high  xhigh  max      written as  luna@high  or  Luna (high)  or  luna high
+ALSO
+  /tier worker claude:sonnet   an Orca-backed Claude worker      /tier worker subagent   back in-process, derived model
+  /tier recon openrouter       the cheap OpenRouter default      /tier overdrive         lifts the worker cap so the executor runs the TOP model
+  /tier auth openrouter        sign in to OpenRouter              /tier help              the long explanation
+EOF
+}
+
+# The long explanation of the command itself. It used to be the body of
 # config/claude-commands/tier.md, so every /tier <anything> re-read it;
-# now only a bare /tier and /tier help print it, and a binding call prints
+# now only /tier help prints it (after the guide), and a binding call prints
 # its bound line and nothing else.
 show_help() {
+    show_guide
+    echo
     cat <<EOF
 /tier overdrive lifts the worker cap so the executor runs the TOP model (recon stays cheap) and keeps it lifted as /model moves the top; it is expensive, says so on every session-start tier line, and a 1-arg /tier <top> clears it.
+1-arg /tier <top> auto-derives worker/recon: worker = one rung down capped at sonnet-class, recon = one below the worker (fable>opus>sonnet>haiku, floored). 2/3-arg /tier <top> <worker> [<recon>] pins those bindings explicitly.
+the checker (verifier) rung is derived too: the top capped at opus, so a fable top is graded from opus; oracle still inherits the orchestrator's model. /model is the primary in-session lever for the derived default.
 each role (worker · recon · checker) also carries a backend: orca (a supervised Orca worker terminal, dispatched with orca-dispatch) or subagent (the in-process Agent tool). /tier worker openrouter:z-ai/glm-5.3-flash binds OpenRouter's GLM 5.3 Flash run by opencode on the orca backend, /tier worker claude:sonnet an orca-backed Claude worker, /tier worker subagent puts it back in-process on the derived model; recon and checker take the same specs. /tier recon openrouter (bare spec, no model named) binds the role's own OpenRouter default, for recon the flash-class rung $TIER_OPENROUTER_RECON_MODEL.
 a 1-arg /tier <top> resets all three to the defaults: worker orca+claude when the Orca runtime is reachable, else subagent; recon subagent haiku; checker subagent at the derived checker rung (the top capped at opus), so a fable top is graded from opus. An off-ladder top leaves the checker on inherit. With an OpenRouter key in this folder the default worker is the GLM rung on opencode, and every OpenRouter request goes through the in-VM guard, which forces config/provider-policy.json's US/EU provider allowlist; /tier worker claude:sonnet puts the claude rung back.
 an openrouter: bind still saves with no credential in this folder -- it names /tier auth openrouter as the next step, which opens a focused Orca tab that gets a key, validates it and starts the guard; with no Orca runtime it prints the same command to run by hand.
+a reasoning effort (luna@high) is stored as roles.<role>.variant and reaches opencode through a per-launch config file (OPENCODE_CONFIG) on both the orca-dispatch and delegate paths; it has no effect on a Claude role.
 a binding applies to NEW spawns immediately (tier-gate reads tier.json at spawn time); /model <top> moves THIS session's own model now.
 EOF
 }
