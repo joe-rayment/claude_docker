@@ -570,6 +570,25 @@ case "$cmd" in
         rm -f "$state/containers/$name" "$state/containers/$name.meta"; exit 0 ;;
     ps)
         [ "${CLAUDE_ORCA_TEST_SERVICE_DOWN:-0}" = "1" ] && exit 1
+        # `docker ps -a --format '{{.Image}}'` -- the Image column the
+        # update's ref prune reads, one ref per line: what each container
+        # was run from (real docker shows the image id instead when the
+        # tag it was run from has since moved). All containers, stopped
+        # ones included -- that is what the prune asks -a for.
+        fmt=""; prev=""
+        for a in "$@"; do
+            case "$prev" in -f|--format) fmt="$a" ;; esac
+            case "$a" in --format=*) fmt="${a#--format=}" ;; esac
+            prev="$a"
+        done
+        case "$fmt" in
+            *.Image*)
+                for f in "$state"/containers/*.meta; do
+                    [ -e "$f" ] || continue
+                    sed -n 's/^image=//p' "$f"
+                done
+                exit 0 ;;
+        esac
         printf '%-38s%s\n' "NAMES" "STATUS"
         for f in "$state"/containers/*; do
             [ -e "$f" ] || continue

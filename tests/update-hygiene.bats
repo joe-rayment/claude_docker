@@ -73,6 +73,47 @@ LIST
     ! grep -q "^rmi bbbbbbb" "$CONTAINER_STUB_LOG"   # the one just built
 }
 
+# S4 (claude-orca-8uo.5) folded the Orca version into the tag, so a
+# folder's first --update after it lands builds claude-orca:latest-orca<v>
+# and leaves the version-less claude-orca:latest it was built at before
+# sitting on the Mac -- tagged, so prune_old_images never collects it (that
+# one gathers <none> layers only). A built update therefore rmis every
+# OTHER ref of our repo that no container still uses: `docker ps -a` --
+# stopped ones included -- is what "in use" means. The ref a container was
+# run from, and its image id when the tag has since moved, both keep it.
+@test "update rmi's our repo's superseded tagged refs -- :latest and older -orca tags -- that no container still uses, never the new ref, never one in use, never another repo's" {
+    export CLAUDE_ORCA_APP="$(make_fake_orca_app "$BATS_TEST_TMPDIR/Applications/Orca197.app" 1.4.197)"
+    export CLAUDE_ORCA_TEST_IMAGE_ID="$(stub_id a)"
+    mkdir -p "$PROJECT_DIR"
+    primary="$(abspath "$PROJECT_DIR")"
+    run make_project_v3 "$primary"
+    [ "$status" -eq 0 ]
+
+    # Registration ran this folder's container from the ref the update
+    # also wants -- same IMAGE_TAG, same app version both times. Another
+    # folder's container is still on latest-orca1.3.0 and must keep it.
+    rm -f "$CONTAINER_STUB_STATE/preset-applied"
+    export DOCKER_STUB_PRESET_CONTAINER="claude-orca-past:claude-orca:latest-orca1.3.0:$primary:7777"
+    export CLAUDE_ORCA_TEST_IMAGE_ID="$(stub_id b)"
+    cat > "$CONTAINER_STUB_STATE/images-list" <<LIST
+claude-orca:latest sha256:$(stub_id c)
+claude-orca:latest-orca1.4.100 sha256:$(stub_id d)
+claude-orca:latest-orca1.3.0 sha256:$(stub_id f)
+someone/else-image:latest sha256:$(stub_id e)
+claude-orca:latest-orca1.4.197 sha256:$(stub_id b)
+LIST
+
+    : > "$CONTAINER_STUB_LOG"
+    run bash -c "cd '$primary' && ./claude-dev --update"
+    [ "$status" -eq 0 ]
+
+    grep -qx "rmi claude-orca:latest" "$CONTAINER_STUB_LOG"
+    grep -qx "rmi claude-orca:latest-orca1.4.100" "$CONTAINER_STUB_LOG"
+    ! grep -q "rmi claude-orca:latest-orca1.4.197" "$CONTAINER_STUB_LOG"
+    ! grep -qx "rmi claude-orca:latest-orca1.3.0" "$CONTAINER_STUB_LOG"
+    ! grep -qx "rmi someone/else-image:latest" "$CONTAINER_STUB_LOG"
+}
+
 # `docker rmi` refuses an image another container still references. That is
 # a normal answer, not a failed update.
 @test "an rmi that fails does not fail the update" {
