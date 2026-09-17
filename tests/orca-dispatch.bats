@@ -20,8 +20,14 @@ REPO_ROOT="$(cd "$REPO_ROOT/.." && pwd)"
 
 setup_file() {
     # The container points BEADS_DIR at the workspace's own tracker; the
-    # throwaway project below must init its own, not refuse to.
-    unset BEADS_DIR
+    # throwaway project below must init its own, not refuse to. And a live
+    # Orca terminal exports its own coordinator identity -- inherited here
+    # when the suite is run from inside one, it would make orca-wait address
+    # THAT terminal instead of this file's coordinator (stable_pane_required
+    # in the throwaway runtime, claude-orca-hjk case 1). The file has to
+    # behave as it would from a clean shell.
+    unset BEADS_DIR ORCA_TERMINAL_HANDLE ORCA_PANE_KEY ORCA_TAB_ID \
+        ORCA_WORKTREE_ID ORCA_USER_DATA_PATH
     command -v xvfb-run >/dev/null 2>&1 || skip "xvfb-run is not installed"
     command -v jq >/dev/null 2>&1 || skip "jq is not installed"
     command -v bd >/dev/null 2>&1 || skip "bd is not installed"
@@ -47,6 +53,24 @@ setup_file() {
         git commit -qm init
         bd init --prefix probe >/dev/null 2>&1
     ) || skip "could not build the throwaway project"
+
+    # Claude Code refuses an injected prompt in a folder it has not trusted
+    # yet: the TUI sits on the trust dialog and Orca reports
+    # agent_prompt_stalled (claude-orca-hjk case 3). Seed the trust entry the
+    # way claude's own diagnosis prescribes -- projects[<path>]
+    # .hasTrustDialogAccepted in ~/.claude.json. Best effort: without a
+    # claude config there is nothing to trust and case 3 fails on its own.
+    if command -v jq >/dev/null 2>&1 && [ -n "${HOME:-}" ] &&
+            [ -f "$HOME/.claude.json" ]; then
+        export ORCA_CLAUDE_JSON_BACKUP="$BATS_FILE_TMPDIR/claude.json.orig"
+        cp -f "$HOME/.claude.json" "$ORCA_CLAUDE_JSON_BACKUP"
+        cfg_tmp="$(mktemp "$HOME/.claude.json.hjkXXXXXX")"
+        jq --arg p "$proj" '.projects[$p].hasTrustDialogAccepted = true' \
+            "$HOME/.claude.json" >"$cfg_tmp" 2>/dev/null &&
+            mv -f "$cfg_tmp" "$HOME/.claude.json" ||
+            { rm -f "$cfg_tmp"; printf '%s\n' \
+                "claude trust: could not seed $proj in $HOME/.claude.json" >&2; }
+    fi
 
     local bead
     bead="$(cd "$proj" && bd create --title "probe slice" \
@@ -103,6 +127,13 @@ s.close()')"
 }
 
 teardown_file() {
+    # Restore the real ~/.claude.json unconditionally, before anything below
+    # can fail and skip it -- setup_file's trust seeding (case 3) must never
+    # leave a residue key behind in the user's actual config.
+    if [ -f "$BATS_FILE_TMPDIR/claude.json.orig" ] && [ -n "${HOME:-}" ]; then
+        cp -f "$BATS_FILE_TMPDIR/claude.json.orig" "$HOME/.claude.json"
+    fi
+
     [ -f "$BATS_FILE_TMPDIR/env" ] || return 0
     # shellcheck disable=SC1091
     . "$BATS_FILE_TMPDIR/env"
