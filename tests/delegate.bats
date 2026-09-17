@@ -557,6 +557,61 @@ STUB
     [ "$(jq -r '.exit_code' "$r")" = "0" ]
 }
 
+@test "run --route glm: receipt reads tokens and cost from opencode's step_finish part line, with no top-level usage/cost key" {
+    repo="$BATS_TEST_TMPDIR/repo"
+    make_repo "$repo" openrouter.ai
+    # opencode 1.18.25 --format json (claude-orca-gor): usage and cost live
+    # under .part on step_finish, not at the top level.
+    cat > "$STUB_BIN/opencode" <<'STUB'
+#!/usr/bin/env bash
+mkdir -p "$HOME"
+echo opencode > "$HOME/runner"
+cat <<'JSON'
+{"type":"session.updated","timestamp":1788224900000,"sessionID":"ses_fake"}
+{"type":"message","timestamp":1788224900500,"role":"assistant","text":"working"}
+{"type":"step_finish","timestamp":1788224901000,"sessionID":"ses_fake","part":{"tokens":{"input":11367,"output":7},"cost":0.00102513}}
+JSON
+exit 0
+STUB
+    chmod +x "$STUB_BIN/opencode"
+
+    run env DELEGATE_REPO="$repo" OPENROUTER_API_KEY=sk-test \
+        bash "$SCRIPT" run --route glm --prompt "do the thing"
+    [ "$status" -eq 0 ]
+
+    r="$(job_dirs "$repo")/receipt.json"
+    [ "$(jq -r '.tokens_in' "$r")" = "11367" ]
+    [ "$(jq -r '.tokens_out' "$r")" = "7" ]
+    [ "$(jq -r '.usd' "$r")" = "0.00102513" ]
+}
+
+@test "run --route glm --bead: generated opencode config pins small_model to the route's model" {
+    repo="$BATS_TEST_TMPDIR/repo"
+    make_repo "$repo" openrouter.ai
+    bead="$(make_bead "$repo" "delegated slice")"
+
+    run env DELEGATE_REPO="$repo" OPENROUTER_API_KEY=sk-test \
+        bash "$SCRIPT" run --route glm --bead "$bead"
+    [ "$status" -eq 0 ]
+
+    cfg="$(job_dirs "$repo")/config/opencode/opencode.json"
+    [ -f "$cfg" ]
+    [ "$(jq -r '.small_model' "$cfg")" = "openrouter/z-ai/glm-5.2" ]
+}
+
+@test "run --route local --prompt: generated opencode config pins small_model to the ollama route model" {
+    repo="$BATS_TEST_TMPDIR/repo"
+    make_repo "$repo"
+    fake_curl "$STUB_BIN" ok
+
+    run env DELEGATE_REPO="$repo" bash "$SCRIPT" run --route local --prompt hi
+    [ "$status" -eq 0 ]
+
+    cfg="$(job_dirs "$repo")/config/opencode/opencode.json"
+    [ -f "$cfg" ]
+    [ "$(jq -r '.small_model' "$cfg")" = "ollama/qwen3-coder:30b" ]
+}
+
 @test "run --route glm --bead: no key material anywhere in the receipt or the log" {
     repo="$BATS_TEST_TMPDIR/repo"
     make_repo "$repo" openrouter.ai
