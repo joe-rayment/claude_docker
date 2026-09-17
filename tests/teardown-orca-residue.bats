@@ -17,6 +17,12 @@ load helpers/setup
     mkdir -p "$PROJECT_DIR"
     printf 'node_modules/\n*.log\n' > "$PROJECT_DIR/.gitignore"
     make_project "$PROJECT_DIR"
+    # The user's .gitignore is committed, as in any real folder, so the
+    # residue check below measures Orca's leftovers and not the fixture's
+    # own untracked file.
+    git -C "$PROJECT_DIR" add .gitignore
+    git -C "$PROJECT_DIR" -c user.email=test@example.com -c user.name=test \
+        commit --quiet -m "gitignore" >/dev/null
 
     mkdir -p "$PROJECT_DIR/.orca/drops"
     printf 'drop\n' > "$PROJECT_DIR/.orca/drops/x.txt"
