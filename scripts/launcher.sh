@@ -3050,6 +3050,58 @@ cmd_teardown_v3() {
     fi
     gitignore_unseed "$dir"
 
+    # claude-orca-gwl's output directory is Orca residue like .orca above.
+    if [ -d "$dir/graphify-out" ]; then
+        rm -rf "$dir/graphify-out"
+        echo "Removed graphify-out from $dir"
+    fi
+
+    # The .git this setup may have created (claude-orca-avp): a folder that
+    # was never a repository got one from provision.d/55-git-init, whose
+    # root commit carries the marker "claude_orca: seed commit". Teardown
+    # removes .git only when every one of these holds: the folder is the
+    # repository's toplevel (a folder folded into a larger repo, or a
+    # linked worktree whose .git is a pointer into another repository,
+    # never qualifies); the history has exactly one root commit; and that
+    # root's subject carries the marker. User commits on top of a seed
+    # root still lose .git -- the ask is a folder that folds into a larger
+    # repo and pushes. Anything else keeps .git, with the reason in one
+    # line; a folder with no .git of its own says nothing.
+    if [ -d "$dir/.git" ]; then
+        keep=""
+        top="$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null || true)"
+        if [ "$top" != "$dir" ]; then
+            keep="the folder is not the repository toplevel"
+        fi
+        if [ -z "$keep" ]; then
+            root_count=0
+            root_sha=""
+            roots="$(git -C "$dir" rev-list --max-parents=0 HEAD 2>/dev/null || true)"
+            for root in $roots; do
+                root_count=$((root_count + 1))
+                root_sha="$root"
+            done
+            case "$root_count" in
+                0) keep="git cannot read the repository history" ;;
+                1) ;;
+                *) keep="the repository has $root_count root commits" ;;
+            esac
+        fi
+        if [ -z "$keep" ]; then
+            subject="$(git -C "$dir" log -1 --format=%s "$root_sha" 2>/dev/null)"
+            case "$subject" in
+                "claude_orca: seed commit"*) ;;
+                *) keep="the root commit is not claude_orca's seed commit" ;;
+            esac
+        fi
+        if [ -z "$keep" ]; then
+            rm -rf "$dir/.git"
+            echo "removed .git (claude_orca created it)"
+        else
+            echo "kept .git ($keep)"
+        fi
+    fi
+
     # A folder upgraded from v2 may still carry the shell hook, and v3
     # never wants one: nothing on the Mac runs an agent any more.
     for rc_file in "$HOME/.zprofile" "$HOME/.zshrc" "$HOME/.bash_profile"; do
