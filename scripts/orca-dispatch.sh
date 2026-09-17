@@ -56,6 +56,8 @@ SCRIPT_DIR="$(cd "$(dirname "$(_resolve_script_path)")" && pwd)"
 . "$SCRIPT_DIR/lib/tier-roles.sh"
 # shellcheck source=lib/orca-orch.sh
 . "$SCRIPT_DIR/lib/orca-orch.sh"
+# shellcheck source=lib/frozen-hook.sh
+. "$SCRIPT_DIR/lib/frozen-hook.sh"
 
 note() { printf '%s\n' "$*" >&2; }
 die()  { printf 'orca-dispatch: %s\n' "$*" >&2; exit "${2:-2}"; }
@@ -120,6 +122,22 @@ fi
 [ -n "$AGENT" ]   || AGENT="claude"
 [ -n "$WORKTREE" ] || WORKTREE="path:$ROOT"
 [ -n "$VARIANT" ] || VARIANT="$(tier_role_field "$STATE_FILE" "$ROLE" variant)"
+
+# Frozen contract (claude-orca-ljl): install the frozen-hook pre-commit
+# hook into the worktree the worker will commit in, before it starts, so an
+# agent with no Claude-side hooks still cannot edit a frozen test after its
+# RED commit. Only possible when the directory is known now; a new-child
+# worktree gets the hook after worker-start reports its path. Failure to
+# install is noted, never fatal -- protection, not a gate on dispatching.
+FROZEN_WT=""
+case "$WORKTREE" in
+    path:*) FROZEN_WT="${WORKTREE#path:}" ;;
+    current) FROZEN_WT="$PWD" ;;
+esac
+if [ -n "$FROZEN_WT" ]; then
+    install_frozen_hook "$FROZEN_WT" "$BEAD" ||
+        note "frozen-hook: could not install pre-commit hook into $FROZEN_WT"
+fi
 
 # An openrouter/… model is opencode's business whatever the binding says.
 case "$MODEL" in
@@ -292,6 +310,10 @@ WORKTREE_PATH="$(orca_field "$out" \
      // .result.launch.effective.worktreePath // .result.launch.worktree.path')"
 if [ -z "$WORKTREE_PATH" ]; then
     case "$WORKTREE" in path:*) WORKTREE_PATH="${WORKTREE#path:}" ;; esac
+fi
+if [ -n "$WORKTREE_PATH" ] && [ "$WORKTREE_PATH" != "$FROZEN_WT" ]; then
+    install_frozen_hook "$WORKTREE_PATH" "$BEAD" ||
+        note "frozen-hook: could not install pre-commit hook into $WORKTREE_PATH"
 fi
 STARTED_AT="$(date +%s)"
 
