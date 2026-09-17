@@ -42,12 +42,13 @@ git_init_step() {  # git_init_step <project> [home] [NAME=value ...]
 }
 
 # A folder that is not a repository, holding a file of the user's own and
-# the two seeds 50-seed-project leaves behind.
+# the two seeds 50-seed-project leaves behind (the .gitignore block as
+# seed_gitignore writes it since claude-orca-e8m, orca.yaml included).
 plain_folder() {  # plain_folder [name]
     local d="$BATS_TEST_TMPDIR/${1:-proj}"
     mkdir -p "$d"
     printf 'x,y\n1,2\n' > "$d/data.csv"
-    printf '# claude_orca\n.claude-dev/\nattachments/\n' > "$d/.gitignore"
+    printf '# claude_orca\n.claude-dev/\nattachments/\norca.yaml\n' > "$d/.gitignore"
     printf 'scripts:\n  setup: bash .claude-dev/template/scripts/container/seed-project.sh\n' > "$d/orca.yaml"
     printf '%s\n' "$d"
 }
@@ -83,7 +84,9 @@ says() {  # says <needle>: the last run's output contains it
     [ -d "$d/.git" ]
     [ "$(head_branch "$d")" = "main" ]
     [ "$(commit_count "$d")" = "1" ]
-    [ "$(tracked "$d")" = ".gitignore orca.yaml" ]
+    # claude-orca-e8m: orca.yaml is ignored by the seeded .gitignore now, so
+    # the seed commit carries .gitignore alone and orca.yaml shows nowhere.
+    [ "$(tracked "$d")" = ".gitignore" ]
     run git -C "$d" status --porcelain
     [ "$output" = "?? data.csv" ]
 }
@@ -174,7 +177,9 @@ says() {  # says <needle>: the last run's output contains it
     run git_init_step "$d"
     [ "$status" -eq 0 ]
     [ "$(commit_count "$d")" = "1" ]
-    [ "$(git -C "$d" ls-tree --name-only HEAD | LC_ALL=C sort | paste -sd' ' -)" = "orca.yaml" ]
+    # claude-orca-e8m: orca.yaml is out of the pathspec, so a folder whose
+    # only seed is an ignored orca.yaml gets an empty commit.
+    [ -z "$(git -C "$d" ls-tree --name-only HEAD)" ]
     [ "$(git -C "$d" diff --cached --name-only)" = "notes.txt" ]
 }
 
@@ -231,7 +236,7 @@ says() {  # says <needle>: the last run's output contains it
     says "seed commit"
     says ".beads"
     [ "$(commit_count "$d")" = "1" ]
-    [ "$(tracked "$d")" = ".beads/.gitignore .beads/config.yaml .beads/issues.jsonl .gitignore orca.yaml" ]
+    [ "$(tracked "$d")" = ".beads/.gitignore .beads/config.yaml .beads/issues.jsonl .gitignore" ]
     run git -C "$d" status --porcelain
     [ "$output" = "?? data.csv" ]
 }
