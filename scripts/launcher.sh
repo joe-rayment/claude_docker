@@ -196,7 +196,8 @@ gitignore_unseed() {
                    l == "/claude-dev" || l == "Orca.app/" || \
                    l == ".mcp.json" || l == "attachments/" || \
                    l == ".claude/logs/" || l == ".orca/" || \
-                   l == ".orca-worktrees/"
+                   l == ".orca-worktrees/" || l == "orca.yaml" || \
+                   l == "graphify-out/" || l == "__pycache__/"
         }
         $0 == marker {
             skip = 1
