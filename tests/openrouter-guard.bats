@@ -162,24 +162,26 @@ post() {  # post <path> <auth-header-value> <json-body> -- prints the HTTP code
     start_upstream json
     start_guard
 
-    # novita is not on the allowlist -> the whole order is dropped
+    # novita is not on the allowlist -> the whole client order is unusable, so
+    # the policy's own explicit order is forced in its place (claude-orca-c6b)
     code="$(post /api/v1/chat/completions 'Bearer guard-token-abc' \
         '{"model":"z-ai/glm-5.3","provider":{"order":["novita","parasail"],"allow_fallbacks":true,"data_collection":"allow"},"messages":[]}')"
     [ "$code" = "200" ]
-    run jq -e '.provider | has("order") | not' "$REC/body.json"
-    [ "$status" -eq 0 ]
+    run jq -r '.provider.order | join(",")' "$REC/body.json"
+    [ "$output" = "$(jq -r '.order | join(",")' "$POLICY")" ]
     run jq -e '.provider.allow_fallbacks == false and .provider.data_collection == "deny"' "$REC/body.json"
     [ "$status" -eq 0 ]
     run jq -r '.provider.only | join(",")' "$REC/body.json"
     [ "$output" = "$(allowlist_csv)" ]
 
-    # ... and the drop is on the record
+    # ... and the drop is on the record, with order_source naming the policy
     log="$RUN/openrouter-guard.log"
     [ -f "$log" ]
-    run jq -e 'select(.client_order_dropped == true) | .model == "z-ai/glm-5.3" and .providers_forced == true and (.ts | length) > 0' "$log"
+    run jq -e 'select(.client_order_dropped == true) | .model == "z-ai/glm-5.3" and .providers_forced == true and .order_source == "policy" and (.ts | length) > 0' "$log"
     [ "$status" -eq 0 ]
 
-    # an order entirely INSIDE the allowlist is kept as the client sent it
+    # an order entirely INSIDE the allowlist is kept as the client sent it,
+    # and the log names the client as the order's source
     rm -f "$REC/body.json"
     first="$(jq -r '.allow[0].slug' "$POLICY")"
     second="$(jq -r '.allow[1].slug' "$POLICY")"
@@ -192,6 +194,64 @@ post() {  # post <path> <auth-header-value> <json-body> -- prints the HTTP code
     [ "$status" -eq 0 ]
     run jq -r '.provider.only | join(",")' "$REC/body.json"
     [ "$output" = "$(allowlist_csv)" ]
+    run jq -e 'select(.client_order_dropped == false) | .order_source == "client"' "$log"
+    [ "$status" -eq 0 ]
+}
+
+@test "a completion request with no provider block at all gets provider.order forced to the policy's explicit order" {
+    start_upstream json
+    start_guard
+
+    code="$(post /api/v1/chat/completions 'Bearer guard-token-abc' \
+        '{"model":"z-ai/glm-5.3","messages":[]}')"
+    [ "$code" = "200" ]
+
+    run jq -r '.provider.order | join(",")' "$REC/body.json"
+    [ "$output" = "$(jq -r '.order | join(",")' "$POLICY")" ]
+    run jq -r '.provider.only | join(",")' "$REC/body.json"
+    [ "$output" = "$(allowlist_csv)" ]
+    run jq -e '.provider.allow_fallbacks == false' "$REC/body.json"
+    [ "$status" -eq 0 ]
+
+    log="$RUN/openrouter-guard.log"
+    run jq -e 'select(.path == "/api/v1/chat/completions" and .status == 200) | .order_source == "policy"' "$log"
+    [ "$status" -eq 0 ]
+}
+
+@test "the guard refuses to start when the policy's order names a provider outside the allow list" {
+    BAD_POLICY="$BATS_TEST_TMPDIR/bad-policy.json"
+    jq '.order = (.order // [.allow[].slug]) + ["not-a-real-provider"]' "$POLICY" > "$BAD_POLICY"
+
+    GP="$(free_port)"
+    run timeout 5 env OPENROUTER_API_KEY=real-secret OPENROUTER_GUARD_TOKEN=guard-token-abc \
+        OPENROUTER_UPSTREAM="http://127.0.0.1:1" \
+        python3 "$GUARD" --port "$GP" --policy "$BAD_POLICY" --run-dir "$RUN"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"not-a-real-provider"* ]]
+    [[ "$output" == *"order"* ]]
+}
+
+@test "a policy with no order field falls back to the allow list order and logs the fallback once" {
+    NOORDER_POLICY="$BATS_TEST_TMPDIR/no-order-policy.json"
+    jq 'del(.order)' "$POLICY" > "$NOORDER_POLICY"
+
+    start_upstream json
+    GP="$(free_port)"
+    OPENROUTER_API_KEY=real-secret \
+    OPENROUTER_GUARD_TOKEN=guard-token-abc \
+    OPENROUTER_UPSTREAM="http://127.0.0.1:$UP_PORT" \
+        python3 "$GUARD" --port "$GP" --policy "$NOORDER_POLICY" --run-dir "$RUN" \
+        > "$BATS_TEST_TMPDIR/guard.log" 2>&1 &
+    GUARD_PID=$!
+    wait_port "$GP"
+
+    code="$(post /api/v1/chat/completions 'Bearer guard-token-abc' '{"model":"z-ai/glm-5.3","messages":[]}')"
+    [ "$code" = "200" ]
+    run jq -r '.provider.order | join(",")' "$REC/body.json"
+    [ "$output" = "$(allowlist_csv)" ]
+
+    run grep -c 'falling back to the allow' "$BATS_TEST_TMPDIR/guard.log"
+    [ "$output" = "1" ]
 }
 
 @test "the guard streams an SSE response through unchanged" {
