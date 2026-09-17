@@ -48,6 +48,14 @@ Environment:
                            test suite points this at a stub server)
     CLAUDE_ORCA_RUN_DIR    run dir (default $PROJECT_DIR/.claude-dev/run)
     PROJECT_DIR            the project root, when CLAUDE_ORCA_RUN_DIR is unset
+    OPENROUTER_GUARD_RETRY_MAX
+                           retries on an upstream 429/502/503/529 before
+                           passing the failure through unchanged (default 4;
+                           0 disables retries -- claude-orca-m57)
+    OPENROUTER_GUARD_RETRY_BASE_S
+                           exponential backoff base in seconds (default 2.0:
+                           2,4,8,16); an upstream Retry-After header wins
+                           over the backoff when present, capped at 30s
 """
 
 import argparse
@@ -58,6 +66,7 @@ import os
 import secrets
 import sys
 import threading
+import time
 import urllib.parse
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -89,6 +98,52 @@ HOP_BY_HOP = frozenset(
 DEFAULT_UPSTREAM = "https://openrouter.ai"
 DEFAULT_PORT = 4141
 LOG_LOCK = threading.Lock()
+
+# claude-orca-m57: a transient upstream failure the client cannot see past --
+# a 429 an agent's own TUI just prints and stops on -- is absorbed here
+# instead, with exponential backoff, since this is the one place every
+# request already passes through.
+RETRYABLE_STATUSES = frozenset((429, 502, 503, 529))
+DEFAULT_RETRY_MAX = 4
+DEFAULT_RETRY_BASE_S = 2.0
+RETRY_AFTER_CAP_S = 30.0
+
+
+def env_int(name, default):
+    raw = (os.environ.get(name, "") or "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+def env_float(name, default):
+    raw = (os.environ.get(name, "") or "").strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+def compute_sleep_s(attempt, base_s, retry_after_header):
+    """Seconds to sleep before retry number `attempt + 1`.
+
+    An upstream Retry-After wins outright when present and parseable --
+    the server told us exactly how long, so guessing with backoff instead
+    would ignore it. Otherwise: base_s * 2**attempt (2, 4, 8, 16 at the
+    defaults). Either way, capped at RETRY_AFTER_CAP_S so a bad/huge header
+    or a runaway attempt count cannot stall a request indefinitely.
+    """
+    if retry_after_header:
+        try:
+            return min(float(retry_after_header), RETRY_AFTER_CAP_S)
+        except ValueError:
+            pass
+    return min(base_s * (2 ** attempt), RETRY_AFTER_CAP_S)
 
 
 def default_run_dir():
@@ -333,29 +388,61 @@ class Guard(BaseHTTPRequestHandler):
         if body:
             headers["Content-Length"] = str(len(body))
 
-        try:
-            conn = cfg["connect"]()
-            conn.request(method, self.path, body=body or None, headers=headers)
-            response = conn.getresponse()
-        except Exception as exc:  # upstream unreachable / TLS failure / ...
+        retry_max = cfg["retry_max"]
+        retry_base_s = cfg["retry_base_s"]
+        attempt = 0
+        while True:
+            try:
+                conn = cfg["connect"]()
+                conn.request(method, self.path, body=body or None, headers=headers)
+                response = conn.getresponse()
+            except Exception as exc:  # upstream unreachable / TLS failure / ...
+                self.audit(
+                    path=self.path,
+                    model=model,
+                    providers_forced=forced,
+                    client_order_dropped=order_dropped,
+                    status=502,
+                    error=str(exc),
+                )
+                self.refuse(502, "openrouter-guard: upstream request failed: %s" % exc)
+                return
+
+            if response.status not in RETRYABLE_STATUSES or attempt >= retry_max:
+                break
+
+            # Nothing has reached the client yet -- send_response has not
+            # been called -- so retrying here, streaming request or not,
+            # never double-delivers a byte of a partial body.
+            sleep_s = compute_sleep_s(attempt, retry_base_s, response.getheader("Retry-After"))
+            try:
+                response.read()
+            except Exception:
+                pass
+            conn.close()
+            attempt += 1
             self.audit(
                 path=self.path,
                 model=model,
                 providers_forced=forced,
                 client_order_dropped=order_dropped,
-                status=502,
-                error=str(exc),
+                retry=attempt,
+                status=response.status,
+                sleep_s=sleep_s,
             )
-            self.refuse(502, "openrouter-guard: upstream request failed: %s" % exc)
-            return
+            time.sleep(sleep_s)
 
-        self.audit(
+        exhausted = attempt > 0 and attempt >= retry_max and response.status in RETRYABLE_STATUSES
+        audit_fields = dict(
             path=self.path,
             model=model,
             providers_forced=forced,
             client_order_dropped=order_dropped,
             status=response.status,
         )
+        if exhausted:
+            audit_fields["retries_exhausted"] = True
+        self.audit(**audit_fields)
 
         # Same status, same headers (minus hop-by-hop), body streamed through
         # in chunks so an SSE answer reaches the client as it arrives rather
@@ -428,6 +515,8 @@ def main(argv):
     token, token_file = resolve_token(args.run_dir)
     upstream = os.environ.get("OPENROUTER_UPSTREAM", DEFAULT_UPSTREAM).rstrip("/")
     connect, host_header = make_connector(upstream)
+    retry_max = env_int("OPENROUTER_GUARD_RETRY_MAX", DEFAULT_RETRY_MAX)
+    retry_base_s = env_float("OPENROUTER_GUARD_RETRY_BASE_S", DEFAULT_RETRY_BASE_S)
 
     server = ThreadingHTTPServer(("127.0.0.1", args.port), Guard)
     server.daemon_threads = True
@@ -438,6 +527,8 @@ def main(argv):
         "connect": connect,
         "upstream_host_header": host_header,
         "log_file": os.path.join(args.run_dir, "openrouter-guard.log"),
+        "retry_max": retry_max,
+        "retry_base_s": retry_base_s,
     }
 
     sys.stderr.write(
