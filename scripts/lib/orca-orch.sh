@@ -279,24 +279,28 @@ orch_fallback() {
 # claude-orca-1w8) has no CLI flag on the opencode TUI -- verified in this
 # container on opencode 1.18.25 (2026-09-16): only a config file naming
 # provider.openrouter.models.<vendor/model>.options.reasoning.effort turns
-# reasoning tokens on. So whenever a variant is given OR a guard token
-# exists, a per-launch config is written under <run_dir>/opencode-launch/
-# and OPENCODE_CONFIG is added to the same env file the guard token rides
-# in -- no variant and no token stays the original bare command, no files.
+# reasoning tokens on. A per-launch config is ALWAYS written now under
+# <run_dir>/opencode-launch/, with OPENCODE_CONFIG added to the same env
+# file the guard token rides in, even with no variant and no token
+# (claude-orca-gh9): opencode's own "ask" default on external_directory and
+# doom_loop stalls a dispatched worker forever since nobody is at the
+# keyboard to answer the TUI's permission prompt, so the config also carries
+# a blanket-allow permission block unless
+# CLAUDE_ORCA_OPENCODE_PERMISSIONS=ask opts back into opencode's
+# interactive defaults (the config is still written either way).
 orca_opencode_command() {
     local model="$1" run_dir="$2" variant="${3:-}"
     local token_file token="" port env_file slug cfg_dir cfg vendor_model
-    local base_url="" api_key_json="null"
+    local base_url="" api_key_json="null" perm_mode haveperm
 
     token_file="$run_dir/openrouter-guard.token"
     if [ -s "$token_file" ]; then
         token="$(cat "$token_file" 2>/dev/null)"
     fi
 
-    if [ -z "$token" ] && [ -z "$variant" ]; then
-        printf 'opencode --model %s' "$model"
-        return 0
-    fi
+    perm_mode="${CLAUDE_ORCA_OPENCODE_PERMISSIONS:-allow}"
+    haveperm=true
+    [ "$perm_mode" = "ask" ] && haveperm=false
 
     port="${CLAUDE_ORCA_GUARD_PORT:-4141}"
     env_file="$run_dir/openrouter-guard.env"
@@ -316,8 +320,16 @@ orca_opencode_command() {
     ( umask 077 && jq -n \
         --argjson options "$api_key_json" \
         --arg vm "$vendor_model" --arg eff "$variant" --argjson havemodels "$([ -n "$variant" ] && echo true || echo false)" \
-        '{"$schema": "https://opencode.ai/config.json",
-          provider: { openrouter: (
+        --argjson haveperm "$haveperm" \
+        '{"$schema": "https://opencode.ai/config.json"}
+          + (if $haveperm then {
+              permission: {
+                "*": "allow",
+                bash: { "*": "allow", "git push *": "deny", "git push": "deny" },
+                external_directory: { "*": "allow" }
+              }
+            } else {} end)
+          + { provider: { openrouter: (
             { }
             + (if $options != null then { options: $options } else {} end)
             + (if $havemodels then { models: { ($vm): { options: { reasoning: { effort: $eff } } } } } else {} end)
