@@ -1529,7 +1529,10 @@ write_opencode_auth() {  # write_opencode_auth <path> <type> <key>
     [ "$output" = "$allow" ]
     run jq -e '.provider.allow_fallbacks == false and .provider.data_collection == "deny"' "$rec/body.json"
     [ "$status" -eq 0 ]
-    run jq -e '.provider | has("order") | not' "$rec/body.json"
+    # z-ai is not usable, so the guard forces its own explicit order in
+    # place of the client's (claude-orca-c6b)
+    run jq -r '.provider.order | join(",")' "$rec/body.json"
+    [ "$output" = "$(jq -r '.order | join(",")' "$REPO_ROOT/config/provider-policy.json")" ]
     [ "$status" -eq 0 ]
     run jq -r '[.provider.only[] | select(. == "z-ai")] | length' "$rec/body.json"
     [ "$output" = "0" ]
