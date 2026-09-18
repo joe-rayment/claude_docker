@@ -243,12 +243,13 @@ orca() { "$ORCA_CLI" "$@"; }
     [ "$status" -eq 0 ]
 }
 
+# claude-orca-32e: since claude-orca-ltd made --agent opencode headless by default, --tui selects the TUI adoption path this case asserts.
 @test "orca-dispatch starts an opencode worker with --model openrouter/ and adopts it as a supervised worker" {
     command -v opencode >/dev/null 2>&1 || skip "opencode is not installed"
 
     run --separate-stderr "$DISPATCH" "$ORCA_BEAD" --agent opencode \
         --model openrouter/qwen/qwen3-coder --worktree "path:$ORCA_PROJ" \
-        --from "$ORCA_COORD"
+        --from "$ORCA_COORD" --tui
     [ "$status" -eq 0 ]
     local r
     r="$(receipt "$output")"
