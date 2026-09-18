@@ -211,7 +211,14 @@ receipt.json         schema above, secret-redacted after the run
 - **Merge-after-verify**: `delegate.sh` never merges. A `--bead` job appends
   `delegated-to:` / `branch:` / `receipt:` to the bead's notes; the branch
   waits for a native `verifier` PASS, then merging is an ordinary
-  orchestrator step.
+  orchestrator step — in the same turn as the PASS, never later.
+- **Cleanup-after-merge**: `worktree-gc` (run after every `git merge` by a
+  PostToolUse hook, at session start and end, by `disk-cleanup`, and by the
+  boot step `65-worktree-sweep`) removes the job's worktree once its branch
+  is merged, deletes the merged branch, and then sweeps the finished job's
+  `home/` and `config/` (~160 MB of runner caches per job), keeping
+  `receipt.json`, `runner.log`, `branch` and `env`. A branch with commits
+  not in main is reported as `STRANDED`, never deleted.
 
 ## Billing guards are separate
 
