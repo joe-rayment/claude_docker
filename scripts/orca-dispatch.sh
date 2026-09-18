@@ -8,7 +8,7 @@
 #                 [--agent claude|opencode|codex|gemini|bash] [--model <id>]
 #                 [--worktree current|new-child|path:<dir>|id:<wt>|…]
 #                 [--task <task_id>] [--task-deps <json array>]
-#                 [--from <handle>] [--timeout-ms <n>]
+#                 [--from <handle>] [--timeout-ms <n>] [--tui]
 #
 # What it does, in order: resolve the coordinator handle -> ensure ONE Run
 # per coordinator (the keyed record runs/<handle>.json, reused by run-use;
@@ -18,10 +18,16 @@
 #
 #   claude|codex|gemini  worker-start --agent <a> --model <m>   (Orca launches
 #                        the TUI in a worktree and injects the spec)
-#   opencode             terminal create --command "opencode --model <m>"
-#                        -> terminal wait --for tui-idle
-#                        -> worker-start --terminal <handle>  (adoption: Orca
-#                        does not launch opencode itself)
+#   opencode             headless by default (claude-orca-ltd): the composed
+#                        SPEC is written to run/orchestration/tasks/<id>.md
+#                        and the terminal runs the template's orca-worker-run
+#                        against it -- a run that exits when the slice is
+#                        done, then `orchestration dispatch --to` makes it a
+#                        context-only Dispatch exactly like bash's
+#                        --tui               the old path: terminal create
+#                        --command "opencode --model <m>" -> terminal wait
+#                        --for tui-idle -> worker-start --terminal <handle>
+#                        (adoption: Orca does not launch opencode itself)
 #   bash                 terminal create --command bash -> dispatch --to
 #                        (a context-only Dispatch: a bare shell has no agent
 #                        to inject into; this is what the integration test
@@ -66,6 +72,7 @@ die()  { printf 'orca-dispatch: %s\n' "$*" >&2; exit "${2:-2}"; }
 BEAD=""; ROLE="worker"; BACKEND=""; AGENT=""; MODEL=""; WORKTREE=""; VARIANT=""
 FROM=""; TIMEOUT_MS="${CLAUDE_ORCA_DISPATCH_TIMEOUT_MS:-90000}"
 TASK_ID=""; TASK_DEPS=""
+TUI=0
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -81,7 +88,8 @@ while [ "$#" -gt 0 ]; do
         --task-deps) TASK_DEPS="${2:-}"; shift ;;
         --from)     FROM="${2:-}"; shift ;;
         --timeout-ms) TIMEOUT_MS="${2:-}"; shift ;;
-        -h|--help)  sed -n '3,33p' "$(_resolve_script_path)"; exit 0 ;;
+        --tui)      TUI=1 ;;
+        -h|--help)  sed -n '3,38p' "$(_resolve_script_path)"; exit 0 ;;
         -*)         die "unknown flag: $1" ;;
         *)          [ -z "$BEAD" ] && BEAD="$1" || die "unexpected argument: $1" ;;
     esac
@@ -193,6 +201,31 @@ else
     [ -n "$TASK_ID" ] || die "task-create returned no task id" 4
 fi
 
+# --- the headless opencode spec (claude-orca-ltd) --------------------------
+#
+# --agent opencode dispatches headless by default: the composed SPEC is
+# written to run/orchestration/tasks/<task_id>.spec.md and the worker
+# terminal runs the template's orca-worker-run against it -- a run that
+# exits when the slice is done, never a resident TUI. --tui keeps the old
+# adoption path for a person who wants to watch.
+
+OP_RUN_DIR=""; SPEC_FILE=""; MODE=""
+case "$AGENT" in
+    opencode)
+        if [ "$TUI" -eq 1 ]; then
+            MODE="tui"
+        else
+            OP_RUN_DIR="$(dirname "$(orch_dir "$ROOT")")"
+            mkdir -p "$OP_RUN_DIR/orchestration/tasks" ||
+                die "cannot write $OP_RUN_DIR/orchestration/tasks" 4
+            SPEC_FILE="$OP_RUN_DIR/orchestration/tasks/$TASK_ID.spec.md"
+            printf '%s\n' "$SPEC" >"$SPEC_FILE"
+            chmod 600 "$SPEC_FILE"
+            MODE="headless"
+        fi
+        ;;
+esac
+
 # --- the worker ----------------------------------------------------------
 
 TERMINAL=""; DISPATCH_ID=""; STATE=""; COMMAND=""; WORKTREE_PATH=""
@@ -245,6 +278,19 @@ new_terminal() {
     [ -n "$TERMINAL" ] || die "terminal create returned no handle" 4
 }
 
+# wt_dir_for_selector <selector> -- the directory behind a worktree
+# selector, resolved the way the frozen-hook install does (path:/current);
+# an id: selector carries the directory after its "::" -- Orca's worktree
+# ids are "<repo-id>::<path>".
+wt_dir_for_selector() {
+    case "$1" in
+        path:*)  printf '%s' "${1#path:}" ;;
+        current) printf '%s' "$PWD" ;;
+        id:*)    local s="${1#id:}"; printf '%s' "${s##*:}" ;;
+        *)       return 1 ;;
+    esac
+}
+
 case "$AGENT" in
     bash|shell)
         # A bare shell has no agent CLI to inject into, so this is a
@@ -260,17 +306,41 @@ case "$AGENT" in
         ;;
     opencode)
         [ -n "$MODEL" ] || die "--agent opencode needs --model <provider/model>"
-        COMMAND="$(orca_opencode_command "$MODEL" "$ROOT/.claude-dev/run" "$VARIANT")"
-        new_terminal "$COMMAND" "$BEAD $MODEL"
-        orca_call terminal wait --terminal "$TERMINAL" --for tui-idle \
-            --timeout-ms 30000 --json >/dev/null 2>&1 ||
-            note "opencode did not report tui-idle; adopting the terminal anyway"
-        out="$(orca_call orchestration worker-start --task "$TASK_ID" \
-            --terminal "$TERMINAL" --worktree "$WORKTREE" \
-            ${NAME_ARGS[@]+"${NAME_ARGS[@]}"} --run "$RUN_ID" \
-            --timeout-ms "$TIMEOUT_MS" ${FROM_ARGS[@]+"${FROM_ARGS[@]}"} --json)" || true
-        DISPATCH_ID="$(orca_field "$out" '.result.dispatchId')"
-        STATE="$(orca_field "$out" '.result.state')"
+        if [ "$MODE" = "headless" ]; then
+            WORKTREE_PATH="$(wt_dir_for_selector "$WORKTREE")" ||
+                die "headless opencode needs a resolvable worktree directory (path:<dir>, current, or id:<id> -- or --tui for the resident TUI path)" 2
+            [ -d "$WORKTREE_PATH" ] ||
+                die "worktree dir not found: $WORKTREE_PATH" 2
+            # The launch env (guard token, OPENCODE_CONFIG with the role's
+            # reasoning variant and the permission block) is prepared by
+            # the same composer the TUI path uses -- orca-worker-run
+            # sources it before exec'ing opencode, so the variant rides
+            # the headless run too. The composed command names the env
+            # file explicitly.
+            orca_opencode_command "$MODEL" "$OP_RUN_DIR" "$VARIANT" >/dev/null
+            COMMAND="$(printf '%s/bin/orca-worker-run --task %s --spec %s --model %s --dir %s --run-dir %s --env %s/openrouter-guard.env --bead %s' \
+                "$(template_dir)" "$TASK_ID" "$SPEC_FILE" "$MODEL" \
+                "$WORKTREE_PATH" "$OP_RUN_DIR" "$OP_RUN_DIR" "$BEAD")"
+            new_terminal "$COMMAND" "$BEAD worker"
+            out="$(orca_call orchestration dispatch --task "$TASK_ID" \
+                --to "$TERMINAL" --run "$RUN_ID" \
+                ${FROM_ARGS[@]+"${FROM_ARGS[@]}"} --json)" ||
+                die "dispatch failed: $(orca_error "$out")" 4
+            DISPATCH_ID="$(orca_field "$out" '.result.dispatch.id')"
+            STATE="$(orca_field "$out" '.result.dispatch.status')"
+        else
+            COMMAND="$(orca_opencode_command "$MODEL" "$ROOT/.claude-dev/run" "$VARIANT")"
+            new_terminal "$COMMAND" "$BEAD $MODEL"
+            orca_call terminal wait --terminal "$TERMINAL" --for tui-idle \
+                --timeout-ms 30000 --json >/dev/null 2>&1 ||
+                note "opencode did not report tui-idle; adopting the terminal anyway"
+            out="$(orca_call orchestration worker-start --task "$TASK_ID" \
+                --terminal "$TERMINAL" --worktree "$WORKTREE" \
+                ${NAME_ARGS[@]+"${NAME_ARGS[@]}"} --run "$RUN_ID" \
+                --timeout-ms "$TIMEOUT_MS" ${FROM_ARGS[@]+"${FROM_ARGS[@]}"} --json)" || true
+            DISPATCH_ID="$(orca_field "$out" '.result.dispatchId')"
+            STATE="$(orca_field "$out" '.result.state')"
+        fi
         ;;
     claude|codex|gemini|cursor)
         out="$(orca_call orchestration worker-start --task "$TASK_ID" \
@@ -305,10 +375,14 @@ fi
 
 # Where the worker actually works: whatever the runtime reports (the only
 # way to learn a new-child path), else the directory behind a path:
-# selector, else empty. orca-wait's stall watch reads it.
-WORKTREE_PATH="$(orca_field "$out" \
-    '.result.worktree.path // .result.worktreePath
-     // .result.launch.effective.worktreePath // .result.launch.worktree.path')"
+# selector, else empty. orca-wait's stall watch reads it. A headless
+# opencode dispatch already resolved it from the selector; the read-back
+# would clobber an id: resolution with empty, so it only fills a gap.
+if [ -z "$WORKTREE_PATH" ]; then
+    WORKTREE_PATH="$(orca_field "$out" \
+        '.result.worktree.path // .result.worktreePath
+         // .result.launch.effective.worktreePath // .result.launch.worktree.path')"
+fi
 if [ -z "$WORKTREE_PATH" ]; then
     case "$WORKTREE" in path:*) WORKTREE_PATH="${WORKTREE#path:}" ;; esac
 fi
@@ -341,11 +415,14 @@ RECEIPT="$(jq -n -c --arg bead "$BEAD" --arg run "$RUN_ID" --arg task "$TASK_ID"
     --arg state "$STATE" --arg cmd "$COMMAND" --arg wtp "$WORKTREE_PATH" \
     --argjson started "$STARTED_AT" --argjson tail "$LAUNCH_TAIL" \
     --arg reason "$REASON" --arg variant "$VARIANT" \
+    --arg mode "$MODE" --arg specfile "$SPEC_FILE" \
     '{bead: $bead, run_id: $run, task_id: $task, dispatch_id: $disp,
       backend: $backend, agent: $agent, model: $model, terminal: $term,
       worktree: $wt, worktree_path: $wtp, state: $state, command: $cmd,
       started_at: $started, launch_tail: $tail, reason: $reason,
-      variant: (if $variant == "" then null else $variant end)}')"
+      variant: (if $variant == "" then null else $variant end),
+      mode: (if $mode == "" then null else $mode end),
+      spec_file: (if $specfile == "" then null else $specfile end)}')"
 
 printf '%s' "$RECEIPT" >"$(orch_disp_file "$ROOT" "$DISPATCH_ID")"
 orch_note_bead "$ROOT" "$BEAD" \

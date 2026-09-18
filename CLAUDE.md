@@ -48,17 +48,17 @@ One command (`gh api … bootstrap.sh | bash`), run from inside a project
 folder, gives that folder **its own Linux container** (on a Mac, inside
 Docker Desktop's own Linux VM). `<project>/.claude-dev/` carries the template
 clone, `bin/claude-dev`, the folder's `claude-orca.json` and the `home/` that
-becomes the agent's home directory. There is no central install and nothing
-on the Mac runs an agent.
+becomes the agent's home directory. There is no central install; nothing on
+the Mac runs an agent.
 
 The boundary is the container's. `claude-dev` runs one Docker container per
 folder from an image built on that machine (`claude-orca`, pinned by the
 `IMAGE_TAG` file; `CLAUDE_ORCA_IMAGE_REPO`/`CLAUDE_ORCA_IMAGE` override it),
 mounting the project at **`/workspace/<name>`** and `.claude-dev/home` as
 `/home/agent`, publishing Orca's port on `127.0.0.1` only. The project used
-to be mounted at its own Mac path so that paths meant the same thing on both
+to be mounted at its own Mac path so paths meant the same thing on both
 sides; the price was a container that spelled out its owner's home directory
-and folder tree at every prompt, which reads as no sandbox at all. Everything
+and folder tree at every prompt — no sandbox at all. Everything
 inside takes the path from `PROJECT_DIR`, so nothing needed them to agree;
 the Mac path still rides in as `CLAUDE_ORCA_HOST_PROJECT_DIR` for messages
 that name a file to open on the Mac, and `BEADS_DIR` names the folder's
@@ -68,11 +68,11 @@ The image carries the whole install: apt state (`setup.sh`'s `IMAGE_PHASES`)
 plus the payload — Orca, Claude Code, opencode, bd, dolt, bats — one
 Docker layer per phase, rarest-changing first, with the repo copy below them
 so editing a script rebuilds no payload layer. That payload was briefly
-installed per folder into `<project>/.claude-dev/toolchain` instead, and the
-measurement that ended the experiment was a first start of ~18 minutes on a
-real Mac, 15.5 of them downloading 1.3 GB at 2.5 MB/s, once per folder,
-shared with no other folder — the job Docker's layer cache does for every
-folder at once. (It also made the macOS CI job impossible: colima's virtiofs
+installed per folder into `<project>/.claude-dev/toolchain` instead; the
+measurement that ended the experiment was an ~18-minute first start — 15.5
+of them downloading 1.3 GB at 2.5 MB/s — once per folder, shared with no
+other folder, the job Docker's layer cache does for every folder at once.
+(It also broke the macOS CI job: colima's virtiofs
 refuses the `chown` into a bind mount.) A folder still carries a toolchain on
 the **runtime path** — plain `ubuntu:24.04`, where a folder lands when the
 local `docker build` cannot run or fails — because there is no baked
@@ -81,28 +81,30 @@ anything to reuse there.
 Inside,
 `scripts/container/entrypoint.sh` runs as PID 1, drops to the `agent` user,
 and starts `orca-ide --serve`; it writes the browser URL to
-`run/orca-web-url.txt` (mode 600 — the fragment carries a pairing code),
-which is the handshake the Mac side waits on before calling `open`. Only
+`run/orca-web-url.txt` (mode 600 — the fragment carries a pairing code) —
+the handshake the Mac side waits on before `open`. Only
 then does it run `scripts/container/provision-run.sh`, where everything
 folder-shaped lives now — the config sync, the seeds, `bd init`, a git init
 when the folder has no commits, `orca repo add`, the toolchain verify, the
 guard check — as numbered idempotent steps
 under `scripts/container/provision.d/`, each writing
-`run/provision/<step>.log` and `.status`, none of them fatal, all of them
-re-run by the next start. Those two files per step are what `provision
+`run/provision/<step>.log` and `.status`, none fatal, all re-run by the next
+start. Those two files per step are what `provision
 status` reads back (one row per step; `provision run <step>` re-runs
 exactly one) -- the SessionStart hook prints the FAILED rows only, so a
 broken folder names its own fault on the first prompt and a clean one says
 nothing, and `claude-dev --doctor` fetches the same rows over `docker
 exec`. The one exception is the OpenRouter guard's
 *start*, which stays in front of `--serve`: Orca's environment is fixed at
-exec, so whether the guard's token reaches it has to be decided before it
-is started. The steps run on the Orca-cannot-start path too, right before
+exec, so whether the guard's token reaches it is decided before it starts.
+The steps run on the Orca-cannot-start path too, right before
 the die. Claude
 Code signs in on its own first run inside Orca. Registration seeds the stack
 this template assumes — Claude Code as the master, low-cost OpenRouter models
 as delegate-route workers, and Orca's native coordination, which needs no
-opt-in now that Orca runs in the container.
+opt-in now that Orca runs in the container. An opencode worker is a headless
+`orca-worker-run` that exits when the slice is done (peak ~700 MB, nothing
+resident afterwards); `--tui` restores the resident TUI for watching.
 
 The UI is a client of that runtime, and on a Mac with the Orca desktop app
 installed the client is the app, not a browser tab: the launcher launches it
@@ -114,13 +116,12 @@ reads has to come first; the container itself is still
 the published loopback port, keyed by `run/orca-pairing-url.txt` or the web
 URL's `#pairing=` fragment). The `ui` key in `claude-orca.json`
 (`desktop`|`web`, written at register) decides; no app found, or
-`CLAUDE_ORCA_UI=web`, means Orca Web, so the browser path stays whole. The
+`CLAUDE_ORCA_UI=web`, means Orca Web — the browser path stays whole. The
 image is built at the app's version because Orca refuses a protocol
 mismatch. The app can also open *local* unsandboxed workspaces, so the
 launcher strips this folder out of `orca-data.json` while Orca is closed --
-it never quits a running Orca to get that window, attaches the remote host
-either way, and prints the in-app clicks when a local project survives --
-and `verify` reads its local repo list back.
+it never quits a running Orca for that window, attaches the remote host
+either way, and prints the in-app clicks when a local project survives.
 
 `HOME` is `<project>/.claude-dev/home`, whose `.claude` config dir is
 populated from this repo's `config/` by a checksum-gated sync that preserves

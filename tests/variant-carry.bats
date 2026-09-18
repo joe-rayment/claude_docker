@@ -203,6 +203,7 @@ opencode_config_from_env() {
 
 # ── 8: orca-dispatch (Orca terminal path, end to end) ────────────────────
 
+# superseded by claude-orca-ltd (headless dispatch)
 @test "orca-dispatch: a recon role bound to variant high carries it into OPENCODE_CONFIG and the receipt" {
     # shellcheck source=helpers/orca-stub.bash
     . "$BATS_TEST_DIRNAME/helpers/orca-stub.bash"
@@ -226,9 +227,8 @@ EOF
         '{"ok":true,"result":{"task":{"id":"t1"}}}'
     orca_stub_reply terminal-create \
         '{"ok":true,"result":{"terminal":{"handle":"term_w1"}}}'
-    orca_stub_reply terminal-wait '{"ok":true,"result":{}}'
-    orca_stub_reply orchestration-worker-start \
-        '{"ok":true,"result":{"dispatchId":"d1","state":"running"}}'
+    orca_stub_reply orchestration-dispatch \
+        '{"ok":true,"result":{"dispatch":{"id":"d1","status":"running"}}}'
 
     run --separate-stderr "$DISPATCH" b1 --recon
     [ "$status" -eq 0 ]

@@ -8,7 +8,7 @@
 #
 #   orca-worker-run --task <task_id> --spec <file> --model <openrouter/...>
 #                   --dir <worktree> [--run-dir <dir>] [--heartbeat-s <n>]
-#                   [--bead <id>]
+#                   [--bead <id>] [--env <guard-env-file>]
 #
 # Exit codes: opencode's exit code, or 2 for usage/environment errors.
 # bash 3.2 clean (scripts/lint-bash32.sh scans all of scripts/).
@@ -34,7 +34,7 @@ SCRIPT_DIR="$(cd "$(dirname "$(_resolve_script_path)")" && pwd)"
 
 die() { printf 'orca-worker-run: %s\n' "$*" >&2; exit "${2:-2}"; }
 
-TASK_ID=""; SPEC=""; MODEL=""; DIR=""; RUN_DIR=""; BEAD=""
+TASK_ID=""; SPEC=""; MODEL=""; DIR=""; RUN_DIR=""; BEAD=""; ENV_OVERRIDE=""
 HEARTBEAT_S="${CLAUDE_ORCA_WORKER_HEARTBEAT_S:-240}"
 
 while [ "$#" -gt 0 ]; do
@@ -46,6 +46,7 @@ while [ "$#" -gt 0 ]; do
         --run-dir)     RUN_DIR="${2:-}"; shift ;;
         --heartbeat-s) HEARTBEAT_S="${2:-}"; shift ;;
         --bead)        BEAD="${2:-}"; shift ;;
+        --env)         ENV_OVERRIDE="${2:-}"; shift ;;
         -h|--help)     sed -n '3,11p' "$(_resolve_script_path)"; exit 0 ;;
         *)             die "unknown flag: $1" ;;
     esac
@@ -69,8 +70,11 @@ fi
 
 # 1. Guard env: exactly what orca_opencode_command's terminal command does
 #    (scripts/lib/orca-orch.sh) -- the token reaches opencode's environment
-#    without ever riding the command line.
+#    without ever riding the command line. --env names it explicitly (the
+#    headless dispatch's composed command does, so the terminal command
+#    shows what it sources); the default is the same file under --run-dir.
 ENV_FILE="$RUN_DIR/openrouter-guard.env"
+[ -n "$ENV_OVERRIDE" ] && ENV_FILE="$ENV_OVERRIDE"
 [ -f "$ENV_FILE" ] || die "guard env file missing: $ENV_FILE"
 set -a
 # shellcheck disable=SC1090
@@ -212,7 +216,10 @@ files="$({ [ -n "$base" ] && git -C "$DIR" diff --name-only "$base..HEAD" 2>/dev
                 awk '{ line = $0; sub(/^.../, "", line);
                        if (line ~ / -> /) sub(/.* -> /, "", line);
                        print line }'; } | sort -u | paste -sd, -)"
-body="$(jq -R -s '
+# -r on this one: the last value is the text itself, and Orca must
+# receive it raw -- JSON-encoded it arrives wrapped in literal double
+# quotes (claude-orca-ltd).
+body="$(jq -r -R -s '
     split("\n")
     | map(select(length > 0))
     | map(try fromjson catch empty)
