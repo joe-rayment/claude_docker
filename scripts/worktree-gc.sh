@@ -30,6 +30,14 @@
 #      out of delegate job dirs whose pid is dead (or absent) and whose
 #      worktree/ is already gone: receipts, logs, the branch name and the
 #      env stay; a live job is untouched.
+#   5. Appends one block per run to <project>/.claude-dev/run/
+#      worktree-gc.log -- a header line "<ISO-8601 UTC> mode=<mode>
+#      orca=<reachable|unreachable> exit=<n>" followed by every line the
+#      run emitted (the ones --quiet suppresses on stdout included) and,
+#      for a busy worktree, the pid, ppid and cmdline of the first process
+#      that made it busy; --after-merge also logs the command that
+#      triggered it (first 200 chars). A hook run that left a worktree
+#      behind explains itself (claude-orca-jqh).
 #
 # Usage: worktree-gc [--report] [--quiet] [--after-merge] [--project <dir>]
 #   --report        print what would happen, delete nothing
@@ -63,6 +71,7 @@ REPORT=0
 QUIET=0
 AFTER_MERGE=0
 PROJECT=""
+GC_TRIGGER=""
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --report)    REPORT=1 ;;
@@ -98,6 +107,24 @@ if [ "$AFTER_MERGE" = "1" ]; then
         exit 0
     fi
     QUIET=1
+    # The sweep is happening because of this command -- log it (first 200
+    # chars) so the run-log block names its own trigger.
+    GC_TRIGGER="$am_cmd"
+fi
+
+# The SessionStart hook runs this with --quiet and Claude Code's event JSON
+# on stdin; the log's hook-session-start mode needs that payload to tell
+# the hook run apart from a human's --quiet. Peek only when stdin is not a
+# tty (a human at a terminal is never read), bound the read, and fail safe
+# to plain quiet. An --after-merge run already consumed stdin above and is
+# labeled after-merge regardless.
+GC_SESSION_START=0
+if [ "$QUIET" = "1" ] && [ "$REPORT" = "0" ] && [ "$AFTER_MERGE" = "0" ] && [ ! -t 0 ]; then
+    ss_line=""
+    read -r -t 2 ss_line 2>/dev/null || true
+    case "$ss_line" in
+        *'"hook_event_name":"SessionStart"'*|*'"hook_event_name": "SessionStart"'*) GC_SESSION_START=1 ;;
+    esac
 fi
 
 if [ -z "$PROJECT" ] && [ -n "${PROJECT_DIR:-}" ]; then
@@ -112,6 +139,18 @@ if [ -z "$PROJECT" ] || [ ! -d "$PROJECT" ] || \
     exit 0
 fi
 
+# --- the run log -------------------------------------------------------------
+# Every run past the repo check appends one block (gc_log_write at each
+# exit); a payload that is not a merge/branch-delete exits above and logs
+# nothing -- otherwise every Bash tool call would append a block and churn
+# the 200 KB cap. Fail-open: a broken log must never break the sweep.
+LOG_FILE=""
+log_lines=()
+_gc_run_dir="$PROJECT/.claude-dev/run"
+if mkdir -p "$_gc_run_dir" 2>/dev/null; then
+    LOG_FILE="$_gc_run_dir/worktree-gc.log"
+fi
+
 removed_wt=0
 deleted_br=0
 swept_jobs=0
@@ -123,9 +162,12 @@ kept_reasons=()
 # emit <line> -- --report prints exactly the lines a deleting run would
 # print, each prefixed "would "; --quiet prints only the STRANDED/FAIL
 # lines (the summary line at the end carries the counts); otherwise print
-# the line as-is.
+# the line as-is. Every line goes into the run log as the run emitted it
+# -- the canonical line, before the --report/--quiet transformation -- so
+# the log carries what --quiet suppressed too.
 emit() {
     local line="$1"
+    gc_log_add "$line"
     if [ "$REPORT" = "1" ]; then
         printf 'would %s\n' "$line"
     elif [ "$QUIET" = "1" ]; then
@@ -135,6 +177,64 @@ emit() {
     else
         printf '%s\n' "$line"
     fi
+}
+
+# gc_log_add <line> -- queue one line for this run's log block.
+gc_log_add() {
+    log_lines=(${log_lines[@]+"${log_lines[@]}"} "$1")
+}
+
+# gc_log_write <exit-code> -- append the block: the header line, then (for
+# an --after-merge run) the command that triggered it, then every line the
+# run emitted. orca= names Orca only as far as this run learned it: only a
+# run that probed and was answered reachable says reachable -- a run whose
+# probe failed and one that never probed (nothing to remove, --report)
+# both say unreachable, i.e. "no Orca help was available to this run".
+gc_log_write() {
+    [ -n "$LOG_FILE" ] || return 0
+    local gc_mode="cli" gc_orca="unreachable" gl_line gc_trig
+    if [ "$AFTER_MERGE" = "1" ]; then
+        gc_mode="after-merge"
+    elif [ "$REPORT" = "1" ]; then
+        gc_mode="report"
+    elif [ "$QUIET" = "1" ] && [ "$GC_SESSION_START" = "1" ]; then
+        gc_mode="hook-session-start"
+    elif [ "$QUIET" = "1" ]; then
+        gc_mode="quiet"
+    fi
+    [ "$reachable" = "1" ] && gc_orca="reachable"
+    {
+        printf '%s mode=%s orca=%s exit=%s\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$gc_mode" "$gc_orca" "$1"
+        if [ -n "$GC_TRIGGER" ]; then
+            gc_trig="$(printf '%s' "$GC_TRIGGER" | tr '\n' ' ')"
+            printf 'command: %.200s\n' "$gc_trig"
+        fi
+        for gl_line in ${log_lines[@]+"${log_lines[@]}"}; do
+            printf '%s\n' "$gl_line"
+        done
+    } >> "$LOG_FILE" 2>/dev/null || return 0
+    gc_log_truncate
+    return 0
+}
+
+# Keep the log bounded: once past 200 KB, keep only the newer half -- the
+# newest data (the block a reader is looking for) always survives.
+gc_log_truncate() {
+    local gc_size gc_half gc_tmp
+    gc_size="$(wc -c < "$LOG_FILE" 2>/dev/null)" || return 0
+    case "$gc_size" in
+        ''|*[!0-9]*) return 0 ;;
+    esac
+    [ "$gc_size" -gt 204800 ] || return 0
+    gc_half=$((gc_size / 2))
+    gc_tmp="$LOG_FILE.tmp.$$"
+    if tail -c "$gc_half" "$LOG_FILE" 2>/dev/null | tail -n +2 > "$gc_tmp" 2>/dev/null; then
+        mv -f "$gc_tmp" "$LOG_FILE" 2>/dev/null || rm -f "$gc_tmp"
+    else
+        rm -f "$gc_tmp"
+    fi
+    return 0
 }
 
 # The CLI is resolved exactly the way 65-worktree-sweep resolved it,
@@ -265,6 +365,8 @@ fi
 
 if [ "${#wt_paths[@]}" -eq 0 ]; then
     echo "worktree-gc: cannot list worktrees in $PROJECT" >&2
+    gc_log_add "worktree-gc: cannot list worktrees in $PROJECT"
+    gc_log_write 2
     exit 2
 fi
 MAIN_PATH="${wt_paths[0]}"
@@ -319,6 +421,8 @@ while [ "$i" -lt "$n_wt" ]; do
     # process also sits in the worktree (Orca's own, closed by the rm).
     real_path="$(cd "$path" && pwd -P)"
     busy=0
+    busy_pid=""
+    busy_first=""
     idle_terminal=0
     occupants=" "
     for cwdlink in /proc/[0-9]*/cwd; do
@@ -333,6 +437,10 @@ while [ "$i" -lt "$n_wt" ]; do
         occupants="$occupants$proc_pid "
     done
     if [ "$occupants" != " " ]; then
+        for occ_pid in $occupants; do
+            busy_first="$occ_pid"
+            break
+        done
         # The idle-terminal question only matters when Orca can actually
         # close one; when it is not reachable, plain `git worktree remove`
         # cannot, so every process still means busy. Asked once per run,
@@ -359,18 +467,28 @@ while [ "$i" -lt "$n_wt" ]; do
                 for occ_pid in $occupants; do
                     case "$forgivable" in
                         *" $occ_pid "*) ;;
-                        *) busy=1; break ;;
+                        *) busy=1; busy_pid="$occ_pid"; break ;;
                     esac
                 done
             else
                 busy=1
+                busy_pid="$busy_first"
             fi
         else
             busy=1
+            busy_pid="$busy_first"
         fi
     fi
     if [ "$busy" = "1" ]; then
         emit "busy $path (a running process has it as its cwd)"
+        # The log must explain WHY the worktree was kept: the pid, ppid and
+        # cmdline of the first process that made it busy.
+        if [ -n "$busy_pid" ]; then
+            busy_ppid="$(awk '/^PPid:/{print $2}' "/proc/$busy_pid/status" 2>/dev/null)"
+            busy_cmd="$(tr '\0' ' ' < "/proc/$busy_pid/cmdline" 2>/dev/null | tr -d '\n')"
+            busy_cmd="${busy_cmd% }"
+            gc_log_add "busy pid=$busy_pid ppid=${busy_ppid:-?} cmdline=$busy_cmd"
+        fi
         kept_paths+=("$path")
         kept_branches+=("$branch")
         kept_reasons+=("busy")
@@ -488,6 +606,7 @@ done
 
 if [ "$REPORT" = "0" ] && [ "$QUIET" = "0" ] && [ "$n_wt" -le 1 ]; then
     printf 'no worktree other than %s; nothing to sweep\n' "$MAIN_PATH"
+    gc_log_add "no worktree other than $MAIN_PATH; nothing to sweep"
 fi
 
 # --- step 3: local branches ------------------------------------------------
@@ -587,10 +706,16 @@ fi  # not stranded
 # --- summary and exit ------------------------------------------------------
 if [ "$QUIET" = "1" ]; then
     if [ "$removed_wt" -ne 0 ] || [ "$deleted_br" -ne 0 ] || [ "$swept_jobs" -ne 0 ] || [ "$stranded" = "1" ]; then
-        printf 'worktree-gc: removed %s worktree(s), deleted %s branch(es), swept %s job dir(s)\n' \
-            "$removed_wt" "$deleted_br" "$swept_jobs"
+        summary_line="$(printf 'worktree-gc: removed %s worktree(s), deleted %s branch(es), swept %s job dir(s)' \
+            "$removed_wt" "$deleted_br" "$swept_jobs")"
+        printf '%s\n' "$summary_line"
+        gc_log_add "$summary_line"
     fi
 fi
 
-[ "$stranded" = "1" ] && exit 1
-exit 0
+gc_exit=0
+if [ "$stranded" = "1" ]; then
+    gc_exit=1
+fi
+gc_log_write "$gc_exit"
+exit "$gc_exit"
