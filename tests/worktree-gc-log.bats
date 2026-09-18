@@ -150,7 +150,7 @@ teardown() {
 
     local payload
     payload="$(printf '{"tool_input":{"command":"git merge feature-x"},"cwd":"%s"}' "$proj")"
-    run bash "$GC" --after-merge --project "$proj" <<< "$payload"
+    ORCA_CLI="$TMP/bin/orca-ide" run bash "$GC" --after-merge --project "$proj" <<< "$payload"
     [ "$status" -eq 0 ]
 
     # the sweep ran quietly and the log explains it: after-merge mode, the
@@ -166,7 +166,7 @@ teardown() {
     local proj="$TMP/project" log="$TMP/project/.claude-dev/run/worktree-gc.log"
     make_project "$proj"
     mkdir -p "$proj/.claude-dev/run"
-    awk 'BEGIN{for(i=0;i<2560;i++) printf "%099d\n", i}' > "$log"
+    awk 'BEGIN{for(i=0;i<2560;i++) printf "fill%04d %093d\n", i, i}' > "$log"
     [ "$(wc -c < "$log")" -ge 250000 ]
 
     ORCA_CLI="$TMP/bin/orca-ide" run bash "$GC" --project "$proj"
@@ -178,5 +178,5 @@ teardown() {
 
     # the newest header survived the truncation; the oldest half did not
     grep -qE "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z mode=cli orca=unreachable exit=0$" "$log"
-    ! grep -q '^000000000' "$log"
+    ! grep -q '^fill0000 ' "$log"
 }
