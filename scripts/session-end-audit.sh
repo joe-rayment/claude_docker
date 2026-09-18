@@ -27,7 +27,11 @@ if [ -n "$payload" ] && command -v jq >/dev/null 2>&1; then
         cwd="$(printf '%s' "$payload" | jq -r '.cwd // empty' 2>/dev/null)" || cwd=""
     fi
 fi
-[ -n "$cwd" ] || cwd="$PWD"
+# The sweep runs only for a cwd the hook payload itself carried -- the
+# $PWD fallback still serves the dirty-tree note, but a test or a script
+# run from an arbitrary folder must never sweep it (claude-orca-jh7).
+cwd_from_payload=0
+if [ -n "$cwd" ]; then cwd_from_payload=1; else cwd="$PWD"; fi
 
 command -v git >/dev/null 2>&1 || exit 0
 [ -d "$cwd" ] || exit 0
@@ -48,7 +52,7 @@ fi
 # line is dev-logged so it survives the session. Fail-open: the audit's
 # exit stays 0 whatever worktree-gc finds.
 gc="$SCRIPT_DIR/worktree-gc.sh"
-if [ -x "$gc" ]; then
+if [ "$cwd_from_payload" = "1" ] && [ -x "$gc" ]; then
     gc_out="$("$gc" --quiet --project "$cwd" 2>/dev/null)" || true
     while IFS= read -r line; do
         case "$line" in

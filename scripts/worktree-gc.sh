@@ -32,12 +32,14 @@
 #      env stay; a live job is untouched.
 #   5. Appends one block per run to <project>/.claude-dev/run/
 #      worktree-gc.log -- a header line "<ISO-8601 UTC> mode=<mode>
-#      orca=<reachable|unreachable> exit=<n>" followed by every line the
-#      run emitted (the ones --quiet suppresses on stdout included) and,
-#      for a busy worktree, the pid, ppid and cmdline of the first process
-#      that made it busy; --after-merge also logs the command that
-#      triggered it (first 200 chars). A hook run that left a worktree
-#      behind explains itself (claude-orca-jqh).
+#      orca=<reachable|unreachable> exit=<n>", then a caller= line naming
+#      who invoked the sweep (parent, grandparent, great-grandparent
+#      cmdline, 100 chars each, " <- " joined -- claude-orca-jh7), then
+#      every line the run emitted (the ones --quiet suppresses on stdout
+#      included) and, for a busy worktree, the pid, ppid and cmdline of
+#      the first process that made it busy; --after-merge also logs the
+#      command that triggered it (first 200 chars). A hook run that left
+#      a worktree behind explains itself (claude-orca-jqh).
 #
 # Usage: worktree-gc [--report] [--quiet] [--after-merge] [--project <dir>]
 #   --report        print what would happen, delete nothing
@@ -151,6 +153,31 @@ if mkdir -p "$_gc_run_dir" 2>/dev/null; then
     LOG_FILE="$_gc_run_dir/worktree-gc.log"
 fi
 
+# Every block names its caller (claude-orca-jh7): the cmdline of this
+# run's parent, then its parent, then its parent, each cut to 100 chars,
+# joined with " <- " -- read from /proc/<pid>/cmdline (NUL -> space).
+GC_CALLER=""
+_gc_caller_pid="${PPID:-}"
+_gc_caller_i=0
+while [ "$_gc_caller_i" -lt 3 ]; do
+    _gc_caller_i=$((_gc_caller_i + 1))
+    case "$_gc_caller_pid" in
+        ''|*[!0-9]*) break ;;
+    esac
+    [ -r "/proc/$_gc_caller_pid/cmdline" ] || break
+    _gc_caller_cmd="$(tr '\0' ' ' < "/proc/$_gc_caller_pid/cmdline" 2>/dev/null \
+        | sed -e 's/[[:space:]]*$//')" || break
+    [ -n "$_gc_caller_cmd" ] || break
+    _gc_caller_cmd="${_gc_caller_cmd:0:100}"
+    if [ -n "$GC_CALLER" ]; then
+        GC_CALLER="$GC_CALLER <- $_gc_caller_cmd"
+    else
+        GC_CALLER="$_gc_caller_cmd"
+    fi
+    _gc_caller_pid="$(awk '/^PPid:/{print $2}' "/proc/$_gc_caller_pid/status" 2>/dev/null)"
+done
+[ -n "$GC_CALLER" ] || GC_CALLER="unknown"
+
 removed_wt=0
 deleted_br=0
 swept_jobs=0
@@ -206,6 +233,7 @@ gc_log_write() {
     {
         printf '%s mode=%s orca=%s exit=%s\n' \
             "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$gc_mode" "$gc_orca" "$1"
+        printf 'caller=%s\n' "$GC_CALLER"
         if [ -n "$GC_TRIGGER" ]; then
             gc_trig="$(printf '%s' "$GC_TRIGGER" | tr '\n' ' ')"
             printf 'command: %.200s\n' "$gc_trig"
