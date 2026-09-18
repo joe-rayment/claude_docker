@@ -31,7 +31,7 @@ REQUIRED_SUITES="lane bd-guard outbound-guard auth-guard contract-gate delegatio
     run jq -e . "$settings"
     [ "$status" -eq 0 ]
 
-    for event in UserPromptSubmit SessionStart PostModelSwitch ConfigChange Stop SessionEnd PreToolUse; do
+    for event in UserPromptSubmit SessionStart PostToolUse PostModelSwitch ConfigChange Stop SessionEnd PreToolUse; do
         run jq -e --arg e "$event" '(.hooks[$e] // []) | length > 0' "$settings"
         [ "$status" -eq 0 ]
     done
