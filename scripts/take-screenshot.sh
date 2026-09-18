@@ -26,7 +26,10 @@
 # Network: fetching chromium needs cdn.playwright.dev and
 # playwright.download.prss.microsoft.com (playwright-core's
 # PLAYWRIGHT_CDN_MIRRORS) reachable. Inside the container VM they are --
-# just run `npx playwright install chromium` once.
+# and the fetch is automatic now (claude-orca-p91): the package and the
+# browser are installed on demand, the first time a screenshot actually
+# needs them, into the paths below. CLAUDE_ORCA_NO_INSTALL=1 puts the old
+# behaviour back (exit 3 with the manual-install hint, fetch nothing).
 #
 # FALLBACK (documented, not hypothetical): headless chromium may refuse to
 # start in a constrained environment. If it does, do not spend the
@@ -65,6 +68,10 @@ Options:
   --wait-ms <ms>      Settle time after load before the shot
                       (default $DEFAULT_WAIT_MS; 0 disables it)
   --wait-for <sel>    Also wait for this CSS selector to be visible
+
+  The playwright package and the chromium browser are installed on demand,
+  the first time a screenshot needs them (~850 MB, one-time). Set
+  CLAUDE_ORCA_NO_INSTALL=1 to skip the fetch (exit 3, manual-install hint).
 
   A single-page app (Orca Web among them) answers 'load' with an empty body
   and paints afterwards, which is how a screenshot comes back blank. The
@@ -132,6 +139,41 @@ browsers_path() {
     local cfg
     cfg="$(claude_config_dir)"
     printf '%s\n' "$(dirname "$cfg")/.cache/ms-playwright"
+}
+
+# The one-line hint the exit-3 paths print: what is missing and what a
+# manual install would run.
+install_hint() {
+    echo "take-screenshot: playwright not installed -- run: npm i -g playwright@$PLAYWRIGHT_VERSION && npx playwright install chromium" >&2
+}
+
+# Install on demand (claude-orca-p91): the package into the playwright home,
+# the chromium browser into the project-local browser cache. Nothing here is
+# carried by the image or the template -- a browser is fetched only when some
+# work actually looks at a page. Returns non-zero when the install is off
+# (CLAUDE_ORCA_NO_INSTALL=1), the tooling is missing, or any fetch fails.
+install_on_demand() {
+    if [ "${CLAUDE_ORCA_NO_INSTALL:-0}" = "1" ]; then
+        return 1
+    fi
+    if ! command -v npm >/dev/null 2>&1 || ! command -v npx >/dev/null 2>&1; then
+        return 1
+    fi
+
+    local home
+    home="${CLAUDE_ORCA_PLAYWRIGHT_HOME:-$HOME/.cache/claude-orca-playwright}"
+    mkdir -p "$home"
+
+    ( cd "$home" && npm install "playwright@$PLAYWRIGHT_VERSION" ) || return 1
+
+    # A "successful" npm that left nothing resolvable behind is a failed
+    # install: check before moving on to the browser download.
+    find_playwright_modules >/dev/null || return 1
+
+    echo "take-screenshot: fetching playwright@$PLAYWRIGHT_VERSION + chromium on demand (~850 MB, first use only) -- this screenshot needs a real browser" >&2
+    ( cd "$home" && \
+      PLAYWRIGHT_BROWSERS_PATH="$(browsers_path)" npx playwright install chromium ) || return 1
+    return 0
 }
 
 # Driven with: node -e <this> <url> <output> <fullPage 0|1> <launch args...>
@@ -232,16 +274,16 @@ cmd_url() {
 
     [ -n "$url" ] || die_usage "url mode needs a URL"
 
-    local modules
-    if ! modules="$(find_playwright_modules)"; then
-        echo "take-screenshot: playwright not installed -- run: npm i -g playwright@$PLAYWRIGHT_VERSION && npx playwright install chromium" >&2
-        exit 3
-    fi
-
     local root
     if ! root="$(claude_orca_root)"; then
         echo "take-screenshot: not inside a registered claude_orca project (set CLAUDE_ORCA_ROOT)" >&2
         exit 2
+    fi
+
+    local modules
+    if ! modules="$(find_playwright_modules)"; then
+        install_on_demand || { install_hint; exit 3; }
+        modules="$(find_playwright_modules)" || { install_hint; exit 3; }
     fi
 
     if [ -z "$name" ]; then
