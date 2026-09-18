@@ -218,12 +218,17 @@ teardown() {
     add_worktree "$proj" "$wt" wt-x
     write_orca_stub "$TMP/bin/orca-ide"
 
+    # The real PostToolUse hook runs with PROJECT_DIR pointing at the
+    # project, so emulate that here instead of letting an ambient
+    # PROJECT_DIR from the calling shell pick some other repo entirely.
     out="$(cd "$proj" && printf '{"tool_input":{"command":"git merge wt-x"},"cwd":"%s"}' "$proj" \
-        | ORCA_CLI="$TMP/bin/orca-ide" bash "$GC" --after-merge 2>&1)"
+        | PROJECT_DIR="$proj" ORCA_CLI="$TMP/bin/orca-ide" bash "$GC" --after-merge 2>&1)"
     rc=$?
     [ "$rc" -eq 0 ]
 
-    [[ "$out" == *"removed $wt"* ]]
+    # --quiet mode: the per-worktree lines are suppressed; the summary
+    # line carries "removed" and the directory itself is the real proof.
+    [[ "$out" == *"removed"* ]]
     [ ! -d "$wt" ]
     [ -z "$(git -C "$proj" branch --list wt-x)" ]
 }
