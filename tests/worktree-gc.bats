@@ -135,7 +135,7 @@ teardown() {
     [ -z "$(git -C "$proj" branch --list wt-clean)" ]
 }
 
-@test "gc removes a clean worktree whose branch has commits not in main, keeps the branch and reports STRANDED with the count" {
+@test "gc keeps a clean worktree whose branch has commits not in main and reports it STRANDED (kept: unmerged)" {
     [ -x "$GC" ]
     local proj="$TMP/project" wt="$TMP/wt-stray"
     make_project "$proj"
@@ -147,11 +147,10 @@ teardown() {
     ORCA_CLI="$TMP/bin/orca-ide" run_gc "$proj"
     [ "$status" -eq 1 ]
 
-    [[ "$output" == *"removed $wt"* ]]
     [[ "$output" == *"STRANDED branch wt-stray: 1 commit(s) not in main"* ]]
-    [[ "$output" == *"git branch -D wt-stray"* ]]
+    [[ "$output" == *"(worktree $wt kept: unmerged)"* ]]
 
-    [ ! -d "$wt" ]
+    [ -d "$wt" ]
     [ -n "$(git -C "$proj" branch --list wt-stray)" ]
 }
 
