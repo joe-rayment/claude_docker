@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 #
 # tests/helpers/ensure_bash32 -- ensures a real GNU bash 3.2 is on hand for
-# tests/shell-entry.bats (claude-orca-3sk.24), which must observe actual
-# bash-3.2 semantics -- e.g. `arr+=("${empty[@]}")` throwing "unbound
-# variable" under `set -u`, a bug the host's bash (>= 4) does not have --
-# not a bash-version-agnostic stand-in for it. Sets/exports $BASH32 to a
-# working, `--version`-confirmed 3.2.x binary.
+# the suites that must observe actual bash-3.2 semantics -- e.g.
+# `arr+=("${empty[@]}")` throwing "unbound variable" under `set -u`, a bug
+# the host's bash (>= 4) does not have -- not a bash-version-agnostic
+# stand-in for it (consumers: config-sync.bats, tier-hooks.bats). Sets/
+# exports $BASH32 to a working, `--version`-confirmed 3.2.x binary.
 #
 # Sourceable (`. helpers/ensure_bash32`, e.g. from a bats setup_file, which
 # then exports BASH32 for every test in the file) or directly executable
@@ -27,7 +27,9 @@
 #      -std=gnu89 on both the host and *_FOR_BUILD compiler flags -- bash's
 #      build uses a separately-flagged host tool (mkbuiltins) to generate
 #      those .c files, so CFLAGS alone (without CFLAGS_FOR_BUILD) is not
-#      enough.
+#      enough. The tarball is fetched with verification and retries (see
+#      _ensure_bash32_fetch_tarball) and the verified copy persists in
+#      tests/.cache, keyed by URL, so a rebuild never re-fetches.
 
 _ensure_bash32_have_32() {
     [ -x "$1" ] || return 1
@@ -47,7 +49,7 @@ _ensure_bash32_have_32() {
 # Exports nothing globally beyond PATH/BISON_PKGDATADIR for this shell,
 # which is exactly the scope the source build below needs.
 _ensure_bash32_local_bison() {
-    local cache_dir="$1" tools apt_opts deb
+    local cache_dir="$1" tools apt_opts deb attempt unpacked
     tools="$cache_dir/tools"
 
     if _ensure_bash32_have_bison "$tools"; then
@@ -58,26 +60,34 @@ _ensure_bash32_local_bison() {
     command -v apt-get >/dev/null 2>&1 || return 1
     command -v dpkg-deb >/dev/null 2>&1 || return 1
 
-    rm -rf "$tools"
-    mkdir -p "$tools/debs" "$tools/lists/partial" "$tools/cache/archives/partial" \
-        || return 1
     apt_opts="-o Dir::State::Lists=$tools/lists -o Dir::Cache=$tools/cache"
 
-    # `apt-get update` is what makes a candidate version visible; it exits 0
-    # with only W: lines when DNS is dead, so the download below is what
-    # actually decides.
-    ( cd "$tools/debs" && apt-get $apt_opts update ) >/dev/null 2>&1
-    ( cd "$tools/debs" && apt-get $apt_opts download bison m4 ) >/dev/null 2>&1
+    # The unpack sits inside the retry with the fetch: a .deb that turns
+    # out to be an error page fails dpkg-deb -x, and that is the same
+    # transient-garbage failure the tarball fetch guards against, so the
+    # answer is a clean re-fetch, not a fatal.
+    for attempt in 1 2 3; do
+        rm -rf "$tools"
+        mkdir -p "$tools/debs" "$tools/lists/partial" "$tools/cache/archives/partial" \
+            || return 1
 
-    for deb in "$tools"/debs/*.deb; do
-        [ -f "$deb" ] || continue
-        dpkg-deb -x "$deb" "$tools/root" >/dev/null 2>&1 || return 1
+        # `apt-get update` is what makes a candidate version visible; it
+        # exits 0 with only W: lines when DNS is dead, so the download
+        # below is what actually decides.
+        ( cd "$tools/debs" && apt-get $apt_opts update ) >/dev/null 2>&1
+        ( cd "$tools/debs" && apt-get $apt_opts download bison m4 ) >/dev/null 2>&1
+
+        unpacked=1
+        for deb in "$tools"/debs/*.deb; do
+            [ -f "$deb" ] || continue
+            dpkg-deb -x "$deb" "$tools/root" >/dev/null 2>&1 || unpacked=0
+        done
+
+        if [ "$unpacked" -eq 1 ] && _ensure_bash32_have_bison "$tools"; then
+            _ensure_bash32_use_bison "$tools"
+            return 0
+        fi
     done
-
-    if _ensure_bash32_have_bison "$tools"; then
-        _ensure_bash32_use_bison "$tools"
-        return 0
-    fi
     return 1
 }
 
@@ -86,6 +96,36 @@ _ensure_bash32_have_bison() {
     BISON_PKGDATADIR="$1/root/usr/share/bison" \
         PATH="$1/root/usr/bin:$PATH" \
         "$1/root/usr/bin/bison" --version >/dev/null 2>&1
+}
+
+# Fetch the bash-3.2.57 tarball and prove it is one before calling it done.
+# A zero-exit curl is not evidence of a tarball, for two reasons seen live
+# on 2026-09-18: helpers/setup's stub curl answers `curl -o` with a fake
+# DMG body and exit 0 (config-sync.bats loads that helper, so its tests
+# see the stub), and the egress proxy has served 200s whose body was an
+# error page. Both surfaced as `gzip: stdin: not in gzip format` in the
+# middle of a suite run -- the case failing on the fetch, not on bash.
+# So: fetch with helpers/setup's ORIGINAL_PATH (the clean PATH it exports
+# precisely so a helper can ask for the real tools) when the suite
+# provides it, plain PATH when run directly; validate with `tar tzf`
+# (gzip structure AND tar structure), throw the body away and retry when
+# it does not parse, and curl only after wget fails -- either tool alone
+# has been enough.
+_ensure_bash32_fetch_tarball() {
+    local dest="$1" url="$2" attempt fetch_path
+    fetch_path="${ORIGINAL_PATH:-$PATH}"
+    for attempt in 1 2 3; do
+        if ! ( cd "$(dirname "$dest")" \
+               && PATH="$fetch_path" curl -fsSL "$url" -o "$dest" ) 2>/dev/null; then
+            ( cd "$(dirname "$dest")" \
+              && PATH="$fetch_path" wget -q "$url" -O "$dest" ) 2>/dev/null
+        fi
+        if tar tzf "$dest" >/dev/null 2>&1; then
+            return 0
+        fi
+        rm -f "$dest"
+    done
+    return 1
 }
 
 # $M4 as well as $PATH: bison shells out to the m4 it was COMPILED against
@@ -152,12 +192,20 @@ _ensure_bash32() {
     src_dir="bash-3.2.57"
     tarball_url="${CLAUDE_ORCA_BASH32_URL:-https://ftp.gnu.org/gnu/bash/bash-3.2.57.tar.gz}"
 
-    if ! (cd "$build_dir" && curl -fsSL "$tarball_url" -o bash-3.2.57.tar.gz) 2>/dev/null \
-        && ! (cd "$build_dir" && wget -q "$tarball_url" -O bash-3.2.57.tar.gz) 2>/dev/null; then
-        echo "ensure_bash32: failed to download $tarball_url (no curl/wget, or no network)" >&2
+    # The verified tarball outlives the build dir and the bash32 install
+    # (it lives beside that dir, which the invalid-cache path rm -rf's) and
+    # is keyed by URL, so a rebuild after a killed or failed run re-fetches
+    # nothing -- the network only enters this file once per cache
+    # lifetime, not once per build.
+    tarball_cache="$repo_root/tests/.cache/bash-3.2.57-$(printf '%s' "$tarball_url" | cksum | cut -d' ' -f1).tar.gz"
+
+    if ! tar tzf "$tarball_cache" >/dev/null 2>&1 \
+        && ! _ensure_bash32_fetch_tarball "$tarball_cache" "$tarball_url"; then
+        echo "ensure_bash32: failed to fetch a valid $tarball_url (no curl/wget, or no network)" >&2
         rm -rf "$build_dir"
         return 1
     fi
+    cp "$tarball_cache" "$build_dir/bash-3.2.57.tar.gz"
 
     if ! (cd "$build_dir" && tar xzf bash-3.2.57.tar.gz); then
         echo "ensure_bash32: failed to extract bash-3.2.57.tar.gz" >&2
