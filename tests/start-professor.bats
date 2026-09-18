@@ -53,6 +53,16 @@ EOF
 }
 
 @test "start-professor: stays in the caller's cwd when the project root is not resolvable" {
+    # The cwd decides this case, so it must not be left to chance: from the
+    # suite working dir the walk-up can find a bootstrapped project (this
+    # dev container's repo IS one -- a worktree's git-common-dir points at
+    # the primary checkout, which has .claude-dev/claude-orca.json), and
+    # there the script is right to cd. Run from a scratch dir no walk-up
+    # can resolve instead -- outside every git checkout and bootstrapped
+    # project on any machine.
+    scratch="$BATS_TEST_TMPDIR/unresolvable-cwd"
+    mkdir -p "$scratch"
+    cd "$scratch"
     here="$PWD"
     env -u CLAUDE_ORCA_ROOT PATH="$FAKEBIN:$PATH" bash "$START_PROFESSOR"
     grep -q "PWD: $here" "$CLAUDE_LOG"
