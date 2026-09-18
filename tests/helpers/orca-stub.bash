@@ -54,6 +54,19 @@ esac
 BDSTUB
     chmod +x "$ORCA_STUB_BIN/bd"
 
+    # A stub-driven orca-dispatch must never start the real mailbox
+    # spooler (claude-orca-csh): the launch would inherit bats's fd 3 and
+    # outlive the test. Every test through orca_stub_init therefore gets
+    # CLAUDE_ORCA_SPOOL_CMD pointed at this no-op shim, which logs its argv
+    # so a test can assert the override was used. Tests that want the real
+    # launch path (tests/orca-spool-detach.bats case 1) unset it.
+    cat >"$ORCA_STUB_DIR/spool-noop" <<'SPOOLSHIM'
+#!/usr/bin/env bash
+printf 'spool %s\n' "$*" >>"${ORCA_STUB_DIR}/spool-shim.log"
+SPOOLSHIM
+    chmod +x "$ORCA_STUB_DIR/spool-noop"
+    export CLAUDE_ORCA_SPOOL_CMD="$ORCA_STUB_DIR/spool-noop"
+
     orca_stub_reply status '{"ok":true,"result":{"runtime":{"reachable":true}}}'
     printf '%s\n' '{"id":"b1","title":"probe slice","description":"do the slice","acceptance_criteria":"CHECK: true"}' \
         >"$ORCA_STUB_DIR/bead.json"

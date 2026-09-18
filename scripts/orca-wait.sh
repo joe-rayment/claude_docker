@@ -19,8 +19,12 @@
 #                          close/bead-note/stall work itself and appending
 #                          every receipt line to inbox.jsonl. Exits when no
 #                          dispatch record has been live for
-#                          CLAUDE_ORCA_SPOOL_IDLE_S seconds (default 1800).
-#                          Pid file: run/orchestration/spool.pid.
+#                          CLAUDE_ORCA_SPOOL_IDLE_S seconds (default 1800)
+#                          counted from the last live dispatch record, not
+#                          from the spooler's start -- and at once when the
+#                          dispatch dir is no longer readable
+#                          (claude-orca-csh). Pid file:
+#                          run/orchestration/spool.pid.
 #   orca-wait --poll-loop  the original blocking wait, kept for orca-run and
 #                          the e2e: the loop below with receipts on stdout,
 #                          ending on the first receipt or --timeout-ms.
@@ -199,6 +203,10 @@ trap cleanup EXIT
 # one (the pid file is orca-dispatch's quick gate; this is the real one) and
 # put our pid in it so the next dispatch sees a live spooler.
 if [ "$MODE" = "spool" ]; then
+    # bats-core waits on fd 3; a spooler that inherits it keeps the whole
+    # test run open (claude-orca-csh). orca-dispatch starts us with 3>&-;
+    # close it here too, for every other way of starting the spooler.
+    exec 3>&-
     mkdir -p "$ODIR"
     other="$(tr -dc '0-9' <"$SPOOL_PID_FILE" 2>/dev/null)"
     if [ -n "$other" ] && [ "$other" != "$$" ] &&
@@ -522,11 +530,40 @@ live_records() {
     printf '%s' "$n"
 }
 
+# last_live_activity -- the newest activity second among the live dispatch
+# records, 0 when there is none (claude-orca-csh): the spooler's idle clock
+# counts from this, so a spooler whose Run went quiet long ago -- or whose
+# dispatch dir is gone entirely -- does not earn a fresh SPOOL_IDLE_S
+# window on start.
+last_live_activity() {
+    local f s a max=0
+    for f in "$DISP_DIR"/*.json; do
+        [ -f "$f" ] || continue
+        s="$(jq -r '.state // ""' "$f" 2>/dev/null)"
+        case "$s" in ready|running|dispatched) ;; *) continue ;; esac
+        a="$(rec_activity "$f")"
+        case "$a" in ''|*[!0-9]*) a=0 ;; esac
+        [ "$a" -gt "$max" ] && max="$a"
+    done
+    printf '%s' "$max"
+}
+
 START_S="$(date +%s)"
 SPENT=0; ELAPSED=0
 LAST_LIVE="$(date +%s)"
+if [ "$MODE" = "spool" ]; then
+    LAST_LIVE="$(last_live_activity)"
+    case "$LAST_LIVE" in ''|*[!0-9]*) LAST_LIVE=0 ;; esac
+fi
 
 while :; do
+    # The spooler's only reason to exist is the dispatch dir under its Run:
+    # with no readable dispatch dir there is nothing left to watch, so exit
+    # at once instead of looping forever reparented to init (claude-orca-csh).
+    if [ "$MODE" = "spool" ] && [ ! -r "$DISP_DIR" ]; then
+        note "dispatch dir $DISP_DIR is gone -- spooler exiting"
+        exit 0
+    fi
     if [ "$MODE" != "spool" ]; then
         [ "$ELAPSED" -lt "$TIMEOUT_MS" ] || break
     fi
@@ -567,12 +604,16 @@ while :; do
     fi
 
     if [ "$MODE" = "spool" ]; then
-        # Pace the loop: a check that returns instantly (a queued message,
-        # a stub) must not become a busy spin on the runtime. One second of
-        # wall clock per iteration, at most ~1s of added receipt latency.
+        # Pace the loop to the poll interval (--poll, from
+        # CLAUDE_ORCA_WAIT_POLL_S): a check that returns instantly (a
+        # stub, a reaped delivery) must not become a busy spin on the
+        # runtime. The old fixed 1s pace ignored the poll setting and was
+        # the `sleep 0.1` seen spinning forever in the mg8 hang
+        # (claude-orca-csh).
         iter_ms=$(( ( $(date +%s) - ITER_START ) * 1000 ))
-        if [ "$iter_ms" -lt 1000 ]; then
-            sleep "0.$(printf '%03d' "$(( 1000 - iter_ms ))")"
+        if [ "$iter_ms" -lt "$WAIT_MS" ]; then
+            rem=$(( WAIT_MS - iter_ms ))
+            sleep "$(( rem / 1000 )).$(printf '%03d' "$(( rem % 1000 ))")"
         fi
         if [ "$(live_records)" -gt 0 ]; then
             LAST_LIVE="$(date +%s)"
