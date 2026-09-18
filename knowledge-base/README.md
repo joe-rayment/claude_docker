@@ -29,3 +29,10 @@ the details. Start with [../README.md](../README.md) for setup and daily use.
 | [HOOK_AUTHORING.md](HOOK_AUTHORING.md) | Writing or debugging a Claude Code hook — the JSON contract, exit codes, and the portability traps. |
 | [TRANSCRIPT_FORENSICS.md](TRANSCRIPT_FORENSICS.md) | Reconstructing what an agent actually did from the session transcripts, including sub-agent files. |
 | [BEADS_TROUBLESHOOTING.md](BEADS_TROUBLESHOOTING.md) | `bd` misbehaves: a database holding 0 issues, a missing `issue_prefix`, a hung `bd edit`, sync trouble. |
+
+The shipped hook surface is wired in `config/claude-settings.json`:
+`branch-guard` (PreToolUse, Bash) gates branch work off main behind
+`BRANCH_OK=1`, and `worktree-gc` runs from boot step 65, after every
+`git merge` and `git branch -d/-D` (PostToolUse), at SessionStart, at
+SessionEnd and from `disk-cleanup` — DELEGATION_ROUTES.md's
+cleanup-after-merge bullet tells the delegation side of that story.

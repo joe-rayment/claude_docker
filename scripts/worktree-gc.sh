@@ -26,8 +26,11 @@
 #      worktree/ is already gone: receipts, logs, the branch name and the
 #      env stay; a live job is untouched.
 #
-# Usage: worktree-gc [--report] [--quiet] [--project <dir>]
+# Usage: worktree-gc [--report] [--quiet] [--after-merge] [--project <dir>]
 #   --report        print what would happen, delete nothing
+#   --after-merge   PostToolUse mode: read the hook JSON from stdin and run
+#                   the sweep (quietly) only when the command was a git
+#                   merge or a `git branch -d/-D`; exit 0 silently otherwise
 #   --quiet         print only STRANDED/FAIL lines and one summary line
 #   --project <dir> operate on <dir> (default: $PROJECT_DIR, else the
 #                   repo containing $PWD)
@@ -53,11 +56,13 @@ SCRIPT_DIR="$(cd "$(dirname "$(_resolve_script_path)")" && pwd)"
 
 REPORT=0
 QUIET=0
+AFTER_MERGE=0
 PROJECT=""
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --report)    REPORT=1 ;;
         --quiet)     QUIET=1 ;;
+        --after-merge) AFTER_MERGE=1 ;;
         --project)
             [ -n "${2:-}" ] || { echo "worktree-gc: --project needs a directory" >&2; exit 2; }
             PROJECT="$2"
@@ -69,6 +74,26 @@ while [ "$#" -gt 0 ]; do
     esac
     shift
 done
+
+# --- PostToolUse mode (--after-merge) ----------------------------------------
+# The PostToolUse hook runs this on every Bash command; sweeping after
+# `git status` would be pure overhead, so the hook payload decides: only a
+# git merge or a `git branch -d/-D` (word boundaries -- not mergetool, not
+# a bare `git branch`, not --delete) sweeps, and it sweeps quietly.
+# Anything else exits 0 silently before git is even consulted.
+if [ "$AFTER_MERGE" = "1" ]; then
+    am_payload="$(cat 2>/dev/null || true)"
+    am_cmd=""
+    if [ -n "$am_payload" ] && command -v jq >/dev/null 2>&1; then
+        am_cmd="$(printf '%s' "$am_payload" | jq -r '.tool_input.command // empty' 2>/dev/null)" || am_cmd=""
+    fi
+    am_hit="$(printf '%s' "$am_cmd" 2>/dev/null \
+        | grep -E '(^|[^[:alnum:]_])git[[:space:]]+(merge|branch[[:space:]]+-[dD])([^[:alnum:]_]|$)' || true)"
+    if [ -z "$am_hit" ]; then
+        exit 0
+    fi
+    QUIET=1
+fi
 
 if [ -z "$PROJECT" ] && [ -n "${PROJECT_DIR:-}" ]; then
     PROJECT="$PROJECT_DIR"
@@ -86,6 +111,9 @@ removed_wt=0
 deleted_br=0
 swept_jobs=0
 stranded=0
+kept_paths=()
+kept_branches=()
+kept_reasons=()
 
 # emit <line> -- --report prints exactly the lines a deleting run would
 # print, each prefixed "would "; --quiet prints only the STRANDED/FAIL
@@ -157,6 +185,33 @@ orca_reachable() {
     return 1
 }
 reachable=""
+
+# Is <pid> an idle Orca worktree terminal rather than live work?
+# Measured 2026-09-18 on the real folder: every Orca worktree carries a
+# default terminal -- a shell whose parent is the orca-ide daemon process
+# and which has no children -- and that shell holds the worktree as its
+# cwd forever, so the /proc cwd scan called a finished, merged worktree
+# "busy" forever. Such a shell is not work: `orca worktree rm` closes it.
+# Anything else (a user's editor, a running build, a shell with children,
+# a shell whose parent is not orca-ide) is live work.
+is_idle_orca_terminal() {    # is_idle_orca_terminal <pid>
+    local pid="$1" ppid pc st
+    ppid="$(awk '/^PPid:/{print $2}' "/proc/$pid/status" 2>/dev/null)"
+    case "$ppid" in ''|*[!0-9]*) return 1 ;; esac
+    [ -r "/proc/$ppid/cmdline" ] || return 1
+    pc="$(tr '\0' ' ' < "/proc/$ppid/cmdline" 2>/dev/null)"
+    case "$pc" in
+        *orca-ide*) ;;
+        *) return 1 ;;
+    esac
+    # No child processes: anything waiting on it (a build, a test run,
+    # a shell with children) is real work.
+    for st in /proc/[0-9]*/status; do
+        [ -r "$st" ] || continue
+        [ "$(awk '/^PPid:/{print $2}' "$st" 2>/dev/null)" = "$pid" ] && return 1
+    done
+    return 0
+}
 
 # Branches step 2 frees -- the branch of every worktree it removed (or,
 # in --report, would remove) and of every pruned one. Step 3 needs them:
@@ -254,24 +309,75 @@ while [ "$i" -lt "$n_wt" ]; do
 
     # A live process in there is not stale, whatever git thinks of its
     # contents -- scan /proc rather than trust anything the worktree itself
-    # reports.
+    # reports. Collect every occupant first: an idle Orca terminal does not
+    # count, and neither does the orca-ide process it hangs from when that
+    # process also sits in the worktree (Orca's own, closed by the rm).
     real_path="$(cd "$path" && pwd -P)"
     busy=0
+    idle_terminal=0
+    occupants=" "
     for cwdlink in /proc/[0-9]*/cwd; do
         [ -e "$cwdlink" ] || continue
         target="$(readlink -f "$cwdlink" 2>/dev/null)" || continue
         case "$target" in
-            "$real_path"|"$real_path"/*) busy=1; break ;;
+            "$real_path"|"$real_path"/*) ;;
+            *) continue ;;
         esac
+        proc_pid="${cwdlink#/proc/}"
+        proc_pid="${proc_pid%/cwd}"
+        occupants="$occupants$proc_pid "
     done
+    if [ "$occupants" != " " ]; then
+        # The idle-terminal question only matters when Orca can actually
+        # close one; when it is not reachable, plain `git worktree remove`
+        # cannot, so every process still means busy. Asked once per run,
+        # and only when a worktree has an occupant to judge.
+        if [ -z "$reachable" ]; then
+            if orca_reachable; then reachable=1; else reachable=0; fi
+        fi
+        if [ "$reachable" = "1" ]; then
+            idle_pids=" "
+            for occ_pid in $occupants; do
+                if is_idle_orca_terminal "$occ_pid"; then
+                    idle_pids="$idle_pids$occ_pid "
+                fi
+            done
+            if [ "$idle_pids" != " " ]; then
+                idle_terminal=1
+                forgivable="$idle_pids"
+                for e in $idle_pids; do
+                    eppid="$(awk '/^PPid:/{print $2}' "/proc/$e/status" 2>/dev/null)"
+                    case "$occupants" in
+                        *" $eppid "*) forgivable="$forgivable$eppid " ;;
+                    esac
+                done
+                for occ_pid in $occupants; do
+                    case "$forgivable" in
+                        *" $occ_pid "*) ;;
+                        *) busy=1; break ;;
+                    esac
+                done
+            else
+                busy=1
+            fi
+        else
+            busy=1
+        fi
+    fi
     if [ "$busy" = "1" ]; then
         emit "busy $path (a running process has it as its cwd)"
+        kept_paths+=("$path")
+        kept_branches+=("$branch")
+        kept_reasons+=("busy")
         continue
     fi
 
     status_out="$(git -C "$path" status --porcelain --untracked-files=all 2>/dev/null)"
     if [ -n "$status_out" ]; then
         emit "FAIL: kept $path (uncommitted or untracked changes)"
+        kept_paths+=("$path")
+        kept_branches+=("$branch")
+        kept_reasons+=("uncommitted changes")
         stranded=1
         continue
     fi
@@ -331,7 +437,11 @@ while [ "$i" -lt "$n_wt" ]; do
     if [ "$removed" = "1" ]; then
         removed_wt=$((removed_wt + 1))
         remember_freed "$branch"
-        emit "removed $path"
+        if [ "$idle_terminal" = "1" ]; then
+            emit "removed $path (closed Orca's idle terminal)"
+        else
+            emit "removed $path"
+        fi
     else
         emit "FAIL: could not remove $path ($reason)"
         stranded=1
@@ -390,6 +500,24 @@ if [ -n "$base" ]; then
             stranded=1
         fi
     done < <(git -C "$PROJECT" for-each-ref --format='%(refname:short)' refs/heads)
+
+    # A branch a kept worktree still holds is skipped above -- but if it
+    # carries commits main does not contain, the work behind it must stay
+    # impossible to miss: name the branch, the count, and why it was kept.
+    j=0
+    n_kept="${#kept_paths[@]}"
+    while [ "$j" -lt "$n_kept" ]; do
+        kept_branch="${kept_branches[j]}"
+        case "$kept_branch" in
+            main|master|"") j=$((j + 1)); continue ;;
+        esac
+        if ! git -C "$PROJECT" merge-base --is-ancestor "$kept_branch" "$base" 2>/dev/null; then
+            kept_commits="$(git -C "$PROJECT" rev-list --count "$base..$kept_branch" 2>/dev/null)" || kept_commits="?"
+            emit "STRANDED branch $kept_branch: $kept_commits commit(s) not in $base (worktree ${kept_paths[j]} kept: ${kept_reasons[j]})"
+            stranded=1
+        fi
+        j=$((j + 1))
+    done
 fi
 
 # --- step 4: finished delegate job dirs ------------------------------------

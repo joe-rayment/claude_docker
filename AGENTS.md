@@ -278,6 +278,24 @@ the first week of September 2026:
   it was 7.84 GB because nobody had read `docker history`. Both were
   found by running the thing once.
 
+Worktree cleanup is one sweep, `worktree-gc`: it removes what a finished
+piece of work leaves behind — every worktree other than the main one whose
+work is already merged, the local branches that pointed at it, and the
+`home/`+`config/` caches of finished delegate job dirs (receipts and logs
+stay). `STRANDED` names work it refuses to touch — a branch with commits
+not in main, a kept worktree still holding such a branch, or a main HEAD
+parked off main — and any STRANDED line exits 1. It runs from boot step 65
+(`65-worktree-sweep`), after every `git merge` and `git branch -d/-D` (the
+PostToolUse hook's `--after-merge`), at SessionStart (`--quiet`, so the
+first prompt carries the STRANDED lines and one summary), at SessionEnd
+(`session-end-audit` dev-logs each STRANDED line), and from `disk-cleanup`.
+An occupant that is only Orca's idle worktree terminal — a shell whose
+parent is the orca-ide daemon and which has no children — does not make a
+worktree busy, because `orca worktree rm` closes it; any other process
+still does. `branch-guard` (PreToolUse, Bash) denies creating or switching
+to a branch off main unless the command carries `BRANCH_OK=1`, so solo
+work stays on main where the user can see it.
+
 ## Conventions & Patterns
 
 - **bash 3.2 on the Mac side.** macOS ships 3.2.57, so `bootstrap.sh` and

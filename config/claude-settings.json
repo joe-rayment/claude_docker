@@ -64,7 +64,16 @@
           { "type": "command", "command": "__HOST__/template/bin/tier-reconcile" },
           { "type": "command", "command": "__HOST__/template/bin/tier-prime" },
           { "type": "command", "command": "[ -x \"__HOST__/template/bin/cost-mirror\" ] && (timeout 3 \"__HOST__/template/bin/cost-mirror\" --refresh-pricing >/dev/null 2>&1 &); exit 0" },
-          { "type": "command", "command": "[ -x \"__HOST__/template/bin/provision\" ] && exec \"__HOST__/template/bin/provision\" status --failed; exit 0" }
+          { "type": "command", "command": "[ -x \"__HOST__/template/bin/provision\" ] && exec \"__HOST__/template/bin/provision\" status --failed; exit 0" },
+          { "type": "command", "command": "[ -x \"__HOST__/template/bin/worktree-gc\" ] && exec \"__HOST__/template/bin/worktree-gc\" --quiet; exit 0" }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          { "type": "command", "command": "[ -x \"__HOST__/template/bin/worktree-gc\" ] && exec \"__HOST__/template/bin/worktree-gc\" --after-merge; exit 0" }
         ]
       }
     ],
@@ -105,6 +114,7 @@
         "matcher": "Bash",
         "hooks": [
           { "type": "command", "command": "[ -x \"__HOST__/template/bin/bd-guard\" ] && exec \"__HOST__/template/bin/bd-guard\"; exit 0" },
+          { "type": "command", "command": "[ -x \"__HOST__/template/bin/branch-guard\" ] && exec \"__HOST__/template/bin/branch-guard\"; exit 0" },
           { "type": "command", "command": "[ -x \"__HOST__/template/bin/outbound-guard\" ] && exec \"__HOST__/template/bin/outbound-guard\"; exit 0" },
           { "type": "command", "command": "[ -x \"__HOST__/template/bin/contract-gate\" ] && exec \"__HOST__/template/bin/contract-gate\"; exit 0", "timeout": 10 },
           { "type": "command", "command": "[ -x \"__HOST__/template/bin/output-cap\" ] && exec \"__HOST__/template/bin/output-cap\"; exit 0", "timeout": 10 }

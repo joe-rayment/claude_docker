@@ -140,7 +140,33 @@ if [ "$REPORT" = 1 ]; then
         "on-demand, swept after ${BROWSER_DAYS} idle days"
     rpt_od "$HOME/.npm/_npx" "on-demand, swept after ${NPM_DAYS} idle days"
     rpt_od "$HOME/.local/share/claude/versions" "on-demand; stale versions swept, current kept"
-    exit 0
+    ddir="$WORKSPACE/.claude-dev/delegate"
+    if [ -d "$ddir" ]; then
+        note "  $(du -sh "$ddir" 2>/dev/null | cut -f1)  $ddir  (delegate job dirs (worktree-gc sweeps home/ and config/ of finished jobs))"
+    else
+        note "  none  $ddir  (delegate job dirs (worktree-gc sweeps home/ and config/ of finished jobs))"
+    fi
+# --- 7. merged worktrees and finished delegate job dirs (worktree-gc) --------
+# worktree-gc owns everything a finished piece of work leaves behind: the
+# worktrees whose work is already merged, the branches that pointed at it,
+# and the home/ + config/ caches of finished delegate job dirs. Skipped
+# under --dry-run: it deletes, and a dry-run deletes nothing. Only its
+# summary line is noted here; STRANDED work is session-end-audit's to
+# surface.
+if [ "$DRY" = 0 ] && [ -x "$SCRIPT_DIR/worktree-gc.sh" ]; then
+    gc_proj="${PROJECT_DIR:-$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null || true)}"
+    [ -n "$gc_proj" ] || gc_proj="$PWD"
+    gc_out="$("$SCRIPT_DIR/worktree-gc.sh" --quiet --project "$gc_proj" 2>/dev/null)" || true
+    while IFS= read -r gc_line; do
+        case "$gc_line" in
+            worktree-gc:*) note "$gc_line" ;;
+        esac
+    done <<EOF
+$gc_out
+EOF
+fi
+
+exit 0
 fi
 
 # --- 4. dated graphify-out/<YYYY-MM-DD>/ snapshot dirs ------------------------
