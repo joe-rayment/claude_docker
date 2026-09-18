@@ -91,3 +91,96 @@ setup_screenshot_env() {
     [[ "$output" == *"npm i -g playwright@1.61.1"* ]]
     [[ "$output" == *"npx playwright install chromium"* ]]
 }
+
+# --- on-demand install (claude-orca-p91) ------------------------------------
+# An npm stub that, on `install playwright@<pin>`, fabricates the package the
+# way a real install leaves it (the shared write_stub_npm only knows
+# claude-code), plus an npx stub that records the chromium fetch.
+
+write_stub_npm_ondemand() {
+    cat > "$STUB_BIN/npm" <<'STUB'
+#!/usr/bin/env bash
+echo "npm $*" >> "$STUB_LOG"
+case "$*" in
+    *playwright@*)
+        [ "${STUB_NPM_FAIL:-0}" = "1" ] && exit 1
+        if [ -n "${CLAUDE_ORCA_PLAYWRIGHT_HOME:-}" ]; then
+            mkdir -p "$CLAUDE_ORCA_PLAYWRIGHT_HOME/node_modules/playwright"
+            printf '{"name":"playwright","version":"1.61.1"}' \
+                > "$CLAUDE_ORCA_PLAYWRIGHT_HOME/node_modules/playwright/package.json"
+        fi
+        ;;
+esac
+exit 0
+STUB
+    chmod +x "$STUB_BIN/npm"
+}
+
+write_stub_npx() {
+    cat > "$STUB_BIN/npx" <<'STUB'
+#!/usr/bin/env bash
+echo "npx $*" >> "$STUB_LOG"
+exit "${STUB_NPX_FAIL:-0}"
+STUB
+    chmod +x "$STUB_BIN/npx"
+}
+
+@test "missing playwright installs on demand: stubbed npm+npx are invoked and the screenshot proceeds" {
+    setup_screenshot_env
+    write_stub_npm_ondemand
+    write_stub_npx
+
+    run TAKE_SCREENSHOT url "http://localhost:3000/dashboard" --name ondemand
+    [ "$status" -eq 0 ]
+
+    # Both halves of the fetch actually ran, package then browser.
+    grep -q "npm install playwright@1.61.1" "$STUB_LOG"
+    grep -q "npx playwright install chromium" "$STUB_LOG"
+
+    # One stderr line says what is being fetched and why.
+    [[ "$output" == *"on demand"* ]]
+
+    # The fetch was not for nothing: the shot itself happened.
+    [ -f "$CLAUDE_ORCA_ROOT/attachments/ondemand.png" ]
+}
+
+@test "CLAUDE_ORCA_NO_INSTALL=1 keeps the one-line exit-3 hint and installs nothing" {
+    setup_screenshot_env
+    write_stub_npm_ondemand
+    write_stub_npx
+
+    CLAUDE_ORCA_NO_INSTALL=1 run TAKE_SCREENSHOT url "http://localhost:3000/"
+    [ "$status" -eq 3 ]
+    [ "${#lines[@]}" -eq 1 ]
+    [[ "$output" == *"npm i -g playwright@1.61.1"* ]]
+    ! grep -q "npm install playwright" "$STUB_LOG"
+    ! grep -q "npx playwright" "$STUB_LOG"
+
+    # Without the knob the very same setup fetches and succeeds -- the knob,
+    # not the missing package, is what held the install back.
+    run TAKE_SCREENSHOT url "http://localhost:3000/"
+    [ "$status" -eq 0 ]
+    grep -q "npm install playwright@1.61.1" "$STUB_LOG"
+}
+
+@test "a failed on-demand install exits 3 with the hint (npm fails)" {
+    setup_screenshot_env
+    write_stub_npm_ondemand
+    write_stub_npx
+
+    STUB_NPM_FAIL=1 run TAKE_SCREENSHOT url "http://localhost:3000/"
+    [ "$status" -eq 3 ]
+    grep -q "npm install playwright@1.61.1" "$STUB_LOG"
+    [[ "$output" == *"npm i -g playwright@1.61.1"* ]]
+}
+
+@test "a failed chromium fetch exits 3 with the hint (npx fails)" {
+    setup_screenshot_env
+    write_stub_npm_ondemand
+    write_stub_npx
+
+    STUB_NPX_FAIL=1 run TAKE_SCREENSHOT url "http://localhost:3000/"
+    [ "$status" -eq 3 ]
+    grep -q "npx playwright install chromium" "$STUB_LOG"
+    [[ "$output" == *"npm i -g playwright@1.61.1"* ]]
+}
