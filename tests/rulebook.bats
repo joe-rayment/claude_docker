@@ -65,13 +65,13 @@ setup() {
 # gained the self-contained-question rule and the interim-update/notification
 # rule, and § Delegation gained the unnamed-spawn rule -- all three are
 # verbatim user text, so the budget moved rather than the words. It moved
-# 1150 -> 1400 the same week (claude-orca-rdk): the file had been running
+# 1150 -> 1300 the same week (claude-orca-rdk): the file had been running
 # red at 1327 words on main since the token-diet bead, and the budget
 # moves rather than the words, per this file's own precedent.
-@test "rulebook: config/claude-user-memory.md is at most 1400 words" {
+@test "rulebook: config/claude-user-memory.md is at most 1300 words" {
     local words
     words=$(wc -w < "$USER_MEMORY")
-    [ "$words" -le 1400 ]
+    [ "$words" -le 1300 ]
 }
 
 # The cap moved 1700 -> 1900 in Sept 2026 (claude-orca-rdk): the

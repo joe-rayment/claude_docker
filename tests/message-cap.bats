@@ -94,7 +94,7 @@ run_hook() {
     [[ "$output" != *"msg:"* ]]
 }
 
-@test "message-cap: config/claude-user-memory.md stays under rulebook.bats's 1400-word cap" {
+@test "message-cap: config/claude-user-memory.md stays under rulebook.bats's 1300-word cap" {
     words_count=$(wc -w < "$USER_MEMORY")
-    [ "$words_count" -le 1400 ]
+    [ "$words_count" -le 1300 ]
 }
