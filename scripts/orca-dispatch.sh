@@ -371,7 +371,11 @@ fi
 # poll on Orca. A live pid in spool.pid means no second start; the spooler
 # itself exits once no dispatch record is live any more, and the next
 # dispatch starts a fresh one. CLAUDE_ORCA_SPOOL_CMD overrides the command
-# (split on whitespace) for tests.
+# (split on whitespace) for tests. The launch detaches hard
+# (claude-orca-csh): setsid nohup with stdin from /dev/null, output to the
+# log, and -- 3>&-, because bats-core waits on the caller's fd 3 and a
+# spooler that inherits it holds the whole test run open; setsid moves it
+# to a session of its own so no group kill can reach it either.
 
 ODIR="$(orch_dir "$ROOT")"
 SPOOL_PID_FILE="$ODIR/spool.pid"
@@ -388,17 +392,28 @@ if [ "$sp_live" -eq 0 ]; then
     SPOOL_FROM_ARGS=()
     [ -n "$HANDLE" ] && SPOOL_FROM_ARGS=(--from "$HANDLE")
     if [ -n "${CLAUDE_ORCA_SPOOL_CMD:-}" ]; then
-        nohup $CLAUDE_ORCA_SPOOL_CMD \
+        setsid nohup $CLAUDE_ORCA_SPOOL_CMD \
             ${SPOOL_FROM_ARGS[@]+"${SPOOL_FROM_ARGS[@]}"} \
-            </dev/null >>"$ODIR/spool.log" 2>&1 &
+            </dev/null >>"$ODIR/spool.log" 2>&1 3>&- &
     else
-        nohup "$SCRIPT_DIR/orca-wait.sh" --spool \
+        setsid nohup "$SCRIPT_DIR/orca-wait.sh" --spool \
             ${SPOOL_FROM_ARGS[@]+"${SPOOL_FROM_ARGS[@]}"} \
-            </dev/null >>"$ODIR/spool.log" 2>&1 &
+            </dev/null >>"$ODIR/spool.log" 2>&1 3>&- &
     fi
     sp_pid=$!
     disown "$sp_pid" 2>/dev/null || true
     printf '%s\n' "$sp_pid" >"$SPOOL_PID_FILE"
+    # A short-lived CLAUDE_ORCA_SPOOL_CMD shim (the orca stub's) finishes
+    # its whole job -- including anything a test asserts right after this
+    # receipt -- within a few ms of the launch, so give it the chance to
+    # exit first; a long-lived spooler (the real orca-wait --spool never
+    # exits while its Run is live) just costs the bounded grace
+    # (claude-orca-csh).
+    sp_i=0
+    while kill -0 "$sp_pid" 2>/dev/null && [ "$sp_i" -lt 60 ]; do
+        sleep 0.005
+        sp_i=$(( sp_i + 1 ))
+    done
     note "spooler started (pid $sp_pid, log $ODIR/spool.log)"
 fi
 
