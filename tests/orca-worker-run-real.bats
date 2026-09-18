@@ -115,7 +115,7 @@ run_worker() {
     run_worker
     [ "$status" -eq 0 ]
     local last_text prefix
-    last_text="$(jq -s '[.[] | select(.type == "text") | .part.text]
+    last_text="$(jq -r -s '[.[] | select(.type == "text") | .part.text]
         | last' "$FIXTURE")"
     [ -n "$last_text" ]
     prefix="${last_text:0:20}"
@@ -131,12 +131,13 @@ run_worker() {
     run --separate-stderr "$WORKER_RUN" --task "$TASK" --spec "$T/spec.txt" \
         --model "$STUB_MODEL" --dir "$WT" --run-dir "$RUN_DIR" \
         --bead claude-orca-pld
+    local werr="$stderr"
     [ "$status" -eq 0 ]
     local r="$RUN_DIR/orchestration/workers/$TASK.receipt.json"
     [ -f "$r" ]
     run jq -e '.exit_code == 0 and .tokens_in == 0
         and .tokens_out == 0 and .usd == 0' "$r"
     [ "$status" -eq 0 ]
-    [ "${#stderr_lines[@]}" -eq 1 ]
-    [[ "${stderr_lines[0]}" == *"could not parse token usage from"* ]]
+    [ "$(printf '%s\n' "$werr" | grep -c . )" -eq 1 ]
+    [[ "$werr" == *"could not parse token usage from"* ]]
 }
