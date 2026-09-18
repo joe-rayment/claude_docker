@@ -79,6 +79,7 @@ git -C "$dir" add -A
 git -C "$dir" commit -qm "worker: add made-by-worker.txt"
 exit "$STUB_EXIT"
 STUB
+chmod +x "$ORCA_STUB_BIN/opencode"
 
     # A real git repo as the worktree, one commit on HEAD.
     WT="$BATS_TEST_TMPDIR/worktree"

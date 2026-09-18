@@ -321,7 +321,7 @@ EOF
 # Returns 0 normally, 3 when it printed a fallback: the caller stops waiting
 # so the orchestrator can re-run the slice in-process on the same worktree.
 stall_scan() {
-    local f now state act idle bead disp term wt model nudged
+    local f now state act idle bead disp term wt model nudged mode
     local text cmd spec bj tmp
     now="$(date +%s)"
     for f in "$DISP_DIR"/*.json; do
@@ -339,6 +339,7 @@ stall_scan() {
         term="$(jq -r '.terminal // ""' "$f" 2>/dev/null)"
         wt="$(jq -r '.worktree_path // ""' "$f" 2>/dev/null)"
         model="$(jq -r '.model // ""' "$f" 2>/dev/null)"
+        mode="$(jq -r '.mode // ""' "$f" 2>/dev/null)"
         nudged="$(jq -r '.nudged_at // 0' "$f" 2>/dev/null)"
         case "$nudged" in ''|*[!0-9]*) nudged=0 ;; esac
 
@@ -388,6 +389,18 @@ stall_scan() {
               terminal: $term, idle_s: $idle, nudge: $nudge}')"
 
         [ "$NUDGE" -eq 1 ] || continue
+        if [ "$mode" = "headless" ]; then
+            # A headless worker has no TUI to type a nudge into (its
+            # terminal ended with the run, claude-orca-ltd): the stall
+            # report above stands, and restarting the stall clock here
+            # reaches the SUBAGENT FALLBACK below exactly as a nudge does
+            # for a resident TUI.
+            tmp="$f.tmp"
+            jq --argjson n "$now" '.nudged_at = $n' "$f" >"$tmp" 2>/dev/null &&
+                mv "$tmp" "$f"
+            rm -f "$tmp"
+            continue
+        fi
         [ -n "$term" ] || continue
         orca_call terminal send --terminal "$term" --text "$text" --enter \
             --json >/dev/null 2>&1 || note "could not nudge $term"
@@ -405,7 +418,7 @@ stall_scan() {
 process_batch() {
     local msgs msg mtype mid subject body from_h payload pj
     local task_id disp_id outcome files bead model agent drec released rel
-    local term rel_state terminal_closed
+    local term rel_state terminal_closed mode
     msgs="$TMPD/msgs.jsonl"
     printf '%s' "$1" | jq -c '.result.messages[]?' >"$msgs" 2>/dev/null
     while IFS= read -r msg; do
@@ -452,8 +465,10 @@ process_batch() {
 $subject: $body"
             fi
             term=""
+            mode=""
             if [ -f "$drec" ]; then
                 term="$(jq -r '.terminal // ""' "$drec")"
+                mode="$(jq -r '.mode // ""' "$drec")"
             fi
             terminal_closed=false
             if [ "$KEEP" -eq 0 ] && [ -n "$disp_id" ]; then
@@ -467,8 +482,13 @@ $subject: $body"
                         *)
                             # A non-terminal release state (e.g. "retained")
                             # leaves the finished worker resident (~1 GB per
-                            # idle opencode TUI) -- close its terminal.
-                            if [ -n "$term" ] &&
+                            # idle opencode TUI) -- close its terminal. A
+                            # headless worker's terminal ended with its run
+                            # (claude-orca-ltd): there is nothing resident
+                            # and nothing to close.
+                            if [ "$mode" = "headless" ]; then
+                                note "worker-release left $disp_id in state '$rel_state'; headless terminal ended with the run -- nothing to close"
+                            elif [ -n "$term" ] &&
                                orca_call terminal close --terminal "$term" \
                                    --json >/dev/null 2>&1; then
                                 released=true
