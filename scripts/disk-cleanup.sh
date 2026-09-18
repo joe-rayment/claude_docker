@@ -21,17 +21,22 @@
 #   TMP_SCAN_DIR     directory to sweep for stray test artifacts    (default /tmp)
 #   CLAUDE_ORCA_CLEANUP_TRANSCRIPT_DAYS  config-dir projects/ files older
 #                     than N days (default 30)
-#   CLAUDE_ORCA_CLEANUP_NPM_DAYS          ~/.npm/_cacache files older than N
-#                     days (default 14)
+#   CLAUDE_ORCA_CLEANUP_NPM_DAYS          ~/.npm/_cacache files and ~/.npm/
+#                     _npx entries older than N days (default 14)
+#   CLAUDE_ORCA_CLEANUP_BROWSER_DAYS      the on-demand browser caches
+#                     (~/.cache/ms-playwright and the playwright package
+#                     home) with nothing newer than N days (default 14)
 #
 # Also swept (beads claude-orca-3fp): dated graphify-out/<YYYY-MM-DD>/
 # snapshot dirs the engine used to leave next to the canonical set, and the
-# npm cache. ~/.cache/ms-playwright is deliberately NOT swept — it is only
-# ever reported (it is the single biggest home consumer and re-downloading
-# browsers is far costlier than the disk it sits on).
+# npm cache. On-demand instruments (claude-orca-p91): the browser caches,
+# ~/.npm/_npx residue and stale ~/.local/share/claude/versions copies are
+# swept when idle -- take-screenshot re-fetches them on demand, and the
+# version ~/.local/bin/claude points at is always kept.
 #
 #   disk-cleanup --report    print the top 10 consumers under $HOME by size
-#                            plus graphify-out's size; deletes nothing
+#                            plus graphify-out's size and the on-demand
+#                            instruments' policies; deletes nothing
 
 set -u
 
@@ -67,6 +72,7 @@ ATTACH_AGE_DAYS="${ATTACH_AGE_DAYS:-7}"
 LOG_MAX_LINES="${LOG_MAX_LINES:-5000}"
 TRANSCRIPT_DAYS="${CLAUDE_ORCA_CLEANUP_TRANSCRIPT_DAYS:-30}"
 NPM_DAYS="${CLAUDE_ORCA_CLEANUP_NPM_DAYS:-14}"
+BROWSER_DAYS="${CLAUDE_ORCA_CLEANUP_BROWSER_DAYS:-14}"
 WORKSPACE="${WORKSPACE:-$(claude_orca_root 2>/dev/null || pwd)}"
 TMP_SCAN_DIR="${TMP_SCAN_DIR:-/tmp}"
 
@@ -80,6 +86,31 @@ graphify_out_dir() {
         /*) printf '%s\n' "$_out" ;;
         *)  printf '%s/%s\n' "$WORKSPACE" "$_out" ;;
     esac
+}
+
+# Does anything in this tree have an mtime newer than <days> days ago?
+# Directories count: an install adds directories, so a directory's own
+# mtime is the freshest thing about it -- which is also what keeps the
+# fixture-dirs of any test honest. Empty output = idle.
+tree_is_fresh() {    # tree_is_fresh <dir> <days>
+    [ -d "$1" ] || return 0
+    find "$1" -newermt "$2 days ago" -print -quit 2>/dev/null | grep -q .
+}
+
+# Remove an on-demand cache the moment its newest mtime is older than the
+# idle gate: whatever needs it re-fetches it on demand (take-screenshot
+# reinstalls playwright+chromium; npm re-fetches npx entries).
+sweep_on_demand_dir() {    # sweep_on_demand_dir <dir> <days> <label>
+    local d="$1" days="$2" label="$3"
+    [ -d "$d" ] || return 0
+    if tree_is_fresh "$d" "$days"; then
+        return 0
+    fi
+    if [ "$DRY" = 1 ]; then
+        note "[dry-run] would remove $label ($d) -- idle >${days}d, re-fetched on demand"
+    else
+        rm -rf "$d" && note "removed $label ($d) -- idle >${days}d, re-fetched on demand"
+    fi
 }
 
 # --- 0. --report: show the biggest consumers, touch nothing -------------------
@@ -96,6 +127,19 @@ if [ "$REPORT" = 1 ]; then
     else
         note "graphify-out: none ($gout)"
     fi
+    # On-demand instruments (claude-orca-p91): fetched when the work needs
+    # them, swept when idle -- each with the policy the sweeps below apply.
+    rpt_od() {    # rpt_od <dir> <policy text>
+        local size="none"
+        [ -d "$1" ] && size="$(du -sh "$1" 2>/dev/null | cut -f1)"
+        note "  $size  $1  ($2)"
+    }
+    note "on-demand instruments:"
+    rpt_od "$HOME/.cache/ms-playwright" "on-demand, swept after ${BROWSER_DAYS} idle days"
+    rpt_od "${CLAUDE_ORCA_PLAYWRIGHT_HOME:-$HOME/.cache/claude-orca-playwright}" \
+        "on-demand, swept after ${BROWSER_DAYS} idle days"
+    rpt_od "$HOME/.npm/_npx" "on-demand, swept after ${NPM_DAYS} idle days"
+    rpt_od "$HOME/.local/share/claude/versions" "on-demand; stale versions swept, current kept"
     exit 0
 fi
 
@@ -152,6 +196,60 @@ if [ -d "$NPM" ] && [ "$NPM_DAYS" -ge 0 ]; then
         find "$NPM" -type f -mtime +"$NPM_DAYS" -exec rm -f {} + 2>/dev/null
         find "$NPM" -mindepth 1 -type d -empty -delete 2>/dev/null
         [ "${npm_swept:-0}" -gt 0 ] && note "removed $npm_swept npm cache file(s) older than ${NPM_DAYS}d"
+    fi
+fi
+
+# --- 6b. on-demand browser caches (claude-orca-p91) ---------------------------
+# ms-playwright (chromium) and the playwright package home are installed on
+# demand by take-screenshot and re-installed just as on demand, so an idle
+# cache -- nothing in the tree newer than BROWSER_DAYS -- is pure dead
+# weight. The gate reads the newest mtime in the whole tree, directories
+# included: any install touches directories, so only genuinely idle caches
+# go.
+sweep_on_demand_dir "$HOME/.cache/ms-playwright" "$BROWSER_DAYS" \
+    "ms-playwright browser cache"
+sweep_on_demand_dir "${CLAUDE_ORCA_PLAYWRIGHT_HOME:-$HOME/.cache/claude-orca-playwright}" \
+    "$BROWSER_DAYS" "playwright package home"
+
+# --- 6c. npx residue (~/.npm/_npx) --------------------------------------------
+# Each entry is one `npx <pkg>` invocation's unpacked package; npm re-fetches
+# it on demand, so entries untouched for NPM_DAYS go the way _cacache does.
+NPX="$HOME/.npm/_npx"
+if [ -d "$NPX" ] && [ "$NPM_DAYS" -ge 0 ]; then
+    if [ "$DRY" = 1 ]; then
+        find "$NPX" -mindepth 1 -maxdepth 1 -mtime +"$NPM_DAYS" 2>/dev/null \
+            | sed 's|^|disk-cleanup: [dry-run] would remove npx residue |'
+    else
+        npx_swept=$(find "$NPX" -mindepth 1 -maxdepth 1 -mtime +"$NPM_DAYS" 2>/dev/null | wc -l | tr -d ' ')
+        find "$NPX" -mindepth 1 -maxdepth 1 -mtime +"$NPM_DAYS" -exec rm -rf {} + 2>/dev/null
+        [ "${npx_swept:-0}" -gt 0 ] && note "removed $npx_swept npx residue entry(ies) older than ${NPM_DAYS}d"
+    fi
+fi
+
+# --- 6d. stale Claude Code versions (~/.local/share/claude/versions) ----------
+# The auto-updater leaves one ~216 MB copy per version; only the one
+# ~/.local/bin/claude points at is live. Unresolvable link (missing, broken
+# chain) = nothing provably stale, so nothing is swept. A target outside
+# versions/ (the image's /opt/claude) makes every copy here stale. Never
+# /opt, never /usr -- every rm below is inside $HOME.
+VDIR="$HOME/.local/share/claude/versions"
+BIN="$HOME/.local/bin/claude"
+if [ -d "$VDIR" ] && [ -L "$BIN" ]; then
+    target="$(readlink -f "$BIN" 2>/dev/null || true)"
+    if [ -n "$target" ]; then
+        keep=""
+        case "$target" in
+            "$VDIR"/?*) keep="${target#"$VDIR"/}"; keep="${keep%%/*}" ;;
+        esac
+        if [ "$DRY" = 1 ]; then
+            find "$VDIR" -mindepth 1 -maxdepth 1 ! -name "$keep" 2>/dev/null \
+                | sed 's|^|disk-cleanup: [dry-run] would remove stale claude version |'
+        else
+            ver_swept=$(find "$VDIR" -mindepth 1 -maxdepth 1 ! -name "$keep" 2>/dev/null | wc -l | tr -d ' ')
+            find "$VDIR" -mindepth 1 -maxdepth 1 ! -name "$keep" -exec rm -rf {} + 2>/dev/null
+            [ "${ver_swept:-0}" -gt 0 ] && \
+                note "removed $ver_swept stale claude version(s) (kept: ${keep:-none})"
+        fi
     fi
 fi
 
