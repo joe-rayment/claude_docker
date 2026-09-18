@@ -174,20 +174,40 @@ PYEOF
 }
 redact_secret "$LOG" "$GUARD_TOKEN"
 
-# 5. Receipt: the same usage jq as delegate.sh, then a best-effort,
-#    fail-open hand-off to cost-mirror's delegate ledger.
+# 5. Receipt: two stream shapes (claude-orca-pld). The real opencode
+#    --format json stream is {"type":"step_start"|"tool_use"|"step_finish"|
+#    "text",...,"part":{...}} with tokens and cost in every step_finish
+#    part -- summed over all of them. The legacy shape (and the frozen
+#    test's stub) is one usage/cost event -- the last one wins. When
+#    neither parses, the receipt is still written with zeros and one
+#    stderr line: cost-mirror must never miss a run for a parse failure.
 usage_obj="$(jq -R -s '
     split("\n")
     | map(select(length > 0))
     | map(try fromjson catch empty)
-    | map(select(. != null and ((has("usage") or has("cost"))
-          or ((.part // {}) | (has("tokens") or has("cost"))))))
-    | last // {}
+    | map(select(. != null))
+    | {
+        real: [.[] | select(.type == "step_finish"
+                  and (((.part // {}) | has("tokens"))
+                       or ((.part // {}) | has("cost"))))],
+        legacy: [.[] | select((has("usage") or has("cost"))
+                  and (.type != "step_finish"))]
+      }
 ' "$LOG" 2>/dev/null)" || usage_obj='{}'
 [ -n "$usage_obj" ] || usage_obj='{}'
-tokens_in="$(jq -r '(.usage.inputTokens // .usage.input_tokens // .usage.promptTokens // .tokens.input // .part.tokens.input) // "null"' <<<"$usage_obj")"
-tokens_out="$(jq -r '(.usage.outputTokens // .usage.output_tokens // .usage.completionTokens // .tokens.output // .part.tokens.output) // "null"' <<<"$usage_obj")"
-usd="$(jq -r '(.usage.cost // .cost // .part.cost) // "null"' <<<"$usage_obj")"
+if [ "$(jq -r '(.real | length) > 0' <<<"$usage_obj" 2>/dev/null)" = "true" ]; then
+    tokens_in="$(jq -r '[.real[] | (.part.tokens.input // 0)] | add // 0' <<<"$usage_obj")"
+    tokens_out="$(jq -r '[.real[] | (.part.tokens.output // 0)] | add // 0' <<<"$usage_obj")"
+    usd="$(jq -r '[.real[] | (.part.cost // 0)] | add // 0' <<<"$usage_obj")"
+else
+    tokens_in="$(jq -r '(.legacy | last | (.usage.inputTokens // .usage.input_tokens // .usage.promptTokens // .tokens.input // .part.tokens.input)) // "null"' <<<"$usage_obj")"
+    tokens_out="$(jq -r '(.legacy | last | (.usage.outputTokens // .usage.output_tokens // .usage.completionTokens // .tokens.output // .part.tokens.output)) // "null"' <<<"$usage_obj")"
+    usd="$(jq -r '(.legacy | last | (.usage.cost // .cost // .part.cost)) // "null"' <<<"$usage_obj")"
+    if [ "$tokens_in" = "null" ] && [ "$tokens_out" = "null" ] && [ "$usd" = "null" ]; then
+        printf 'worker-run: could not parse token usage from %s\n' "$LOG" >&2
+        tokens_in=0; tokens_out=0; usd=0
+    fi
+fi
 
 RECEIPT="$WORKERS_DIR/$TASK_ID.receipt.json"
 jq -n \
@@ -218,15 +238,21 @@ files="$({ [ -n "$base" ] && git -C "$DIR" diff --name-only "$base..HEAD" 2>/dev
                        print line }'; } | sort -u | paste -sd, -)"
 # -r on this one: the last value is the text itself, and Orca must
 # receive it raw -- JSON-encoded it arrives wrapped in literal double
-# quotes (claude-orca-ltd).
+# quotes (claude-orca-ltd). The last text event's part.text is the
+# worker's own summary (claude-orca-pld); the deep scan stays as the
+# fallback for streams that carry text some other way.
 body="$(jq -r -R -s '
     split("\n")
     | map(select(length > 0))
     | map(try fromjson catch empty)
     | map(select(. != null))
-    | map([.. | objects | select(has("text")) | .text] | last // empty)
-    | map(select(length > 0))
-    | last // empty
+    | [([.[] | select(.type == "text") | (.part.text // empty)
+         | select(length > 0)] | last // empty),
+        ([.[] | [.. | objects | select(has("text")) | .text]
+          | last // empty]
+         | map(select(length > 0)) | last // empty)]
+    | map(select(. != null and . != "" and length > 0))
+    | first // empty
 ' "$LOG" 2>/dev/null)"
 [ -n "$body" ] || body="$(grep -v '^[[:space:]]*$' "$LOG" 2>/dev/null | tail -20)"
 body="${body:0:1500}"
