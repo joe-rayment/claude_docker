@@ -1,32 +1,21 @@
 #!/usr/bin/env bash
 #
-# claude-orca-grq -- nothing in this repo ever removes a worktree
-# (orca-run.sh, delegate.sh and by-hand executors all create one; none of
-# them calls `orca worktree rm` or `git worktree remove`), and Orca
-# rediscovers every git worktree from .git/worktrees at load, so a folder's
-# sidebar fills with detached-HEAD and stale-branch entries forever. This
-# step is the sweep: it runs at every start and clears what the last run
-# left behind.
+# claude-orca-6zg -- the boot-time sweep now delegates: one sweep,
+# scripts/worktree-gc.sh, owns the whole cleanup. This step used to remove
+# stale worktrees only -- it never deleted a branch and never touched the
+# delegate job dirs, whose npm/opencode caches alone measured 329 MB in
+# this folder. worktree-gc.sh does all three in one pass: the worktree
+# semantics below (unchanged, so `provision status` reads the same),
+# merged local branches via `git branch -d`, and home/ + config/ of
+# finished delegate jobs. Work that is NOT merged is reported STRANDED
+# with its commit count and is never deleted -- uncommitted or unmerged
+# work stays impossible to miss.
 #
-# For every worktree of PROJECT_DIR other than the main one:
-#
-#   * its directory is gone      -> `git worktree prune` covers it.
-#   * a process has it as cwd    -> kept; not a failure -- a live editor or
-#                                    shell in there is normal, not stale.
-#   * clean (no uncommitted or untracked changes) -> removed: through Orca
-#     when it is reachable (orca-ide also drops the branch when it can
-#     prove it merged, keeps it otherwise), through plain git otherwise.
-#   * otherwise (uncommitted or untracked changes) -> kept, and this run
-#     exits non-zero so `provision status` surfaces it at the next prompt.
-#     A person or an agent has to decide whether that work is wanted.
-#
-# Idempotent: a folder with nothing stale finds nothing to do and exits 0.
-# Never fatal to the boot -- provision-run.sh does not stop on a non-zero
-# step -- but its own exit code still carries the one thing worth a human's
-# attention: uncommitted work this sweep declined to throw away.
+# Kept from the old step: the early exits. A folder with no PROJECT_DIR,
+# or one that is not a git repo, has nothing to sweep and must not turn
+# the boot's provision status red.
 
 set -uo pipefail
-. "$(dirname "$0")/../provision-lib.sh"
 
 if [ -z "${PROJECT_DIR:-}" ] || [ ! -d "$PROJECT_DIR" ]; then
     echo "no PROJECT_DIR; nothing to sweep"
@@ -37,159 +26,5 @@ if ! git -C "$PROJECT_DIR" rev-parse --git-dir >/dev/null 2>&1; then
     exit 0
 fi
 
-# The CLI is resolved exactly the way 60-orca-repo-add resolves it, because
-# a folder that registered with Orca under one path must ask the same CLI
-# about it.
-AGENT_HOME="${HOME:-/home/agent}"
-ORCA_BIN="${ORCA_BIN:-/opt/orca/orca-ide}"
-USER_DATA_DIR="${ORCA_USER_DATA_DIR:-$AGENT_HOME/.config/orca}"
-
-resolve_cli() {
-    if [ -n "${ORCA_CLI:-}" ]; then
-        printf '%s\n' "$ORCA_CLI"
-        return 0
-    fi
-    for candidate in \
-        "$(dirname "$ORCA_BIN")/resources/bin/orca-ide" \
-        "$AGENT_HOME/.local/bin/orca-ide" \
-        "$AGENT_HOME/.local/bin/orca"
-    do
-        [ -x "$candidate" ] && { printf '%s\n' "$candidate"; return 0; }
-    done
-    for name in orca orca-ide; do
-        found="$(command -v "$name" 2>/dev/null)"
-        [ -n "$found" ] && { printf '%s\n' "$found"; return 0; }
-    done
-    return 1
-}
-
-cli="$(resolve_cli || true)"
-
-orca_call() {  # orca_call <args...> -- CLI call, bounded, with the runtime's user-data dir
-    if command -v timeout >/dev/null 2>&1; then
-        env ORCA_USER_DATA_PATH="$USER_DATA_DIR" timeout 15 "$cli" "$@"
-    else
-        env ORCA_USER_DATA_PATH="$USER_DATA_DIR" "$cli" "$@"
-    fi
-}
-
-# Reachable is asked once per run, not once per worktree: the answer does
-# not change mid-sweep, and a run with several stale worktrees must not
-# make several network round trips to find that out.
-orca_reachable() {
-    [ -n "$cli" ] || return 1
-    local out
-    out="$(orca_call status --json 2>/dev/null)" || return 1
-    if command -v jq >/dev/null 2>&1; then
-        [ "$(printf '%s' "$out" | jq -r '.result.runtime.reachable // false' 2>/dev/null)" = "true" ]
-        return
-    fi
-    case "$out" in
-        *'"reachable":true'*|*'"reachable": true'*) return 0 ;;
-    esac
-    return 1
-}
-reachable=0
-orca_reachable && reachable=1
-
-MAIN_PATH="$(cd "$PROJECT_DIR" && pwd -P)"
-
-worktree_paths=()
-while IFS= read -r p; do
-    [ -n "$p" ] && worktree_paths+=("$p")
-done < <(git -C "$PROJECT_DIR" worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p')
-
-fail=0
-swept=0
-
-for path in ${worktree_paths[@]+"${worktree_paths[@]}"}; do
-    [ "$path" = "$MAIN_PATH" ] && continue
-    swept=$((swept + 1))
-
-    if [ ! -d "$path" ]; then
-        git -C "$PROJECT_DIR" worktree prune >/dev/null 2>&1
-        echo "pruned $path (directory gone)"
-        continue
-    fi
-
-    # A live process in there is not stale, whatever git thinks of its
-    # contents -- scan /proc rather than trust anything the worktree itself
-    # reports.
-    real_path="$(cd "$path" && pwd -P)"
-    busy=0
-    for cwdlink in /proc/[0-9]*/cwd; do
-        [ -e "$cwdlink" ] || continue
-        target="$(readlink -f "$cwdlink" 2>/dev/null)" || continue
-        case "$target" in
-            "$real_path"|"$real_path"/*) busy=1; break ;;
-        esac
-    done
-    if [ "$busy" = "1" ]; then
-        echo "busy $path (a running process has it as its cwd)"
-        continue
-    fi
-
-    status_out="$(git -C "$path" status --porcelain --untracked-files=all 2>/dev/null)"
-    if [ -n "$status_out" ]; then
-        echo "FAIL: kept $path (uncommitted or untracked changes)"
-        fail=1
-        continue
-    fi
-
-    # Clean. Prefer Orca, because it drops the branch too when it can prove
-    # the worktree merged -- but a reachable Orca that answers ok:false, or
-    # that answers ok:true and leaves the directory in place, is a refusal,
-    # not a removal, and must not be reported as one.
-    removed=0
-    reason=""
-    if [ "$reachable" = "1" ]; then
-        rm_out="$(orca_call worktree rm --worktree "path:$path" --json 2>/dev/null)"
-        rm_ok=0
-        if command -v jq >/dev/null 2>&1; then
-            [ "$(printf '%s' "$rm_out" | jq -r '.ok // false' 2>/dev/null)" = "true" ] && rm_ok=1
-        else
-            case "$rm_out" in
-                *'"ok":true'*|*'"ok": true'*) rm_ok=1 ;;
-            esac
-        fi
-        if [ "$rm_ok" = "1" ] && [ ! -d "$path" ]; then
-            removed=1
-        elif [ "$rm_ok" != "1" ]; then
-            reason="orca-ide refused the rm"
-        else
-            reason="orca-ide reported ok but the directory is still there"
-        fi
-    fi
-
-    if [ "$removed" != "1" ]; then
-        # Unreachable, or Orca's rm did not actually take: fall back to
-        # plain git. The tree is already confirmed clean on this path, so
-        # --force (needed only if the first attempt leaves something behind
-        # -- e.g. a half-finished Orca rm) throws nothing real away.
-        git -C "$PROJECT_DIR" worktree remove "$path" >/dev/null 2>&1
-        if [ -d "$path" ]; then
-            git -C "$PROJECT_DIR" worktree remove --force "$path" >/dev/null 2>&1
-        fi
-        if [ ! -d "$path" ]; then
-            removed=1
-        elif [ -z "$reason" ]; then
-            reason="git worktree remove left the directory in place"
-        fi
-    fi
-
-    git -C "$PROJECT_DIR" worktree prune >/dev/null 2>&1
-
-    if [ "$removed" = "1" ]; then
-        echo "removed $path"
-    else
-        echo "FAIL: could not remove $path ($reason)"
-        fail=1
-    fi
-done
-
-if [ "$swept" = "0" ]; then
-    echo "no worktree other than $MAIN_PATH; nothing to sweep"
-fi
-
-[ "$fail" = "1" ] && exit 1
-exit 0
+step_dir="$(cd "$(dirname "$0")" && pwd)"
+exec "$step_dir/../../worktree-gc.sh" --project "$PROJECT_DIR"
