@@ -146,19 +146,26 @@ if [ "$REPORT" = 1 ]; then
     else
         note "  none  $ddir  (delegate job dirs (worktree-gc sweeps home/ and config/ of finished jobs))"
     fi
+fi
+
 # --- 7. merged worktrees and finished delegate job dirs (worktree-gc) --------
 # worktree-gc owns everything a finished piece of work leaves behind: the
 # worktrees whose work is already merged, the branches that pointed at it,
-# and the home/ + config/ caches of finished delegate job dirs. Skipped
-# under --dry-run: it deletes, and a dry-run deletes nothing. Only its
-# summary line is noted here; STRANDED work is session-end-audit's to
-# surface.
-if [ "$DRY" = 0 ] && [ -x "$SCRIPT_DIR/worktree-gc.sh" ]; then
-    gc_proj="${PROJECT_DIR:-$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null || true)}"
-    [ -n "$gc_proj" ] || gc_proj="$PWD"
-    gc_out="$("$SCRIPT_DIR/worktree-gc.sh" --quiet --project "$gc_proj" 2>/dev/null)" || true
+# and the home/ + config/ caches of finished delegate job dirs. It runs in
+# every mode against $WORKSPACE -- the one project root disk-cleanup uses
+# for everything else, never the ambient $PROJECT_DIR -- as --quiet (a
+# deleting sweep) on a plain run and as --report (its would-lines noted,
+# nothing deleted) under --report/--dry-run; STRANDED work is
+# session-end-audit's to surface.
+if [ -x "$SCRIPT_DIR/worktree-gc.sh" ]; then
+    gc_mode="--report"
+    if [ "$DRY" = 0 ] && [ "$REPORT" = 0 ]; then
+        gc_mode="--quiet"
+    fi
+    gc_out="$("$SCRIPT_DIR/worktree-gc.sh" "$gc_mode" --project "$WORKSPACE" 2>/dev/null)" || true
     while IFS= read -r gc_line; do
         case "$gc_line" in
+            would\ *)     note "$gc_line" ;;
             worktree-gc:*) note "$gc_line" ;;
         esac
     done <<EOF
@@ -166,7 +173,8 @@ $gc_out
 EOF
 fi
 
-exit 0
+if [ "$REPORT" = 1 ]; then
+    exit 0
 fi
 
 # --- 4. dated graphify-out/<YYYY-MM-DD>/ snapshot dirs ------------------------
