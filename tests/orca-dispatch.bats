@@ -24,10 +24,15 @@ setup_file() {
     # Orca terminal exports its own coordinator identity -- inherited here
     # when the suite is run from inside one, it would make orca-wait address
     # THAT terminal instead of this file's coordinator (stable_pane_required
-    # in the throwaway runtime, claude-orca-hjk case 1). The file has to
-    # behave as it would from a clean shell.
-    unset BEADS_DIR ORCA_TERMINAL_HANDLE ORCA_PANE_KEY ORCA_TAB_ID \
-        ORCA_WORKTREE_ID ORCA_USER_DATA_PATH
+    # in the throwaway runtime, claude-orca-hjk case 1). The same inheritance
+    # carries the real folder's PROJECT_DIR and CLAUDE_ORCA_ROOT into this
+    # runtime's worker sessions, whose SessionStart hooks (worktree-gc
+    # --quiet, backgrounded disk-cleanup) would then sweep the user's live
+    # folder (claude-orca-jh7): without them both hooks fall back to the
+    # session cwd -- the throwaway project. The file has to behave as it
+    # would from a clean shell.
+    unset BEADS_DIR PROJECT_DIR CLAUDE_ORCA_ROOT ORCA_TERMINAL_HANDLE \
+        ORCA_PANE_KEY ORCA_TAB_ID ORCA_WORKTREE_ID ORCA_USER_DATA_PATH
     command -v xvfb-run >/dev/null 2>&1 || skip "xvfb-run is not installed"
     command -v jq >/dev/null 2>&1 || skip "jq is not installed"
     command -v bd >/dev/null 2>&1 || skip "bd is not installed"
