@@ -16,6 +16,11 @@
 #      removed through Orca's CLI when it is reachable, plain git
 #      otherwise). Removing a worktree frees its branch for step 3, so
 #      the branch of a merged piece of work goes in the same sweep.
+#      A clean worktree whose branch, or detached HEAD, carries commits
+#      main does not contain is kept instead and reported STRANDED with
+#      "kept: unmerged" -- that is a finished worker whose verification
+#      may still be running in it, and the ~4 MB removing it would free
+#      buys nothing (claude-orca-mpt, after claude-orca-kbu).
 #   3. Deletes every local branch other than main/master and the
 #      branches still checked out in some worktree that main contains
 #      (`git branch -d`). A branch main does NOT contain is reported
@@ -379,6 +384,39 @@ while [ "$i" -lt "$n_wt" ]; do
         kept_branches+=("$branch")
         kept_reasons+=("uncommitted changes")
         stranded=1
+        continue
+    fi
+
+    # Clean -- but removable only when its branch, or a detached HEAD, is
+    # contained in the base (claude-orca-mpt). A clean tree carrying commits
+    # main does not have is a finished-but-unverified worker's home: keep it
+    # and let the kept-worktree loop in step 3 name it STRANDED with
+    # "kept: unmerged", the same shape a busy or dirty keep already gets.
+    contained=1
+    wt_head=""
+    if [ -z "$base" ]; then
+        contained=0
+    elif [ -n "$branch" ]; then
+        git -C "$PROJECT" merge-base --is-ancestor "$branch" "$base" 2>/dev/null || contained=0
+    else
+        wt_head="$(git -C "$path" rev-parse HEAD 2>/dev/null)" || wt_head=""
+        contained=0
+        if [ -n "$wt_head" ] && git -C "$PROJECT" merge-base --is-ancestor "$wt_head" "$base" 2>/dev/null; then
+            contained=1
+        fi
+    fi
+    if [ "$contained" != "1" ]; then
+        kept_paths+=("$path")
+        kept_branches+=("$branch")
+        kept_reasons+=("unmerged")
+        if [ -z "$base" ]; then
+            emit "FAIL: kept $path (no $base_label branch to judge merged-ness)"
+            stranded=1
+        elif [ -z "$branch" ]; then
+            n_det="$(git -C "$PROJECT" rev-list --count "$base..$wt_head" 2>/dev/null)" || n_det="?"
+            emit "STRANDED detached HEAD at $path: $n_det commit(s) not in $base (worktree kept: unmerged)"
+            stranded=1
+        fi
         continue
     fi
 
