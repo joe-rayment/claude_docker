@@ -196,12 +196,12 @@ JSON
     [ "$preset_count" -ge 1 ] && [ "$preset_count" -le 4 ]
 
     # names: lowercase lead, [a-z0-9-] tail; unique; none reserved; none a route
-    bad="$(jq -r '.presets[].name' "$SHIPPED_PRESETS" | grep -vE '^[a-z][a-z0-9-]*$')"
+    bad="$(jq -r '.presets[].name' "$SHIPPED_PRESETS" | grep -vE '^[a-z][a-z0-9-]*$')" || bad=""
     [ -z "$bad" ]
     bad="$(jq -r '.presets[].name' "$SHIPPED_PRESETS" | sort | uniq -d)"
     [ -z "$bad" ]
     bad="$(jq -r '.presets[].name' "$SHIPPED_PRESETS" \
-        | grep -xE 'show|help|overdrive|auth|models|checker|worker|recon|fable|opus|sonnet|haiku')"
+        | grep -xE 'show|help|overdrive|auth|models|checker|worker|recon|fable|opus|sonnet|haiku')" || bad=""
     [ -z "$bad" ]
     routes="$(jq -r '.routes // {} | keys | .[]' "$SHIPPED_ROUTES" 2>/dev/null)"
     [ -n "$routes" ]
@@ -248,7 +248,7 @@ JSON
     [ -f "$CMD_FILE" ]
     grep -q 'Bash(tier-set:\*)' "$CMD_FILE"
     grep -q 'AskUserQuestion' "$CMD_FILE"
-    first_body="$(awk '/^---$/{seen++; next} seen && NF {print; exit}' "$CMD_FILE")"
+    first_body="$(awk '/^---$/{seen++; next} seen >= 2 && NF {print; exit}' "$CMD_FILE")"
     [ "$first_body" = '!`tier-set "$ARGUMENTS"`' ]
     grep -q '\[tier-picker\]' "$CMD_FILE"
     grep -q 'Which tier preset?' "$CMD_FILE"
