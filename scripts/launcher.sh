@@ -2169,7 +2169,7 @@ folder_image_ref() {
 }
 
 container_create() {
-    local dir="$1" name="$2" port="$3" ref src token cpus memory mount theme dns guest
+    local dir="$1" name="$2" port="$3" ref src token cpus memory mount theme dns guest ver
     guest="$(guest_project_dir "$dir")"
     src="$(image_source "$dir")"
     ref="$(folder_image_ref "$dir")"
@@ -2219,6 +2219,15 @@ container_create() {
         -e "CLAUDE_ORCA_PROJECT_NAME=$(derive_project_name "$dir")" \
         -e "CLAUDE_ORCA_GIT_NAME=$(git_identity_name)" \
         -e "CLAUDE_ORCA_GIT_EMAIL=$(git_identity_email)"
+
+    # The image was built at wanted_orca_version -- the ONE answer the tag
+    # and the build arg already use -- so boot-time setup.sh must not fall
+    # back to its own pin: measured 2026-09-19 as 1.4.197 reinstalled over
+    # an image built at 1.4.203, a download and a downgrade per recreate.
+    ver="$(wanted_orca_version)"
+    if [ -n "$ver" ]; then
+        set -- "$@" -e "ORCA_VERSION=$ver"
+    fi
 
     # Deliver a scripts/container/* fix without an image rebuild: the
     # entrypoint already baked into today's image reads
