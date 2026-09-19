@@ -282,9 +282,15 @@ elif [ -n "$ORCA_APP" ] && [ "${CLAUDE_ORCA_UI:-}" != "web" ]; then
 fi
 [ "$UI" = "desktop" ] || UI="web"
 
-# The environment the launcher registers is named after the folder, the
-# same string as the container (S3 / claude-orca-8uo.4).
-ENV_NAME="$CNAME"
+# The environment the launcher registers is remote-<project> (launcher.sh
+# orca_env_name, since d2cd8c1) -- the name IS the sidebar badge. Before
+# that it was the container's name, which the launcher still removes on
+# add and on teardown. This used to say "$CNAME", and the 2026-09-19 Mac
+# run showed what that costs: `repo list --environment` failed with
+# "Unknown Orca server", and the teardown row passed on a name that had
+# never existed.
+ENV_NAME="remote-$(project_name "$PROJECT")"
+LEGACY_ENV_NAME="$CNAME"
 
 # dcheck <name> <command...> -- one desktop row: SKIP on a browser folder
 # (row() does not count a SKIP, so the exit status is unmoved and the
@@ -522,13 +528,29 @@ in_bd_anywhere() {
     inc_wd / bd status
 }
 
+# "Its pin" is what the launcher asked the build for, which for two tools
+# is no longer setup.sh's literal: Claude Code is the newest release the
+# launcher resolved (claude-orca-7a0, the --build-arg on this folder's own
+# build line) and Orca is the Mac app's version (claude-orca-8uo.5), so
+# wanting the literals failed a correct container on 2026-09-19. The Orca
+# half is also the only real-Mac guard on claude-orca-jg1: a boot that
+# reinstalls setup.sh's pin over the image's build reads here as
+# "orca(want <app> got <pin>)".
 in_versions() {
-    local want got bad=""
+    local want got bad="" claude_want="" orca_want=""
+    if [ -f "$HOST/run/container.log" ]; then
+        claude_want="$(sed -n 's/.*--build-arg CLAUDE_CODE_VERSION=\([^ ]*\).*/\1/p' \
+            "$HOST/run/container.log" | tail -1)"
+    fi
+    [ -n "$claude_want" ] || claude_want="$(inc cat /opt/claude/VERSION 2>/dev/null | tr -d '[:space:]')"
+    [ -n "$claude_want" ] || claude_want="$(sed -n 's/^CLAUDE_CODE_VERSION="${CLAUDE_CODE_VERSION:-\(.*\)}"$/\1/p' "$REPO_ROOT/scripts/container/setup.sh")"
+    orca_want="$APP_VER"
+    [ -n "$orca_want" ] || orca_want="$(sed -n 's/^ORCA_VERSION="${ORCA_VERSION:-\(.*\)}"$/\1/p' "$REPO_ROOT/scripts/container/setup.sh")"
     for pair in \
-        "claude:$(sed -n 's/^CLAUDE_CODE_VERSION="${CLAUDE_CODE_VERSION:-\(.*\)}"$/\1/p' "$REPO_ROOT/scripts/container/setup.sh")" \
+        "claude:$claude_want" \
         "bd:$(sed -n 's/^BD_VERSION="${BD_VERSION:-\(.*\)}"$/\1/p' "$REPO_ROOT/scripts/container/setup.sh")" \
         "dolt:$(sed -n 's/^DOLT_VERSION="${DOLT_VERSION:-\(.*\)}"$/\1/p' "$REPO_ROOT/scripts/container/setup.sh")" \
-        "orca:$(sed -n 's/^ORCA_VERSION="${ORCA_VERSION:-\(.*\)}"$/\1/p' "$REPO_ROOT/scripts/container/setup.sh")"
+        "orca:$orca_want"
     do
         want="${pair#*:}"
         case "${pair%%:*}" in
@@ -621,10 +643,15 @@ d_versions_equal() {
 }
 
 d_env_registered() {
-    local f="$HOST/run/orca-environment.json" id
+    local f="$HOST/run/orca-environment.json" id name
     [ -s "$f" ] || { echo "no run/orca-environment.json -- nothing was registered"; return 1; }
     id="$(jq -r '.id // .environment.id // .result.environment.id // empty' "$f" 2>/dev/null)"
     [ -n "$id" ] || { echo "no id in run/orca-environment.json: $(head -c 100 "$f")"; return 1; }
+    # The launcher's own record of the name has to be the one every later
+    # row asks for, or those rows measure nothing.
+    name="$(jq -r '.name // empty' "$f" 2>/dev/null)"
+    [ "$name" = "$ENV_NAME" ] \
+        || { echo "the launcher registered '${name:-?}', this script expects '$ENV_NAME'"; return 1; }
     printf '%s id %s\n' "$ENV_NAME" "$id"
 }
 
@@ -710,11 +737,14 @@ if [ "$KEEP" -eq 0 ] && [ -z "$EXISTING_FOLDER" ]; then
         out="$("$ORCA_CLI" environment list --json 2>&1)" \
             || { d_oneline "$out"; return 1; }
         printf '%s\n' "$out" >> "$RUN_LOG"
-        if printf '%s' "$out" | jq -e --arg n "$ENV_NAME" \
-            '[.result.environments[]?.name] | index($n)' >/dev/null 2>&1; then
-            echo "$ENV_NAME is still registered after teardown"
-            return 1
-        fi
+        local n
+        for n in "$ENV_NAME" "$LEGACY_ENV_NAME"; do
+            if printf '%s' "$out" | jq -e --arg n "$n" \
+                '[.result.environments[]?.name] | index($n)' >/dev/null 2>&1; then
+                echo "$n is still registered after teardown"
+                return 1
+            fi
+        done
         printf '%s is gone from the environment list\n' "$ENV_NAME"
     }
 
