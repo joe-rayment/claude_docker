@@ -78,6 +78,10 @@ _resolve_script_path() {
     echo "$src"
 }
 SCRIPT_DIR="$(cd "$(dirname "$(_resolve_script_path)")" && pwd)"
+# This script's own resolved path -- the preset dispatch re-runs it with the
+# preset's args (claude-orca-af0), so a symlinked invocation still finds the
+# real file.
+SELF="$SCRIPT_DIR/$(basename "$(_resolve_script_path)")"
 # shellcheck source=lib/paths.sh
 . "$SCRIPT_DIR/lib/paths.sh"
 # shellcheck source=lib/tier-roles.sh
@@ -104,6 +108,15 @@ if [ -z "$ROUTES_FILE" ]; then
     ROUTES_FILE="$_tier_set_root/config/delegate-routes.json"
 fi
 
+# The preset table (claude-orca-af0): one NAME for an existing /tier argument
+# form, found the way ROUTES_FILE is. TIER_PRESETS_FILE overrides it; default
+# = <root>/config/tier-presets.json. Data, read with jq -- never sourced.
+PRESETS_FILE="${TIER_PRESETS_FILE:-}"
+if [ -z "$PRESETS_FILE" ]; then
+    _tier_set_root="$(template_dir 2>/dev/null)" || _tier_set_root="$SCRIPT_DIR/.."
+    PRESETS_FILE="$_tier_set_root/config/tier-presets.json"
+fi
+
 # An alias is already the value we want: Claude Code resolves "fable",
 # "opus", "sonnet" and "haiku" to the newest model of that family, so the
 # bound value never has to be bumped when a new version ships. Only the
@@ -126,6 +139,54 @@ valid_id() {
         ''|*[!a-zA-Z0-9._\[\]-]*) return 1 ;;
         *) return 0 ;;
     esac
+}
+
+# --- preset helpers (claude-orca-af0) ----------------------------------------
+
+# preset_args <name> -- the preset's args, one per line; empty when <name> is
+# not a preset, the file is missing/invalid, or its args are not an array.
+preset_args() {
+    [ -n "$PRESETS_FILE" ] && [ -f "$PRESETS_FILE" ] && command -v jq >/dev/null 2>&1 || return 0
+    jq -r --arg n "$1" '(.presets // []) | map(select(.name == $n)) | .[0].args
+                        | select(type == "array") | .[]' "$PRESETS_FILE" 2>/dev/null
+}
+
+# preset_summary <name> -- the preset's summary; empty when absent/non-string.
+preset_summary() {
+    [ -n "$PRESETS_FILE" ] && [ -f "$PRESETS_FILE" ] && command -v jq >/dev/null 2>&1 || return 0
+    jq -r --arg n "$1" '(.presets // []) | map(select(.name == $n)) | .[0].summary
+                        | select(type == "string")' "$PRESETS_FILE" 2>/dev/null
+}
+
+# preset_reserved <word> -- 0 when <word> must NEVER be treated as a preset
+# name: the subcommands and role words, the Claude aliases in any case, and
+# any route name in ROUTES_FILE. Reserved words always win.
+preset_reserved() {
+    local w
+    w="$(printf '%s' "$1" | tr 'A-Z' 'a-z')"
+    case "$w" in
+        show|help|overdrive|auth|models|checker|worker|recon|fable|opus|sonnet|haiku) return 0 ;;
+    esac
+    if [ -n "$ROUTES_FILE" ] && [ -f "$ROUTES_FILE" ] && command -v jq >/dev/null 2>&1; then
+        [ "$(jq -r --arg n "$w" '(.routes // {}) | has($n)' "$ROUTES_FILE" 2>/dev/null)" = "true" ] && return 0
+    fi
+    return 1
+}
+
+# stamp_preset <name> -- .preset = <name> in the state file, tmp file + mv
+# like every other writer. Any later non-preset bind drops the key again by
+# construction: write_state/write_state_v3 rebuild the file whole with jq -n.
+stamp_preset() {
+    [ -n "$STATE_FILE" ] && [ -f "$STATE_FILE" ] || return 1
+    local tmp
+    tmp=$(mktemp "$STATE_FILE.XXXXXX") || return 1
+    if jq --arg n "$1" '.preset = $n' "$STATE_FILE" > "$tmp" 2>/dev/null \
+          && jq -e . "$tmp" >/dev/null 2>&1; then
+        mv "$tmp" "$STATE_FILE"
+    else
+        rm -f "$tmp"
+        return 1
+    fi
 }
 
 state_field() {  # state_field <field> -- '' if the file/field is absent
@@ -364,7 +425,66 @@ show_state() {
         [ "$overdrive" = "true" ] && echo "overdrive: ON — the worker cap is LIFTED (executor runs the top model); a plain /tier <top> clears it."
     fi
     echo
+    show_presets
+    echo
     show_guide
+}
+
+# show_presets -- the presets section of a bare /tier and /tier show: every
+# preset on one line, '*' and '(current)' on the one named in the state's
+# .preset. A missing or invalid presets file prints nothing here (not even
+# the leading blank line) and never fails the command.
+show_presets() {
+    local rows cur n a s mark tail
+    [ -n "$PRESETS_FILE" ] && [ -f "$PRESETS_FILE" ] && command -v jq >/dev/null 2>&1 || return 0
+    rows="$(jq -r '.presets // [] | .[] | [(.name // ""), ((.args // []) | map(tostring) | join(" ")), (.summary // "")] | @tsv' \
+        "$PRESETS_FILE" 2>/dev/null)" || return 0
+    [ -n "$rows" ] || return 0
+    cur="$(state_field preset)"
+    echo
+    echo "presets -- /tier <name>:"
+    while IFS=$'\t' read -r n a s; do
+        [ -n "$n" ] || continue
+        mark=" "; tail=""
+        if [ "$n" = "$cur" ]; then mark="*"; tail="   (current)"; fi
+        printf '  %s %-14s%-36s %s%s\n' "$mark" "$n" "$a" "$s" "$tail"
+    done <<<"$rows"
+}
+
+# show_picker -- the [tier-picker] block a bare /tier ends with when stdout
+# is NOT a terminal (that is how the slash command and bats both run it): the
+# command file reads it back into one AskUserQuestion. The current preset is
+# offered first, then file order, at most 4 options (the AskUserQuestion
+# tool takes 2-4).
+show_picker() {
+    local rows cur n s count current_row
+    [ -n "$PRESETS_FILE" ] && [ -f "$PRESETS_FILE" ] && command -v jq >/dev/null 2>&1 || return 0
+    rows="$(jq -r '.presets // [] | .[] | [(.name // ""), (.summary // "")] | @tsv' \
+        "$PRESETS_FILE" 2>/dev/null)" || return 0
+    [ -n "$rows" ] || return 0
+    cur="$(state_field preset)"
+    echo "[tier-picker]"
+    echo "current: ${cur:-none}"
+    count=0
+    current_row=""
+    if [ -n "$cur" ]; then
+        while IFS=$'\t' read -r n s; do
+            if [ "$n" = "$cur" ]; then current_row="$n"$'\t'"$s"; break; fi
+        done <<<"$rows"
+    fi
+    if [ -n "$current_row" ]; then
+        n="${current_row%%$'\t'*}"; s="${current_row#*$'\t'}"
+        echo "option: $n -- $s"
+        count=1
+    fi
+    while IFS=$'\t' read -r n s; do
+        [ -n "$n" ] || continue
+        [ "$n" = "$cur" ] && continue
+        echo "option: $n -- $s"
+        count=$((count + 1))
+        [ "$count" -ge 4 ] && break
+    done <<<"$rows"
+    echo "[/tier-picker]"
 }
 
 # role_line <role> -- "<backend>:<agent>:<model>@<variant>" for the show
@@ -394,6 +514,7 @@ HOW TO SET IT -- always in this order: top, worker, recon
   /tier fable z-ai/glm-5.3-flash openai/gpt-5.6-luna@high  exact OpenRouter ids
   /tier recon luna high                                    one role at a time: worker | recon | checker
   /tier opus                                               one Claude model; worker and recon are derived from it
+  /tier <preset>                                           a preset -- one name for a whole combination; bare /tier lists them
 NAMES
   Claude:     fable  opus  sonnet  haiku
   OpenRouter: ${routes}(the short names are the routes in config/delegate-routes.json)
@@ -462,6 +583,12 @@ fi
 
 if [ $# -eq 0 ] || [ "${1:-}" = "show" ]; then
     show_state
+    # The picker rides on a BARE /tier only (not `show`), and only when
+    # stdout is not a terminal -- the slash command and bats both run it
+    # with stdout captured, a human's interactive shell does not.
+    if [ $# -eq 0 ] && [ ! -t 1 ]; then
+        show_picker
+    fi
     exit 0
 fi
 
@@ -920,6 +1047,45 @@ if [ "${1:-}" = "models" ]; then
     fi
     printf '%s\n' "$matches" | awk -F'\t' '{printf "%s  %s  $%.2f/$%.2f per M tokens\n", $1, $2, $3*1000000, $4*1000000}'
     exit 0
+fi
+
+# --- presets: tier-set <name> (claude-orca-af0) ------------------------------
+#
+# Exactly one argument that is a preset name and NOT a reserved word
+# (preset_reserved above -- subcommands, role words, the Claude aliases, any
+# route name; reserved words always win) re-runs this same script with the
+# preset's args, so every parsing/validation/pin/effort rule below is
+# reused unchanged. Only if that exits 0 is the name stamped into the state
+# file; then one 'preset <name> -- <summary>' line is printed followed by
+# the child's own output.
+
+if [ $# -eq 1 ] && ! preset_reserved "$1"; then
+    _preset_args="$(preset_args "$1")"
+    if [ -n "$_preset_args" ]; then
+        _preset_summary="$(preset_summary "$1")"
+        set -f
+        _preset_argv=()
+        while IFS= read -r _preset_arg; do
+            [ -n "$_preset_arg" ] || continue
+            _preset_argv+=("$_preset_arg")
+        done <<PRESET_ARGS
+$_preset_args
+PRESET_ARGS
+        _preset_out="$("$SELF" ${_preset_argv[@]+"${_preset_argv[@]}"} 2>&1)"
+        _preset_status=$?
+        if [ "$_preset_status" -eq 0 ]; then
+            stamp_preset "$1" || true
+            if [ -n "$_preset_summary" ]; then
+                echo "preset $1 -- $_preset_summary"
+            else
+                echo "preset $1"
+            fi
+            printf '%s\n' "$_preset_out"
+        else
+            printf '%s\n' "$_preset_out"
+        fi
+        exit "$_preset_status"
+    fi
 fi
 
 # --- 1-arg (auto-derive) or 2/3-arg (explicit pin) --------------------------
