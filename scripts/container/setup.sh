@@ -756,11 +756,15 @@ run_checks() {
         ck_fail "orca web theme: app.asar does not seed ${CLAUDE_ORCA_THEME:-dark} + terminal ${CLAUDE_ORCA_TERMINAL_THEME:-Homebrew} (patch-orca-web-theme.py)"
     fi
 
+    # The image creates agent at 1000; on a Mac the entrypoint re-maps it to
+    # HOST_UID so the bind mounts stay the owner's, and that is the uid a
+    # running container has to show.
+    local want_uid="${HOST_UID:-1000}"
     v="$(id -u agent 2>/dev/null || true)"
-    if [ "$v" = "1000" ]; then
-        ck_ok "agent user at uid 1000"
+    if [ "$v" = "$want_uid" ]; then
+        ck_ok "agent user at uid ${want_uid}"
     else
-        ck_fail "agent user: want uid 1000, got ${v:-none}"
+        ck_fail "agent user: want uid ${want_uid}, got ${v:-none}"
     fi
 
     if [ -x /usr/bin/tini ]; then
