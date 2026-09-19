@@ -437,6 +437,19 @@ case "$cmd" in
             case "$a" in --format=*) fmt="${a#--format=}" ;; esac
             prev="$a"
         done
+        # `docker inspect -f '...HostConfig.PortBindings...' ID...` -- the
+        # one inspect that names MANY containers: "/<name> <host port>" per
+        # port each was created to publish, whatever its state, which is
+        # what real docker keeps in HostConfig across a stop.
+        case "$fmt" in
+            *HostConfig.PortBindings*)
+                for a in "$@"; do
+                    [ -f "$state/containers/$a.meta" ] || continue
+                    sed -n 's/^port=\([0-9][0-9]*\):.*/\1/p' "$state/containers/$a.meta" \
+                        | while read -r hp; do printf '/%s %s\n' "$a" "$hp"; done
+                done
+                exit 0 ;;
+        esac
         [ -n "$name" ] || exit 1
         [ -f "$state/containers/$name" ] || exit 1
         meta="$state/containers/$name.meta"
@@ -494,6 +507,30 @@ case "$cmd" in
         # so a stub standing in for the entrypoint writes to the host path.
         [ -n "$hostproj" ] && proj="$hostproj"
         [ -n "$name" ] || { echo "docker: run needs --name" >&2; exit 1; }
+        # A host port a RUNNING container already publishes cannot be bound
+        # twice. Real docker fails the run in its own allocator and leaves
+        # the container behind in `created` -- with its HostConfig, so the
+        # next start finds a container by the right name that is not up.
+        prev=""
+        for a in "$@"; do
+            case "$prev" in
+                -p|--publish)
+                    hostpub="${a%:*}"; hostpub="${hostpub##*:}"
+                    for f in "$state"/containers/*.meta; do
+                        [ -e "$f" ] || continue
+                        other="$(basename "$f" .meta)"
+                        [ "$other" != "$name" ] || continue
+                        [ "$(cat "$state/containers/$other" 2>/dev/null)" = "running" ] || continue
+                        if grep -q "^port=$hostpub:" "$f"; then
+                            echo created > "$state/containers/$name"
+                            printf 'port=%s:%s\n' "$hostpub" "${a##*:}" > "$state/containers/$name.meta"
+                            echo "docker: Error response from daemon: failed to set up container networking: driver failed programming external connectivity on endpoint $name: Bind for 127.0.0.1:$hostpub failed: port is already allocated" >&2
+                            exit 125
+                        fi
+                    done ;;
+            esac
+            prev="$a"
+        done
         echo running > "$state/containers/$name"
         # A --volume whose source is not a path is a NAMED volume, and
         # docker creates it on demand here. It outlives `docker rm`, so
@@ -580,6 +617,19 @@ case "$cmd" in
             case "$prev" in -f|--format) fmt="$a" ;; esac
             case "$a" in --format=*) fmt="${a#--format=}" ;; esac
             prev="$a"
+        done
+        # `docker ps -aq`: every container's id, one per line. The stub's id
+        # is the name -- `inspect` takes either, as docker does.
+        for a in "$@"; do
+            case "$a" in
+                -aq|-qa|-q|--quiet)
+                    for f in "$state"/containers/*; do
+                        [ -e "$f" ] || continue
+                        case "$f" in *.meta) continue ;; esac
+                        basename "$f"
+                    done
+                    exit 0 ;;
+            esac
         done
         case "$fmt" in
             *.Image*)

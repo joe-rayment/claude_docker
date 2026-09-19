@@ -1083,7 +1083,7 @@ port_is_free() {
 # to be free on both sides, because the pairing code the browser gets
 # advertises ws://127.0.0.1:<port>.
 choose_port() {
-    local dir="$1" port tries=0
+    local dir="$1" port
     port="$(json_get "$dir" '.port')"
     case "$port" in
         ''|*[!0-9]*) port="" ;;
@@ -1092,9 +1092,58 @@ choose_port() {
         printf '%s\n' "$port"
         return 0
     fi
+    next_free_port "$(container_name "$dir")"
+}
+
+# "<name> <host port>", one line per port a container on this machine was
+# created to publish -- running or not, which is the point. Docker's own
+# allocator only holds the ports of RUNNING containers and a connect probe
+# only hears the ones answering, so a folder whose container is down owns
+# its number invisibly; .HostConfig.PortBindings is the one place the claim
+# survives a stop (.NetworkSettings.Ports is empty until the next start).
+# Names come back docker's way, with the leading slash. Nothing at all when
+# docker cannot answer: the probe is then the only question, as it was.
+container_port_claims() {
+    local ids
+    if [ "$CTR_RUNTIME" = "local" ]; then
+        return 0
+    fi
+    ids="$(ctr ps -aq 2>/dev/null | tr '\n' ' ' || true)"
+    case "$ids" in
+        *[!\ ]*) ;;
+        *) return 0 ;;
+    esac
+    # shellcheck disable=SC2086
+    ctr inspect -f '{{$n := .Name}}{{range $p, $b := .HostConfig.PortBindings}}{{range $b}}{{$n}} {{.HostPort}}{{"\n"}}{{end}}{{end}}' $ids 2>/dev/null || true
+}
+
+# Is this port someone else's? Something answering on it is, and so is a
+# number another container was created with -- the container named $2 is
+# this folder's own and its claim never counts against it. $3 is a
+# container_port_claims answer the caller already has.
+port_taken() {
+    local port="$1" own="$2" claims n p
+    if ! port_is_free "$port"; then
+        return 0
+    fi
+    claims="${3-$(container_port_claims)}"
+    while read -r n p; do
+        if [ "$p" = "$port" ] && [ "$n" != "/$own" ] && [ "$n" != "$own" ]; then
+            return 0
+        fi
+    done <<CLAIMS
+$claims
+CLAIMS
+    return 1
+}
+
+# The first port from the base up that is nobody's (port_taken).
+next_free_port() {
+    local own="$1" port tries=0 claims
     port="${CLAUDE_ORCA_PORT_BASE:-6768}"
+    claims="$(container_port_claims)"
     while [ "$tries" -lt 200 ]; do
-        if port_is_free "$port"; then
+        if ! port_taken "$port" "$own" "$claims"; then
             break
         fi
         port=$((port + 1))
@@ -2443,7 +2492,7 @@ resync_config() {
 }
 
 cmd_open_v3() {
-    local dir="${1:-$PROJECT_SELF}" name port state url rc=0 t0 t1
+    local dir="${1:-$PROJECT_SELF}" name port was state url rc=0 t0 t1
     [ -d "$dir" ] || { echo "Error: directory does not exist: $dir" >&2; return 1; }
     dir="$(cd "$dir" && pwd -P)"
     if [ ! -f "$(orca_json "$dir")" ]; then
@@ -2468,6 +2517,29 @@ cmd_open_v3() {
         ctr rm -f "$name" >/dev/null 2>&1 || true
         clear_run_results "$dir"
         state=""
+    fi
+
+    # The port was chosen once and is reused forever -- but that is only
+    # this folder's promise. While its container is down nothing holds the
+    # number (container_port_claims says why), so the next folder to
+    # register is handed the same one, and whichever of the two starts
+    # second dies in `docker run` on "Bind for 127.0.0.1:<port> failed:
+    # port is already allocated" -- on every start, because the number is
+    # persisted, and each failed run leaves a `created` container behind
+    # for the next one to trip over (a real Mac, 2026-09-19). So a folder
+    # about to create or start its container asks again, and moves when the
+    # number is someone else's now. A running container of this folder's
+    # own already holds its port and is never asked; one that is down was
+    # created for the old number and goes, the way a stranger's does.
+    if [ "$state" != "running" ] && port_taken "$port" "$name"; then
+        was="$port"
+        port="$(next_free_port "$name")"
+        echo "  port $was is in use by something else on this machine -- this folder moves to $port" >&2
+        if [ -n "$state" ]; then
+            ctr rm -f "$name" >/dev/null 2>&1 || true
+            state=""
+        fi
+        clear_run_results "$dir"
     fi
     persist_port "$dir" "$port"
 
