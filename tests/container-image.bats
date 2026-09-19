@@ -157,6 +157,9 @@ setup_steps() {
     pin="$(sed -n 's/^ORCA_VERSION="\${ORCA_VERSION:-\([^}]*\)}".*/\1/p' \
         "$SETUP" | head -1)"
     [ -n "$pin" ]
+    # setup.sh honours an ambient ORCA_VERSION, so the case has to want
+    # what the script wants.
+    pin="${ORCA_VERSION:-$pin}"
     if [ -f /opt/orca/VERSION ]; then
         have="$(tr -d '[:space:]' < /opt/orca/VERSION)"
     fi
