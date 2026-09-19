@@ -197,7 +197,10 @@ gitignore_unseed() {
                    l == ".mcp.json" || l == "attachments/" || \
                    l == ".claude/logs/" || l == ".orca/" || \
                    l == ".orca-worktrees/" || l == "orca.yaml" || \
-                   l == "graphify-out/" || l == "__pycache__/"
+                   l == "graphify-out/" || l == "__pycache__/" || \
+                   l == ".agents/skills/orchestration/" || \
+                   l == ".claude/skills/orchestration" || \
+                   l == "skills-lock.json"
         }
         $0 == marker {
             skip = 1

@@ -69,10 +69,16 @@ seed_gitignore() {
             echo "# claude_orca"
         } >> "$gitignore"
     fi
+    # claude-orca-vm1: the last three are 'orca skills install --local'
+    # (provision.d/75-orca-skills) artefacts, which land in the project root
+    # like every other local-only sandbox artifact -- ignored exactly, so a
+    # user's own skills under .claude/skills/ stay visible to git.
     for pattern in '.claude-dev/' '.claude-dev-snapshots/' '/claude-dev' \
                    'Orca.app/' '.mcp.json' 'attachments/' '.claude/logs/' \
                    '.orca/' '.orca-worktrees/' 'orca.yaml' \
-                   'graphify-out/' '__pycache__/'; do
+                   'graphify-out/' '__pycache__/' \
+                   '.agents/skills/orchestration/' \
+                   '.claude/skills/orchestration' 'skills-lock.json'; do
         grep -qxF "$pattern" "$gitignore" 2>/dev/null || echo "$pattern" >> "$gitignore"
     done
 }
