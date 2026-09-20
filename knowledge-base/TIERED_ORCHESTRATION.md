@@ -128,8 +128,9 @@ the bare `openrouter` spec takes the role's own OpenRouter default, so the
 same word means the full-size GLM for the worker and the flash sibling for
 recon. The matching delegate routes are `glm-flash` and `deepseek-flash`,
 both `grade: scout` (`config/delegate-routes.json`); see *tier.json* below for the file all of this is read from. Every
-OpenRouter call from the VM goes through the residency guard — the no-China
-provider rule and the default Fable + GLM stack are in
+OpenRouter call from the VM goes through the residency guard — GLM is fine,
+a China-hosted GLM is not, and the rule (served only in the US, Canada or
+Europe) plus the default Fable + GLM stack are in
 `knowledge-base/DATA_RESIDENCY.md`.
 
 ### The dispatch loop

@@ -44,7 +44,7 @@
 #                              OpenRouter key never appears here: the guard
 #                              holds it alone and forces the provider
 #                              allowlist, which is what keeps the user's
-#                              data out of China-hosted providers. Absent
+#                              data on US/Canadian/European hosts. Absent
 #                              entirely when the folder has no key.
 #   settings.agentDefaultArgs  how Orca launches each agent id
 #                              (claude-orca-qa2.11): `claude

@@ -97,7 +97,8 @@ tier_role_label() {
 # stack and data residency"): Fable orchestrates, the most capable GLM
 # executes. The provider that actually serves it is not decided here -- the
 # in-VM guard forces config/provider-policy.json's allowlist onto every
-# request, which is what keeps the traffic out of China.
+# request, which is what keeps a Chinese model on US/Canadian/European
+# hardware.
 TIER_OPENROUTER_DEFAULT_MODEL="openrouter/z-ai/glm-5.3"
 
 # The RECON rung's OpenRouter default (claude-orca-8a0.2). Recon is fan-out

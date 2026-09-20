@@ -2,10 +2,11 @@
 """openrouter-guard -- the in-VM chokepoint between every agent-side client
 and openrouter.ai (claude-orca-qa2.20).
 
-The user's rule: their data never routes to China. On OpenRouter the model
-decides nothing -- GLM is served by China-based hosts as well as US/EU ones --
-so the *provider set* has to be pinned, and pinned somewhere a client cannot
-edit. That place is here.
+The user's rule: a request may only be served in the US, Canada or Europe.
+The model's nationality is not the question -- GLM is wanted, and GLM is
+served by China-based hosts as well as US/EU ones, and on OpenRouter the
+model id decides nothing about which -- so the *provider set* has to be
+pinned, and pinned somewhere a client cannot edit. That place is here.
 
 The guard is the only process in the VM that holds the real OPENROUTER_API_KEY.
 Clients (OpenCode, Codex, delegate.sh) get a random guard token and the guard's
@@ -17,6 +18,9 @@ which is this whole design inverted (claude-orca-qa2.25). For every completion r
 
   * refuses anything that does not carry the guard token (401), so a leaked
     or guessed client config cannot reach OpenRouter at all;
+  * refuses to start on a policy whose allow list reaches outside
+    `.allowed_countries` (US, CA, Europe), so the rule is checked rather
+    than left to whoever last edited a provider row;
   * rewrites the JSON body's `provider` object to
         {only: <config/provider-policy.json .allow[].slug>,
          allow_fallbacks: false,
@@ -175,6 +179,33 @@ def load_policy(path):
         raise SystemExit(
             "openrouter-guard: %s allows providers with no country note (%s) -- "
             "refusing to start" % (path, ", ".join(missing))
+        )
+
+    # The residency rule itself, checked rather than trusted. The allowlist
+    # used to BE the rule -- "not China" lived in whoever curated the rows --
+    # so a row with the wrong country note was a silent widening of the
+    # boundary and nothing would say so. `.allowed_countries` states where a
+    # request may be served (US, CA, Europe); every allowed provider has to
+    # sit inside it, and moving the boundary means editing that one list,
+    # which is the line a human reads. Absent or empty is not a permissive
+    # default: a policy that does not say where requests may go cannot be the
+    # thing that keeps them out of anywhere.
+    allowed_countries = policy.get("allowed_countries") or []
+    if not isinstance(allowed_countries, list) or not allowed_countries:
+        raise SystemExit(
+            "openrouter-guard: %s has no allowed_countries list -- refusing to "
+            "start (the country allowlist IS the residency rule; without it "
+            "the provider rows are unchecked)" % path
+        )
+    outside = [
+        "%s (%s)" % (e.get("slug", "?"), e.get("country"))
+        for e in policy.get("allow", [])
+        if e.get("country") not in allowed_countries
+    ]
+    if outside:
+        raise SystemExit(
+            "openrouter-guard: %s allows providers served outside "
+            "allowed_countries (%s) -- refusing to start" % (path, ", ".join(outside))
         )
 
     # claude-orca-c6b: an empty client order left OpenRouter free to try only

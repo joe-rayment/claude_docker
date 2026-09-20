@@ -462,7 +462,8 @@ fi
 
 # --- the OpenRouter guard (claude-orca-qa2.21) --------------------------
 #
-# The user's rule is that their data never routes to China, and the only
+# The user's rule is that a request is only ever served in the US, Canada
+# or Europe -- the model may be Chinese, the host may not be -- and the only
 # thing that can enforce it is a chokepoint no client can edit: the guard
 # (scripts/container/openrouter-guard.py + config/provider-policy.json,
 # claude-orca-qa2.20) holds the real OPENROUTER_API_KEY alone and forces

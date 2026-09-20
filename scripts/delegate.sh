@@ -171,8 +171,9 @@ OLLAMA_BASE_URL="http://127.0.0.1:11434"
 # claude-orca-qa2.20: no delegate job talks to openrouter.ai directly. It
 # talks to the in-VM guard (scripts/container/openrouter-guard.py), which is
 # the only holder of the real key and forces config/provider-policy.json's
-# US/EU provider allowlist onto every request -- the "data never routes to
-# China" rule, enforced where a runner config cannot reach it. The key var
+# provider allowlist onto every request -- the "served only in the US,
+# Canada or Europe" rule, enforced where a runner config cannot reach it.
+# The model may be Chinese; the host may not be. The key var
 # handed to the runner therefore carries the GUARD TOKEN, not the key.
 OPENROUTER_BASE_URL="${OPENROUTER_GUARD_URL:-http://127.0.0.1:4141/api/v1}"
 

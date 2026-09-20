@@ -231,6 +231,33 @@ post() {  # post <path> <auth-header-value> <json-body> -- prints the HTTP code
     [[ "$output" == *"order"* ]]
 }
 
+@test "the guard refuses to start when an allowed provider is served outside allowed_countries" {
+    BAD_POLICY="$BATS_TEST_TMPDIR/outside-policy.json"
+    # The shape the country check exists to catch: a provider row edited to a
+    # country the rule does not cover, in a file that is otherwise valid.
+    jq '.allow[0].country = "CN"' "$POLICY" > "$BAD_POLICY"
+
+    GP="$(free_port)"
+    run timeout 5 env OPENROUTER_API_KEY=real-secret OPENROUTER_GUARD_TOKEN=guard-token-abc \
+        OPENROUTER_UPSTREAM="http://127.0.0.1:1" \
+        python3 "$GUARD" --port "$GP" --policy "$BAD_POLICY" --run-dir "$RUN"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"allowed_countries"* ]]
+    [[ "$output" == *"(CN)"* ]]
+}
+
+@test "the guard refuses to start on a policy with no allowed_countries list" {
+    NOCOUNTRIES="$BATS_TEST_TMPDIR/no-countries-policy.json"
+    jq 'del(.allowed_countries)' "$POLICY" > "$NOCOUNTRIES"
+
+    GP="$(free_port)"
+    run timeout 5 env OPENROUTER_API_KEY=real-secret OPENROUTER_GUARD_TOKEN=guard-token-abc \
+        OPENROUTER_UPSTREAM="http://127.0.0.1:1" \
+        python3 "$GUARD" --port "$GP" --policy "$NOCOUNTRIES" --run-dir "$RUN"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"allowed_countries"* ]]
+}
+
 @test "a policy with no order field falls back to the allow list order and logs the fallback once" {
     NOORDER_POLICY="$BATS_TEST_TMPDIR/no-order-policy.json"
     jq 'del(.order)' "$POLICY" > "$NOORDER_POLICY"
@@ -315,6 +342,25 @@ post() {  # post <path> <auth-header-value> <json-body> -- prints the HTTP code
     [ "$status" -eq 0 ]
     # ... and none of them is China
     run jq -e '[.allow[] | select(.country == "CN")] | length == 0' "$POLICY"
+    [ "$status" -eq 0 ]
+
+    # the rule is the country list, and it is what every allow row answers to:
+    # US and Canada are in it, China is not, and no allowed provider sits
+    # outside it. This is the assertion that makes "not China" a consequence
+    # of the rule rather than a separate thing to remember.
+    run jq -e '(.allowed_countries | index("US")) != null
+               and (.allowed_countries | index("CA")) != null
+               and (.allowed_countries | index("CN")) == null' "$POLICY"
+    [ "$status" -eq 0 ]
+    # Europe is in it, and not only the countries that happen to be in use
+    # today -- a European host is admitted by the rule, not by a new decision
+    run jq -e '[.allowed_countries[] | select(. == "FR" or . == "DE" or . == "NL"
+               or . == "ES" or . == "SE" or . == "IE" or . == "GB")] | length == 7' "$POLICY"
+    [ "$status" -eq 0 ]
+    # every allow row's country is inside the list -- the same check the guard
+    # refuses to start on, asserted here against the file that actually ships
+    run jq -e '[.allow[] | select(([.country] - $countries) != [])] | length == 0' \
+        --argjson countries "$(jq -c '.allowed_countries' "$POLICY")" "$POLICY"
     [ "$status" -eq 0 ]
 
     # the China-hosted providers that serve GLM are named and denied, each
