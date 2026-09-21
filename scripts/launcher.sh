@@ -2173,6 +2173,67 @@ RUNIT
 # no longer does is sit in the folder where the Mac can see it.
 state_volume() { printf '%s-orca-state\n' "$1"; }
 
+# --- the cpu cap (claude-orca-wda) ---------------------------------------
+#
+# A container may use every core of the Docker VM, and nothing anywhere
+# limits how many agents run inside one -- so parallel agents saturate the
+# Mac (measured in claude-orca-19o: cgroup cpu.max read "max" on a 10-core
+# VM). A folder that wants its own answer writes "cpus" in
+# claude-orca.json; null -- what register seeds -- now means a DEFAULT cap
+# of half the VM's cores, and an explicit 0 stays docker's own "no
+# limit": the documented opt-out.
+#
+# default_cpus halves what `docker info` reports as NCPU, integer
+# division, never below one -- a one-core VM still gets one core, never
+# zero -- and prints nothing when docker does not answer with a positive
+# integer, so a half-broken daemon costs a folder nothing. The local
+# runtime has no cgroup to cap, so there is never a cap there.
+default_cpus() {
+    local n
+    if [ "$CTR_RUNTIME" = "local" ]; then return 0; fi
+    n="$(ctr info --format '{{.NCPU}}' 2>/dev/null)"
+    case "$n" in
+        ''|*[!0-9]*|0*) return 0 ;;
+    esac
+    n=$((n / 2))
+    if [ "$n" -lt 1 ]; then n=1; fi
+    printf '%s\n' "$n"
+}
+
+# The cap THIS folder runs at: its own "cpus" verbatim when it has one
+# (2, 2.5 and 0 all read as written), the default otherwise.
+desired_cpus() {
+    local cpus
+    cpus="$(json_get "$1" '.cpus')"
+    if [ -n "$cpus" ]; then
+        printf '%s\n' "$cpus"
+    else
+        default_cpus
+    fi
+}
+
+# A kept container -- container_matches said it is this folder's and the
+# launcher reuses it instead of recreating -- gets the cap applied live:
+# `docker update`, never fatal, never a recreate. Skipped when the
+# container is already at the cap, and on the local runtime, which has no
+# cgroup to update.
+apply_cpu_cap() {
+    local dir="$1" name="$2" cpus have want
+    if [ "$CTR_RUNTIME" = "local" ]; then return 0; fi
+    cpus="$(desired_cpus "$dir")"
+    if [ -z "$cpus" ]; then return 0; fi
+    have="$(ctr inspect -f '{{.HostConfig.NanoCpus}}' "$name" 2>/dev/null | head -1 | tr -d '[:space:]')"
+    # NanoCpus is nanoseconds of CPU per second -- 5e9 is five cores -- and
+    # the desired value may be a decimal, so the product goes through awk
+    # rather than $(( )). LC_ALL=C: a decimal point is a decimal point
+    # whatever the Mac's locale says.
+    want="$(LC_ALL=C awk -v c="$cpus" 'BEGIN { printf "%d", c*1e9 }')"
+    if [ "$have" != "$want" ]; then
+        ctr update --cpus "$cpus" "$name" >/dev/null 2>&1 || \
+            echo "  could not apply the cpu cap to $name" >&2
+    fi
+}
+
 # --- the folder's toolchain cache, on the runtime path only -------------
 #
 # The built image carries the whole toolchain, so a folder that runs it
@@ -2318,9 +2379,12 @@ container_create() {
         set -- "$@" --dns "$dns"
     fi
 
-    cpus="$(json_get "$dir" '.cpus')"
+    cpus="$(desired_cpus "$dir")"
     if [ -n "$cpus" ]; then
         set -- "$@" --cpus "$cpus"
+        if [ -z "$(json_get "$dir" '.cpus')" ]; then
+            echo "  cpu cap: $cpus of $(ctr info --format '{{.NCPU}}' 2>/dev/null) cores (default; set \"cpus\" in claude-orca.json -- 0 = no cap)" >&2
+        fi
     fi
     memory="$(json_get "$dir" '.memory')"
     if [ -n "$memory" ]; then
@@ -2543,6 +2607,14 @@ cmd_open_v3() {
     fi
     persist_port "$dir" "$port"
 
+    # A kept container gets the cap applied live (apply_cpu_cap): the
+    # create path below already passes --cpus, so this is only for the
+    # container the launcher is about to reuse. An empty $state here means
+    # the container was removed above and the create path handles the cap.
+    if [ -n "$state" ]; then
+        apply_cpu_cap "$dir" "$name"
+    fi
+
     case "$state" in
         running)
             echo "Container $name is already running."
@@ -2614,9 +2686,10 @@ cmd_register_v3() {
     mkdir -p "$dir/.claude-dev/home" "$dir/.claude-dev/run" "$dir/.claude-dev/state"
     ctr_init "$dir"
 
-    # Defaults only if absent -- never reset a folder's own edits. cpus and
-    # memory null mean "whatever `container` defaults to"; extraMounts are
-    # host paths mounted read-only beside the project.
+    # Defaults only if absent -- never reset a folder's own edits. cpus
+    # null now means the default cap (half the VM's cores) and cpus 0
+    # means no cap; memory null means "whatever `container` defaults to";
+    # extraMounts are host paths mounted read-only beside the project.
     if [ ! -f "$(orca_json "$dir")" ]; then
         # `-f` follows symlinks, so a link to an existing file takes the
         # branch that leaves a folder's own config alone -- but a DANGLING
