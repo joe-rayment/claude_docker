@@ -248,9 +248,11 @@ Orca's own managed hook entries (status dots, sub-agent rows). One directory
 under that home is NOT the folder's: Orca's `--user-data-dir`
 (`~/.config/orca`) is a docker volume named after the container, because a
 macOS bind mount cannot `chmod` or `link` a unix socket and that is where
-Orca puts its RPC and daemon sockets — on the folder home it never publishes
-a web URL at all. `./claude-dev --teardown` removes the volume with the
-container, so the state still dies with the folder. The hook/guard
+Orca puts its RPC and daemon sockets. `./claude-dev --teardown` removes the
+volumes with the container, so the state still dies with the folder. Four
+more volumes (`.cache`, `.npm`, `.local/share/opencode`, `worktrees`) keep
+small-file churn off the share (15x slower); the project folder stays
+bind-mounted. The hook/guard
 suite (lane, tier, bd-guard, outbound-guard, auth-guard, contract-gate,
 cost-mirror…) runs from there. `/tier` state lives in
 `.claude-dev/run/tier.json` and is injected into sub-agent spawns by a

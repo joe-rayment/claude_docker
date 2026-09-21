@@ -2173,6 +2173,24 @@ RUNIT
 # no longer does is sit in the folder where the Mac can see it.
 state_volume() { printf '%s-orca-state\n' "$1"; }
 
+# --- the scratch volumes (claude-orca-7uy) --------------------------------
+#
+# The other write-heavy, regenerable agent state gets the same treatment
+# as Orca's user-data-dir, because file-creating work on the bind-mount
+# share is what the Docker VM pays for (measured in claude-orca-19o: 3000
+# small files create/stat/rm = 901 ms and 61,129 VM interrupts on the
+# share vs 59 ms and 330 on a docker volume; a full checkout 842 ms /
+# 55,654 vs 283 ms / 10,848). Caches, opencode's session data and the
+# worktrees Orca links live on four more per-container volumes -- named
+# after the container like the state volume, so teardown can remove them
+# without a record, and the container half (claude-orca-1eh) migrates the
+# shadowed copies onto them. The project folder itself and the rest of
+# /home/agent STAY bind mounts: the user must keep seeing the folder the
+# template was started in, on the Mac and in Orca. The guest paths are the
+# one interface with the container: they ride in as CLAUDE_ORCA_VOLUME_DIRS.
+SCRATCH_VOLUMES="cache:/home/agent/.cache npm:/home/agent/.npm opencode:/home/agent/.local/share/opencode worktrees:/home/agent/worktrees"
+scratch_volume() { printf '%s-%s\n' "$1" "$2"; }        # <container name> <suffix>
+
 # --- the cpu cap (claude-orca-wda) ---------------------------------------
 #
 # A container may use every core of the Docker VM, and nothing anywhere
@@ -2312,10 +2330,18 @@ container_create() {
         done
     fi
 
+    # The two bind mounts stay first, then the state volume and the four
+    # scratch ones -- these lines and SCRATCH_VOLUMES (see state_volume)
+    # say the same thing, in the same order.
     set -- run -d --name "$name" \
         --volume "$dir:$guest" \
         --volume "$dir/.claude-dev/home:/home/agent" \
         --volume "$(state_volume "$name"):/home/agent/.config/orca" \
+        --volume "$(scratch_volume "$name" cache):/home/agent/.cache" \
+        --volume "$(scratch_volume "$name" npm):/home/agent/.npm" \
+        --volume "$(scratch_volume "$name" opencode):/home/agent/.local/share/opencode" \
+        --volume "$(scratch_volume "$name" worktrees):/home/agent/worktrees" \
+        -e "CLAUDE_ORCA_VOLUME_DIRS=/home/agent/.cache:/home/agent/.npm:/home/agent/.local/share/opencode:/home/agent/worktrees" \
         -p "127.0.0.1:$port:$port" \
         -e "PROJECT_DIR=$guest" \
         -e "CLAUDE_ORCA_HOST_PROJECT_DIR=$dir" \
@@ -2490,6 +2516,27 @@ MOUNTS
         echo "  container $name is not this folder's (home mount: none vs $dir/.claude-dev/home) -- recreating it" >&2
         return 1
     fi
+
+    # The scratch volumes (claude-orca-7uy): a container from before the
+    # launcher mounted them still matches on image, mounts and port, but
+    # its writes would land on the macOS share the volumes exist to keep
+    # the VM off -- so it is recreated too.
+    for pair in $SCRATCH_VOLUMES; do
+        p="${pair#*:}"
+        found=""
+        while IFS= read -r m; do
+            [ -n "$m" ] || continue
+            case "$m" in
+                *":$p") found=1 ;;
+            esac
+        done <<MOUNTS
+$mounts
+MOUNTS
+        if [ -z "$found" ]; then
+            echo "  container $name predates the scratch volumes (nothing mounted at $p) -- recreating it" >&2
+            return 1
+        fi
+    done
 
     # The published port. A container that publishes nothing at all makes
     # the index template error out; that is a mismatch (the URL this folder
@@ -3213,6 +3260,12 @@ cmd_teardown_v3() {
     # what keeps "dies with the folder" true of it. A `docker rm` on the
     # container never touches a NAMED volume, so this is not redundant.
     ctr volume rm "$(state_volume "$name")" >/dev/null 2>&1 || true
+    # The scratch volumes (see state_volume) are named after the container
+    # too, so teardown names them the same way -- regenerable state, but
+    # "dies with the folder" is still the promise.
+    for pair in $SCRATCH_VOLUMES; do
+        ctr volume rm "$(scratch_volume "$name" "${pair%%:*}")" >/dev/null 2>&1 || true
+    done
 
     snap="$(snapshot_beads "$dir" "$project")"
     if [ -n "$snap" ]; then
