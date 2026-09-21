@@ -6,12 +6,26 @@
 # starts.
 #
 # What it writes and why:
-#   repos[0].worktreeBasePath  <project>/.orca-worktrees -- worktrees stay
-#                              inside the bind mount, so they exist on the
-#                              Mac too instead of vanishing with the VM.
-#                              This key is PER-REPO, not a global setting,
-#                              and `orca repo add` has no flag for it --
+#   repos[0].worktreeBasePath  the agent home's worktrees volume when the
+#                              launcher mounted one
+#                              ($AGENT_HOME/worktrees, named in
+#                              CLAUDE_ORCA_VOLUME_DIRS), else
+#                              <project>/.orca-worktrees. This key is
+#                              PER-REPO, not a global setting, and
+#                              `orca repo add` has no flag for it --
 #                              pre-seeding the record is the only way in.
+#                              Worktrees moved OFF the macOS share
+#                              (claude-orca-1eh): file-creating work there
+#                              costs 15x the wall time and 185x the VM
+#                              interrupts of a docker volume
+#                              (claude-orca-19o), and git worktrees are
+#                              nothing but file creation. Worktrees
+#                              already under .orca-worktrees keep working
+#                              -- git tracks them by path, and
+#                              worktree-gc is path-agnostic -- so an
+#                              existing orca-data.json is rewritten only
+#                              entry by entry, and only the ones still
+#                              naming the old default.
 #                              projects[] stays empty on purpose: Orca
 #                              derives the project row from repos[] on
 #                              load, and `orca repo add` later finds the
@@ -119,6 +133,27 @@ case "$TERM_THEME" in
         TERM_THEME="Homebrew" ;;
 esac
 
+# --- the worktree base (claude-orca-1eh) ----------------------------------
+#
+# On the worktrees volume when the launcher mounted one, else the old
+# in-folder default. HOME is the agent home: the entrypoint runs this
+# through run_as_agent, which pins it.
+
+. "$(dirname "$0")/volume-dirs.sh"
+
+agent_home="${CLAUDE_ORCA_AGENT_HOME:-${HOME:-}}"
+volume_worktree_base="$agent_home/worktrees"
+worktree_base="$PROJECT_DIR/.orca-worktrees"
+using_volume_base=0
+if [ -n "$agent_home" ]; then
+    while IFS= read -r d; do
+        [ "$d" = "$volume_worktree_base" ] && using_volume_base=1
+    done < <(volume_dirs "$agent_home")
+fi
+if [ "$using_volume_base" = "1" ]; then
+    worktree_base="$volume_worktree_base"
+fi
+
 # --- where Orca's global state lives -------------------------------------
 
 PROFILE_INDEX="$USER_DATA_DIR/orca-profile-index.json"
@@ -129,7 +164,45 @@ if [ -f "$PROFILE_INDEX" ] && command -v jq >/dev/null 2>&1; then
 fi
 DATA_FILE="$USER_DATA_DIR/profiles/$PROFILE_ID/orca-data.json"
 
+# An existing orca-data.json keeps whatever the user changed, forever --
+# except the one key this script owns the DEFAULT of: when the volume base
+# applies, records still naming the old in-folder default are rewritten to
+# the volume, so a folder that predates the volumes gets its worktrees
+# moved too. jq through a tmp file in the same directory and an mv, so a
+# failure mid-write cannot lose the file; jq missing or failing leaves the
+# file byte-identical and still exits 0 -- a base path left on the share is
+# a performance loss, not a broken folder. Safe because the entrypoint runs
+# this before `orca-ide --serve` starts: Orca is not holding the file.
+rewrite_worktree_base_to_volume() {
+    if ! command -v jq >/dev/null 2>&1; then
+        warn "no jq; could not rewrite worktreeBasePath to $volume_worktree_base"
+        return 0
+    fi
+    local tmp="$DATA_FILE.claude-orca.tmp"
+    if ! jq --arg p "$PROJECT_DIR" \
+            --arg old "$PROJECT_DIR/.orca-worktrees" \
+            --arg new "$volume_worktree_base" '
+            .repos = ((.repos // []) |
+                      map(if .path == $p and .worktreeBasePath == $old
+                          then .worktreeBasePath = $new
+                          else . end))' \
+            "$DATA_FILE" > "$tmp" 2>/dev/null || [ ! -s "$tmp" ]; then
+        rm -f "$tmp"
+        warn "could not rewrite worktreeBasePath in $DATA_FILE; leaving the file as it is"
+        return 0
+    fi
+    if ! mv "$tmp" "$DATA_FILE"; then
+        rm -f "$tmp"
+        warn "could not install the rewritten $DATA_FILE"
+        return 0
+    fi
+    log "rewrote worktreeBasePath to $volume_worktree_base for $PROJECT_DIR in $DATA_FILE"
+}
+
 if [ -e "$DATA_FILE" ]; then
+    if [ "$using_volume_base" = "1" ]; then
+        rewrite_worktree_base_to_volume
+    fi
     log "orca state present, not seeded ($DATA_FILE)"
     exit 0
 fi
@@ -156,7 +229,6 @@ repo_id="$(new_uuid)"
 [ -n "$repo_id" ] || repo_id="claude-orca-seed"
 display_name="$(basename "$PROJECT_DIR")"
 added_at="$(date +%s)000"
-worktree_base="$PROJECT_DIR/.orca-worktrees"
 
 e_project="$(json_escape "$PROJECT_DIR")"
 e_worktree="$(json_escape "$worktree_base")"

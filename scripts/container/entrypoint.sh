@@ -113,6 +113,27 @@ _resolve_script_path() {
 }
 SCRIPT_DIR="$(cd "$(dirname "$(_resolve_script_path)")" && pwd -P)"
 
+# The launcher's scratch volumes (claude-orca-1eh): docker volumes mounted
+# under the agent home and named in CLAUDE_ORCA_VOLUME_DIRS (see
+# volume-dirs.sh). Docker creates a fresh volume root-owned, and the agent
+# cannot write into a root-owned home directory -- so hand each one to the
+# agent's uid at boot, but only when the owner differs: a volume a previous
+# boot already handed over (or one the launcher pre-owned) is not walked
+# again. Best effort, like every chown on this side -- chown_agent_tree
+# already skips sockets and dangling links, and a failure here leaves a
+# readable warning, never a dead boot.
+chown_volume_dirs() {
+    . "$SCRIPT_DIR/volume-dirs.sh"
+    local d owner
+    while IFS= read -r d; do
+        owner="$(stat -c %u "$d" 2>/dev/null)"
+        if [ "$owner" != "$AGENT_UID" ]; then
+            log "scratch volume $d is owned by uid ${owner:-unknown}, not $AGENT_UID; chowning to $AGENT_UID:$AGENT_GID"
+            chown_agent_tree "$d"
+        fi
+    done < <(volume_dirs "$AGENT_HOME")
+}
+
 # A command given to the container runtime (after tini's `--`) wins over
 # starting Orca: that is how CI runs smoke.sh in the built image, and how
 # a person gets a shell in it without a running server.
@@ -393,6 +414,13 @@ export GH_TOKEN="${GH_TOKEN:-}"
 USER_DATA_DIR="${ORCA_USER_DATA_DIR:-$AGENT_HOME/.config/orca}"
 mkdir -p "$USER_DATA_DIR"
 [ "$PRIVDROP" = "1" ] && chown_agent_tree "$USER_DATA_DIR"
+
+# The scratch volumes are the agent's to write into, from the first boot
+# that has them (claude-orca-1eh). Root phase: the agent could not chown a
+# root-owned volume itself.
+if [ "$PRIVDROP" = "1" ]; then
+    chown_volume_dirs
+fi
 
 # --- early config sync (claude-orca-0jn) --------------------------------
 #

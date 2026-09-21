@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+#
+# The scratch volumes' migration (claude-orca-1eh). The launcher mounts
+# docker volumes under the agent home (.cache, .npm, .local/share/opencode,
+# worktrees -- see volume-dirs.sh); /home/agent is the SAME host directory
+# as $PROJECT_DIR/.claude-dev/home, so once a volume sits on one of those
+# paths the old bind-mounted copy is shadowed -- still there, still on the
+# slow macOS share, and invisible to the agent. This step moves what is
+# worth moving and deletes what is regenerable, so a folder that predates
+# the volumes does not keep paying for the share.
+#
+# The guard below is the point of the whole step. Without the volume, D and
+# legacy are the SAME directory (same device, same inode) and a delete
+# would destroy live data -- so nothing is touched unless stat -c %d says
+# the two really are different filesystems. A folder that runs this step
+# without the volumes mounted changes nothing, and says so.
+#
+# Runs as the agent, is idempotent (a migrated dir carries a
+# .migrated-from-home marker, and a deleted legacy is simply gone), and its
+# exit code is its status.
+
+set -uo pipefail
+. "$(dirname "$0")/../provision-lib.sh"
+. "$STEP_TREE/scripts/container/volume-dirs.sh"
+
+AGENT_HOME="${CLAUDE_ORCA_AGENT_HOME:-${HOME:-/home/agent}}"
+
+while IFS= read -r vol; do
+    rel="${vol#"$AGENT_HOME"/}"
+    legacy="$PROJECT_DIR/.claude-dev/home/$rel"
+
+    # --- the guard --------------------------------------------------------
+    if [ -z "$PROJECT_DIR" ] || [ ! -d "$legacy" ]; then
+        echo "$vol: no legacy copy at $legacy -- nothing to migrate"
+        continue
+    fi
+    if ! mountpoint -q "$vol" 2>/dev/null \
+       || [ "$(stat -c %d "$vol" 2>/dev/null)" = "$(stat -c %d "$legacy" 2>/dev/null)" ]; then
+        echo "$vol: not a separate mount -- untouched"
+        continue
+    fi
+
+    case "$rel" in
+        .cache|.npm)
+            # Regenerable caches: the shadowed copy is disposable.
+            rm -rf "$legacy"
+            echo "$vol: removed shadowed cache $legacy"
+            ;;
+        .local/share/opencode)
+            # The sessions db and auth: NOT regenerable, so copy first and
+            # delete last. Entries already on the volume are never
+            # overwritten -- a collision lands as <entry>.from-home.
+            if [ -e "$vol/.migrated-from-home" ]; then
+                rm -rf "$legacy"
+                echo "$vol: already migrated; removed $legacy"
+                continue
+            fi
+            rm -rf "$vol/.migrating"
+            if ! cp -a "$legacy/." "$vol/.migrating/"; then
+                rm -rf "$vol/.migrating"
+                echo "$vol: copy from $legacy failed; legacy left intact" >&2
+                exit 1
+            fi
+            for entry in "$vol/.migrating"/* "$vol/.migrating"/.[!.]* \
+                         "$vol/.migrating"/..?*; do
+                [ -e "$entry" ] || continue
+                name="$(basename "$entry")"
+                if [ -e "$vol/$name" ]; then
+                    mv "$entry" "$vol/$name.from-home"
+                else
+                    mv "$entry" "$vol/$name"
+                fi
+            done
+            rmdir "$vol/.migrating" 2>/dev/null || rm -rf "$vol/.migrating"
+            : > "$vol/.migrated-from-home"
+            rm -rf "$legacy"
+            echo "$vol: migrated $legacy onto the volume and removed it"
+            ;;
+        *)
+            # Worktrees and anything else: nothing to migrate, nothing to
+            # delete. Orca's worktree base was pointed at the volume by
+            # seed-orca-state.sh; worktrees already under .orca-worktrees
+            # keep working where they are (git tracks them by path).
+            echo "$vol: nothing to migrate -- untouched"
+            ;;
+    esac
+done < <(volume_dirs "$AGENT_HOME")
+
+exit 0

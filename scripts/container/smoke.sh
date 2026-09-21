@@ -215,6 +215,10 @@ else
     [ -n "$agent_home" ] || agent_home="$HOME"
     user_data_dir="$agent_home/.config/orca"
 fi
+if [ -z "$agent_home" ]; then
+    agent_home="$(getent passwd "${CLAUDE_ORCA_AGENT_USER:-agent}" 2>/dev/null | cut -d: -f6)"
+    [ -n "$agent_home" ] || agent_home="$HOME"
+fi
 
 seed_file=""
 for f in "$user_data_dir"/profiles/*/orca-data.json; do
@@ -225,7 +229,20 @@ for f in "$user_data_dir"/profiles/*/orca-data.json; do
 done
 if [ -n "$seed_file" ]; then
     pass "orca state seeded: $seed_file"
-    if grep -q "$PROJECT_DIR/.orca-worktrees" "$seed_file"; then
+    # Where the worktree base lands depends on whether the launcher mounted
+    # the worktrees volume (claude-orca-1eh): on the volume when it is
+    # mounted, else the old in-folder default.
+    volume_worktrees=""
+    if mountpoint -q "$agent_home/worktrees" 2>/dev/null; then
+        volume_worktrees="$agent_home/worktrees"
+    fi
+    if [ -n "$volume_worktrees" ]; then
+        if grep -q "$volume_worktrees" "$seed_file"; then
+            pass "seeded worktree base path is on the worktrees volume"
+        else
+            fail "no $volume_worktrees in $seed_file"
+        fi
+    elif grep -q "$PROJECT_DIR/.orca-worktrees" "$seed_file"; then
         pass "seeded worktree base path is inside the project"
     else
         fail "no $PROJECT_DIR/.orca-worktrees in $seed_file"
