@@ -374,6 +374,15 @@ case "$cmd" in
         # `docker info` succeeding IS the daemon being up, on both sides.
         [ "${CLAUDE_ORCA_TEST_SERVICE_DOWN:-0}" = "1" ] && exit 1
         : > "$state/service"
+        # `docker info --format '{{.NCPU}}'` -- the VM's core count, which
+        # the launcher's default cpu cap halves (claude-orca-wda). Answers
+        # $CONTAINER_STUB_NCPU and prints NOTHING when a test leaves that
+        # unset, which is every other suite's world: no answer, no --cpus.
+        for a in "$@"; do
+            case "$a" in
+                *NCPU*) printf '%s\n' "${CONTAINER_STUB_NCPU:-}"; exit 0 ;;
+            esac
+        done
         echo "Server Version: 27.0-stub"
         exit 0 ;;
     pull)
@@ -461,6 +470,12 @@ case "$cmd" in
                 meta_get image ;;
             *range\ .Mounts*)
                 meta_get mount ;;
+            *HostConfig.NanoCpus*)
+                # `docker inspect -f '{{.HostConfig.NanoCpus}}' NAME` -- the
+                # cpu cap the container actually runs under (claude-orca-wda).
+                # Nanoseconds of CPU per second: 5e9 is five cores, 0 is
+                # docker's own "no limit", which is also the stub's default.
+                printf '%s\n' "${CONTAINER_STUB_NANOCPUS:-0}" ;;
             *NetworkSettings.Ports*)
                 # `{{(index (index .NetworkSettings.Ports "6768/tcp") 0).HostPort}}`
                 # -- and on a container that publishes no such port, real
@@ -600,6 +615,12 @@ case "$cmd" in
     stop)
         [ -f "$state/containers/$1" ] || exit 1
         echo exited > "$state/containers/$1"; exit 0 ;;
+    update)
+        # `docker update --cpus N NAME` -- the launcher's live cpu cap on a
+        # kept container (claude-orca-wda). Logged like every invocation
+        # above; CONTAINER_STUB_UPDATE_RC is the update failing, which the
+        # launcher must survive without failing the open.
+        exit "${CONTAINER_STUB_UPDATE_RC:-0}" ;;
     rm)
         # `docker rm [-f] NAME`: the name is last, and what the container
         # was goes with it.
