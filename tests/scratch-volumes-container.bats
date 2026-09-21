@@ -145,7 +145,7 @@ SHIM
     # Dropped: an entry outside the home, one carrying a '..' segment, one
     # the stub does not recognise as a mount. Kept: the two mounts, in the
     # order the variable names them.
-    run_volume_dirs "$home" \
+    run run_volume_dirs "$home" \
         "$TMP/elsewhere:$home/../x:$home/plain:$home/.cache:$home/.npm" \
         "$TMP/err"
     [ "$status" -eq 0 ]
@@ -154,7 +154,7 @@ SHIM
 
     # Unset variable: nothing, and a clean exit either way.
     unset CLAUDE_ORCA_VOLUME_DIRS
-    run_volume_dirs "$home" "" "$TMP/err2"
+    run run_volume_dirs "$home" "" "$TMP/err2"
     [ "$status" -eq 0 ]
     [ -z "$output" ]
 }
@@ -187,6 +187,7 @@ $(sed -n '/^chown_volume_dirs()/,/^}/p' "$ENTRYPOINT")"
 
     run env SCRIPT_DIR="$REPO_ROOT/scripts/container" \
         AGENT_UID="$(id -u)" AGENT_GID="$(id -g)" AGENT_HOME="$home" \
+        CLAUDE_ORCA_VOLUME_DIRS="$home/.cache:$home/.npm" \
         MOUNTS_FILE="$TMP/mounts" PATH="$TMP/bin:$PATH" \
         CHOWN_LOG="$TMP/chown.log" \
         bash -c "set -uo pipefail
@@ -396,7 +397,7 @@ JSON
     proj="$TMP/p9"
     vol="$home/.local/share/opencode"
     legacy="$proj/.claude-dev/home/.local/share/opencode"
-    mkdir -p "$legacy" "$home/.cache" "$vol"
+    mkdir -p "$legacy" "$home/.cache" "$proj/.claude-dev/home/.cache" "$vol"
     printf 'legacy db\n'   > "$legacy/opencode.db"
     printf 'legacy auth\n' > "$legacy/auth.json"
     printf 'l\n' > "$proj/.claude-dev/home/.cache/legacy.txt"
