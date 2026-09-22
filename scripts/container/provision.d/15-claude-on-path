@@ -1,26 +1,36 @@
 #!/usr/bin/env bash
 #
-# `claude` on PATH is the newest Claude Code this container holds.
+# `claude` on PATH is ONE Claude Code, the home's native install, and it is
+# never older than the image's.
 #
 # A container can hold two copies. The image's copy is /opt/claude/claude
 # (/usr/local/bin/claude on PATH), installed at whatever downloads.claude.ai
 # called latest when `claude-dev --update` built the image. The other is
-# Claude Code's own native install, which `claude update` writes into the
-# folder's home: ~/.local/bin/claude, a symlink into
-# ~/.local/share/claude/versions/<v>. That home is a bind mount, so it
-# outlives every rebuild, and ~/.local/bin comes first on PATH (the
-# Dockerfile's ENV, config/.zshrc). Because of one `claude update` on
-# 2026-09-14, every later --update built the latest into the image, yet
-# every terminal kept running the September 14 copy, and
-# DISABLE_AUTOUPDATER kept it there.
+# Claude Code's own native install in the folder's home: ~/.local/bin/claude,
+# a symlink into ~/.local/share/claude/versions/<v>. `claude update` only
+# ever writes this one. That home is a bind mount, so it outlives every
+# rebuild, and ~/.local/bin comes first on PATH (the Dockerfile's ENV,
+# config/.zshrc). Measured with real binaries on 2026-09-22, this setup had
+# three ways to run a stale copy:
 #
-# So on every start the newer copy wins. If the home copy is older, its link
-# is repointed at the image's binary. If it is newer (a `claude update`
-# since the last build), it stays until a build catches up. The step
-# repoints the link rather than removing it, because installMethod=native in
-# the home's .claude.json expects ~/.local/bin/claude to exist. The copies left in
-# versions/ belong to disk-cleanup (6d): once the link points outside
-# versions/, every copy there is stale.
+#   - a home install older than the image hid every rebuild: one
+#     `claude update` on 2026-09-14 kept every terminal on that copy, and
+#     DISABLE_AUTOUPDATER kept it there;
+#   - with no home install, `claude update` run from the image's copy
+#     reports success and creates ~/.local/bin/claude, yet `cs` in the same
+#     shell still runs the old copy, because zsh has already hashed `claude`
+#     to /usr/local/bin/claude;
+#   - a home link that points at the image's binary is "not created by the
+#     native installer", so `claude update` downloads the new version and
+#     leaves the link on the old one.
+#
+# So on every start, the image's binary is copied into versions/<v> and the
+# link is pointed at it, the same layout the native installer writes,
+# whenever the home install is missing, broken, not a versions/ link, or
+# older than the image. A newer home install (a `claude update` since the
+# last build) is left alone. After that, `claude` always resolves to
+# ~/.local/bin/claude, and `claude update` moves that same link. disk-cleanup
+# (6d) sweeps the copies in versions/ that the link no longer points at.
 
 set -uo pipefail
 . "$(dirname "$0")/../provision-lib.sh"
@@ -29,13 +39,10 @@ AGENT_HOME="${HOME:-/home/agent}"
 IMAGE_DIR="${CLAUDE_ORCA_CLAUDE_DIR:-/opt/claude}"
 IMAGE_BIN="$IMAGE_DIR/claude"
 HOME_BIN="$AGENT_HOME/.local/bin/claude"
+VDIR="$AGENT_HOME/.local/share/claude/versions"
 
 semver() { grep -Eo '^[0-9]+\.[0-9]+\.[0-9]+' | head -1; }
 
-if [ ! -L "$HOME_BIN" ] && [ ! -e "$HOME_BIN" ]; then
-    echo "no Claude Code in $HOME_BIN; claude on PATH is the image's $IMAGE_BIN"
-    exit 0
-fi
 if [ ! -x "$IMAGE_BIN" ]; then
     echo "no Claude Code at $IMAGE_BIN; leaving $HOME_BIN alone"
     exit 0
@@ -49,40 +56,39 @@ if [ -z "$image_v" ]; then
     exit 1
 fi
 
-if [ ! -L "$HOME_BIN" ]; then
+if [ -e "$HOME_BIN" ] && [ ! -L "$HOME_BIN" ]; then
     echo "$HOME_BIN is a file, not Claude Code's native-install link; it shadows the image's $image_v on PATH" >&2
     exit 1
 fi
 
-resolved="$(readlink -f "$HOME_BIN" 2>/dev/null || true)"
-if [ "$resolved" = "$(readlink -f "$IMAGE_BIN")" ]; then
-    echo "claude is the image's $image_v ($HOME_BIN -> $IMAGE_BIN)"
-    exit 0
-fi
-
-# A versions/<v> target names its own version; a broken link or an
-# unrecognised target is treated as older than anything.
+# Only a link into versions/ is the native installer's; anything else
+# (missing, broken, the image's binary) is replaced.
 home_v=""
-if [ -n "$resolved" ] && [ -x "$resolved" ]; then
-    home_v="$(basename "$resolved" | semver)"
-    [ -n "$home_v" ] || home_v="$("$resolved" --version 2>/dev/null | semver)"
+if [ -L "$HOME_BIN" ]; then
+    resolved="$(readlink -f "$HOME_BIN" 2>/dev/null || true)"
+    case "$resolved" in
+        "$(readlink -f "$VDIR" 2>/dev/null || printf '%s' "$VDIR")"/?*)
+            [ -x "$resolved" ] && home_v="$(basename "$resolved" | semver)" ;;
+    esac
 fi
 
 if [ -n "$home_v" ]; then
     newest="$(printf '%s\n%s\n' "$image_v" "$home_v" | sort -V | tail -1)"
-    if [ "$home_v" = "$image_v" ]; then
-        echo "claude is $home_v either way ($HOME_BIN -> $resolved; image $IMAGE_BIN)"
-        exit 0
-    fi
     if [ "$newest" = "$home_v" ]; then
-        echo "keeping $HOME_BIN at $home_v: newer than the image's $image_v"
+        echo "claude is the home's native $home_v (image $image_v)"
         exit 0
     fi
 fi
 
-if ln -sf "$IMAGE_BIN" "$HOME_BIN"; then
-    echo "claude: $HOME_BIN now -> $IMAGE_BIN (image $image_v; was ${home_v:-unknown} at ${resolved:-a broken link})"
+# Copy, then rename over the target: a session running an old copy keeps
+# its inode, and a half-written file is never linked.
+mkdir -p "$VDIR" "$(dirname "$HOME_BIN")" || exit 1
+tmp="$VDIR/.$image_v.claude-orca.tmp"
+if cp "$IMAGE_BIN" "$tmp" && chmod 755 "$tmp" && mv -f "$tmp" "$VDIR/$image_v" \
+        && ln -sfn "$VDIR/$image_v" "$HOME_BIN"; then
+    echo "claude: $HOME_BIN -> $VDIR/$image_v (seeded from the image's $IMAGE_BIN; was ${home_v:-no native install})"
 else
-    echo "could not repoint $HOME_BIN at $IMAGE_BIN" >&2
+    rm -f "$tmp"
+    echo "could not seed $VDIR/$image_v from $IMAGE_BIN" >&2
     exit 1
 fi
