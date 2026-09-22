@@ -176,7 +176,7 @@ chmod 600 "$CFG" 2>/dev/null || true
 
 # 4. The prompt: the read-only recon preamble, a blank line, then the
 #    question verbatim.
-PREAMBLE='You are doing read-only recon for an orchestrator that will act on your findings without re-reading the files itself. Answer with concrete file:line references for every claim; state negative results explicitly ("X appears nowhere under src/"); compact bullets, verbatim snippets only when the exact text is load-bearing; answer the question asked, at the size asked, then stop. Your permissions deny edits.'
+PREAMBLE='You are doing read-only recon for an orchestrator that will act on your findings without re-reading the files itself. Answer with concrete file:line references for every claim; state negative results explicitly ("X appears nowhere under src/"); compact bullets, verbatim snippets only when the exact text is load-bearing; answer the question asked, at the size asked, then stop. Your permissions deny edits. You are a recon worker, not the orchestrator: the CLAUDE.md rules about lanes, beads, delegation and message shape do not apply to you -- declare no lane, file nothing, and print only the answer.'
 PROMPT="$PREAMBLE
 
 $QUESTION"
@@ -255,7 +255,8 @@ $(jq -R -r -s '
     | [ ([.[] | select(.type == "step_finish") | (.part.tokens.input // 0)] | add // 0),
         ([.[] | select(.type == "step_finish") | (.part.tokens.output // 0)] | add // 0),
         ([.[] | select(.type == "step_finish") | (.part.tokens.reasoning // 0)] | add // 0),
-        ([.[] | select(.type == "step_finish") | (.part.cost // empty)] | add // 0) ]
+        ([.[] | select(.type == "step_finish") | (.part.cost // empty)] | add // 0
+          | (. * 1000000 | round) / 1000000) ]
     | @tsv' "$LOG" 2>/dev/null || printf '0\t0\t0\t0')
 SUMS_EOF
 TI="${TI:-0}" TO="${TO:-0}" TR="${TR:-0}" USD="${USD:-0}"
