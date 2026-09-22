@@ -120,7 +120,14 @@ file `claude-dev key openrouter` writes) the derived worker is `opencode` on
 `claude:<derived worker rung>`. **Recon = `subagent` haiku** and **checker = `subagent`
 at the derived checker rung** (the top capped at opus), both in-process on
 purpose — recon is cheap and read-only, and a checker never grades a claim
-from below the worker that made it. `/tier worker openrouter:qwen/qwen3-coder`,
+from below the worker that made it. An **orca-backed recon** (the hybrid
+presets' `luna@high`, or `/tier recon openrouter:<model>`) is asked with
+`recon "<question>"` instead of a spawn — a headless, read-only
+`opencode run` on the recon model in the project's working tree: no bead,
+no worktree, the answer on stdout, the cost in the delegate ledger.
+`tier-gate` denies a model-less `scout` spawn there with
+`recon "<question>"` as the reason; an explicit `model` on the spawn is
+the in-process fallback. `/tier worker openrouter:qwen/qwen3-coder`,
 `/tier worker claude:sonnet` or `/tier worker subagent` rebinds the worker
 seat, and **`/tier recon openrouter` puts recon on the flash-class rung**
 (`openrouter/z-ai/glm-5.3-flash` run by `opencode` on the orca backend) —
@@ -206,8 +213,9 @@ The bias is "everything independent runs at once", not "one slice at a time".
   epic X with `orca-run`" and let that coordinator run its own wave loop.
   The top session then supervises coordinators, not slices. Depth stops at
   2: a coordinator's own workers are leaves.
-- **Recon fans out freely** — several `scout` spawns in one message, no
-  worktree, no Run.
+- **Recon fans out freely** — several `scout` spawns in one message
+  (subagent backend) or several `recon "<question>"` calls with
+  run_in_background (orca backend); no worktree, no Run either way.
 
 All five live in `bin/` and are exercised by `tests/orca-run.bats` and
 `tests/orca-dispatch.bats` against a real `orca-ide --serve`.
@@ -218,7 +226,8 @@ Running outside Orca still works. With `.runtime.reachable` false (or an
 explicit `--backend subagent`), `orca-dispatch` writes the equivalent
 Agent-tool executor spec to stdout and **exits 3** — nothing is dispatched
 and the orchestrator falls back to the in-process `executor` knowingly,
-never silently.
+never silently. `recon` does the same — exit 3 with "spawn a scout" when
+the recon role is not orca+opencode or the guard token is missing.
 
 That fallback spawn must carry **an explicit `model`**. `tier-gate` never
 blocks a spawn; what it injects depends on the worker's binding. Under a
