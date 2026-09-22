@@ -1,94 +1,96 @@
 #!/usr/bin/env bash
 #
-# `claude` on PATH is ONE Claude Code, the home's native install, and it is
-# never older than the image's.
-#
-# A container can hold two copies. The image's copy is /opt/claude/claude
-# (/usr/local/bin/claude on PATH), installed at whatever downloads.claude.ai
-# called latest when `claude-dev --update` built the image. The other is
-# Claude Code's own native install in the folder's home: ~/.local/bin/claude,
-# a symlink into ~/.local/share/claude/versions/<v>. `claude update` only
-# ever writes this one. That home is a bind mount, so it outlives every
-# rebuild, and ~/.local/bin comes first on PATH (the Dockerfile's ENV,
-# config/.zshrc). Measured with real binaries on 2026-09-22, this setup had
-# three ways to run a stale copy:
-#
-#   - a home install older than the image hid every rebuild: one
-#     `claude update` on 2026-09-14 kept every terminal on that copy, and
-#     DISABLE_AUTOUPDATER kept it there;
-#   - with no home install, `claude update` run from the image's copy
-#     reports success and creates ~/.local/bin/claude, yet `cs` in the same
-#     shell still runs the old copy, because zsh has already hashed `claude`
-#     to /usr/local/bin/claude;
-#   - a home link that points at the image's binary is "not created by the
-#     native installer", so `claude update` downloads the new version and
-#     leaves the link on the old one.
-#
-# So on every start, the image's binary is copied into versions/<v> and the
-# link is pointed at it, the same layout the native installer writes,
-# whenever the home install is missing, broken, not a versions/ link, or
-# older than the image. A newer home install (a `claude update` since the
-# last build) is left alone. After that, `claude` always resolves to
-# ~/.local/bin/claude, and `claude update` moves that same link. disk-cleanup
-# (6d) sweeps the copies in versions/ that the link no longer points at.
+# The image carries no Claude Code. This step is the template's install and
+# update of Claude Code's own native install in the folder's home: a link at
+# ~/.local/bin/claude into ~/.local/share/claude/versions/<v>, the same
+# layout `claude update` writes, so an update run in a session moves the
+# same link and the next start never downgrades it. At every start the step
+# fetches the latest release, verifies its sha256, and points the link at
+# it. Measured with real binaries on 2026-09-22: an old home copy shadowed
+# every rebuild; zsh had hashed the image's copy, so `cs` ran it even after
+# `claude update`; and a link at the image's binary is one `claude update`
+# refuses to move.
 
 set -uo pipefail
 . "$(dirname "$0")/../provision-lib.sh"
 
+RELEASES="${CLAUDE_ORCA_CLAUDE_RELEASES:-https://downloads.claude.ai/claude-code-releases}"
 AGENT_HOME="${HOME:-/home/agent}"
-IMAGE_DIR="${CLAUDE_ORCA_CLAUDE_DIR:-/opt/claude}"
-IMAGE_BIN="$IMAGE_DIR/claude"
 HOME_BIN="$AGENT_HOME/.local/bin/claude"
 VDIR="$AGENT_HOME/.local/share/claude/versions"
 
 semver() { grep -Eo '^[0-9]+\.[0-9]+\.[0-9]+' | head -1; }
 
-if [ ! -x "$IMAGE_BIN" ]; then
-    echo "no Claude Code at $IMAGE_BIN; leaving $HOME_BIN alone"
-    exit 0
-fi
-
-image_v=""
-[ -r "$IMAGE_DIR/VERSION" ] && image_v="$(semver < "$IMAGE_DIR/VERSION")"
-[ -n "$image_v" ] || image_v="$("$IMAGE_BIN" --version 2>/dev/null | semver)"
-if [ -z "$image_v" ]; then
-    echo "cannot tell the version of $IMAGE_BIN; leaving $HOME_BIN alone" >&2
-    exit 1
-fi
-
+# A plain file where the link belongs is not ours to replace: someone put it
+# there on purpose.
 if [ -e "$HOME_BIN" ] && [ ! -L "$HOME_BIN" ]; then
-    echo "$HOME_BIN is a file, not Claude Code's native-install link; it shadows the image's $image_v on PATH" >&2
+    echo "$HOME_BIN is a file, not Claude Code's native-install link; leaving it alone" >&2
     exit 1
 fi
 
 # Only a link into versions/ is the native installer's; anything else
-# (missing, broken, the image's binary) is replaced.
+# (missing, broken, a link at the image's old copy) reads as no native
+# install.
 home_v=""
 if [ -L "$HOME_BIN" ]; then
     resolved="$(readlink -f "$HOME_BIN" 2>/dev/null || true)"
+    vreal="$(readlink -f "$VDIR" 2>/dev/null || printf '%s' "$VDIR")"
     case "$resolved" in
-        "$(readlink -f "$VDIR" 2>/dev/null || printf '%s' "$VDIR")"/?*)
+        "$vreal"/?*)
             [ -x "$resolved" ] && home_v="$(basename "$resolved" | semver)" ;;
     esac
 fi
 
+# What is the latest release?
+latest="$(curl -fsSL --max-time 10 "$RELEASES/latest" 2>/dev/null | tr -d '[:space:]')"
+if ! printf '%s\n' "$latest" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+    if [ -n "$home_v" ]; then
+        echo "cannot reach $RELEASES/latest; keeping claude $home_v"
+        exit 0
+    fi
+    echo "no Claude Code in $HOME_BIN and cannot reach $RELEASES/latest" >&2
+    exit 1
+fi
+
 if [ -n "$home_v" ]; then
-    newest="$(printf '%s\n%s\n' "$image_v" "$home_v" | sort -V | tail -1)"
+    newest="$(printf '%s\n%s\n' "$home_v" "$latest" | sort -V | tail -1)"
     if [ "$newest" = "$home_v" ]; then
-        echo "claude is the home's native $home_v (image $image_v)"
+        echo "claude $home_v is current (latest $latest)"
         exit 0
     fi
 fi
 
-# Copy, then rename over the target: a session running an old copy keeps
-# its inode, and a half-written file is never linked.
-mkdir -p "$VDIR" "$(dirname "$HOME_BIN")" || exit 1
-tmp="$VDIR/.$image_v.claude-orca.tmp"
-if cp "$IMAGE_BIN" "$tmp" && chmod 755 "$tmp" && mv -f "$tmp" "$VDIR/$image_v" \
-        && ln -sfn "$VDIR/$image_v" "$HOME_BIN"; then
-    echo "claude: $HOME_BIN -> $VDIR/$image_v (seeded from the image's $IMAGE_BIN; was ${home_v:-no native install})"
+# Install: download to a temp file, verify the checksum, and only then move
+# it into versions/ and move the link -- a half-written binary is never
+# linked.
+case "$(uname -m)" in
+    aarch64|arm64) platform="linux-arm64" ;;
+    x86_64|amd64)  platform="linux-x64" ;;
+    *)
+        echo "cannot install claude: unsupported architecture $(uname -m)" >&2
+        exit 1
+        ;;
+esac
+manifest="$(curl -fsSL --max-time 30 "$RELEASES/$latest/manifest.json" 2>/dev/null)"
+checksum="$(printf '%s\n' "$manifest" | jq -r ".platforms[\"$platform\"].checksum // empty" 2>/dev/null)"
+if ! printf '%s\n' "$checksum" | grep -Eq '^[a-f0-9]{64}$'; then
+    echo "cannot read a sha256 for $platform from $RELEASES/$latest/manifest.json" >&2
+    exit 1
+fi
+
+mkdir -p "$VDIR" "$(dirname "$HOME_BIN")" || {
+    echo "cannot create $VDIR or $(dirname "$HOME_BIN")" >&2
+    exit 1
+}
+tmp="$VDIR/.$latest.claude-orca.tmp"
+if curl -fsSL --max-time 120 "$RELEASES/$latest/$platform/claude" -o "$tmp" \
+        && echo "$checksum  $tmp" | sha256sum -c - >/dev/null \
+        && chmod 755 "$tmp" \
+        && mv -f "$tmp" "$VDIR/$latest" \
+        && ln -sfn "$VDIR/$latest" "$HOME_BIN"; then
+    echo "claude: $HOME_BIN -> $VDIR/$latest (was ${home_v:-no native install})"
 else
     rm -f "$tmp"
-    echo "could not seed $VDIR/$image_v from $IMAGE_BIN" >&2
+    echo "claude: installing $latest failed; $HOME_BIN is untouched" >&2
     exit 1
 fi
