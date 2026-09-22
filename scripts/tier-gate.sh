@@ -8,7 +8,11 @@
 # unnamed spawns), the RECON model for scout spawns, whenever the Agent call
 # omits `model` -- an explicit model always wins (also the idempotency
 # guard: the injected call re-enters here and passes through, since it now
-# carries a model). The GRADERS -- verifier and bead-auditor -- take the
+# carries a model). An orca-backed role with a NON-Claude agent
+# (opencode/codex/gemini) has no model the Agent tool would accept: the
+# model-less spawn is DENIED, the reason naming the command the tier wants
+# (`recon "<question>"` / `orca-dispatch <bead>`); the deny is never
+# throttled. The GRADERS -- verifier and bead-auditor -- take the
 # CHECKER rung (roles.checker.model, else `tier-derive --checker <top>`: the
 # top capped at opus), so an in-process check runs from a seat that is
 # neither the orchestrator's nor the worker's (claude-orca-8a0.2). A checker
@@ -158,13 +162,13 @@ elif [ -n "$STATE_FILE" ] && [ -f "$STATE_FILE" ]; then
     # injection path below is byte-for-byte what it always was.
     BACKEND=$(tier_role_field "$STATE_FILE" "$SLOT" backend)
     if [ "$BACKEND" = "orca" ]; then
-        # Orca-backed role: the spawn is ALLOWED (this hook never blocks) and
-        # the orchestrator is told a supervised Orca worker was waiting for
-        # it. It is still a WORKER spawn, though, so the invariant "expensive
-        # tiers never take the worker seat" holds here too: a claude-agent
-        # role injects its own model (or the derived rung, if that model
-        # cannot be ranked), so the fallback spawn never silently lands on
-        # the orchestrator's tier.
+        # Orca-backed role: a claude-agent role injects its own model (or
+        # the derived rung, if that model cannot be ranked), so the fallback
+        # spawn never silently lands on the orchestrator's tier. A
+        # non-Claude agent has no model the Agent tool would accept: the
+        # model-less spawn is DENIED (claude-orca-424.2), the reason naming
+        # the command the tier wants -- an explicit model on the call never
+        # reaches this branch and stays the deliberate in-process fallback.
         RM=$(tier_role_field "$STATE_FILE" "$SLOT" model)
         RA=$(tier_role_field "$STATE_FILE" "$SLOT" agent)
         RV=$(tier_role_field "$STATE_FILE" "$SLOT" variant)
@@ -186,16 +190,22 @@ elif [ -n "$STATE_FILE" ] && [ -f "$STATE_FILE" ]; then
         else
             # A non-Claude agent (opencode/codex/gemini) has no model the
             # Agent tool would accept, and its rung is not this hook's to
-            # guess: note only, no injection. Once per session per slot,
-            # same as the injection notice below -- a distinct marker
-            # suffix (".orca") so this note and the injection note (a
-            # claude-agent orca role can still hit both, at different
-            # times) are tracked independently.
-            if _tier_gate_announce_once "$SLOT.orca"; then
-                jq -cn --arg slot "$SLOT" --arg m "$RM_LABEL" --arg a "$RA" \
-                   '{systemMessage: ("tier-gate: " + $slot + " backend is orca (" + $a + " " + $m + ") — prefer orca-dispatch for this slice; the Agent-tool spawn was allowed and runs on the orchestrator'"'"'s own model.")}' \
-                   2>/dev/null || exit 0
-            fi
+            # guess: the tier is what the operator set, so the model-less
+            # spawn is DENIED with the reason naming the exact command the
+            # tier wants (claude-orca-424.2). The deny is never throttled --
+            # its reason rides on every call; only the injection notice
+            # below is once-per-session.
+            case "$SLOT" in
+                recon) REASON=$(printf 'tier-gate: recon backend is orca (%s %s) -- run `recon "<question>"` in Bash (several in one message, run_in_background, to fan out) instead of an in-process scout; an explicit model on the Agent call (model: haiku) is the deliberate in-process fallback when the recon backend is down.' "$RA" "$RM_LABEL") ;;
+                *)     REASON=$(printf 'tier-gate: worker backend is orca (%s %s) -- dispatch the slice with `orca-dispatch <bead>` instead of an in-process executor; an explicit model on the Agent call is the deliberate in-process fallback when Orca is unreachable (orca-dispatch exits 3 and prints the spec).' "$RA" "$RM_LABEL") ;;
+            esac
+            jq -cn --arg r "$REASON" '{
+                hookSpecificOutput: {
+                    hookEventName: "PreToolUse",
+                    permissionDecision: "deny",
+                    permissionDecisionReason: $r
+                }
+            }' 2>/dev/null || exit 0
             exit 0
         fi
     else
