@@ -134,8 +134,9 @@ unreadable state, an unwritable cache dir — exits 0 with no output.
 Exempt from all of this: a list of housekeeping Bash commands — `bd`,
 every `git` and every `gh` invocation (not just the read-only ones: a
 commit or a push is session steering, not inline work), bats, dev-log,
-cost-mirror, tier-*, lane, run-tests, take-screenshot and delegation-gate
-itself — which are bookkeeping, not the grinding this hook targets.
+cost-mirror, tier-*, lane, run-tests, take-screenshot, recon and
+delegation-gate itself — which are bookkeeping, not the grinding this
+hook targets.
 """
 
 import json
@@ -177,7 +178,7 @@ READONLY_TOOLS = {"Read", "Grep", "Glob"}
 RECOGNIZED_MODES = {"off", "warn-only", "warn", "guard", "enforce"}
 
 EXEMPT_BASH_RE = re.compile(
-    r"^\s*(bd|git|gh"
+    r"^\s*(bd|git|gh|recon"
     r"|bats|dev-log|cost-mirror|tier-|lane|delegation-gate|run-tests"
     r"|take-screenshot)\b"
 )
@@ -540,9 +541,9 @@ def main():
     if mode in ("guard", "enforce") and tool_name == "Bash" and streak >= deny_at() and on_cadence:
         # A non-exempt Bash call is inline work exactly like an Edit --
         # `cat` costs the orchestrator what Read costs, and a grep sweep
-        # costs more. The exempt list above (bd/git/bats/lane/tier-…) is
-        # how the session steers and is never counted, so what lands here
-        # is recon or editing that belongs in a worker's context.
+        # costs more. The exempt list above (bd/git/bats/lane/tier-/recon…)
+        # is how the session steers and is never counted, so what lands
+        # here is recon or editing that belongs in a worker's context.
         # EVERY lane but express: unlike the edit note, this one fires in
         # lane standard too, because standard is where most sessions run
         # and eight inline shell calls is a streak in any lane. express
@@ -553,10 +554,12 @@ def main():
         emit_note(
             f"[delegation-gate] {streak} inline calls — this Bash "
             "call is recon or editing the orchestrator should not be doing "
-            "itself: recon to a scout, edits and builds to an executor slice "
-            "(`orca-dispatch <bead>`, else the Agent tool). Streak resets on "
-            "Agent use; `bd`, `git`, `gh`, `bats`, `lane` and `tier-` calls "
-            "never count."
+            "itself: recon to the recon backend ("
+            '`recon "<question>"`'
+            " when it is orca-backed, a scout otherwise), edits and builds "
+            "to an executor slice (`orca-dispatch <bead>`, else the Agent "
+            "tool). Streak resets on Agent use; `bd`, `git`, `gh`, `bats`, "
+            "`lane`, `tier-` and `recon` calls never count."
         )
         return
 
@@ -566,7 +569,8 @@ def main():
         save_state(state_path, state)
         emit_note(
             f"[delegation-gate] {streak} inline calls — batch the "
-            "remaining reads into a scout and work from its summary. "
+            "remaining reads into one recon call (`recon \"<question>\"`, "
+            "or a scout) and work from its summary. "
             "Streak resets on Agent use."
         )
         return

@@ -1,8 +1,13 @@
 // .claude/workflows/recon-fanout.js — named Workflow.
 //
-// Fans a set of independent recon questions out to one scout-grade
-// agent() call per question, in parallel, each returning typed findings
-// anchored to file:line. Invoke via the Workflow tool with:
+// This is the IN-PROCESS form of recon fan-out (Claude haiku): it fans a
+// set of independent recon questions out to one scout-grade agent() call
+// per question, in parallel. Under an orca-backed recon role the
+// orchestrator runs one `recon "<question>"` Bash call per question
+// instead of this workflow.
+//
+// Each agent() call returns typed findings anchored to file:line.
+// Invoke via the Workflow tool with:
 //
 //   { questions: ["where is X configured?", "who calls Y?"], glob: "src/**/*.ts" }
 //
@@ -19,7 +24,7 @@
 
 export const meta = {
   name: 'recon-fanout',
-  description: 'Fan out independent recon questions to one scout-grade agent() call per question, each returning typed findings anchored to file:line.',
+  description: 'Fan out independent recon questions to one in-process scout-grade agent() call per question (subagent recon backend; under an orca-backed recon role use recon "<question>" per question instead), each returning typed findings anchored to file:line.',
   phases: [{ title: 'Recon' }],
 };
 
