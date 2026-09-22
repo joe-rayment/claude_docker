@@ -1838,6 +1838,12 @@ STUB
     local proj="$TMP/project" port urlfile pdir step name
     make_project "$proj"
     mkdir -p "$TMP/home" "$TMP/bin"
+    # The same template-root pin as the stub-ORCA_BIN case: without it a
+    # box that bakes /opt/claude-orca provisions from the IMAGE's frozen
+    # provision.d, and a step added since that build has no status here.
+    mkdir -p "$proj/.claude-dev/template/scripts/container"
+    : > "$proj/.claude-dev/template/scripts/container/setup.sh"
+    chmod +x "$proj/.claude-dev/template/scripts/container/setup.sh"
     port="$(free_port)"
     pdir="$proj/.claude-dev/run/provision"
 
