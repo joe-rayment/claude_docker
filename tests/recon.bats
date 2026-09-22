@@ -54,6 +54,10 @@ JSON
     export RECON_STATE_FILE="$RUN/tier.json"
     export RECON_RUN_DIR="$RUN"
     export PROJECT_DIR="$PROJECT"
+    # recon.sh hands every receipt to cost-mirror (fail-open); without this
+    # the stub receipts land in the REAL ledger at
+    # ~/.claude/cache/cost-mirror/lifetime.json (claude-orca-424.4).
+    export COST_MIRROR_STATE_DIR="$T/cost-mirror"
 
     mkdir -p "$T/bin"
     export STUB_LOG="$T/opencode-stub.log"
