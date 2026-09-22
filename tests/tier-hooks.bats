@@ -508,16 +508,19 @@ seed_state() {  # seed_state <worker> <recon> -- a bound, unpinned, non-overdriv
         [ -z "$output" ]
     done
 
-    # an orca-backed worker: the spawn is still ALLOWED, with one note and no
-    # model injection (the orchestrator should have used orca-dispatch)
+    # an orca-backed non-Claude worker: the model-less spawn is DENIED
+    # (claude-orca-424.2, superseding the old note-only pin), the reason
+    # naming orca-dispatch -- the command that follows the tier
     TIER_DERIVE="$DERIVE" tier_set fable
     TIER_DERIVE="$DERIVE" tier_set worker openrouter:qwen/qwen3-coder
     gate '{"tool_name":"Agent","tool_input":{"subagent_type":"executor","prompt":"p"}}'
     [ "$status" -eq 0 ]
     orca_out="$output"
-    run jq -e '.systemMessage | test("orca")' <<<"$orca_out"
+    run jq -e '.hookSpecificOutput.permissionDecision == "deny"' <<<"$orca_out"
     [ "$status" -eq 0 ]
-    run jq -e 'has("hookSpecificOutput") | not' <<<"$orca_out"
+    run jq -e '.hookSpecificOutput.permissionDecisionReason | test("orca-dispatch")' <<<"$orca_out"
+    [ "$status" -eq 0 ]
+    run jq -e 'has("systemMessage") | not' <<<"$orca_out"
     [ "$status" -eq 0 ]
 
     # back on the subagent backend, injection is exactly as before
