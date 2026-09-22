@@ -119,7 +119,7 @@ setup() {
 
     local phrase
     for phrase in 'orca-dispatch' 'Agent tool' 'reachable' \
-                  'checkers and recon stay in-process' \
+                  'checkers stay in-process' 'recon "<question>"' \
                   'independent slices run in parallel' \
                   'share files run sequentially' \
                   'recon fans out freely' \
