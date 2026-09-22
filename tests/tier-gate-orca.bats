@@ -1,11 +1,12 @@
 #!/usr/bin/env bats
 #
 # tier-gate under the ORCA worker backend (claude-orca-qa2.12, GREEN-2).
-# NOT a frozen contract file -- tests/tier-hooks.bats is the frozen one, and
-# it pins the non-Claude (opencode/openrouter) orca case to "note only, no
-# injection". This file covers the rest of the rule: an Agent spawn is the
-# subagent FALLBACK for an orca-backed role, so it must still land on a
-# worker-tier model rather than inheriting the orchestrator's expensive one.
+# NOT a frozen contract file -- tests/tier-hooks.bats is the frozen S4 one.
+# The orca-backend rule as of claude-orca-424.2: a model-less spawn onto an
+# orca-backed non-Claude role is DENIED, the reason naming the exact command
+# the tier wants (`recon "<question>"` for recon, `orca-dispatch <bead>` for
+# worker); an explicit model on the Agent call stays the deliberate
+# in-process fallback, and a claude-agent orca role still injects.
 
 REPO_ROOT="${BATS_TEST_DIRNAME:-.}"
 REPO_ROOT="$(cd "$REPO_ROOT/.." && pwd)"
@@ -15,6 +16,7 @@ TSET="$REPO_ROOT/scripts/tier-set.sh"
 GATE="$REPO_ROOT/scripts/tier-gate.sh"
 
 setup() {
+    unset PROJECT_DIR BEADS_DIR
     export CLAUDE_ORCA_ROOT="$BATS_TEST_TMPDIR/root"
     export CLAUDE_CONFIG_DIR="$BATS_TEST_TMPDIR/root/.claude"
     mkdir -p "$CLAUDE_ORCA_ROOT/.claude-dev/run" "$CLAUDE_CONFIG_DIR/agents"
@@ -66,7 +68,24 @@ gate() { run "$GATE" <<<"$1"; }
 
     gate '{"tool_name":"Agent","tool_input":{"subagent_type":"scout","prompt":"p"}}'
     [ "$status" -eq 0 ]
-    run jq -e '.hookSpecificOutput.updatedInput.model == "haiku"' <<<"$output"
+    out="$output"
+    run jq -e '.hookSpecificOutput.updatedInput.model == "haiku"' <<<"$out"
+    [ "$status" -eq 0 ]
+    # a claude-agent orca role is never denied (claude-orca-424.2): the
+    # model rides in updatedInput, no permissionDecision alongside it
+    run jq -e '.hookSpecificOutput | has("permissionDecision") | not' <<<"$out"
+    [ "$status" -eq 0 ]
+
+    # the same with a concrete (not alias) claude id in the role: still
+    # injects its own model, still never denies
+    jq '.roles.recon.model = "claude-haiku-4-5-20251001" | .recon = "claude-haiku-4-5-20251001"' \
+        "$STATE_FILE" > "$STATE_FILE.tmp" && mv "$STATE_FILE.tmp" "$STATE_FILE"
+    gate '{"tool_name":"Agent","tool_input":{"subagent_type":"scout","prompt":"p"}}'
+    [ "$status" -eq 0 ]
+    out="$output"
+    run jq -e '.hookSpecificOutput.updatedInput.model == "haiku"' <<<"$out"
+    [ "$status" -eq 0 ]
+    run jq -e '.hookSpecificOutput | has("permissionDecision") | not' <<<"$out"
     [ "$status" -eq 0 ]
 
     # an explicit model on the call still wins, orca backend or not
@@ -109,17 +128,90 @@ probe_stub() {
     [ "$status" -ne 0 ]
 }
 
-@test "tier-gate: a non-Claude (opencode) orca worker is note-only — no model the Agent tool would take" {
+@test "tier-gate: a model-less executor spawn onto a non-Claude orca worker is denied, naming orca-dispatch" {
     TIER_DERIVE="$DERIVE" tier_set fable
     [ "$status" -eq 0 ]
-    TIER_DERIVE="$DERIVE" tier_set worker openrouter:qwen/qwen3-coder
+    TIER_DERIVE="$DERIVE" tier_set worker openrouter:z-ai/glm-5.3-flash
     [ "$status" -eq 0 ]
 
     gate '{"tool_name":"Agent","tool_input":{"subagent_type":"executor","prompt":"p"}}'
     [ "$status" -eq 0 ]
     out="$output"
-    run jq -e '.systemMessage | test("orca-dispatch")' <<<"$out"
+    run jq -e '.hookSpecificOutput.permissionDecision == "deny"' <<<"$out"
     [ "$status" -eq 0 ]
-    run jq -e 'has("hookSpecificOutput") | not' <<<"$out"
+    run jq -e '.hookSpecificOutput.permissionDecisionReason | contains("orca-dispatch")' <<<"$out"
+    [ "$status" -eq 0 ]
+    run jq -e '.hookSpecificOutput.permissionDecisionReason | contains("explicit model")' <<<"$out"
+    [ "$status" -eq 0 ]
+    run jq -e '.hookSpecificOutput | has("updatedInput") | not' <<<"$out"
+    [ "$status" -eq 0 ]
+    run jq -e 'has("systemMessage") | not' <<<"$out"
+    [ "$status" -eq 0 ]
+}
+
+@test "tier-gate: a model-less scout spawn onto a non-Claude orca recon role is denied, naming recon" {
+    TIER_DERIVE="$DERIVE" tier_set fable
+    [ "$status" -eq 0 ]
+    TIER_DERIVE="$DERIVE" tier_set recon openrouter:openai/gpt-5.6-luna@high
+    [ "$status" -eq 0 ]
+    run jq -e '.roles.recon | .backend == "orca" and .agent == "opencode" and .model == "openrouter/openai/gpt-5.6-luna" and .variant == "high"' "$STATE_FILE"
+    [ "$status" -eq 0 ]
+
+    gate '{"tool_name":"Agent","tool_input":{"subagent_type":"scout","prompt":"p"}}'
+    [ "$status" -eq 0 ]
+    out="$output"
+    run jq -e '.hookSpecificOutput.permissionDecision == "deny"' <<<"$out"
+    [ "$status" -eq 0 ]
+    run jq -e '.hookSpecificOutput.permissionDecisionReason | contains("recon \"<question>\"")' <<<"$out"
+    [ "$status" -eq 0 ]
+    run jq -e '.hookSpecificOutput.permissionDecisionReason | contains("gpt-5.6-luna@high")' <<<"$out"
+    [ "$status" -eq 0 ]
+    run jq -e '.hookSpecificOutput.permissionDecisionReason | contains("model: haiku")' <<<"$out"
+    [ "$status" -eq 0 ]
+    run jq -e '.hookSpecificOutput | has("updatedInput") | not' <<<"$out"
+    [ "$status" -eq 0 ]
+}
+
+@test "tier-gate: the deny is not throttled -- both calls in one session carry the full reason" {
+    TIER_DERIVE="$DERIVE" tier_set fable
+    [ "$status" -eq 0 ]
+    TIER_DERIVE="$DERIVE" tier_set recon openrouter:openai/gpt-5.6-luna@high
+    [ "$status" -eq 0 ]
+
+    gate '{"session_id":"sess-deny","tool_name":"Agent","tool_input":{"subagent_type":"scout","prompt":"p"}}'
+    [ "$status" -eq 0 ]
+    first="$output"
+    gate '{"session_id":"sess-deny","tool_name":"Agent","tool_input":{"subagent_type":"scout","prompt":"p"}}'
+    [ "$status" -eq 0 ]
+    second="$output"
+    for out in "$first" "$second"; do
+        run jq -e '.hookSpecificOutput.permissionDecision == "deny" and (.hookSpecificOutput.permissionDecisionReason | contains("gpt-5.6-luna@high"))' <<<"$out"
+        [ "$status" -eq 0 ]
+    done
+}
+
+@test "tier-gate: an explicit model on the scout spawn wins over the orca recon role" {
+    TIER_DERIVE="$DERIVE" tier_set fable
+    [ "$status" -eq 0 ]
+    TIER_DERIVE="$DERIVE" tier_set recon openrouter:openai/gpt-5.6-luna@high
+    [ "$status" -eq 0 ]
+
+    gate '{"tool_name":"Agent","tool_input":{"subagent_type":"scout","model":"haiku","prompt":"p"}}'
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+}
+
+@test "tier-gate: an unnamed spawn onto a non-Claude orca worker is denied too" {
+    TIER_DERIVE="$DERIVE" tier_set fable
+    [ "$status" -eq 0 ]
+    TIER_DERIVE="$DERIVE" tier_set worker openrouter:z-ai/glm-5.3-flash
+    [ "$status" -eq 0 ]
+
+    gate '{"tool_name":"Agent","tool_input":{"prompt":"p"}}'
+    [ "$status" -eq 0 ]
+    out="$output"
+    run jq -e '.hookSpecificOutput.permissionDecision == "deny"' <<<"$out"
+    [ "$status" -eq 0 ]
+    run jq -e '.hookSpecificOutput.permissionDecisionReason | contains("orca-dispatch")' <<<"$out"
     [ "$status" -eq 0 ]
 }
