@@ -28,6 +28,10 @@
 #   workflows/*.js        -> .claude/workflows/
 #   opencode/opencode.json -> .config/opencode/opencode.json (opencode's own
 #                             provider config, outside .claude/)
+#   opencode/plugin/context-meter.js -> .config/opencode/plugin/
+#                             context-meter.js (claude-orca-7lz.2 -- the
+#                             opencode-side context-budget meter; opencode
+#                             auto-loads *.js under ~/.config/opencode/plugin/)
 #   .zshrc                -> .zshrc
 #
 # settings.local.json itself is only ever READ, never rewritten or moved --
@@ -217,6 +221,15 @@ if [ -f "$TEMPLATE_CONFIG/opencode/opencode.json" ]; then
     mkdir -p "$project/.claude-dev/home/.config/opencode"
     cp "$TEMPLATE_CONFIG/opencode/opencode.json" \
         "$project/.claude-dev/home/.config/opencode/opencode.json"
+fi
+
+# The opencode-side context-budget meter (claude-orca-7lz.2): opencode
+# auto-loads any *.js under ~/.config/opencode/plugin/, no config entry
+# needed. Template-owned and checksum-gated like everything else here.
+if [ -f "$TEMPLATE_CONFIG/opencode/plugin/context-meter.js" ]; then
+    mkdir -p "$project/.claude-dev/home/.config/opencode/plugin"
+    cp "$TEMPLATE_CONFIG/opencode/plugin/context-meter.js" \
+        "$project/.claude-dev/home/.config/opencode/plugin/context-meter.js"
 fi
 
 # --- settings.local.json overlay: preserved on disk, and merged IN (local
