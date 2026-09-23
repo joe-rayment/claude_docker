@@ -271,17 +271,48 @@ orch_note_bead() {
 # It ends with the WORKER RULES block, which is the whole reason a worker
 # on a foreign model behaves like one of ours.
 
+# orch_last_handoff <notes> -- the last HANDOFF the relay (orca-wait.sh)
+# appended to a bead's notes as "HANDOFF-AT <ts> dispatch=<id>" followed by
+# the block. Prints the lines after the LAST such line, through the first
+# following line that starts with "relay:" (included), or up to but not
+# including the next line starting with "ORCA " when there is no relay:
+# line, or to the end of the notes otherwise. Exit 1, no output, when
+# <notes> has no "HANDOFF-AT " line.
+orch_last_handoff() {
+    local notes="$1"
+    printf '%s\n' "$notes" | awk '
+        /^HANDOFF-AT / { last = NR }
+        { line[NR] = $0 }
+        END {
+            if (!last) { exit 1 }
+            for (i = last + 1; i <= NR; i++) {
+                if (line[i] ~ /^ORCA /) { break }
+                print line[i]
+                if (line[i] ~ /^relay:/) { break }
+            }
+        }
+    '
+}
+
 # orch_spec <bead-json> <bead-id>
 orch_spec() {
-    local bj="$1" id="$2" title desc ac
+    local bj="$1" id="$2" title desc ac notes handoff
     title="$(printf '%s' "$bj" | jq -r '.title // ""')"
     desc="$(printf '%s' "$bj" | jq -r '.description // ""')"
     ac="$(printf '%s' "$bj" | jq -r '.acceptance_criteria // ""')"
+    notes="$(printf '%s' "$bj" | jq -r '.notes // ""')"
 
     printf 'BEAD %s -- %s\n\n' "$id" "$title"
     [ -n "$desc" ] && printf '%s\n\n' "$desc"
     if [ -n "$ac" ]; then
         printf 'ACCEPTANCE CONTRACT (pre-registered; the checker runs it verbatim)\n%s\n\n' "$ac"
+    fi
+    if printf '%s\n' "$notes" | grep -q -e '^HANDOFF-AT '; then
+        handoff="$(orch_last_handoff "$notes")"
+        if [ -n "$handoff" ]; then
+            printf 'CONTINUE FROM HANDOFF\nA previous worker on this bead stopped at its context budget. Continue from\nits handoff below; do not redo what it lists as done.\n%s\n\n' \
+                "$handoff"
+        fi
     fi
     cat <<'RULES'
 WORKER RULES

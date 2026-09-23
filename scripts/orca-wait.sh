@@ -316,13 +316,89 @@ EOF
     printf '%s' "$a"
 }
 
+# release_worker <disp_id> <term> <mode> [<reap>] -- calls orca
+# orchestration worker-release for <disp_id> (unless KEEP=1) and, when the
+# release state is not released|closed|gone, closes <term> too. Prints
+# "<released> <terminal_closed>" ("true"/"false") on stdout; human notes on
+# stderr.
+#
+# reap=0 (default, a worker that already reported worker_done): a headless
+# worker's terminal ended with its run, so a non-terminal state is left
+# alone for it -- today's exact behaviour.
+# reap=1 (a worker the stall scan is giving up on, which has NOT finished):
+# the terminal is closed whenever the state was not released|closed|gone and
+# a terminal id is known, headless included, because a stalled headless run
+# is still running.
+# KEEP=1 skips it all, as today: nothing is called, both outputs are false.
+release_worker() {
+    local disp="$1" term="$2" mode="$3" reap="${4:-0}"
+    local released=false terminal_closed=false rel rel_state
+    if [ "$KEEP" -eq 1 ]; then
+        note "kept $disp (--keep)"
+        printf 'false false\n'
+        return 0
+    fi
+    if [ -z "$disp" ]; then
+        printf 'false false\n'
+        return 0
+    fi
+    if rel="$(orca_call orchestration worker-release --dispatch "$disp" --json)"; then
+        rel_state="$(orca_field "$rel" '.result.state')"
+        case "$rel_state" in
+            released|closed|gone)
+                released=true
+                note "released $disp ($rel_state)"
+                ;;
+            *)
+                # A non-terminal release state (e.g. "retained") leaves the
+                # worker resident (~1 GB per idle opencode TUI) -- close its
+                # terminal. A headless worker's terminal ended with its run
+                # (claude-orca-ltd) UNLESS this is a reap: a stalled headless
+                # run is still running and its terminal is still open.
+                if [ "$reap" -eq 0 ] && [ "$mode" = "headless" ]; then
+                    note "worker-release left $disp in state '$rel_state'; headless terminal ended with the run -- nothing to close"
+                elif [ -n "$term" ] &&
+                     orca_call terminal close --terminal "$term" \
+                         --json >/dev/null 2>&1; then
+                    released=true
+                    terminal_closed=true
+                    note "closed $term (worker-release left it retained)"
+                else
+                    note "worker-release left $disp in state '$rel_state' and terminal close ${term:-<no terminal>} failed -- the worker may stay resident"
+                fi
+                ;;
+        esac
+    else
+        note "worker-release $disp: $(orca_error "$rel")"
+    fi
+    printf '%s %s\n' "$released" "$terminal_closed"
+}
+
+# detect_handoff <body> -- prints the HANDOFF block (the line that is
+# exactly "HANDOFF", surrounding whitespace allowed, through the end of
+# <body>) when one is present; exit 1, no output, otherwise. "HANDOFF"
+# inside a longer line is not a handoff (epic claude-orca-7lz's SHARED
+# CONTRACT).
+detect_handoff() {
+    printf '%s\n' "$1" | awk '
+        BEGIN { found = 0 }
+        {
+            trimmed = $0
+            gsub(/^[ \t]+|[ \t]+$/, "", trimmed)
+            if (!found && trimmed == "HANDOFF") { found = 1 }
+            if (found) { print }
+        }
+        END { exit(found ? 0 : 1) }
+    '
+}
+
 # --- the stall watch -----------------------------------------------------
 #
 # Returns 0 normally, 3 when it printed a fallback: the caller stops waiting
 # so the orchestrator can re-run the slice in-process on the same worktree.
 stall_scan() {
     local f now state act idle bead disp term wt model nudged mode
-    local text cmd spec bj tmp
+    local text cmd spec bj tmp rel_out r_released r_term_closed tc_note
     now="$(date +%s)"
     for f in "$DISP_DIR"/*.json; do
         [ -f "$f" ] || continue
@@ -350,9 +426,16 @@ stall_scan() {
             bj="$(orch_bead_json "$ROOT" "$bead")" || bj=""
             if [ -n "$bj" ] &&
                [ "$(printf '%s' "$bj" | jq -r '.status // ""')" = "closed" ]; then
+                rel_out="$(release_worker "$disp" "$term" "$mode" 1)"
+                r_released="${rel_out%% *}"
+                r_term_closed="${rel_out##* }"
+                tc_note=""
+                [ "$r_term_closed" = "true" ] && tc_note=", terminal closed"
+                note "[reap] $disp ($bead): closed bead -- worker released$tc_note"
                 note "$disp (${bead:-no bead}): bead is closed -- marking the dispatch done"
-                rec_set "$disp" --argjson n "$now" \
-                    '.state = "done" | .finished_at = $n |
+                rec_set "$disp" --argjson n "$now" --argjson tc "$r_term_closed" \
+                    '.state = "done" | .finished_at = $n | .reaped = true |
+                     .terminal_closed = $tc |
                      .note = "bead closed; dispatch marked done by stall scan"'
                 continue
             fi
@@ -361,6 +444,15 @@ stall_scan() {
         if [ "$nudged" -gt 0 ]; then
             spec=""
             [ -n "$bj" ] && spec="$(orch_spec "$bj" "$bead")"
+            # the in-process executor the fallback spawns must not share the
+            # worktree with a worker that is still (nominally) live -- reap
+            # it before the fallback receipt goes out.
+            rel_out="$(release_worker "$disp" "$term" "$mode" 1)"
+            r_released="${rel_out%% *}"
+            r_term_closed="${rel_out##* }"
+            tc_note=""
+            [ "$r_term_closed" = "true" ] && tc_note=", terminal closed"
+            note "[reap] $disp ($bead): stalled twice -- worker released$tc_note"
             note "$disp (${bead:-no bead}) is still quiet ${idle}s after its nudge -- falling back to an in-process executor"
             emit_receipt "$(jq -n -c --arg bead "$bead" --arg disp "$disp" --arg term "$term" \
                 --argjson idle "$idle" --arg wt "$wt" \
@@ -369,7 +461,8 @@ stall_scan() {
                   terminal: $term, idle_s: $idle, nudged: true,
                   worktree_path: $wt, fallback: $fb}')"
             # scanned no more, and the wait only ends if nothing else is live
-            rec_set "$disp" '.state = "stalled"'
+            rec_set "$disp" --argjson tc "$r_term_closed" \
+                '.state = "stalled" | .reaped = true | .terminal_closed = $tc'
             local g gs other=0
             for g in "$DISP_DIR"/*.json; do
                 [ -f "$g" ] || continue
@@ -417,8 +510,9 @@ stall_scan() {
 # REAL_COUNT counts the messages that end the wait; a heartbeat does not.
 process_batch() {
     local msgs msg mtype mid subject body from_h payload pj
-    local task_id disp_id outcome files bead model agent drec released rel
-    local term rel_state terminal_closed mode
+    local task_id disp_id outcome files bead model agent drec released
+    local term terminal_closed mode
+    local handoff handoff_block rel_out
     msgs="$TMPD/msgs.jsonl"
     printf '%s' "$1" | jq -c '.result.messages[]?' >"$msgs" 2>/dev/null
     while IFS= read -r msg; do
@@ -458,11 +552,22 @@ process_batch() {
         REAL_COUNT=$(( REAL_COUNT + 1 ))
 
         released=false
+        handoff=false
         if [ "$mtype" = "worker_done" ]; then
+            handoff_block=""
+            if handoff_block="$(detect_handoff "$body")" && [ -n "$handoff_block" ]; then
+                handoff=true
+            fi
             if [ -n "$bead" ]; then
                 orch_note_bead "$ROOT" "$bead" \
                     "ORCA WORKER_DONE outcome=${outcome:-unknown} task=$task_id dispatch=$disp_id files=$(printf '%s' "$files" | jq -r 'join(",")')
 $subject: $body"
+                if [ "$handoff" = "true" ]; then
+                    orch_note_bead "$ROOT" "$bead" \
+                        "HANDOFF-AT $(date -u +%Y-%m-%dT%H:%M:%SZ) dispatch=$disp_id
+$handoff_block"
+                    note "[relay] $bead handed off at its context budget -- orca-dispatch $bead starts a fresh worker from the HANDOFF in its notes"
+                fi
             fi
             term=""
             mode=""
@@ -471,42 +576,17 @@ $subject: $body"
                 mode="$(jq -r '.mode // ""' "$drec")"
             fi
             terminal_closed=false
-            if [ "$KEEP" -eq 0 ] && [ -n "$disp_id" ]; then
-                if rel="$(orca_call orchestration worker-release --dispatch "$disp_id" --json)"; then
-                    rel_state="$(orca_field "$rel" '.result.state')"
-                    case "$rel_state" in
-                        released|closed|gone)
-                            released=true
-                            note "released $disp_id ($rel_state)"
-                            ;;
-                        *)
-                            # A non-terminal release state (e.g. "retained")
-                            # leaves the finished worker resident (~1 GB per
-                            # idle opencode TUI) -- close its terminal. A
-                            # headless worker's terminal ended with its run
-                            # (claude-orca-ltd): there is nothing resident
-                            # and nothing to close.
-                            if [ "$mode" = "headless" ]; then
-                                note "worker-release left $disp_id in state '$rel_state'; headless terminal ended with the run -- nothing to close"
-                            elif [ -n "$term" ] &&
-                               orca_call terminal close --terminal "$term" \
-                                   --json >/dev/null 2>&1; then
-                                released=true
-                                terminal_closed=true
-                                note "closed $term (worker-release left it retained)"
-                            else
-                                note "worker-release left $disp_id in state '$rel_state' and terminal close ${term:-<no terminal>} failed -- the worker may stay resident"
-                            fi
-                            ;;
-                    esac
-                else
-                    note "worker-release $disp_id: $(orca_error "$rel")"
-                fi
+            if [ -n "$disp_id" ]; then
+                rel_out="$(release_worker "$disp_id" "$term" "$mode" 0)"
+                released="${rel_out%% *}"
+                terminal_closed="${rel_out##* }"
             fi
             # a finished dispatch never goes back under the stall watch
             [ -n "$disp_id" ] && [ -f "$drec" ] &&
                 rec_mark_done "$disp_id" "${outcome:-unknown}" "$released" \
                     "$terminal_closed"
+            [ "$handoff" = "true" ] && [ -n "$disp_id" ] &&
+                rec_set "$disp_id" '.handoff = true'
         fi
 
         note "$mtype from ${agent:-$from_h}${bead:+ [$bead]}: ${subject:-(no subject)}"
@@ -515,13 +595,17 @@ $subject: $body"
             --arg disp "$disp_id" --arg bead "$bead" --arg agent "$agent" \
             --arg model "$model" --arg outcome "$outcome" \
             --argjson files "$files" --argjson released "$released" \
-            --argjson closed "$terminal_closed" \
+            --argjson closed "$terminal_closed" --argjson handoff "$handoff" \
+            --arg relay "orca-dispatch $bead" \
             --arg reply "orca-reply $mid <text>" '
             {type: $type, msg_id: $id, from: $from, subject: $subject,
              body: $body, task_id: $task, dispatch_id: $disp, bead: $bead,
              agent: $agent, model: $model, outcome: $outcome, files: $files,
              released: $released, terminal_closed: $closed}
-            + (if $type == "worker_done" then {} else {reply_with: $reply} end)')"
+            + (if $type == "worker_done" then
+                 {handoff: $handoff} +
+                 (if $handoff then {relay_with: $relay} else {} end)
+               else {reply_with: $reply} end)')"
     done <"$msgs"
     return 0
 }
