@@ -39,6 +39,15 @@ concern outside it gets one line at the end and never moves the verdict.
 If the pointers are thin, read the code or fetch the source yourself
 rather than bouncing it back.
 
+## Context budget
+
+Your answers get measurably worse once your context passes about 30% of
+your window. Keep it lean: search narrowly, read the lines you need
+rather than whole files, and never re-read what you already have. A
+[context-meter] notice is an order, not advice: finish the step in hand
+and end your report with the HANDOFF block it gives -- a fresh agent
+continues from it.
+
 ## The five checks plus C2b
 
 **C1 — Goalposts unmoved.** `acceptance_criteria` must be identical across

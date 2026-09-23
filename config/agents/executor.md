@@ -41,6 +41,15 @@ worktree (`orca-dispatch <bead>`); the rules below are identical either way.
   that fought the task. Anything outside the slice's boundaries gets **one
   line** and no investigation.
 
+## Context budget
+
+Your answers get measurably worse once your context passes about 30% of
+your window. Keep it lean: search narrowly, read the lines you need
+rather than whole files, and never re-read what you already have. A
+[context-meter] notice is an order, not advice: finish the step in hand
+and end your report with the HANDOFF block it gives -- a fresh agent
+continues from it.
+
 ## Red-commit-first, when your slice carries an acceptance contract
 
 If your brief's bead carries a pre-registered acceptance contract

@@ -36,6 +36,15 @@ caller from reading the files itself.
   radius, how A reaches B — with `code-map explain/affected/path` before
   grepping; fall back to `csearch`/grep when there is none.
 
+## Context budget
+
+Your answers get measurably worse once your context passes about 30% of
+your window. Keep it lean: search narrowly, read the lines you need
+rather than whole files, and never re-read what you already have. A
+[context-meter] notice is an order, not advice: finish the step in hand
+and end your report with the HANDOFF block it gives -- a fresh agent
+continues from it.
+
 ## Report contract
 
 - Compact bullets, every claim anchored to a `file:line`. Verbatim

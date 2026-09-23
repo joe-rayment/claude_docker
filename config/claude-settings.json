@@ -75,6 +75,12 @@
         "hooks": [
           { "type": "command", "command": "[ -x \"__HOST__/template/bin/worktree-gc\" ] && exec \"__HOST__/template/bin/worktree-gc\" --after-merge; exit 0" }
         ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          { "type": "command", "command": "[ -x \"__HOST__/template/bin/context-meter\" ] && exec \"__HOST__/template/bin/context-meter\" --post; exit 0" }
+        ]
       }
     ],
     "PostModelSwitch": [
@@ -136,6 +142,12 @@
         "matcher": "Read|Grep|Glob|Bash|Edit|Write|NotebookEdit|Agent|Workflow",
         "hooks": [
           { "type": "command", "command": "[ -x \"__HOST__/template/bin/delegation-gate\" ] && exec \"__HOST__/template/bin/delegation-gate\"; exit 0", "timeout": 10 }
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          { "type": "command", "command": "[ -x \"__HOST__/template/bin/context-meter\" ] && exec \"__HOST__/template/bin/context-meter\" --pre; exit 0" }
         ]
       }
     ]
