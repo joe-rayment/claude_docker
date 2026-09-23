@@ -10,9 +10,7 @@
 # and verified natively (scripts/container/verify-rootfs.sh runs it inside
 # a real Ubuntu 24.04 chroot, then re-runs it to prove it is idempotent);
 # this file only copies that script and calls it. Every version is pinned
-# there. The Claude Code pin is the SAME string as
-# scripts/install-claude.sh's CLAUDE_CODE_VERSION -- tests/container-
-# entrypoint.bats greps setup.sh for it, so the two can never drift.
+# there.
 FROM ubuntu:24.04
 
 ARG DEBIAN_FRONTEND=noninteractive
@@ -24,19 +22,19 @@ ENV DEBIAN_FRONTEND=noninteractive \
     DISABLE_AUTOUPDATER=1 \
     DISABLE_AUTO_MIGRATE_TO_NATIVE=1
 
-# The two pins the build takes as arguments (image.yml passes neither
-# today, so these defaults are what ships); setup.sh reads them as env.
-ARG CLAUDE_CODE_VERSION=2.1.271
+# The one pin the build takes as an argument (image.yml passes neither
+# today, so this default is what ships); setup.sh reads it as env.
 ARG ORCA_VERSION=1.4.197
 
 # The apt half (setup.sh's IMAGE_PHASES: base, node, gh, Orca's runtime
 # libraries, the agent user), in one layer that is cached until setup.sh
 # itself changes -- the repo copy below must NOT invalidate it.
 COPY scripts/container/setup.sh /opt/claude-orca-setup.sh
-RUN CLAUDE_CODE_VERSION=$CLAUDE_CODE_VERSION ORCA_VERSION=$ORCA_VERSION /opt/claude-orca-setup.sh --image
+RUN ORCA_VERSION=$ORCA_VERSION /opt/claude-orca-setup.sh --image
 
-# ... and the payload: Orca, Claude Code, opencode, bd, dolt and bats,
-# ~1.3 GB of pinned tools.
+# ... and the payload: Orca, opencode, bd, dolt and bats,
+# ~1.3 GB of pinned tools. Claude Code is the exception: it is installed
+# per folder by provision.d/15-claude-on-path, never baked here.
 #
 # This was briefly NOT baked -- the entrypoint installed it on a folder's
 # first start into <project>/.claude-dev/toolchain -- and the measurement
@@ -48,15 +46,14 @@ RUN CLAUDE_CODE_VERSION=$CLAUDE_CODE_VERSION ORCA_VERSION=$ORCA_VERSION /opt/cla
 # macOS CI job impossible -- colima's virtiofs refuses the chown.)
 #
 # ONE RUN PER PHASE, rarest-changing first, so moving a pin rebuilds that
-# layer and the ones below it rather than all 1.3 GB. The ARGs above are
+# layer and the ones below it rather than all 1.3 GB. The ARG above is
 # in scope for every RUN in this stage, which is how setup.sh sees the
-# two pins the build takes as arguments.
+# pin the build takes as an argument.
 RUN /opt/claude-orca-setup.sh --phase bats
 RUN /opt/claude-orca-setup.sh --phase dolt
 RUN /opt/claude-orca-setup.sh --phase bd
 RUN /opt/claude-orca-setup.sh --phase orca
 RUN /opt/claude-orca-setup.sh --phase opencode
-RUN /opt/claude-orca-setup.sh --phase claude
 
 # --- this template ------------------------------------------------------
 #

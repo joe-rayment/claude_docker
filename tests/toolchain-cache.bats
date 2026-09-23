@@ -6,7 +6,7 @@
 #
 # Until 2026-09-07 the image carried the whole toolchain: ~1.9 GB, and
 # 15m41s of every CI run spent carrying it through QEMU for the arm64 leg.
-# So it was split at apt -- apt state in the image, the six pinned tools
+# So it was split at apt -- apt state in the image, the five pinned tools
 # into <project>/.claude-dev/toolchain on a folder's first start -- on the
 # reasoning that a bind mount can hold files and cannot hold dpkg state.
 #
@@ -90,17 +90,17 @@ lacks() {
     done
 }
 
-@test "the toolchain set is exactly the six tools that live under the cached paths" {
+@test "the toolchain set is exactly the five tools that live under the cached paths" {
     local toolchain
     toolchain="$(bash "$SETUP" --list toolchain | sort | tr '\n' ' ')"
-    [ "$toolchain" = "bats bd claude dolt opencode orca " ]
+    [ "$toolchain" = "bats bd dolt opencode orca " ]
 }
 
 @test "the Dockerfile bakes the apt half in one layer and each toolchain phase in its own" {
     run grep -qE '^RUN .*/opt/claude-orca-setup\.sh --image$' "$DOCKERFILE"
     [ "$status" -eq 0 ]
 
-    # One RUN per toolchain phase, not one RUN for all six: a pin bump
+    # One RUN per toolchain phase, not one RUN for all five: a pin bump
     # then rebuilds that layer and the ones after it, never the whole
     # 1.3 GB.
     local p
@@ -169,7 +169,6 @@ lacks() {
     [ -n "$line" ]
     contains "$line" "--volume $primary/.claude-dev/toolchain/usr-local:/usr/local"
     contains "$line" "--volume $primary/.claude-dev/toolchain/opt-Orca:/opt/Orca"
-    contains "$line" "--volume $primary/.claude-dev/toolchain/opt-claude:/opt/claude"
 
     # Never /opt itself: that would shadow /opt/claude-orca, which IS the
     # image's copy of this template.
@@ -177,7 +176,7 @@ lacks() {
     [ "$status" -ne 0 ]
 
     # Made by the launcher, so docker does not create root-owned ones.
-    for d in usr-local opt-Orca opt-claude; do
+    for d in usr-local opt-Orca; do
         [ -d "$primary/.claude-dev/toolchain/$d" ]
     done
 }

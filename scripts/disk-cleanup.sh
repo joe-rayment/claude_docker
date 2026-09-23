@@ -264,7 +264,7 @@ fi
 # The auto-updater leaves one ~216 MB copy per version; only the one
 # ~/.local/bin/claude points at is live. Unresolvable link (missing, broken
 # chain) = nothing provably stale, so nothing is swept. A target outside
-# versions/ (the image's /opt/claude) makes every copy here stale. Never
+# versions/ makes every copy here stale. Never
 # /opt, never /usr -- every rm below is inside $HOME.
 VDIR="$HOME/.local/share/claude/versions"
 BIN="$HOME/.local/bin/claude"

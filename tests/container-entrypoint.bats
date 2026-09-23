@@ -584,7 +584,7 @@ STUB
     [ ! -f "$proj2/.claude-dev/run/orca-web-url.txt" ]
 }
 
-@test "Dockerfile, setup.sh and smoke.sh exist, and setup.sh pins Orca 1.4.197 and the Claude Code version from install-claude.sh" {
+@test "Dockerfile, setup.sh and smoke.sh exist, and setup.sh pins Orca 1.4.197" {
     [ -f "$DOCKERFILE" ]
     [ -x "$SETUP" ]
     [ -x "$SMOKE" ]
@@ -597,14 +597,6 @@ STUB
     # claude-orca-qa2.6 re-pointed this one assertion: the AppImage cannot
     # be extracted under QEMU, so the image installs the release .deb.
     run grep -qE 'orca-ide_\$\{ORCA_VERSION\}_\$\{[A-Za-z_][A-Za-z0-9_]*\}\.deb' "$SETUP"
-    [ "$status" -eq 0 ]
-
-    # ONE Claude Code pin in this repo: scripts/install-claude.sh's.
-    local pin
-    pin="$(sed -n 's/^CLAUDE_CODE_VERSION="\([^"]*\)".*/\1/p' \
-        "$REPO_ROOT/scripts/install-claude.sh" | head -1)"
-    [ -n "$pin" ]
-    run grep -qF "$pin" "$SETUP"
     [ "$status" -eq 0 ]
 
     # The image runs the entrypoint under tini.

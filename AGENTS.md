@@ -184,15 +184,16 @@ that name a file to open on the Mac, and `BEADS_DIR` names the folder's
 tracker so `bd` answers from any directory.
 
 The image carries the whole install: apt state (`setup.sh`'s `IMAGE_PHASES`)
-plus the payload — Orca, Claude Code, opencode, bd, dolt, bats — one
+plus the payload — Orca, opencode, bd, dolt, bats — one
 Docker layer per phase, rarest-changing first, with the repo copy below them
 so editing a script rebuilds no payload layer. That payload was briefly
 installed per folder into `<project>/.claude-dev/toolchain` instead; the
 measurement that ended the experiment was an ~18-minute first start — 15.5
 of them downloading 1.3 GB at 2.5 MB/s — once per folder, shared with no
 other folder, the job Docker's layer cache does for every folder at once.
-(It also broke the macOS CI job: colima's virtiofs
-refuses the `chown` into a bind mount.) A folder still carries a toolchain on
+Claude Code is the exception: `provision.d/15-claude-on-path` installs the
+latest natively into the folder's home, where `claude update` updates it.
+A folder still carries a toolchain on
 the **runtime path** — plain `ubuntu:24.04`, where a folder lands when the
 local `docker build` cannot run or fails — because there is no baked
 anything to reuse there.

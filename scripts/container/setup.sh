@@ -17,24 +17,11 @@
 #   setup.sh --list          print the phase names in order
 #
 # Every version is pinned below and overridable by env, which is how the
-# Dockerfile passes its ARGs through. CLAUDE_CODE_VERSION is the SAME
-# string as scripts/install-claude.sh's -- tests/container-entrypoint.bats
-# greps both, so the two can never drift.
+# Dockerfile passes its ARGs through.
 
 set -Eeuo pipefail
 
-# Recorded before the default below can hide it: phase_claude and --check
-# both need to know whether CLAUDE_CODE_VERSION rode in as a build-arg (the
-# Dockerfile passes whatever scripts/launcher.sh resolved) or is unset,
-# meaning phase_claude should resolve "latest" itself, lazily, rather than
-# install whatever this line's literal says.
-CLAUDE_CODE_VERSION_EXPLICIT=0
-if [ -n "${CLAUDE_CODE_VERSION:-}" ]; then
-    CLAUDE_CODE_VERSION_EXPLICIT=1
-fi
-
 ORCA_VERSION="${ORCA_VERSION:-1.4.197}"
-CLAUDE_CODE_VERSION="${CLAUDE_CODE_VERSION:-2.1.271}"
 OPENCODE_VERSION="${OPENCODE_VERSION:-1.18.25}"
 BD_VERSION="${BD_VERSION:-1.2.2}"
 DOLT_VERSION="${DOLT_VERSION:-2.3.1}"
@@ -52,12 +39,12 @@ export DEBIAN_FRONTEND="${DEBIAN_FRONTEND:-noninteractive}"
 NPM_PREFIX="${NPM_PREFIX:-/usr/local}"
 npm_global_root() { printf '%s/lib/node_modules\n' "$NPM_PREFIX"; }
 
-PHASES="base node gh orcadeps bats bd dolt claude opencode orca user template"
+PHASES="base node gh orcadeps bats bd dolt opencode orca user template"
 
 # WHERE EACH PHASE RUNS, and why the line falls here.
 #
 # A folder's toolchain cache is a bind mount (<project>/.claude-dev/
-# toolchain, mounted over /usr/local, /opt/Orca and /opt/claude), so it can
+# toolchain, mounted over /usr/local and /opt/Orca), so it can
 # hold FILES and nothing else. apt state is not files: it is /var/lib/dpkg,
 # /etc, ld.so caches and a hundred paths across the filesystem, and a bind
 # mount cannot carry any of it. So the line is drawn at apt:
@@ -65,11 +52,13 @@ PHASES="base node gh orcadeps bats bd dolt claude opencode orca user template"
 #   IMAGE_PHASES      everything apt-managed -- the base packages, node,
 #                     gh, and the GTK/at-spi/xvfb libraries Orca links
 #                     against. Slow (~340 s) and almost never changes.
-#   TOOLCHAIN_PHASES  the payload: six pinned tools that land under
-#                     /usr/local, /opt/Orca and /opt/claude and nowhere
+#   TOOLCHAIN_PHASES  the payload: five pinned tools that land under
+#                     /usr/local and /opt/Orca and nowhere
 #                     else. ~1.2 GB, ~340 s, and the half that actually
 #                     churns -- a version bump here is a template pull,
-#                     not an image rebuild.
+#                     not an image rebuild. Claude Code is the exception:
+#                     it is installed per folder by
+#                     provision.d/15-claude-on-path, not here.
 #
 # A plain `setup.sh` still runs every phase in order, which is exactly what
 # a folder with no prebuilt image does on its first start.
@@ -77,7 +66,7 @@ PHASES="base node gh orcadeps bats bd dolt claude opencode orca user template"
 # has to be COPYed in first, so the Dockerfile runs it by name after the
 # copy, and a folder running the base image has nothing to link.
 IMAGE_PHASES="base node gh orcadeps user"
-TOOLCHAIN_PHASES="bats bd dolt claude opencode orca"
+TOOLCHAIN_PHASES="bats bd dolt opencode orca"
 
 # The base apt set: only what Orca's own package does NOT already depend
 # on. The .deb pulls libgtk-3-0, libnss3, libnotify4, libxss1, libxtst6,
@@ -165,9 +154,9 @@ installed_bd() {
 # What npm has on disk, read from the package rather than by running the
 # binary: opencode is a Bun executable and Bun reads /proc at startup,
 # which the chroot verify-rootfs.sh uses does not have (the same
-# constraint phase_claude documents). Reading package.json is also what
-# keeps the phase idempotent in there -- a check that had to RUN opencode
-# would re-install on every pass.
+# constraint the phase comments below document). Reading package.json is
+# also what keeps the phase idempotent in there -- a check that had to RUN
+# opencode would re-install on every pass.
 installed_opencode() {
     local root pkg
     command -v npm >/dev/null 2>&1 || return 1
@@ -303,70 +292,6 @@ phase_dolt() {
     say "dolt: installing ${DOLT_VERSION}"
     curl -fsSL "https://github.com/dolthub/dolt/releases/download/v${DOLT_VERSION}/install.sh" | bash
     dolt version
-}
-
-# --- Claude Code, pinned native install ---------------------------------
-#
-# Keep in lockstep with scripts/install-claude.sh's CLAUDE_CODE_VERSION,
-# which is the FALLBACK floor now, not the installed version -- see
-# resolve_claude_latest below.
-#
-# When CLAUDE_CODE_VERSION was not given as a build-arg (scripts/launcher.sh
-# resolves it OUTSIDE the build via scripts/resolve-claude-version.sh, the
-# same script the Dockerfile's ARG is fed from), resolve "latest" here
-# instead, lazily -- called only from phase_claude, never at parse time,
-# because a network call at the top of this file would put a stall or a
-# captive-portal hang in `--check` and `--list`, neither of which needs a
-# network. It never fails: a blip falls back to the pin above, the same
-# way scripts/resolve-claude-version.sh does (setup.sh is COPYed into the
-# image alone, so it cannot source that script and duplicates the logic).
-resolve_claude_latest() {
-    local base body
-    base="https://downloads.claude.ai/claude-code-releases"
-    body="$(curl -fsSL --max-time 10 "${base}/latest" 2>/dev/null)" || body=""
-    body="$(printf '%s' "$body" | tr -d '[:space:]')"
-    if [ -n "$body" ] && echo "$body" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
-        printf '%s\n' "$body"
-    else
-        printf '%s\n' "$CLAUDE_CODE_VERSION"
-    fi
-}
-
-phase_claude() {
-    need_root claude
-    local want="$CLAUDE_CODE_VERSION"
-    if [ "$CLAUDE_CODE_VERSION_EXPLICIT" != "1" ]; then
-        want="$(resolve_claude_latest)"
-    fi
-    if [ "$(stamp /opt/claude/VERSION || true)" = "$want" ] \
-        && [ -x /opt/claude/claude ]; then
-        say "claude: ${want} already present"
-        return 0
-    fi
-    say "claude: installing ${want}"
-    local platform base manifest checksum
-    platform="linux-$(claude_arch)"
-    base="https://downloads.claude.ai/claude-code-releases"
-    manifest="$(curl -fsSL "${base}/${want}/manifest.json")"
-    checksum="$(echo "$manifest" | jq -r ".platforms[\"${platform}\"].checksum // empty")"
-    echo "$checksum" | grep -Eq '^[a-f0-9]{64}$' \
-        || die "no ${platform} in manifest for ${want}"
-    mkdir -p /opt/claude
-    curl -fsSL -o /opt/claude/claude "${base}/${want}/${platform}/claude"
-    echo "${checksum}  /opt/claude/claude" | sha256sum -c -
-    chmod +x /opt/claude/claude
-    ln -sf /opt/claude/claude /usr/local/bin/claude
-    echo "${want}" > /opt/claude/VERSION
-    # Claude Code is a Bun binary and Bun reads /proc/self at startup, so
-    # running it needs a mounted /proc -- which an image build has and the
-    # chroot verify-rootfs.sh uses does not (`mount` is not permitted
-    # there). The sha256 above is what actually proves the download; this
-    # is a smoke puff, and it skips rather than aborting on SIGABRT.
-    if [ -r /proc/self/cmdline ]; then
-        claude --version
-    else
-        say "claude: not running \`claude --version\` (no /proc; the sha256 is the proof)"
-    fi
 }
 
 # --- opencode, the OpenRouter worker's CLI (pinned) ---------------------
@@ -710,26 +635,6 @@ run_checks() {
         ck_fail "dolt: want ${DOLT_VERSION}, got ${v:-none}"
     fi
 
-    # An explicit CLAUDE_CODE_VERSION (the build-arg path) is checked for
-    # equality; otherwise phase_claude resolved "latest" itself, and a
-    # `--check` run a day after the build could re-resolve to something
-    # newer -- so this only asks for a valid semver stamp and an
-    # executable, never the exact string.
-    v="$(stamp /opt/claude/VERSION 2>/dev/null || true)"
-    if [ "$CLAUDE_CODE_VERSION_EXPLICIT" = "1" ]; then
-        if [ "$v" = "$CLAUDE_CODE_VERSION" ] && [ -x /opt/claude/claude ]; then
-            ck_ok "claude ${v} (/opt/claude/claude)"
-        else
-            ck_fail "claude: want ${CLAUDE_CODE_VERSION} in /opt/claude/VERSION, got ${v:-none}"
-        fi
-    else
-        if printf '%s' "$v" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' && [ -x /opt/claude/claude ]; then
-            ck_ok "claude ${v} (/opt/claude/claude)"
-        else
-            ck_fail "claude: want a valid semver in /opt/claude/VERSION with an executable claude, got ${v:-none}"
-        fi
-    fi
-
     v="$(installed_opencode 2>/dev/null || true)"
     if [ "$v" = "$OPENCODE_VERSION" ]; then
         ck_ok "opencode ${v}"
@@ -790,7 +695,7 @@ run_checks() {
 
 run_phase() {
     case "$1" in
-        base|node|gh|orcadeps|bats|bd|dolt|claude|opencode|orca|user|template)
+        base|node|gh|orcadeps|bats|bd|dolt|opencode|orca|user|template)
             "phase_$1" ;;
         *) die "unknown phase: $1 (have: ${PHASES})" ;;
     esac
