@@ -238,11 +238,10 @@ setup_steps() {
     [ -n "$pin" ]
     printf '%s' "$pin" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'
 
-    # A phase of its own, after claude and before orca, in PHASES and so in
-    # --list and the default all-phases run.
+    # In PHASES, so in --list and the default all-phases run.
     phase="$(opencode_phase)"
     [ -n "$phase" ]
-    run grep -qE '^PHASES="[^"]*claude opencode[^"]*"$' "$SETUP"
+    run grep -qE '^PHASES="[^"]*dolt opencode orca[^"]*"$' "$SETUP"
     [ "$status" -eq 0 ]
     run bash "$SETUP" --list
     [ "$status" -eq 0 ]
@@ -264,14 +263,4 @@ setup_steps() {
     # And --check reads the version off THIS box, where opencode is real.
     run bash "$SETUP" --check
     [[ "$output" == *"ok    opencode ${pin}"* ]]
-}
-
-@test "setup.sh's Claude Code pin is install-claude.sh's, character for character" {
-    local pin setup_pin
-    pin="$(sed -n 's/^CLAUDE_CODE_VERSION="\([^"]*\)".*/\1/p' \
-        "$REPO_ROOT/scripts/install-claude.sh" | head -1)"
-    [ -n "$pin" ]
-    setup_pin="$(sed -n 's/^CLAUDE_CODE_VERSION="\${CLAUDE_CODE_VERSION:-\([^}]*\)}".*/\1/p' \
-        "$SETUP" | head -1)"
-    [ "$setup_pin" = "$pin" ]
 }

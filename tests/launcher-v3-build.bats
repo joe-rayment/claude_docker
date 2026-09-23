@@ -357,16 +357,11 @@ template_orca_default() {
     [ -n "$want" ]
     [ "$want" != "9.9.9" ]
 
-    # The same folder on a host with no Orca.app: no ORCA_VERSION build arg,
+    # The same folder on a host with no Orca.app: no build arg at all,
     # and the Dockerfile's own default is what both the tag and the image
-    # are at. (CLAUDE_ORCA_APP pointing nowhere is an answer, on any host.)
-    # claude-orca-7a0 deliberately narrows this from "no build arg at all"
-    # to "no ORCA_VERSION arg": CLAUDE_CODE_VERSION is now a second,
-    # unconditional build-arg (helpers/setup.bash pins
-    # CLAUDE_ORCA_CLAUDE_VERSION for this suite, so its value is fixed and
-    # not asserted here), and the blanket assertion was only ever a proxy
-    # for "the app decided nothing", true while ORCA_VERSION was the sole
-    # build arg.
+    # are at. (CLAUDE_ORCA_APP pointing nowhere is an answer, on any
+    # host.) ORCA_VERSION is the only build arg left, so the absence of
+    # the arg is again the whole assertion.
     : > "$CONTAINER_STUB_LOG"
     run bash -c "cd '$primary' \
         && CLAUDE_ORCA_APP='$BATS_TEST_TMPDIR/no-such-Orca.app' ./claude-dev --update"

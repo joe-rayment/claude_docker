@@ -528,39 +528,64 @@ in_bd_anywhere() {
     inc_wd / bd status
 }
 
-# "Its pin" is what the launcher asked the build for, which for two tools
-# is no longer setup.sh's literal: Claude Code is the newest release the
-# launcher resolved (claude-orca-7a0, the --build-arg on this folder's own
-# build line) and Orca is the Mac app's version (claude-orca-8uo.5), so
-# wanting the literals failed a correct container on 2026-09-19. The Orca
-# half is also the only real-Mac guard on claude-orca-jg1: a boot that
-# reinstalls setup.sh's pin over the image's build reads here as
-# "orca(want <app> got <pin>)".
+# "Its pin" is what the launcher asked the build for, which for bd and
+# dolt is setup.sh's literal and for Orca is the Mac app's version
+# (claude-orca-8uo.5), so wanting the literal failed a correct container
+# on 2026-09-19. The Orca half is also the only real-Mac guard on
+# claude-orca-jg1: a boot that reinstalls setup.sh's pin over the image's
+# build reads here as "orca(want <app> got <pin>)". Claude Code is the
+# exception -- the home's native install at the LATEST release
+# (provision.d/15-claude-on-path), never an image pin -- so its want is
+# resolved live from downloads.claude.ai, and when that cannot be fetched
+# the claude pair is skipped with a note rather than failing a correct
+# container on this box's own network. The image itself must carry no
+# Claude Code either: the one-binary assertion below is how that reads
+# in a running container.
 in_versions() {
-    local want got bad="" claude_want="" orca_want=""
-    if [ -f "$HOST/run/container.log" ]; then
-        claude_want="$(sed -n 's/.*--build-arg CLAUDE_CODE_VERSION=\([^ ]*\).*/\1/p' \
-            "$HOST/run/container.log" | tail -1)"
-    fi
-    [ -n "$claude_want" ] || claude_want="$(inc cat /opt/claude/VERSION 2>/dev/null | tr -d '[:space:]')"
-    [ -n "$claude_want" ] || claude_want="$(sed -n 's/^CLAUDE_CODE_VERSION="${CLAUDE_CODE_VERSION:-\(.*\)}"$/\1/p' "$REPO_ROOT/scripts/container/setup.sh")"
+    local want got bad="" orca_want="" claude_want=""
+    claude_want="$(curl -fsSL --max-time 10 \
+        https://downloads.claude.ai/claude-code-releases/latest 2>/dev/null \
+        | tr -d '[:space:]')"
     orca_want="$APP_VER"
     [ -n "$orca_want" ] || orca_want="$(sed -n 's/^ORCA_VERSION="${ORCA_VERSION:-\(.*\)}"$/\1/p' "$REPO_ROOT/scripts/container/setup.sh")"
     for pair in \
-        "claude:$claude_want" \
         "bd:$(sed -n 's/^BD_VERSION="${BD_VERSION:-\(.*\)}"$/\1/p' "$REPO_ROOT/scripts/container/setup.sh")" \
         "dolt:$(sed -n 's/^DOLT_VERSION="${DOLT_VERSION:-\(.*\)}"$/\1/p' "$REPO_ROOT/scripts/container/setup.sh")" \
         "orca:$orca_want"
     do
         want="${pair#*:}"
         case "${pair%%:*}" in
-            claude) got="$(inc claude --version 2>/dev/null | awk '{print $1}')" ;;
             bd)     got="$(inc bd version 2>/dev/null | sed -n 's/^bd version \([0-9][^ ]*\).*/\1/p' | head -1)" ;;
             dolt)   got="$(inc dolt version 2>/dev/null | sed -n 's/^dolt version \([0-9][^ ]*\).*/\1/p' | head -1)" ;;
             orca)   got="$(inc cat /opt/orca/VERSION 2>/dev/null | tr -d '[:space:]')" ;;
         esac
         [ "$got" = "$want" ] || bad="$bad ${pair%%:*}(want $want got ${got:-none})"
     done
+    if [ -n "$claude_want" ]; then
+        # The native install in the folder's home -- `claude` resolves to
+        # ~/.local/bin/claude, the one provision.d/15-claude-on-path keeps
+        # at the latest release.
+        got="$(inc claude --version 2>/dev/null | awk '{print $1}')"
+        [ "$got" = "$claude_want" ] \
+            || bad="$bad claude(want $claude_want got ${got:-none})"
+    else
+        printf 'claude: could not fetch the latest release, pin check skipped\n'
+    fi
+    # One binary, and it is the native one: `which -a claude` prints
+    # exactly /home/agent/.local/bin/claude, and that resolves into
+    # ~/.local/share/claude/versions/ -- a stray image binary or a second
+    # PATH hit means the folder is not running the install `claude update`
+    # keeps current.
+    local cl_where cl_target
+    cl_where="$(inc which -a claude 2>/dev/null | tr -d '\r')"
+    cl_target="$(inc readlink -f /home/agent/.local/bin/claude 2>/dev/null | tr -d '\r')"
+    if [ "$cl_where" = "/home/agent/.local/bin/claude" ] \
+        && printf '%s' "$cl_target" \
+            | grep -q '^/home/agent/.local/share/claude/versions/'; then
+        :
+    else
+        bad="$bad claude(not one native install: got '${cl_where:-none}' -> '${cl_target:-none}')"
+    fi
     [ -z "$bad" ] || { echo "pins disagree:$bad"; return 1; }
     printf 'claude/bd/dolt/orca all at their pins\n'
 }

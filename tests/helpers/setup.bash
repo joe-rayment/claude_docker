@@ -1307,16 +1307,6 @@ setup() {
 
     export CLAUDE_ORCA_TEMPLATE_URL="$TEMPLATE_SRC"
 
-    # scripts/launcher.sh's try_build shells out to resolve-claude-
-    # version.sh on every build, which without this would hit the real
-    # downloads.claude.ai/.../latest endpoint (write_stub_curl below only
-    # fakes `-o` downloads, so a bare `curl -fsSL` falls through to the
-    # real binary) -- a 10s timeout on an air-gapped or flaky box, and a
-    # live network dependency this suite exists to avoid. The rollback
-    # escape hatch skips that call outright; any test that cares about a
-    # specific value overrides it itself.
-    export CLAUDE_ORCA_CLAUDE_VERSION="${CLAUDE_ORCA_CLAUDE_VERSION:-9.9.0}"
-
     export STUB_LOG="$BATS_TEST_TMPDIR/stub.log"
     : > "$STUB_LOG"
     export STUB_ENV="$BATS_TEST_TMPDIR/stub.env"

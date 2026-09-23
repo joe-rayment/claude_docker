@@ -375,7 +375,7 @@ if [ "${CLAUDE_ORCA_ENTRYPOINT_NO_PRIVDROP:-0}" != "1" ] && [ "$(id -u)" = "0" ]
         # every write to the calling user -- which is exactly why it had to
         # be caught on Linux. Handing the cache to the host uid is what
         # keeps "the state dies with the folder" true on both.
-        for toolchain_mount in /usr/local /opt/Orca /opt/claude; do
+        for toolchain_mount in /usr/local /opt/Orca; do
             if mountpoint -q "$toolchain_mount" 2>/dev/null; then
                 chown_agent_tree "$toolchain_mount"
             fi
