@@ -66,7 +66,7 @@ worker_done_line() {
     [ "$status" -eq 0 ]
     out="$output"
 
-    notes="$(orca_stub_calls 'bd update')"
+    notes="$(grep -A20 -e 'bd update' "$ORCA_STUB_LOG")"
     printf '%s\n' "$notes" | grep -q -e 'HANDOFF-AT '
     printf '%s\n' "$notes" | grep -q -e 'next: wire it up'
 
