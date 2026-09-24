@@ -427,7 +427,13 @@ if [ -d "$HOST/template/.git" ]; then
     git -C "$HOST/template" pull --ff-only
 else
     rm -rf "$HOST/template"
-    git clone --quiet "$TEMPLATE_URL" "$HOST/template"
+    # Only the latest commit: the clone is a build context and a place to
+    # `git pull --ff-only` into, never a history to read. (A local path
+    # can't be shallow -- git warns and ignores --depth -- so only a URL
+    # gets it.)
+    depth=""
+    case "$TEMPLATE_URL" in *://*|*@*:*) depth="--depth 1" ;; esac
+    git clone --quiet $depth "$TEMPLATE_URL" "$HOST/template"
 fi
 
 # The wrappers, as relative symlinks into the template clone: a `--update`

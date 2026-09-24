@@ -517,7 +517,10 @@ phase_user() {
     # boundary that exists on macOS (virtiofs vs the VM's disk) and does
     # not on Linux (both on the same filesystem). -h needs neither to be
     # true: owning the link is what was meant either way.
-    find /home/agent -xdev ! -type s -print0 \
+    # Only what is not already agent:agent reaches chown: find looks at
+    # every file anyway, and on a restart that is usually nothing, so the
+    # boot no longer rewrites the owner of the whole home over the share.
+    find /home/agent -xdev ! -type s \( ! -user agent -o ! -group agent \) -print0 \
         | xargs -0 -r chown -h agent:agent
 }
 
