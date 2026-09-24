@@ -236,7 +236,7 @@ lacks() {
     # Re-linking has to happen before the version check, or every recreate
     # pays the full reinstall the cache exists to avoid.
     local body
-    body="$(sed -n '/^phase_orca()/,/^}/p' "$SETUP")"
+    body="$(sed -n '/^phase_orca()/,/^}/p' "$SETUP" "${SETUP%/*}"/phases/*.sh)"
     contains "$body" "orca_relink"
 
     local relink_line check_line
@@ -249,7 +249,7 @@ lacks() {
 
 @test "the orca payload is extracted, not apt-installed, so no dpkg state is required to own it" {
     local body
-    body="$(sed -n '/^phase_orca()/,/^}/p' "$SETUP")"
+    body="$(sed -n '/^phase_orca()/,/^}/p' "$SETUP" "${SETUP%/*}"/phases/*.sh)"
     contains "$body" "dpkg-deb -x"
 
     # apt would register a package in a dpkg database that dies with the
@@ -268,7 +268,7 @@ lacks() {
     [ "$status" -eq 0 ]
 
     local body
-    body="$(sed -n '/^phase_opencode()/,/^}/p' "$SETUP")"
+    body="$(sed -n '/^phase_opencode()/,/^}/p' "$SETUP" "${SETUP%/*}"/phases/*.sh)"
     contains "$body" '--prefix "$NPM_PREFIX"'
 
     # `npm root -g` answers /usr/lib/node_modules, which the container

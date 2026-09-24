@@ -38,12 +38,12 @@ SMOKE="$REPO_ROOT/scripts/container/smoke.sh"
 # cache, because a recreated container has the payload but none of the
 # links, and both the fast path and the install path have to make them.
 orca_phase() {
-    sed -n '/^orca_relink()/,/^}/p;/^phase_orca()/,/^}/p' "$SETUP"
+    sed -n '/^orca_relink()/,/^}/p;/^phase_orca()/,/^}/p' "$SETUP" "${SETUP%/*}"/phases/*.sh
 }
 
 # The opencode phase alone, scoped the same way.
 opencode_phase() {
-    sed -n '/^phase_opencode()/,/^}/p' "$SETUP"
+    sed -n '/^phase_opencode()/,/^}/p' "$SETUP" "${SETUP%/*}"/phases/*.sh
 }
 
 # The arch mapping both the .deb name and every other asset go through.
@@ -54,14 +54,14 @@ arch_helper() {
 # Build steps only -- comments explain the AppImage history and must stay
 # free to say so.
 setup_steps() {
-    grep -v '^[[:space:]]*#' "$SETUP"
+    cat "$SETUP" "${SETUP%/*}"/phases/*.sh | grep -v '^[[:space:]]*#'
 }
 
 @test "setup.sh installs Orca 1.4.197 from the release .deb for the build architecture, links /opt/orca to /opt/Orca, and never executes the Orca binary at install time" {
     [ -f "$SETUP" ]
 
     # One pin, and it is a version, never 'latest'.
-    run grep -qE '^ORCA_VERSION="\$\{ORCA_VERSION:-1\.4\.197\}"[[:space:]]*$' "$SETUP"
+    run grep -qE '^ORCA_VERSION="\$\{ORCA_VERSION:-1\.4\.197\}"[[:space:]]*$' "$SETUP" "${SETUP%/*}"/phases/*.sh
     [ "$status" -eq 0 ]
 
     local phase arch
@@ -155,7 +155,7 @@ setup_steps() {
     # kind of box.
     local pin have=""
     pin="$(sed -n 's/^ORCA_VERSION="\${ORCA_VERSION:-\([^}]*\)}".*/\1/p' \
-        "$SETUP" | head -1)"
+        "$SETUP" "${SETUP%/*}"/phases/*.sh | head -1)"
     [ -n "$pin" ]
     # setup.sh honours an ambient ORCA_VERSION, so the case has to want
     # what the script wants.
@@ -234,7 +234,7 @@ setup_steps() {
     # One pin, a version, overridable by env like every other phase's.
     local pin phase
     pin="$(sed -n 's/^OPENCODE_VERSION="\${OPENCODE_VERSION:-\([^}]*\)}".*/\1/p' \
-        "$SETUP" | head -1)"
+        "$SETUP" "${SETUP%/*}"/phases/*.sh | head -1)"
     [ -n "$pin" ]
     printf '%s' "$pin" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'
 

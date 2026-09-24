@@ -46,17 +46,25 @@ RUN ORCA_VERSION=$ORCA_VERSION /opt/claude-orca-setup.sh --image
 # macOS CI job impossible -- colima's virtiofs refuses the chown.)
 #
 # ONE RUN PER PHASE, rarest-changing first, so moving a pin rebuilds that
-# layer and the ones below it rather than all 1.3 GB. The ARG above is
-# in scope for every RUN in this stage, which is how setup.sh sees the
-# pin the build takes as an argument.
+# layer and the ones below it rather than all 1.3 GB. Each phase's code
+# and pin live in their own file (scripts/container/phases/), copied in
+# right before the RUN that uses it -- copying all of setup.sh up front
+# meant any edit to it rebuilt every layer here. The ARG above is in scope
+# for every RUN in this stage, which is how setup.sh sees the pin the
+# build takes as an argument.
+COPY scripts/container/phases/bats.sh /opt/claude-orca-phases/bats.sh
 RUN /opt/claude-orca-setup.sh --phase bats
+COPY scripts/container/phases/dolt.sh /opt/claude-orca-phases/dolt.sh
 RUN /opt/claude-orca-setup.sh --phase dolt
+COPY scripts/container/phases/bd.sh /opt/claude-orca-phases/bd.sh
 RUN /opt/claude-orca-setup.sh --phase bd
 # phase_orca seeds the default web theme into app.asar in the same layer
 # that unpacks it; a later layer rewriting the archive carried a second
 # ~113 MB copy (.claude/plans/recovery.md, `docker history`).
 COPY scripts/container/patch-orca-web-theme.py /opt/patch-orca-web-theme.py
+COPY scripts/container/phases/orca.sh /opt/claude-orca-phases/orca.sh
 RUN /opt/claude-orca-setup.sh --phase orca
+COPY scripts/container/phases/opencode.sh /opt/claude-orca-phases/opencode.sh
 RUN /opt/claude-orca-setup.sh --phase opencode
 
 # --- this template ------------------------------------------------------

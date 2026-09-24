@@ -16,16 +16,12 @@
 #   setup.sh --phase <name>  run one phase
 #   setup.sh --list          print the phase names in order
 #
-# Every version is pinned below and overridable by env, which is how the
-# Dockerfile passes its ARGs through.
+# Every version is pinned and overridable by env, which is how the
+# Dockerfile passes its ARGs through: node's below, each toolchain phase's
+# at the top of its own file under phases/ (loaded at the end of this one).
 
 set -Eeuo pipefail
 
-ORCA_VERSION="${ORCA_VERSION:-1.4.197}"
-OPENCODE_VERSION="${OPENCODE_VERSION:-1.18.25}"
-BD_VERSION="${BD_VERSION:-1.2.2}"
-DOLT_VERSION="${DOLT_VERSION:-2.3.1}"
-BATS_VERSION="${BATS_VERSION:-1.14.0}"
 NODE_MAJOR="${NODE_MAJOR:-22}"
 
 export DEBIAN_FRONTEND="${DEBIAN_FRONTEND:-noninteractive}"
@@ -141,38 +137,6 @@ node_major() {
     node --version 2>/dev/null | sed -n 's/^v\([0-9][0-9]*\)\..*/\1/p'
 }
 
-installed_bats() {
-    command -v bats >/dev/null 2>&1 || return 1
-    bats --version 2>/dev/null | sed -n 's/^Bats \([0-9][^ ]*\).*/\1/p'
-}
-
-installed_bd() {
-    command -v bd >/dev/null 2>&1 || return 1
-    bd version 2>/dev/null | sed -n 's/^bd version \([0-9][^ ]*\).*/\1/p' | head -1
-}
-
-# What npm has on disk, read from the package rather than by running the
-# binary: opencode is a Bun executable and Bun reads /proc at startup,
-# which the chroot verify-rootfs.sh uses does not have (the same
-# constraint the phase comments below document). Reading package.json is
-# also what keeps the phase idempotent in there -- a check that had to RUN
-# opencode would re-install on every pass.
-installed_opencode() {
-    local root pkg
-    command -v npm >/dev/null 2>&1 || return 1
-    command -v opencode >/dev/null 2>&1 || return 1
-    root="$(npm_global_root)"
-    pkg="$root/opencode-ai"
-    [ -f "$pkg/package.json" ] || return 1
-    [ -x "$pkg/bin/opencode.exe" ] || return 1
-    jq -r '.version // empty' "$pkg/package.json" 2>/dev/null
-}
-
-installed_dolt() {
-    command -v dolt >/dev/null 2>&1 || return 1
-    dolt version 2>/dev/null | sed -n 's/^dolt version \([0-9][^ ]*\).*/\1/p' | head -1
-}
-
 stamp() {
     # stamp <file> -- the pinned version a previous run wrote, if any.
     [ -f "$1" ] || return 1
@@ -244,116 +208,6 @@ phase_gh() {
     gh --version
 }
 
-# --- bats-core (pinned) -------------------------------------------------
-phase_bats() {
-    need_root bats
-    if [ "$(installed_bats || true)" = "$BATS_VERSION" ]; then
-        say "bats: ${BATS_VERSION} already present"
-        return 0
-    fi
-    say "bats: installing ${BATS_VERSION}"
-    rm -rf /tmp/bats-core
-    git clone --depth 1 --branch "v${BATS_VERSION}" \
-        https://github.com/bats-core/bats-core.git /tmp/bats-core
-    /tmp/bats-core/install.sh /usr/local
-    rm -rf /tmp/bats-core
-    bats --version
-}
-
-# --- beads (bd), the agent task tracker (pinned) ------------------------
-phase_bd() {
-    need_root bd
-    if [ "$(installed_bd || true)" = "$BD_VERSION" ]; then
-        say "bd: ${BD_VERSION} already present"
-        return 0
-    fi
-    say "bd: installing ${BD_VERSION}"
-    local bdarch base archive tmp
-    bdarch="$(deb_arch)"
-    base="https://github.com/gastownhall/beads/releases/download/v${BD_VERSION}"
-    archive="beads_${BD_VERSION}_linux_${bdarch}.tar.gz"
-    tmp="$(mktemp -d)"
-    curl -fsSL -o "${tmp}/${archive}" "${base}/${archive}"
-    curl -fsSL -o "${tmp}/checksums.txt" "${base}/checksums.txt"
-    (cd "$tmp" && grep " ${archive}\$" checksums.txt | sha256sum -c -)
-    tar -xzf "${tmp}/${archive}" -C "$tmp"
-    install -m 0755 "${tmp}/bd" /usr/local/bin/bd
-    rm -rf "$tmp"
-    bd version
-}
-
-# --- dolt, bd's storage engine (pinned) ---------------------------------
-phase_dolt() {
-    need_root dolt
-    if [ "$(installed_dolt || true)" = "$DOLT_VERSION" ]; then
-        say "dolt: ${DOLT_VERSION} already present"
-        return 0
-    fi
-    say "dolt: installing ${DOLT_VERSION}"
-    curl -fsSL "https://github.com/dolthub/dolt/releases/download/v${DOLT_VERSION}/install.sh" | bash
-    dolt version
-}
-
-# --- opencode, the OpenRouter worker's CLI (pinned) ---------------------
-#
-# An Orca worker terminal running a non-Anthropic model is `opencode
-# --model openrouter/<vendor>/<model>` (.claude/plans/orca-orchestration.md).
-# It is a plain npm global install -- the package ships the per-platform
-# binary in its postinstall, so nothing here maps an arch by hand -- and
-# its config comes from the file config-sync writes into the agent home,
-# pointed at by OPENCODE_CONFIG in Orca's own settings
-# (scripts/container/seed-orca-state.sh). No key is baked in anywhere: the
-# config reads OPENROUTER_API_KEY from the environment the VM already
-# carries (claude-orca-qa2.7).
-phase_opencode() {
-    need_root opencode
-    if [ "$(installed_opencode || true)" = "$OPENCODE_VERSION" ]; then
-        say "opencode: ${OPENCODE_VERSION} already present"
-        return 0
-    fi
-    say "opencode: installing ${OPENCODE_VERSION}"
-    # --ignore-scripts, then place the platform binary by hand. The
-    # package's postinstall picks that binary by probing the machine and
-    # then RUNS it to confirm; under a chroot with no /proc the run fails,
-    # postinstall falls through to the musl build, npm rejects it
-    # (EBADPLATFORM) and the whole install exits 1. The optional
-    # dependency npm already resolved for this platform is the same
-    # binary, so copying it is the honest, probe-free version of what the
-    # postinstall would have done.
-    npm install -g --prefix "$NPM_PREFIX" --ignore-scripts --no-fund --no-audit "opencode-ai@${OPENCODE_VERSION}"
-
-    local root pkg binpkg src tmp=""
-    root="$(npm_global_root)"
-    pkg="$root/opencode-ai"
-    # opencode spells the arch the way downloads.claude.ai does: x64/arm64.
-    # (x64 also has a `-baseline` build for CPUs without AVX2; the image is
-    # cross-built under QEMU, whose CPU says nothing about the Mac that
-    # will run it, so the normal build is the right default.)
-    binpkg="opencode-linux-$(claude_arch)"
-    src="$pkg/node_modules/$binpkg/bin/opencode"
-    [ -f "$src" ] || src="$root/$binpkg/bin/opencode"
-    if [ ! -f "$src" ]; then
-        tmp="$(mktemp -d)"
-        npm install --prefix "$tmp" --no-save --ignore-scripts --loglevel=error \
-            "${binpkg}@${OPENCODE_VERSION}"
-        src="$tmp/node_modules/$binpkg/bin/opencode"
-    fi
-    install -m 0755 "$src" "$pkg/bin/opencode.exe"
-    if [ -n "$tmp" ]; then rm -rf "$tmp"; fi
-
-    # npm keeps every tarball it downloaded under $HOME/.npm, and in an
-    # image build that cache is 264 MB of dead weight riding in the same
-    # layer as the package it produced. Nothing reads it again: the pin is
-    # in this file, and a re-install is a rebuild.
-    npm cache clean --force >/dev/null 2>&1 || true
-
-    if [ -r /proc/self/cmdline ]; then
-        opencode --version
-    else
-        say "opencode: not running \`opencode --version\` (no /proc; npm's own integrity check is the proof)"
-    fi
-}
-
 # --- Orca's apt dependencies (image phase) ------------------------------
 #
 # These used to arrive for free: the .deb was installed with apt at build
@@ -390,92 +244,6 @@ phase_orcadeps() {
     # shellcheck disable=SC2086
     apt-get install -y --no-install-recommends $ORCA_PACKAGES
     apt_cleanup
-}
-
-# --- Orca Linux, pinned, from the release .deb --------------------------
-#
-# NOT the AppImage (claude-orca-qa2.6). An AppImage's runtime carries the
-# "AI\x02" magic in its ELF e_ident padding, which QEMU's binfmt pattern
-# does not match, so the self-extractor cannot run under emulation: the
-# linux/arm64 leg of the multi-arch build died on `./orca.AppImage: Exec
-# format error`. Installing the .deb goes through apt, the same path every
-# other phase already takes under QEMU, and its Depends supply the
-# GTK/NSS/at-spi/xdotool/xclip/xvfb set so this script need not list them.
-#
-# Nothing here EXECUTES the Orca binary. Under emulation a 200 MB Electron
-# binary is slow to start and proves nothing about the target machine;
-# `test -x` is the only claim a build can honestly make. The runtime check
-# that Orca actually serves belongs to scripts/container/smoke.sh.
-# The three names the rest of the system reaches Orca by. Two of them
-# (/opt/orca, /usr/bin/orca-ide) live outside the toolchain cache, so a
-# recreated container has neither even when the payload is right there --
-# they are re-made on every run, before anything asks a question about
-# what is installed.
-orca_relink() {
-    [ -d /opt/Orca ] || return 0
-    ln -sfn /opt/Orca /opt/orca
-    ln -sf /opt/Orca/resources/bin/orca-ide /usr/local/bin/orca
-    ln -sf /opt/Orca/resources/bin/orca-ide /usr/bin/orca-ide
-}
-
-phase_orca() {
-    need_root orca
-    orca_relink
-    if [ "$(stamp /opt/orca/VERSION || true)" = "$ORCA_VERSION" ] \
-        && [ -x /opt/orca/orca-ide ]; then
-        say "orca: ${ORCA_VERSION} already present"
-        return 0
-    fi
-    say "orca: installing ${ORCA_VERSION}"
-    local debarch asset url tmp dep installed missing=""
-    debarch="$(deb_arch)"
-    asset="orca-ide_${ORCA_VERSION}_${debarch}.deb"
-    url="https://github.com/stablyai/orca/releases/download/v${ORCA_VERSION}/${asset}"
-    tmp="$(mktemp -d)"
-    curl -fsSL -o "${tmp}/orca.deb" "$url"
-
-    # The .deb's own Depends, checked against what the image actually has.
-    # phase_orcadeps hand-lists those packages because the payload no
-    # longer goes in through apt, and a hand-list drifts -- so the drift
-    # is caught HERE, by the package itself, naming what is missing
-    # instead of leaving Orca to die on a missing .so at first start.
-    # Provides counts: 24.04 satisfies libgtk-3-0 with libgtk-3-0t64.
-    installed=" $(dpkg-query -W -f='${Package} ${Provides}\n' 2>/dev/null \
-        | tr ',()' '   ' | tr -s ' ' | tr '\n' ' ') "
-    for dep in $(dpkg-deb --field "${tmp}/orca.deb" Depends 2>/dev/null \
-        | tr ',' '\n' | awk '{print $1}'); do
-        [ -n "$dep" ] || continue
-        case "$installed" in
-            *" $dep "*) ;;
-            *) missing="$missing $dep" ;;
-        esac
-    done
-    if [ -n "$missing" ]; then
-        die "orca ${ORCA_VERSION} depends on packages this image does not have:${missing}
-      Add them to ORCA_PACKAGES in this file (phase orcadeps) and rebuild the image."
-    fi
-
-    # dpkg-deb -x, not `apt-get install`: the payload belongs to the
-    # folder's toolchain cache, and apt would register a package in a dpkg
-    # database that dies with the container -- leaving the next start with
-    # an installed-but-unknown Orca. Extraction has no such memory, which
-    # is what makes the cache the single source of truth. /opt/Orca is a
-    # mount point, so its CONTENTS are replaced, never the directory.
-    dpkg-deb -x "${tmp}/orca.deb" "${tmp}/x"
-    test -x "${tmp}/x/opt/Orca/orca-ide"
-    mkdir -p /opt/Orca
-    find /opt/Orca -mindepth 1 -maxdepth 1 -exec rm -rf {} +
-    cp -a "${tmp}/x/opt/Orca/." /opt/Orca/
-    rm -rf "$tmp"
-
-    test -x /opt/Orca/orca-ide
-    test -x /opt/Orca/resources/bin/orca-ide
-    orca_relink
-    echo "${ORCA_VERSION}" > /opt/orca/VERSION
-    # Seed the default theme in the same step that unpacked the archive: a
-    # later image layer that rewrote app.asar carried a second ~113 MB copy
-    # of it. phase_template still re-seeds a folder's own theme at boot.
-    patch_orca_web_theme
 }
 
 # --- the agent user -----------------------------------------------------
@@ -703,6 +471,10 @@ run_checks() {
 run_phase() {
     case "$1" in
         base|node|gh|orcadeps|bats|bd|dolt|opencode|orca|user|template)
+            # A phase whose file under phases/ was not copied next to
+            # this script (the Dockerfile copies each one before its RUN).
+            command -v "phase_$1" >/dev/null 2>&1 \
+                || die "phase $1: phases/$1.sh is not next to $0"
             "phase_$1" ;;
         *) die "unknown phase: $1 (have: ${PHASES})" ;;
     esac
@@ -751,5 +523,15 @@ main() {
             ;;
     esac
 }
+
+# The toolchain phases (bats bd dolt opencode orca) live one per file:
+# phases/ next to this script in a checkout, /opt/claude-orca-phases/ next
+# to the copy the Dockerfile runs. A phase whose file is not here yet (an
+# earlier image layer) simply is not defined.
+_setup_here="$(cd "$(dirname "$0")" && pwd)"
+for _setup_phase in "$_setup_here"/phases/*.sh "$_setup_here"/claude-orca-phases/*.sh; do
+    [ -f "$_setup_phase" ] && . "$_setup_phase"
+done
+unset _setup_here _setup_phase
 
 main "$@"

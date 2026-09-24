@@ -591,12 +591,12 @@ STUB
     [ -x "$ENTRYPOINT" ]
 
     # The Orca release the image installs, pinned -- never 'latest'.
-    run grep -c '1\.4\.197' "$SETUP"
+    run grep -c '1\.4\.197' "${SETUP%/*}"/phases/orca.sh
     [ "$status" -eq 0 ]
     [ "$output" != "0" ]
     # claude-orca-qa2.6 re-pointed this one assertion: the AppImage cannot
     # be extracted under QEMU, so the image installs the release .deb.
-    run grep -qE 'orca-ide_\$\{ORCA_VERSION\}_\$\{[A-Za-z_][A-Za-z0-9_]*\}\.deb' "$SETUP"
+    run grep -qE 'orca-ide_\$\{ORCA_VERSION\}_\$\{[A-Za-z_][A-Za-z0-9_]*\}\.deb' "$SETUP" "${SETUP%/*}"/phases/*.sh
     [ "$status" -eq 0 ]
 
     # The image runs the entrypoint under tini.
