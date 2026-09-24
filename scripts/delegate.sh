@@ -567,10 +567,11 @@ receipt: $job_dir/receipt.json" >/dev/null
 
     # Fail-open hand-off to the delegate ledger; skipped when this copy of
     # cost-mirror has no ingest hook.
-    local cost_mirror_impl="$SCRIPT_DIR/../python/cost-mirror.py"
-    if [ -f "$cost_mirror_impl" ] \
+    local cost_mirror="$SCRIPT_DIR/../python/cost-mirror.py"
+    local cost_mirror_impl="$SCRIPT_DIR/../python/cost_mirror.py"
+    if [ -f "$cost_mirror" ] && [ -f "$cost_mirror_impl" ] \
         && grep -q -- "ingest-delegate-receipt" "$cost_mirror_impl" 2>/dev/null; then
-        python3 "$cost_mirror_impl" --ingest-delegate-receipt "$job_dir/receipt.json" >/dev/null 2>&1 || true
+        python3 "$cost_mirror" --ingest-delegate-receipt "$job_dir/receipt.json" >/dev/null 2>&1 || true
     fi
 
     echo "branch: $branch"

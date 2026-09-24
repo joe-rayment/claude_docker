@@ -288,10 +288,11 @@ JOB_ID="recon-$(date +%s)-$(printf '%03x%03x' $((RANDOM % 4096)) $((RANDOM % 409
     }' >"$RECEIPT" )
 chmod 600 "$RECEIPT" 2>/dev/null || true
 
-COST_IMPL="$SCRIPT_DIR/../python/cost-mirror.py"
-if [ -f "$COST_IMPL" ] \
+COST_MIRROR="$SCRIPT_DIR/../python/cost-mirror.py"
+COST_IMPL="$SCRIPT_DIR/../python/cost_mirror.py"
+if [ -f "$COST_MIRROR" ] && [ -f "$COST_IMPL" ] \
     && grep -q -- "ingest-delegate-receipt" "$COST_IMPL" 2>/dev/null; then
-    python3 "$COST_IMPL" --ingest-delegate-receipt "$RECEIPT" >/dev/null 2>&1 || true
+    python3 "$COST_MIRROR" --ingest-delegate-receipt "$RECEIPT" >/dev/null 2>&1 || true
 fi
 
 # 6b. The summary (stderr) and the exit code.

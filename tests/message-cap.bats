@@ -8,6 +8,7 @@
 REPO_ROOT="${BATS_TEST_DIRNAME:-.}"
 REPO_ROOT="$(cd "$REPO_ROOT/.." && pwd)"
 COST_MIRROR="$REPO_ROOT/python/cost-mirror.py"
+COST_MIRROR_MODULE="$REPO_ROOT/python/cost_mirror.py"   # where the code (and the cap constant) lives
 USER_MEMORY="$REPO_ROOT/config/claude-user-memory.md"
 
 setup() {
@@ -40,7 +41,7 @@ run_hook() {
 }
 
 @test "message-cap: cap default in cost-mirror.py matches the rulebook's number (lockstep)" {
-    default="$(grep -oE 'MSG_CAP_DEFAULT = [0-9]+' "$COST_MIRROR" | grep -oE '[0-9]+')"
+    default="$(grep -oE 'MSG_CAP_DEFAULT = [0-9]+' "$COST_MIRROR_MODULE" | grep -oE '[0-9]+')"
     [ -n "$default" ]
     run grep -F "${default} words" "$USER_MEMORY"
     [ "$status" -eq 0 ]
