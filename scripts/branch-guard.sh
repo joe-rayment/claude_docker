@@ -44,14 +44,15 @@ command -v jq >/dev/null 2>&1 || exit 0
 # deny <reason> — emit the PreToolUse hookSpecificOutput deny JSON and exit
 # 0 (same contract as scripts/outbound-guard.sh's deny(): a jq construction
 # failure still fails open rather than leaving the hook non-zero).
+# lib/hook.sh sits next to this file's directory whether it runs as
+# scripts/branch-guard.sh or through bin/branch-guard (bin/lib links to
+# scripts/lib), so no symlink resolution is needed to find it.
+case "${BASH_SOURCE[0]}" in
+    (*/*) . "${BASH_SOURCE[0]%/*}/lib/hook.sh" ;;
+    (*)   . ./lib/hook.sh ;;
+esac
 deny() {
-    jq -cn --arg r "$1" '{
-        hookSpecificOutput: {
-            hookEventName: "PreToolUse",
-            permissionDecision: "deny",
-            permissionDecisionReason: $r
-        }
-    }' 2>/dev/null || true
+    hook_deny "$1"
     exit 0
 }
 

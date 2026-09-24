@@ -59,6 +59,8 @@ _resolve_script_path() {
 SCRIPT_DIR="$(_s="$(_resolve_script_path)"; case "$_s" in (*/*) cd "${_s%/*}/" ;; esac && pwd)"
 # shellcheck source=lib/paths.sh
 . "$SCRIPT_DIR/lib/paths.sh"
+# shellcheck source=lib/hook.sh
+. "$SCRIPT_DIR/lib/hook.sh"
 
 command -v jq >/dev/null 2>&1 || exit 0
 
@@ -115,13 +117,7 @@ gh_connected() {
 # not scripts/bd-guard.sh's older exit-2 contract). A jq construction
 # failure still fails open rather than leaving the hook non-zero.
 deny() {
-    jq -cn --arg r "$1" '{
-        hookSpecificOutput: {
-            hookEventName: "PreToolUse",
-            permissionDecision: "deny",
-            permissionDecisionReason: $r
-        }
-    }' 2>/dev/null || true
+    hook_deny "$1"
     exit 0
 }
 
