@@ -84,28 +84,24 @@ re-bind — the OpenRouter twin of Claude Code's `fable`/`opus`/`sonnet`.
 
 ### Where the key goes
 
-`<project>/.claude-dev/state/openrouter.key` — one line, mode 600:
+`./claude-dev key openrouter` on the Mac reads the key without echoing it
+and stores it at `<project>/.claude-dev/home/.openrouter.key` (mode 600,
+gitignored) — that path is `/home/agent/.openrouter.key` inside the
+container, since `.claude-dev/home` is mounted as the agent's `$HOME`.
 
-```bash
-printf '%s\n' 'sk-or-...' > .claude-dev/state/openrouter.key
-chmod 600 .claude-dev/state/openrouter.key
-```
-
-**Your key is written only from your own paste** — by hand, as above, or via
-the `claude-dev setup` prompt on this Mac, which reads it without echoing it,
-writes the file mode 600 and prints a masked tail only. Nothing else in this
-repo writes a key, and nothing writes one on your behalf.
-`state/` is host-owned and write-denied to both sandbox layers, so nothing
-inside the sandbox can read or rewrite it. `claude-orca-shell` reads it on
-the host at launch — the same place and the same way it reads `gh auth
-token` — exports `OPENROUTER_API_KEY` into the session, and passes
-`--openrouter-key-present` to `gen-settings.sh`, which adds the mask
-(`credentials.envVars`) and the `openrouter.ai` inject host. An
-`OPENROUTER_API_KEY` already exported on the host wins; the file is the
-default, not an override. The value is never echoed, never written under the
-project, and `claude-orca-shell --print-env` omits it exactly like
-`GH_TOKEN`. No key file (and no exported key) means no export, no mask, and
-no OpenRouter surface for that folder.
+Nothing in the sandbox ever sees that real key. On boot,
+`scripts/container/entrypoint.sh` reads it (or `OPENROUTER_API_KEY` if
+already exported, or opencode's own `auth login openrouter` store) and
+hands it to `openrouter-guard.py` alone, over a mode-600 file the guard
+unlinks once read — never argv, never an inherited env var. The guard is
+the only process in the VM that holds the real key; it pins every
+completion request to US/Canada/Europe providers
+(`config/provider-policy.json`) regardless of what the client asked for.
+Orca and every terminal it spawns — including delegate workers — get a
+random guard token and the guard's loopback base URL as
+`OPENROUTER_API_KEY`/`OPENROUTER_BASE_URL` instead. No key file (and
+nothing already exported) means the guard never starts and there is no
+OpenRouter surface for that folder.
 
 ### Egress
 
@@ -113,6 +109,7 @@ There is no per-domain allowlist to keep in step: the container VM reaches
 the network the way the Mac does, so a route with a key set can talk to its
 provider and `delegate check` says so. A key is the only thing that gates it
 — without one there is nothing to send.
+
 ## Cheap workers without losing quality
 
 The saving comes from moving *typing* to a cheap model, never from moving
@@ -253,8 +250,7 @@ actual/at-top/saved columns.
 | Reason | Cause | Fix |
 |---|---|---|
 | `<runner> not found on PATH` | the runner CLI is not installed | install it; confirm `command -v <runner>` |
-| `<PROVIDER>_API_KEY not set` | no key in the environment for the route's provider | for OpenRouter, write `.claude-dev/state/openrouter.key` and restart the shell; otherwise export it before launching the session (the wrapper masks it either way) |
-| `egress blocked (domain not allowlisted)` | the provider host is not in the sandbox allowlist | add it to `network.extraAllowedDomains` and restart the shell |
+| `<PROVIDER>_API_KEY not set` | no key in the environment for the route's provider | for OpenRouter, run `./claude-dev key openrouter` on the Mac and restart the container; otherwise export the key before launching the session |
 | `ollama unreachable` | `curl -sf -m 2 http://127.0.0.1:11434/api/version` failed | start Ollama; local binding is already allowed by the profile |
 
 `delegate check` never blocks on a degraded route — it always exits 0. The

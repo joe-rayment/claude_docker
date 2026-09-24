@@ -9,13 +9,13 @@ the VM, it does not exist as far as any agent is concerned.
 
 | Path in the VM | What it is |
 |---|---|
-| `<project>` (the real absolute path) | the project folder, bind-mounted read-write. Same path on both sides, so every path an agent prints means the same thing to you. |
+| `/workspace/<name>` | the project folder, bind-mounted read-write. Not the Mac's own absolute path — a container that spelled out your home directory and folder tree at every prompt was no sandbox at all. The Mac path still rides in as `CLAUDE_ORCA_HOST_PROJECT_DIR`, for messages that name a file to open on the Mac. |
 | `/home/agent` | `<project>/.claude-dev/home` on the Mac: Claude's credentials, Orca's state, the git identity, the synced `.claude` config dir. |
 | whatever `claude-orca.json` names in `extraMounts` | mounted **read-only**, always. |
 
-Nothing else under `/Users` is present. A runaway `rm -rf /` inside the VM
-destroys the container, the project folder and that folder's home — and
-nothing else on the Mac.
+Nothing else from the Mac's filesystem is present. A runaway `rm -rf /`
+inside the VM destroys the container, the project folder and that folder's
+home — and nothing else on the Mac.
 
 ## What crosses the boundary, on purpose
 

@@ -644,207 +644,68 @@ clause is suppressed when it would round to $0.00 or only one model appears
 in the session (nothing to save against). Unknown/off-ladder models still
 show their tokens but contribute $0 and mark the clause with a trailing `?`.
 
-**Billing mode: API vs subscription (2026-07-29).** The same install runs
-under either a raw API key or a Claude subscription; under a subscription
-the dollar figure isn't a bill, it's what the session *would* cost on the
-API — same math, `API-equiv` label instead. `COST_MIRROR_BILLING=api|sub`
-forces the mode; otherwise `detect_billing_mode()` auto-detects, in order:
-(1) `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN` in the environment → `api`
-(an explicit key means per-token billing regardless of any OAuth creds also
-present); (2) `claudeAiOauth.subscriptionType` present in
-`~/.claude/.credentials.json` (override: `COST_MIRROR_CREDENTIALS_PATH`,
-tests only) → `sub`; (3) neither signal found → defaults to `api` rather
-than guessing. In `api` mode the hook line is byte-identical to before this
-feature; in `sub` mode the actual-cost figure gets ` API-equiv` appended,
-e.g. `~$0.45 API-equiv · ~$1.20 at opus-5 → saved ~$0.75` — the savings
-clause is unchanged since it was already a counterfactual either way.
-`--report` gains a `billing: <mode> (<how determined>)` line up top (plus
-`— dollars are API-equivalent` in sub mode) and marks the three money
-column headers with a trailing `*` in sub mode; the table's columns/widths
-and data rows are otherwise untouched. Billing mode is computed at render
-time only — it is never written into the persisted per-session state.
+**Billing mode.** `COST_MIRROR_BILLING=api|sub` forces it; otherwise
+`detect_billing_mode()` checks, in order: an `ANTHROPIC_API_KEY`/
+`ANTHROPIC_AUTH_TOKEN` in the environment -> `api`; `claudeAiOauth.subscriptionType`
+in `~/.claude/.credentials.json` (override `COST_MIRROR_CREDENTIALS_PATH`,
+tests only) -> `sub`; neither signal -> `api`. Computed at render time only,
+never persisted. In `sub` mode the actual-cost figure gets ` API-equiv`
+appended and `--report`'s three money-column headers get a trailing `*`;
+the savings clause is unchanged (it was already a counterfactual either
+way).
 
-Run `tier-cost` (alias for `cost-mirror --report`) for the full per-model
-breakdown: one row per `side|model` with input/output/cache-read/cache-
-write tokens plus actual/at-top/saved dollars, and a TOTAL row.
-`--report` is read-only (never advances the incremental byte-offset state)
-and is NOT fail-silent — a missing/unreadable/ambiguous transcript prints
-to stderr and exits nonzero, since it's run directly from a terminal
-rather than from the hook.
+**`tier-cost` (alias for `cost-mirror --report`).** Read-only, and NOT
+fail-silent: a missing/unreadable/ambiguous transcript exits nonzero. Bare
+`--report`/`tier-cost` aggregates by default (2026-07-30) across every
+`~/.claude/projects/*/*.jsonl` on disk (plus each one's `subagents/*.jsonl`),
+independent of any live session, with its own incremental cache
+(`all-sessions.json` in the state dir, keyed by file path) so a warm run
+only reads bytes appended since last time; `--since <N>d` narrows the file
+set to that window. Output is a per-session table (project dir, short
+session id, last-modified date, tokens, actual $) followed by the usual
+per-side|model breakdown and grand total. Three flags select a single
+session instead of the aggregate: `--report <transcript.jsonl>` (direct
+path), `--report --session <prefix>` (matches `sessionId`/filename, fails
+loud if ambiguous or no match), `--report --this` (the transcript named in
+the newest cost-mirror hook state file). All single-session forms are
+read-only with respect to `lifetime.json` below.
 
-**Bare `--report` aggregates by default (changed 2026-07-30).** A user
-saw `tier-cost` report ~$12 saved, started and killed a second parallel
-session for a small task, then re-ran `tier-cost` and saw a nearly-blank
-~$0.70 session — no data was lost, but bare `--report` used to call
-`_default_transcript()`, which returns the `tp` from the **newest state
-file by mtime**; the parallel session's hook had written a fresher state
-file, so the default silently pointed there instead. Bare `--report` (and
-`tier-cost`) is now exactly what `--all` did before this change — see
-"Cross-session" below — with `--all` kept as an accepted no-op alias so
-old habits/docs still work. Three flags select a single session instead:
-  - `--report <transcript.jsonl>` — a specific transcript, given directly.
-  - `--report --session <prefix>` — the transcript whose `sessionId` (or
-    filename UUID) starts with `<prefix>`; ambiguous or no-match prefixes
-    fail loud, listing candidates.
-  - `--report --this` — the *old* bare-default behaviour verbatim: the
-    transcript recorded in the newest cost-mirror hook state file. Spelling
-    out "whichever session's hook most recently fired, which may not be
-    the one you're sitting in" as an opt-in flag is the actual fix — the
-    bug was that this was silent and implicit.
-All three single-session forms are read-only, including with respect to
-`lifetime.json` (below) — they never write any state.
+**`lifetime.json`.** Deleting a transcript used to silently erase its spend
+from every future aggregate. Both the hook and the aggregate report path
+now write each session's rows into a durable, schema-versioned row ledger
+in the state dir, keyed `sessionId|side|model|bucket`, each row carrying the
+five USD/MTok rates that priced it — frozen the first time the row is
+written, so a later price change reprices only new rows, never history.
+Writes are REPLACE per session, never increment, so rescanning a transcript
+any number of times cannot inflate the durable total (the load-bearing
+property; tested for byte-identical output across repeated aggregate runs).
+The aggregate unions live-scanned transcripts with lifetime rows whose
+transcript no longer exists on disk, so a deleted session's spend still
+counts toward the grand total; a footnote names how many sessions were
+pulled from history. `disk-cleanup.sh`'s three sweep targets never overlap
+the cost-mirror state dir, so nothing there needs to survive a sweep by
+special-casing it.
 
-**Cross-session aggregate: `[--since <N>d]` (added 2026-07-29, now the
-default).** Reads every `~/.claude/projects/*/*.jsonl` on disk (plus each
-one's beside-it `subagents/*.jsonl`), independent of any live session — no
-positional transcript argument in this mode. Output is a per-session table
-(project dir, short session id, last-modified date, total tokens, actual
-$, newest first) followed by the same per-side|model breakdown and grand
-total `--report` produces for one session, computed over everything
-scanned. The header states the scope plainly: session count, project-dir
-count, and the `--since` window when given — never again silently blank.
-`--since 7d` / `--since 30d` (any `<N>d`) narrows the file set to
-transcripts modified in that window — without it, everything is included.
-The billing-mode label and the counterfactual/top-model math apply to the
-aggregate exactly as in single-session mode.
-
-Scanning hundreds of transcripts on every invocation would be slow, so the
-aggregate keeps its own persisted incremental cache — `all-sessions.json`
-in the cost-mirror state dir, keyed by file path with the same `{off,
-agg}` shape as the hook's per-session state — so a warm run only reads
-bytes appended since the last run. This cache is a **dedicated file**,
-never one of the hook's per-session `<sha256>.json` state files: the
-single-session forms above still write zero state. Measured on this
-sandbox config dir's `~/.claude/projects/` (47 top-level transcripts, ~110
-files with subagents, ~21 MB): cold run 0.055s, warm run 0.014s. A corpus
-with nothing to report (no live transcripts on disk AND no lifetime
-history in scope, see below) prints a message to stderr and exits nonzero
-rather than crashing; the aggregate is otherwise NOT fail-silent, like
-every `--report` mode. Test-only override: `COST_MIRROR_PROJECTS_DIR`
-replaces `~/.claude/projects` as the root the aggregate scans.
-
-**Durable lifetime rollup (added 2026-07-30).** Transcripts get deleted
-(disk-cleanup, manual pruning), which used to silently erase their spend
-from every future aggregate report. Both the hook (for the live session)
-and the aggregate report path now write each session's rows into
-`lifetime.json` in the state dir — schema-versioned like the other state
-files. Since 2026-08-26 (`beads_claude_docker-8dg`) those rows are a
-**row ledger**: keyed `sessionId|side|model|bucket`, at the same time-bucket
-granularity the scan already accumulates (so a session's tier epochs outlive
-its transcript instead of being re-derived from a file that may be gone),
-and each row carries the five USD/MTok **rates that priced it** — frozen the
-first time the row is written, with their provenance — beside its tokens and
-dollars. Report-time code reads those rates rather than calling `rates_for`
-again, so a price change (e.g. sonnet-5's intro rate lapsing at
-`SONNET5_INTRO_CUTOFF`) prices new rows only and never re-prices history; a
-`LIFETIME_VERSION` 3 file is migrated in place to legacy rows marked
-`pricing_source: unknown`, never back-filled with rates they were not priced
-at. Writes are **REPLACE, never
-increment**: every existing row for a session_id is dropped before the
-freshly (re)scanned rows are written back in, so rescanning the same
-transcript any number of times cannot inflate the durable total — this is
-the single load-bearing property and is tested explicitly (three
-successive aggregate runs must produce byte-identical output and an
-unchanged `lifetime.json` after the second). The aggregate report unions
-live-scanned transcripts with lifetime rows whose transcript no longer
-exists on disk, so a deleted session's spend still counts toward the
-grand total and the per-session table; a footnote names how many sessions
-were pulled from history rather than disk. Single-session views
-(`--session`/`--this`/a direct positional transcript) never touch
-`lifetime.json`, preserving their read-only-with-respect-to-state
-guarantee — checked in tests by checksumming the whole state directory,
-not just listing filenames, since a same-name rewrite-in-place wouldn't
-show up in `ls`. `disk-cleanup.sh` was audited and confirmed to never
-touch the cost-mirror state dir (`~/.claude/cache/cost-mirror`, under
-`$HOME` — none of its three sweep targets, `$TMP_SCAN_DIR` default `/tmp`,
-`$WORKSPACE/attachments`, or `$WORKSPACE/.claude/logs`, overlap it), so no
-changes were needed there for `lifetime.json` to survive a sweep.
-
-**The counterfactual, precisely — delegation-only savings via tier epochs
-(fixed 2026-07-30, replacing the "reprice everything at one top model"
-method below).** The original method picked the single most EXPENSIVE
-model seen among main-loop rows all session (`pick_top_model`, main rows
-ranked by output rate, falling back to the most expensive model overall if
-there were no main rows) and repriced **every** row — main-loop included —
-at that model's rate; `saved = at_top − actual`. That conflated two very
-different things: delegating work to a cheap worker (real savings) and the
-orchestrator itself dropping to a cheaper tier mid-session via `/tier`
-(not savings — just a smaller bill for the *same* seat). A session that
-ran Opus for an hour then `/tier sonnet` kept "top" pinned at Opus for the
-rest of the session, so every post-downgrade main-loop token was misreported
-as "saved," inflating the headline figure.
-
-The fix: each session's main-loop rows are ordered by their transcript
-`timestamp` and split into **tier epochs** — maximal runs of consecutive
-main-loop rows sharing the same `message.model` (`_epochs_from_main_buckets`
-in `scripts/cost-mirror.py`). A worker row reprices only against the epoch
-its *own* timestamp falls into; a main-loop row's tier *is* the epoch it's
-in by construction, so main-loop spend can no longer appear in "saved" at
-all — `session_epoch_pricing` enforces this unconditionally (main rows
-always get `at_epoch == actual`), not merely as a side effect of bucket
-math. The first and last epochs are then CLAMPED to cover the whole session
-timeline (start pulled back, end pushed to infinity), so a worker row
-before the session's first main-loop row or after its last still reprices
-against the nearest orchestrator tier instead of costing zero — the only
-case that still costs zero toward "saved" is a worker row with no
-parseable `timestamp` of its own, in a session whose main rows DO have
-usable timestamps (there's genuinely no bucket to place it in); a session
-with no main-loop rows at all also produces zero everywhere, since it has
-no epochs to reprice against. Epochs are computed and summed **strictly per session**; an aggregate
-`--report` (multi-session) never lets one session's tier reprice another's
-spend (`_add_pricing` sums each session's own `session_epoch_pricing`
-output — it never merges bucket data across sessions before pricing).
-
-For state-size reasons (the incremental scan must stay bounded across a
-long session, not grow with row count — see "Mechanics" above), rows are
-grouped into 5-minute buckets (`BUCKET_SECONDS`) before epochs are computed,
-not compared row-by-row; a bucket containing more than one main model (a
-genuine tier change inside one 5-minute window, or — far more commonly — a
-whole session with no `timestamp` field on any row, which all collapse into
-one shared `NA_BUCKET`) resolves via `pick_top_model`'s own price-ranked
-pick restricted to just that bucket. Reusing that exact tie-break (price,
-not volume) is what makes a session with **no timestamps at all** collapse
-to a single epoch. Where that session also used only ONE main-loop model it
-reduces EXACTLY to the old whole-session method; where it used two, the
-main-row pin correctly suppresses the old method's fake "saving" on
-main-loop spend, so the figures deliberately differ. Combined with the
-outward clamp described above, the exact-reduction case also covers a
-session with real timestamps and only ONE main-loop model: its single epoch
-is clamped to span the whole timeline.
-
-This is the compatibility guarantee, stated precisely: **a session that
-never changed its main-loop model, and whose worker rows all carry parseable
-timestamps, produces the identical figure this always did.** Both conditions
-are load-bearing — an untimestamped worker inside an otherwise-timestamped
-session has no bucket to place it in and contributes zero, which does differ
-from the old figure. Asserted directly in `tests/tier-hooks.bats`, both with
-and without real timestamps present.
-`pick_top_model` itself wasn't removed — it's reused per-bucket internally,
-and still names the "top model (counterfactual)"/hook-line "at `<model>`"
-label — but it no longer drives any dollar figure on its own.
-
-This is still always an estimate even within an epoch: a cheaper/pricier
-model would not have emitted the identical token counts (different
-verbosity, different cache behavior), so "saved" is "what these same
-worker tokens would have cost run on the orchestrator's own tier at the
-time," not a guarantee of what actually would have happened.
-
-Housekeeping riding along with the epoch fix: (1) `STATE_VERSION` bumped to
-3 (the persisted per-file `agg` gained a bucketed sibling, `bagg`, so an
-old v2 state is rescanned clean rather than silently missing epoch history
-for bytes already consumed) — but `lifetime.json`'s schema didn't change,
-so it now has its own `LIFETIME_VERSION` (still 2) rather than riding the
-same bump and being wiped for no reason. (2) `run_report_all`'s title line
-now reads `len(session_rows)` (live + lifetime-only) instead of
-`len(transcripts)` (live only), so it can't read "0 transcripts" directly
-above a table headed "2 session(s)" when sessions were pulled from
-lifetime history. (3) the comment above `_update_lifetime`'s call in the
-hook's `main()` now says what actually happens: that call isn't wrapped in
-its own try/except, so a failure there is caught only by the outer
-fail-silent guard, silently skipping that prompt's hook line too — not
-just the lifetime write, as the old comment implied — which is still
-judged acceptable since the overall fail-open contract (never crash the
-prompt) holds either way.
+**"Saved", precisely — delegation-only, via tier epochs.** Dollars saved
+count only work moved to a cheap worker, never the orchestrator itself
+dropping tiers mid-session. Each session's main-loop rows are ordered by
+transcript `timestamp` and split into **tier epochs** — maximal runs of
+consecutive main-loop rows sharing the same `message.model`
+(`_epochs_from_main_buckets` in `scripts/cost-mirror.py`, working in
+5-minute buckets for state-size reasons). A worker row reprices only
+against the epoch its own timestamp falls into; main-loop rows always price
+at their own actual rate and can never appear in "saved"
+(`session_epoch_pricing` enforces this unconditionally). The first and last
+epochs are clamped to the session's edges, so a worker row outside the
+main-loop's own timestamp range still reprices against the nearest
+orchestrator tier rather than costing zero; the only rows that price at
+zero are worker rows with no parseable timestamp in an otherwise-timestamped
+session. Epochs are computed and summed strictly per session; an aggregate
+`--report` never lets one session's tier reprice another's spend. This is
+still always an estimate even within one epoch — a different model would
+not have emitted identical token counts — so "saved" means "what these
+worker tokens would have cost at the orchestrator's tier at the time," not
+a guarantee of what would actually have happened.
 
 **Maintenance: refresh `PRICING_TABLE` from the claude-api skill whenever
 models or prices change.** Current table (`scripts/cost-mirror.py`), USD
@@ -866,73 +727,26 @@ optional date for testing (see `tests/tier-hooks.bats`).
 
 ## Delegation gate (2026-07-29)
 
-**Why instructions alone failed.** The protocol above is text, and text
-didn't bind behavior: the motivating session logged 1 demonstration scout
-against ~20 inline main-loop calls with the full protocol already live. A
-headless matrix confirmed it wasn't a one-off — with the global protocol
-and the per-prompt `[tier]` line both present, two of three task shapes
-(B, C below) ran **100% inline** in their control children. Guidance alone
-doesn't move spend; only a mechanical gate does.
-
-**Mechanism.** `scripts/delegation-gate.py` (PreToolUse) counts
-consecutive Read/Grep/Glob/Edit/Write/NotebookEdit + non-exempt-Bash calls
-made by the **main loop only**, never a subagent. Mode (env
-`DELEGATION_GATE_MODE` / `~/.claude/delegation-gate.mode`, default
-`warn`): `warn` fires a one-shot `additionalContext` nudge at streak 4;
-`enforce` always denies Edit/Write/NotebookEdit (naming executor) and
-denies other counted tools past streak 8 (naming scout). Housekeeping
-Bash (`bd`, read/commit-ish `git`, `bats`, `dev-log`, `cost-mirror`,
-`tier-*`, `run-tests`, `take-screenshot`) is exempt from counting
-entirely. `Agent`/`Workflow` resets the streak to 0 — the "I delegated"
-signal. Fails open.
-
-**Discriminator, and the dead-gate lesson.** The obvious signal — a
-subagent `transcript_path` containing `/subagents/` — is a red herring:
-byte-identical for main-loop and subagent calls. The real signal,
-`agent_id`, changes shape mid-session: absent pre-first-spawn, present-
-but-`null` on main-loop calls after any spawn, populated only on subagent
-calls. An earlier version assumed `agent_id: null` was the only main-loop
-shape and was tested only against it — 12/12 green — while real
-early-session traffic (key **absent**) fell through as "subagent, skip":
-the gate silently never fired, caught only by zero state files in real
-sessions, not by its own test suite. A worker's report and the synthetic
-fixtures encoded the same wrong assumption, so the tests validated the
-bug. Lesson: check empirical claims against raw evidence, not a report or
-a test suite built on the same unverified premise. Current tests lock in
-both main-loop shapes plus a regression guard against the transcript_path
-hypothesis (`tests/delegation-gate.bats`).
-
-**2-round headless matrix (12 children): dead-gate control vs live gate.**
-**A** (recon): regression guard passes clean — 3 scouts, 0 inline reads.
-**B**: flips under warn at both sonnet and fable top tiers (streak-4 note
-recorded, executor spawn on the very next move) — but see the channel
-caveat below before reading that ordering as causal in headless runs;
-enforce's deny paths are unambiguously live — an Edit-deny redirected a
-fable session into its executor, and a `DENY_AT=1` child went deny →
-scout → correct answer. **C** (audit): the honest negative — bursts stay
-~4 calls, never reaching `DENY_AT=8`, so enforce never trips, and its one
-warn-mode delegation spawned subagent_type-less `general-purpose` instead
-of `scout` (functionally delegated, wrong tier, recon pricing forfeited —
-why the protocol now spells out `subagent_type: "scout"` explicitly).
-Every variant's final answer stayed correct, independently re-verified.
-
-**Warn-channel matrix (v2.1.220, probed).** A DENY's
-`permissionDecisionReason` reaches the model **always** — it arrives as
-an `is_error` tool_result and is followed as a literal instruction (both
-probes confirmed unprompted compliance). An ALLOW's `additionalContext`
-(and `systemMessage`) is **harness-dependent**: in an interactive/agent
-session it lands in model context (observed live — the shipping session
-read its own streak-4 warn and delegated), but in headless `claude -p`
-children a full content-scan of every user/assistant message found the
-probe strings **only in sidecar attachment records, never model-visible**.
-Two implications: headless B-warn "flips" may be spontaneous delegation
-rather than warn-caused (n=1, channel inert there), and in headless
-pipelines only `enforce` actually steers.
+`scripts/delegation-gate.py` (PreToolUse) counts consecutive
+Read/Grep/Glob/Edit/Write/NotebookEdit + non-exempt-Bash calls made by the
+**main loop only**, never a subagent — discriminated via `agent_id` (absent
+pre-first-spawn, present-but-`null` on main-loop calls after any spawn,
+populated only on subagent calls; the more obvious `transcript_path` signal
+is a red herring, byte-identical for both). Housekeeping Bash (`bd`,
+read/commit-ish `git`, `bats`, `dev-log`, `cost-mirror`, `tier-*`,
+`run-tests`, `take-screenshot`) is exempt from counting; `Agent`/`Workflow`
+resets the streak to 0. Fails open. Built because instructions alone didn't
+move behavior: with the full delegation protocol already live in context, a
+headless matrix still ran two of three task shapes 100% inline, and a DENY's
+`permissionDecisionReason` was found to reach the model reliably while an
+ALLOW's `additionalContext` is harness-dependent (model-visible in
+interactive sessions, absent from headless `claude -p` children) — see
+`tests/delegation-gate.bats` for the regression cases that finding produced.
 
 **Tuning decision.** Ship the observed defaults — warn at streak 4,
 enforce's deny at streak 8. Warn targets interactive sessions, where its
-channel demonstrably lands; `enforce` is the user's escalation endpoint
-and the only reliable lever for headless children — one env flip away
+channel demonstrably lands; `enforce` is the user's escalation endpoint and
+the only reliable lever for headless children — one env flip away
 (`DELEGATION_GATE_MODE=enforce` or `~/.claude/delegation-gate.mode`), no
 code change required.
 
@@ -1407,102 +1221,26 @@ All changes are repo files, reversible via git; and the live state is
 self-healing: **an image rebuild resets the agent files and
 `settings.json` from the templates, and the SessionStart reconciler
 re-derives worker/recon from `.model` on the first session** — no manual
-re-run needed. To roll back live state without a rebuild:
-`cp /etc/claude-dev/configs/agents/*.md ~/.claude/agents/` (or from the
-repo: `config/agents/`) and start a fresh session. Note the repo agent
-templates carry alias placeholders (`model: sonnet` / `model: haiku`); the
-reconciler replaces them with concrete ids on first run.
+re-run needed. To roll back live state without a rebuild: revert the file
+under `config/` in the folder's own template clone
+(`<project>/.claude-dev/template/config/...`, or the repo itself) and
+either restart the container or force just that step with `provision run
+20-config-sync` — `config-sync` is checksum-gated, so either path picks up
+the reverted file on the next boot (see CONFIG_SYNC.md). Note the repo
+agent templates carry alias placeholders (`model: sonnet` / `model:
+haiku`); the reconciler replaces them with concrete ids on first run.
 
 Revision log (each reversible via git on the listed files):
 
-- **2026-09-02 — advisor pin removed (advisor off by default):**
-  `config/claude-settings.json` dropped `advisorModel: "opus"`. An absent
-  key is the CLI's "No advisor" state (2.1.258: the picker renders
-  "No advisor" when the value is unset, the resolver returns no advisor for
-  any falsy value, and `/advisor off` clears the key — there is no `"none"`
-  sentinel), so every config sync had been handing back an Opus advisor the
-  user then cleared by hand. `tests/smoke.bats` now asserts the key is
-  absent; the `/advisor` coupling paragraph above was rewritten. Layer 2
-  (`/etc/claude-dev/configs/claude-settings.json`) was live-patched the same
-  day so the change took effect without waiting for a host rebuild.
-  Rollback = re-add the key (and it must be ≥ the session's main model).
-
-- **2026-08-26 — lane rubric: ties-go-lighter teeth, recon-breadth
-  clarifier, verifier batching (bead beads_claude_docker-epe):**
-  `scripts/lane.sh`'s `--prime` rubric gains two lines — "declare standard"
-  when genuinely unsure (tripwires self-correct upward; over-routing does
-  not), and "recon breadth is not implementation depth" (files a scout
-  reads don't count toward the deep-lane file threshold, only files
-  changed do). `CLAUDE.md` and `config/claude-user-memory.md` carry the
-  same two insertions in their lane rubric prose, plus a third: verifier
-  runs batch by evidence surface across beads, never one per bead — this
-  doc's lane table and "Trust, but verify" section gain the same batching
-  line. Evidence: `log.jsonl` showed 9 of 21 routed prompts declared deep
-  with zero mid-prompt escalations (the 5–15% escalation-rate target above
-  implies routing sits above actual need — a lane that never escalates
-  down was arguably never deep), and verifier spawns were tracked running
-  roughly 1:1 against executor sessions, i.e. one verifier per bead rather
-  than per evidence surface. Also fixed in passing: `config/claude-user-memory.md`'s
-  deep-lane row previously read "1 `verifier` per bead", contradicting the
-  "per evidence surface" model documented everywhere else in this file —
-  corrected to "per evidence surface" so the new "never per bead" clause
-  isn't self-contradictory in the same cell. Rollback = revert
-  `scripts/lane.sh`, `CLAUDE.md`, `config/claude-user-memory.md`, and this
-  doc; `lane.sh` fails open, so a partial revert degrades to the
-  pre-change rubric text rather than breaking the hook.
-- **2026-08-11 — complexity router (lanes):** `scripts/lane.sh` added (state,
-  log, and the single home of the rubric wording) plus `tests/lane.bats`;
-  `scripts/delegation-gate.py` gains lane awareness (express carves out the
-  Edit/Write denial, an unknown lane falls back to guard, the express-grind
-  warn) with cases in `tests/delegation-gate.bats`;
-  `config/claude-settings.json` wires `lane --reset` into UserPromptSubmit
-  ahead of the tier reconciler and sources the dispatch tail from `lane`;
-  `scripts/tier-prime.sh` injects the short rubric at SessionStart and the
-  full one at PreCompact; doctrine edits in `CLAUDE.md`,
-  `config/claude-user-memory.md` and `config/agents/*.md`; this doc gains the
-  Complexity Router chapter; `scripts/cost-mirror.py` joins the declaration
-  log (per-prompt `lane last-turn` tag, `tier-cost` lanes section) with cases
-  in `tests/tier-hooks.bats`; `Dockerfile` stages the new script. Rollback =
-  revert those files and remove the settings entries; every piece fails open
-  if `lane` is absent, so a partial revert degrades to the pre-router
-  behaviour rather than breaking a hook.
-- **2026-08-10 — advisorModel fable→opus:** `config/claude-settings.json`
-  `advisorModel` flipped from `"fable"` to `"opus"` to match the default
-  `.model`; `tests/smoke.bats` ("claude-settings.json pins the advisor at
-  or above the top tier") retargeted to assert `== "opus"`; this doc's
-  `/advisor` coupling paragraph rewritten for the new pin. Rollback =
-  revert those two files; the layer-2 staged copy at
-  `/etc/claude-dev/configs/claude-settings.json` needs a matching `cp` (or
-  an image rebuild) to pick it up.
-- **2026-07-29 — delegation gate (beads arr/0xi/p1r):**
-  `scripts/delegation-gate.py` + `tests/delegation-gate.bats` added;
-  `config/claude-settings.json` gains the PreToolUse entry;
-  `config/claude-user-memory.md` dispatch-table wording tightened
-  (whole-task trivial rule, explicit `subagent_type: "scout"`); this doc
-  gains the Delegation gate section. Rollback = revert those files and
-  remove the settings entry; the gate fails open if the binary is absent.
-- **2026-07-17 — mechanism v2 (frontmatter binding; bead dsu):**
-  `scripts/tier-set.sh`, `scripts/tier-reconcile.sh`, `scripts/tier-derive.sh`
-  rewritten (env-slot remap retired, purge policy added, `TIER_AGENTS_DIR`
-  override added); `config/claude-settings.json` SessionStart echo now
-  reads settings `.model` + executor/scout frontmatter; this doc rewritten.
-  The runtime binding now lives in `~/.claude/agents/{executor,scout}.md`
-  frontmatter, maintained by the scripts.
-- **2026-07-10 rev 2 (/tier slash command):** engine moved from the shell
-  into `scripts/tier-set.sh` (installed as `/usr/local/bin/tier-set`),
-  exposed as `/tier` via `config/claude-commands/tier.md`; `config/.zshrc`
-  reduced to thin wrappers; `Dockerfile` + `scripts/entrypoint.sh` staging;
-  `tests/smoke.bats` retargeted.
-- **2026-07-10 rev 1 (Fable-is-back review):** `config/.zshrc`,
-  `config/agents/{verifier,oracle}.md` (`model: inherit`),
-  `config/agents/{executor,scout}.md` (prose),
-  `config/claude-settings.json` (`advisorModel: "fable"`), `CLAUDE.md`,
-  `tests/smoke.bats`. Pre-change copies:
-  `~/.claude/backups/tier-review-20260710/`.
-- **Original introduction:** `config/agents/executor.md`, `verifier.md`
-  (new); `scout.md`, `config/claude-settings.json`, `config/.zshrc`,
-  `CLAUDE.md` (additive edits). Base commit `bc5cb028`; pre-change copy
-  under `~/.claude/backups/tiered-orchestration-<sha>/`.
+- **2026-09-02** — advisor pin removed by default: `config/claude-settings.json` drops `advisorModel`; `tests/smoke.bats` asserts the key is absent.
+- **2026-08-26** — lane rubric gains "declare standard when unsure" and "recon breadth isn't implementation depth" (`scripts/lane.sh`, `CLAUDE.md`, `config/claude-user-memory.md`), plus a verifier-batch-by-evidence-surface line (also this doc's lane table and "Trust, but verify").
+- **2026-08-11** — complexity router (lanes) added: `scripts/lane.sh` + `tests/lane.bats`, lane-aware `scripts/delegation-gate.py`, settings wiring (`lane --reset`/`tier-prime` rubric), lane tracking in `scripts/cost-mirror.py`, doctrine edits in `CLAUDE.md`/`config/claude-user-memory.md`/`config/agents/*.md`, this doc's Complexity Router chapter.
+- **2026-08-10** — `advisorModel` flipped `fable` -> `opus` to match the default `.model` (`config/claude-settings.json`, `tests/smoke.bats`).
+- **2026-07-29** — delegation gate added: `scripts/delegation-gate.py` + `tests/delegation-gate.bats`, settings PreToolUse entry, dispatch-table wording in `config/claude-user-memory.md`, this doc's Delegation gate section.
+- **2026-07-17** — mechanism v2, frontmatter binding (bead dsu): `scripts/tier-set.sh`/`tier-reconcile.sh`/`tier-derive.sh` rewritten, env-slot remap retired and purged, this doc rewritten.
+- **2026-07-10 rev 2** — `/tier` slash command: engine moved into `scripts/tier-set.sh`, exposed via `config/claude-commands/tier.md`; `config/.zshrc` thinned to wrappers.
+- **2026-07-10 rev 1** — Fable-is-back review: `config/.zshrc`, `config/agents/{verifier,oracle}.md` (`model: inherit`), `config/agents/{executor,scout}.md`, `config/claude-settings.json` (`advisorModel: "fable"`), `CLAUDE.md`.
+- **Original introduction** — `config/agents/executor.md`/`verifier.md` added; `scout.md`, `config/claude-settings.json`, `config/.zshrc`, `CLAUDE.md` extended. Base commit `bc5cb028`.
 
 ## Consults: native advisor vs oracle (decision 2026-08-30)
 

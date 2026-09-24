@@ -364,11 +364,11 @@ delegate run --route deepseek --bead claude-orca-3sk.22
 ```
 
 Routes live in `config/delegate-routes.json` (runners: `opencode run`,
-`codex exec`, `gemini -p`). It ships `glm`, `deepseek` and `qwen-coder` on
-OpenRouter, `local` on Ollama, plus `codex`/`gemini` examples — **the file is
-yours to edit**: any model id from
-[openrouter.ai/models](https://openrouter.ai/models) works as
-`openrouter/<id>`. Each job gets an ephemeral worktree under
+`codex exec`, `gemini -p`) — **the file is yours to edit**: any model id
+from [openrouter.ai/models](https://openrouter.ai/models) works as
+`openrouter/<id>`. It ships ten routes today; see
+[knowledge-base/DELEGATION_ROUTES.md](knowledge-base/DELEGATION_ROUTES.md#the-assumed-stack-claude-code-master-openrouter-workers)
+for the full table. Each job gets an ephemeral worktree under
 `.claude-dev/delegate/<job>`, and the receipt lands in the bead's notes.
 Interactive Codex, Gemini and OpenCode sessions you open in Orca share the
 same container and the same beads database.
