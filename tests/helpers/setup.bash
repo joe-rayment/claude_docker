@@ -28,13 +28,11 @@ setup_file() {
     # helper that needs the REAL node/npm can ask for it explicitly.
     export ORIGINAL_PATH="$PATH"
 
-    # $BATS_RUN_TMPDIR (private per bats invocation), never $BATS_TMPDIR
-    # (== ${TMPDIR:-/tmp}, machine-wide and identical for every concurrent
-    # agent in this container when TMPDIR is unset) -- a shared literal
-    # /tmp/template.git meant two agents' parallel bats runs could rm -rf
-    # and rebuild out from under each other, seen as random failures in
-    # unrelated suites.
-    TEMPLATE_SRC="$BATS_RUN_TMPDIR/template.git"
+    # $BATS_FILE_TMPDIR: private to this file. Never $BATS_TMPDIR (shared
+    # by every agent on the machine) and never $BATS_RUN_TMPDIR (shared by
+    # every file in one run -- under `bats --jobs` two files' setup_file
+    # rebuilt the same directory at once and tests silently never ran).
+    TEMPLATE_SRC="$BATS_FILE_TMPDIR/template.git"
     rm -rf "$TEMPLATE_SRC"
     mkdir -p "$TEMPLATE_SRC"
     git init --quiet -b main "$TEMPLATE_SRC" >/dev/null 2>&1
@@ -65,6 +63,14 @@ setup_file() {
         commit --quiet -m "template snapshot" >/dev/null 2>&1
 
     export TEMPLATE_SRC
+
+    # The stubs every test's setup() puts on PATH are static files, so they
+    # are written once per file here and copied into each test (a test can
+    # still overwrite its own copy).
+    STUB_CACHE="$BATS_FILE_TMPDIR/stub-cache"
+    mkdir -p "$STUB_CACHE"
+    write_setup_stubs "$STUB_CACHE"
+    export STUB_CACHE
 }
 
 # --- stub executables ----------------------------------------------------
@@ -1293,6 +1299,28 @@ STUB
 
 # --- per-test environment -------------------------------------------------
 
+# Every stub setup() puts on PATH, written into directory $1.
+write_setup_stubs() {
+    write_stub_brew "$1/brew"
+    write_stub_npm  "$1/npm"
+    write_stub_gh   "$1/gh"
+    write_stub_node "$1/node"
+    write_stub_curl "$1/curl"
+    write_stub_hdiutil "$1/hdiutil"
+    write_stub_docker "$1/docker"
+    write_stub_open "$1/open"
+    write_stub_sw_vers "$1/sw_vers"
+    write_stub_uname "$1/uname"
+    write_stub_defaults "$1/defaults"
+    write_stub_pbcopy "$1/pbcopy"
+    write_stub_osascript "$1/osascript"
+    write_stub_lsof "$1/lsof"
+    write_stub_sudo "$1/sudo"
+    write_stub_installer "$1/installer"
+    write_stub_softwareupdate "$1/softwareupdate"
+    write_stub_xcode_select "$1/xcode-select"
+}
+
 setup() {
     # This suite can itself be running inside a claude-orca container (the
     # dev box this template runs on IS one), which sets these two for its
@@ -1316,12 +1344,11 @@ setup() {
     # restored binary back here, so they have to know where "here" is.
     export STUB_BIN="$BATS_TEST_TMPDIR/stubs"
     mkdir -p "$STUB_BIN"
-    write_stub_brew "$STUB_BIN/brew"
-    write_stub_npm  "$STUB_BIN/npm"
-    write_stub_gh   "$STUB_BIN/gh"
-    write_stub_node "$STUB_BIN/node"
-    write_stub_curl "$STUB_BIN/curl"
-    write_stub_hdiutil "$STUB_BIN/hdiutil"
+    if [ -n "${STUB_CACHE:-}" ] && [ -d "$STUB_CACHE" ]; then
+        cp -p "$STUB_CACHE"/* "$STUB_BIN"/
+    else
+        write_setup_stubs "$STUB_BIN"   # a file with its own setup_file
+    fi
 
     # v3 (claude-orca-qa2.2): the Mac tooling the v3 bootstrap and launcher
     # drive. `open` and `sw_vers` do not exist on this box at all, the
@@ -1334,10 +1361,6 @@ setup() {
     mkdir -p "$CONTAINER_STUB_STATE/containers"
     export OPEN_STUB_LOG="$BATS_TEST_TMPDIR/open.log"
     : > "$OPEN_STUB_LOG"
-    write_stub_docker "$STUB_BIN/docker"
-    write_stub_open "$STUB_BIN/open"
-    write_stub_sw_vers "$STUB_BIN/sw_vers"
-    write_stub_uname "$STUB_BIN/uname"
 
     # S2 (claude-orca-8uo.3): every suite drives the bootstrap as a Mac
     # (make_project_v3 pins uname to Darwin), and the Darwin preflight now
@@ -1345,7 +1368,6 @@ setup() {
     # pointed at by the same override a real user would use -- and the
     # cases that are ABOUT a Mac with no Orca point the override at a path
     # that does not exist, which is an answer on any host, Mac included.
-    write_stub_defaults "$STUB_BIN/defaults"
     export CLAUDE_ORCA_APP="$(make_fake_orca_app)"
 
     # S3 (claude-orca-8uo.4): where the orca CLI stub logs its argv and
@@ -1368,11 +1390,8 @@ setup() {
     mkdir -p "$ORCA_STUB_STATE"
     export PBCOPY_STUB_LOG="$BATS_TEST_TMPDIR/pbcopy.log"
     : > "$PBCOPY_STUB_LOG"
-    write_stub_pbcopy "$STUB_BIN/pbcopy"
     export OSASCRIPT_STUB_LOG="$BATS_TEST_TMPDIR/osascript.log"
     : > "$OSASCRIPT_STUB_LOG"
-    write_stub_osascript "$STUB_BIN/osascript"
-    write_stub_lsof "$STUB_BIN/lsof"
     # orca_user_data_dir()'s own fallback path (claude-orca-tgr) --
     # $HOME/Library/Application Support/Orca, standing in for the Mac's
     # own copy without a folder-specific override. Not created here: a
@@ -1391,10 +1410,6 @@ setup() {
     # The bootstrap installs a missing dependency rather than instructing
     # it, so the tools that install things are stubbed too. All four are
     # inert until a test removes a dependency from PATH.
-    write_stub_sudo "$STUB_BIN/sudo"
-    write_stub_installer "$STUB_BIN/installer"
-    write_stub_softwareupdate "$STUB_BIN/softwareupdate"
-    write_stub_xcode_select "$STUB_BIN/xcode-select"
 
     export PATH="$STUB_BIN:$PATH"
 

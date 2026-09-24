@@ -18,6 +18,11 @@
 #   CLAUDE_ORCA_TEST_ALL=1 ./run-tests.sh   # the same thing
 #   bats tests/*.bats           # also still the whole suite, directly
 #
+# PARALLEL WHEN IT CAN BE. With GNU parallel installed (brew install
+# parallel), test files run side by side, one per CPU core; the cases
+# inside one file still run in order. CLAUDE_ORCA_TEST_JOBS=<n> picks the
+# number, CLAUDE_ORCA_TEST_JOBS=1 runs one file at a time as before.
+#
 # bash 3.2 compatible: macOS ships 3.2.57 and this script runs there.
 
 set -e
@@ -137,6 +142,19 @@ if [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
     fi
 fi
 
+# Files side by side when GNU parallel is here (bats needs it for --jobs).
+JOBS="${CLAUDE_ORCA_TEST_JOBS:-}"
+if [ -z "$JOBS" ]; then
+    JOBS="$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 1)"
+fi
+case "$JOBS" in ''|*[!0-9]*) JOBS=1 ;; esac
+if [ "$JOBS" -gt 1 ] && [ "$#" -gt 1 ] && command -v parallel >/dev/null 2>&1; then
+    set -- --jobs "$JOBS" --no-parallelize-within-files "$@"
+    echo "==> running test files $JOBS at a time (CLAUDE_ORCA_TEST_JOBS=1 for one at a time)"
+else
+    JOBS=1
+fi
+
 START=$(date +%s)
 STATUS=0
 if [ -n "$NEWER_BASH" ]; then
@@ -153,6 +171,7 @@ fi
 ELAPSED=$(( $(date +%s) - START ))
 
 echo ""
+[ "$JOBS" -gt 1 ] && shift 3   # the count below is of files, not flags
 if [ "$SKIPPED" -gt 0 ]; then
     echo "==> $# test files run in ${ELAPSED}s; $SKIPPED slow file(s) skipped -- run them with ./run-tests.sh --all"
 else
