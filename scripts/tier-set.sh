@@ -72,12 +72,12 @@ _resolve_script_path() {
         link="$(readlink "$src")"
         case "$link" in
             /*) src="$link" ;;
-            *)  dir="$(cd "$(dirname "$src")" && pwd)"; src="$dir/$link" ;;
+            *)  dir="$(case "$src" in (*/*) cd "${src%/*}/" ;; esac && pwd)"; src="$dir/$link" ;;
         esac
     done
     echo "$src"
 }
-SCRIPT_DIR="$(cd "$(dirname "$(_resolve_script_path)")" && pwd)"
+SCRIPT_DIR="$(_s="$(_resolve_script_path)"; case "$_s" in (*/*) cd "${_s%/*}/" ;; esac && pwd)"
 # This script's own resolved path -- the preset dispatch re-runs it with the
 # preset's args (claude-orca-af0), so a symlinked invocation still finds the
 # real file.

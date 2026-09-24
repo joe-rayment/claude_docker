@@ -106,12 +106,12 @@ _resolve_script_path() {
         link="$(readlink "$src")"
         case "$link" in
             /*) src="$link" ;;
-            *)  src="$(cd "$(dirname "$src")" && pwd)/$link" ;;
+            *)  src="$(case "$src" in (*/*) cd "${src%/*}/" ;; esac && pwd)/$link" ;;
         esac
     done
     printf '%s\n' "$src"
 }
-SCRIPT_DIR="$(cd "$(dirname "$(_resolve_script_path)")" && pwd -P)"
+SCRIPT_DIR="$(_s="$(_resolve_script_path)"; case "$_s" in (*/*) cd "${_s%/*}/" ;; esac && pwd -P)"
 
 # The launcher's scratch volumes (claude-orca-1eh): docker volumes mounted
 # under the agent home and named in CLAUDE_ORCA_VOLUME_DIRS (see
