@@ -28,7 +28,7 @@ setup() {
     grep -qF 'recon "<question>"' "$USER_MEMORY"
     ! grep -qF 'checkers and recon stay in-process' "$USER_MEMORY"
     words=$(wc -w < "$USER_MEMORY")
-    [ "$words" -le 1300 ]
+    [ "$words" -le 1600 ]
 }
 
 @test "the knowledge base explains the orca-backed recon path" {

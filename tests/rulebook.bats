@@ -67,21 +67,27 @@ setup() {
 # verbatim user text, so the budget moved rather than the words. It moved
 # 1150 -> 1300 the same week (claude-orca-rdk): the file had been running
 # red at 1327 words on main since the token-diet bead, and the budget
-# moves rather than the words, per this file's own precedent.
-@test "rulebook: config/claude-user-memory.md is at most 1300 words" {
+# moves rather than the words, per this file's own precedent. It moved
+# 1300 -> 1600 later that month: the user asked for a § Tests section
+# (targeted tests only, the full suite is theirs, every test explained for
+# a beginner) -- their rule, so again the budget moves, with headroom so
+# the next edit does not trip it at once.
+@test "rulebook: config/claude-user-memory.md is at most 1600 words" {
     local words
     words=$(wc -w < "$USER_MEMORY")
-    [ "$words" -le 1300 ]
+    [ "$words" -le 1600 ]
 }
 
 # The cap moved 1700 -> 1900 in Sept 2026 (claude-orca-rdk): the
 # Architecture Overview gained the worktree-gc/branch-guard paragraph the
 # hook-wiring bead mandates -- the budget moved rather than the words,
 # the same call the 1000 -> 1150 move made for verbatim rulebook text.
-@test "rulebook: CLAUDE.md is at most 1900 words" {
+# 1900 -> 2000 later that month: Build & Test gained the user's rule that
+# the full suite is theirs to run, and how to run one file or one case.
+@test "rulebook: CLAUDE.md is at most 2000 words" {
     local words
     words=$(wc -w < "$CLAUDE_MD")
-    [ "$words" -le 1900 ]
+    [ "$words" -le 2000 ]
 }
 
 @test "rulebook: none of the seven banned phrases appear in CLAUDE.md" {

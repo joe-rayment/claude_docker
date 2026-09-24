@@ -14,6 +14,12 @@ PASS to be recorded back into the bead's --notes (append-only) as
 before it gets closed -- this hook is the mechanical nudge (or, in
 enforce mode, the block).
 
+Contracts are opt-in since Sept 2026 (config/claude-user-memory.md
+§ Tests): the agent registers one only when the user asks for it. So a
+bead with NO acceptance field is not gated at all; only a bead that
+carries a contract must have its verifier's PASS recorded before it
+closes.
+
 Mode: env CONTRACT_GATE_MODE, else $CLAUDE_CONFIG_DIR/contract-gate.mode (single
 word), else "warn". An unset OR unrecognized value falls back to "warn" --
 never to "off": a hook that silently degrades to no-op on a typo defeats
@@ -541,10 +547,10 @@ def emit_deny(reason):
 
 def emit_warn(bead_id):
     sys.stderr.write(
-        f"[contract-gate warn] bd close {bead_id}: no acceptance contract "
-        "or no recorded 'VERIFIED: PASS' note on this bead -- register a "
-        "CHECK/PASS-IF contract before dispatch and record the verifier's "
-        "PASS via `bd update --append-notes` before closing. "
+        f"[contract-gate warn] bd close {bead_id}: this bead carries an "
+        "acceptance contract but no recorded 'VERIFIED: PASS' note -- run "
+        "the verifier and record its PASS via `bd update --append-notes` "
+        "before closing. "
         "(CONTRACT_GATE_MODE=off to silence, =enforce to block.)\n"
     )
 
@@ -606,12 +612,13 @@ def bead_failure(bead_id):
     acceptance = (issue.get("acceptance_criteria") or "").strip()
     notes = issue.get("notes") or ""
 
-    if acceptance and CLASS_NO_CONTRACT_RE.search(acceptance):
+    if not acceptance:
+        return None  # contracts are opt-in: a bead without one is not gated
+
+    if CLASS_NO_CONTRACT_RE.search(acceptance):
         return None  # explicitly exempt: allowed silently
 
-    has_contract = bool(acceptance)
-    has_pass = bool(VERIFIED_PASS_RE.search(notes))
-    if not (has_contract and has_pass):
+    if not VERIFIED_PASS_RE.search(notes):
         return (FAIL_MISSING, None)
 
     # A PASS note is present. Believe it on its face only where the
@@ -672,12 +679,10 @@ def main():
         reason = ""
         if missing:
             reason = (
-                f"[contract-gate enforce] bd close {' '.join(missing)}: no "
-                "acceptance contract or no recorded 'VERIFIED: PASS' note. "
-                "Register a CHECK/PASS-IF contract before dispatch and record "
-                "the verifier's PASS via `bd update --append-notes` before "
-                "closing, or set CLASS: no-contract on the acceptance field "
-                "at registration time if this bead has no observable check."
+                f"[contract-gate enforce] bd close {' '.join(missing)}: the "
+                "bead carries an acceptance contract but no recorded "
+                "'VERIFIED: PASS' note. Run the verifier and record its PASS "
+                "via `bd update --append-notes` before closing."
             )
         for bead_id, kind, detail in failing:
             if kind != FAIL_UNCORROBORATED:

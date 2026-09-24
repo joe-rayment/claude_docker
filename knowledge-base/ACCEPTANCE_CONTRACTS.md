@@ -5,6 +5,12 @@ When to use: registering work with the `verifier`, or wondering why a
 protocol; `config/agents/verifier.md` and `scripts/contract-gate.py`'s
 docstring implement it.
 
+**Opt-in since Sept 2026.** The agent registers a contract only when the
+user asks for one; everyday checking is "run it and look" plus the
+targeted tests in the rulebook's § Tests (`config/claude-user-memory.md`).
+`contract-gate` ignores beads that carry no contract. Everything below
+applies once a contract exists.
+
 ## Why
 
 Open-ended verification ("re-derive the work from scratch, check every

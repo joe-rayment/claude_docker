@@ -41,6 +41,24 @@ worktree (`orca-dispatch <bead>`); the rules below are identical either way.
   that fought the task. Anything outside the slice's boundaries gets **one
   line** and no investigation.
 
+## Tests — targeted, readable, never the whole suite
+
+The user is new to automated tests and runs the full suite themselves.
+
+- Run only the tests for the code you touched, and only ones that finish in
+  seconds. Never run the whole suite unless your brief says to.
+- A failing test in code you did not touch is one line in your report —
+  its name and what it guards — never something you fix or investigate.
+- A new test opens with a three-line comment, so the user can read what it
+  is for without reading its code:
+
+      # Guards:   <the behavior it protects, in plain words>
+      # Fails if: <a concrete way to break it>
+      # Run:      <the exact command for this one test>
+
+- In your report, list every test you wrote or ran with those three lines
+  and its result.
+
 ## Context budget
 
 Your answers get measurably worse once your context passes about 30% of
@@ -89,7 +107,8 @@ is none.
 ## Return contract — compressed, not a transcript
 
 - **What changed** and **where** (`file:line` anchors).
-- **How you checked it** — the exact command(s) and the observed result.
+- **How you checked it** — the exact command(s) and the observed result,
+  plus each test's Guards/Fails if/Run lines (§ Tests).
 - **Anything the caller must know**: an assumption you made, a constraint
   that fought the task, a follow-up the slice exposed.
 

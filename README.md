@@ -436,7 +436,11 @@ runs `./claude-dev --update` moves to a new image with the rebuild.
 ## Tests
 
 ```bash
-./run-tests.sh           # everything
+./run-tests.sh           # the fast subset (~2 min); --all for every file
 bats tests/*.bats        # the suite directly
 bats tests/docs.bats     # one file
 ```
+
+New to tests? [`tests/INDEX.md`](tests/INDEX.md) explains how they work and
+how to read a failure, and maps every file to what it guards. Inside a
+project, `/test` runs its suite and explains the results in plain English.

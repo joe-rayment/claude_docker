@@ -2,12 +2,19 @@
 bats_require_minimum_version 1.5.0
 
 # contract-gate.bats — PreToolUse(Bash) hook that warns (or, in enforce mode,
-# denies) a `bd close` run against a bead that has no acceptance contract or
-# no recorded `VERIFIED: PASS` note. Modelled on tests/delegation-gate.bats.
+# denies) a `bd close` run against a bead that carries an acceptance contract
+# but no recorded `VERIFIED: PASS` note. Modelled on tests/delegation-gate.bats.
 #
 # FROZEN per beads_claude_docker-smo's acceptance contract: this file must
 # not be edited after its RED commit. If a test here turns out to be wrong,
 # stop and report — do not edit it.
+#
+# SUPERSEDED by the user, Sept 2026: acceptance contracts became opt-in
+# (config/claude-user-memory.md § Tests), so a bead with NO contract is no
+# longer gated -- (b2) pins that. The cases that used "no contract" as their
+# example of a failing bead now use "a contract with no PASS" instead, which
+# still fails the gate; what each case checks (close shapes, modes, lanes)
+# is unchanged.
 #
 # A fake `bd` binary is staged ahead of the real one on PATH for every test
 # except (h), which deliberately excludes it to prove the fail-open path.
@@ -59,10 +66,10 @@ gate() { python3 "$GATE"; }
     [ -z "$stderr" ]
 }
 
-# (b) mode=warn on a bead with no contract prints a warning to stderr and exits 0.
-@test "(b) mode=warn, no contract: warns on stderr, exits 0" {
+# (b) mode=warn on a bead with a contract but no PASS prints a warning to stderr and exits 0.
+@test "(b) mode=warn, contract but no PASS: warns on stderr, exits 0" {
     export CONTRACT_GATE_MODE=warn
-    export FAKE_BD_ACCEPTANCE=""
+    export FAKE_BD_ACCEPTANCE=$'CHECK:   x\nPASS-IF: y'
     export FAKE_BD_NOTES=""
     run --separate-stderr sh -c 'jq -cn "{tool_name:\"Bash\",session_id:\"s2\",tool_input:{command:\"bd close beads_claude_docker-smo --reason done\"}}" | python3 '"$GATE"
     [ "$status" -eq 0 ]
@@ -82,14 +89,28 @@ gate() { python3 "$GATE"; }
     [ -z "$stderr" ]
 }
 
-# (d) mode=enforce with no contract emits hookSpecificOutput.permissionDecision == deny.
-@test "(d) mode=enforce, no contract: emits a deny decision" {
+# (d) mode=enforce with a contract but no PASS emits hookSpecificOutput.permissionDecision == deny.
+@test "(d) mode=enforce, contract but no PASS: emits a deny decision" {
     export CONTRACT_GATE_MODE=enforce
-    export FAKE_BD_ACCEPTANCE=""
+    export FAKE_BD_ACCEPTANCE=$'CHECK:   x\nPASS-IF: y'
     export FAKE_BD_NOTES=""
     run --separate-stderr sh -c 'jq -cn "{tool_name:\"Bash\",session_id:\"s4\",tool_input:{command:\"bd close beads_claude_docker-smo --reason done\"}}" | python3 '"$GATE"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.hookSpecificOutput.permissionDecision == "deny"'
+}
+
+# (b2) contracts are opt-in (config/claude-user-memory.md § Tests): a bead
+# with NO acceptance contract closes silently, in warn and in enforce.
+@test "(b2) no contract: allowed silently in warn and enforce (contracts are opt-in)" {
+    export FAKE_BD_ACCEPTANCE=""
+    export FAKE_BD_NOTES=""
+    for mode in warn enforce; do
+        export CONTRACT_GATE_MODE=$mode
+        run --separate-stderr sh -c 'jq -cn "{tool_name:\"Bash\",session_id:\"s2b\",tool_input:{command:\"bd close beads_claude_docker-smo --reason done\"}}" | python3 '"$GATE"
+        [ "$status" -eq 0 ]
+        [ -z "$output" ]
+        [ -z "$stderr" ]
+    done
 }
 
 # (e) mode=enforce WITH contract + PASS allows (silent, no deny).
@@ -139,7 +160,7 @@ gate() { python3 "$GATE"; }
 # (i) an unrecognized mode string falls back to warn, never off.
 @test "(i) unrecognized mode falls back to warn, never off" {
     export CONTRACT_GATE_MODE=bogus-typo
-    export FAKE_BD_ACCEPTANCE=""
+    export FAKE_BD_ACCEPTANCE=$'CHECK:   x\nPASS-IF: y'
     export FAKE_BD_NOTES=""
     run --separate-stderr sh -c 'jq -cn "{tool_name:\"Bash\",session_id:\"s8\",tool_input:{command:\"bd close beads_claude_docker-smo --reason done\"}}" | python3 '"$GATE"
     [ "$status" -eq 0 ]
@@ -155,7 +176,7 @@ gate() { python3 "$GATE"; }
 # "Aliases: close, done") and must be gated identically.
 @test "(j) 'bd done <id>' is gated exactly like 'bd close <id>'" {
     export CONTRACT_GATE_MODE=warn
-    export FAKE_BD_ACCEPTANCE=""
+    export FAKE_BD_ACCEPTANCE=$'CHECK:   x\nPASS-IF: y'
     export FAKE_BD_NOTES=""
     run --separate-stderr sh -c 'jq -cn "{tool_name:\"Bash\",session_id:\"s9\",tool_input:{command:\"bd done beads_claude_docker-smo\"}}" | python3 '"$GATE"
     [ "$status" -eq 0 ]
@@ -206,7 +227,8 @@ if [ "$1" = "show" ]; then
         *-good) acc='CHECK:   x
 PASS-IF: y'
                 notes='VERIFIED: PASS all clear' ;;
-        *)      acc=''
+        *)      acc='CHECK:   x
+PASS-IF: y'
                 notes='' ;;
     esac
     jq -cn --arg id "$id" --arg acc "$acc" --arg notes "$notes" \
@@ -237,7 +259,7 @@ EOF
 # ignored entirely -- bd is never even invoked.
 @test "(m) 'bd update <id> --status closed' is gated like a close" {
     export CONTRACT_GATE_MODE=warn
-    export FAKE_BD_ACCEPTANCE=""
+    export FAKE_BD_ACCEPTANCE=$'CHECK:   x\nPASS-IF: y'
     export FAKE_BD_NOTES=""
     run --separate-stderr sh -c 'jq -cn "{tool_name:\"Bash\",session_id:\"s15\",tool_input:{command:\"bd update beads_claude_docker-smo --status closed\"}}" | python3 '"$GATE"
     [ "$status" -eq 0 ]
@@ -565,9 +587,9 @@ EOF
 # naming it -- and neither falls back to the old "explicit bead id" ask.
 # The gate must also stay read-only: it may only ever run `bd show`.
 # [BRANCH A, clause 1]
-@test "(w) bare close resolves --current and checks that bead (uncontracted)" {
+@test "(w) bare close resolves --current and checks that bead (contract, no PASS)" {
     stage_current_stub "[{\"id\":\"$RESOLVED_ID\",\"title\":\"the last touched bead\",\"status\":\"open\"}]"
-    export FAKE_BD_ACCEPTANCE=""
+    export FAKE_BD_ACCEPTANCE=$'CHECK:   x\nPASS-IF: y'
     export FAKE_BD_NOTES=""
 
     export CONTRACT_GATE_MODE=warn
@@ -772,7 +794,7 @@ lane_state() {
 @test "(ad) lane=deep keeps today's behaviour -- the existing warn text still fires" {
     lane_state deep s-lane-ad
     export CONTRACT_GATE_MODE=warn
-    export FAKE_BD_ACCEPTANCE=""
+    export FAKE_BD_ACCEPTANCE=$'CHECK:   x\nPASS-IF: y'
     export FAKE_BD_NOTES=""
     run --separate-stderr sh -c 'jq -cn "{tool_name:\"Bash\",session_id:\"s-lane-ad\",tool_input:{command:\"bd close beads_claude_docker-smo --reason done\"}}" | python3 '"$GATE"
     [ "$status" -eq 0 ]
@@ -784,7 +806,7 @@ lane_state() {
 @test "(ae) no lane state file at all keeps today's behaviour -- the existing warn text still fires" {
     export LANE_STATE_DIR="$BATS_TEST_TMPDIR/lane-state-empty"
     export CONTRACT_GATE_MODE=warn
-    export FAKE_BD_ACCEPTANCE=""
+    export FAKE_BD_ACCEPTANCE=$'CHECK:   x\nPASS-IF: y'
     export FAKE_BD_NOTES=""
     run --separate-stderr sh -c 'jq -cn "{tool_name:\"Bash\",session_id:\"s-lane-ae\",tool_input:{command:\"bd close beads_claude_docker-smo --reason done\"}}" | python3 '"$GATE"
     [ "$status" -eq 0 ]
@@ -795,7 +817,7 @@ lane_state() {
 @test "(af) lane state file present but lane field is literally 'unset' keeps today's behaviour" {
     lane_state unset s-lane-af
     export CONTRACT_GATE_MODE=warn
-    export FAKE_BD_ACCEPTANCE=""
+    export FAKE_BD_ACCEPTANCE=$'CHECK:   x\nPASS-IF: y'
     export FAKE_BD_NOTES=""
     run --separate-stderr sh -c 'jq -cn "{tool_name:\"Bash\",session_id:\"s-lane-af\",tool_input:{command:\"bd close beads_claude_docker-smo --reason done\"}}" | python3 '"$GATE"
     [ "$status" -eq 0 ]
@@ -809,7 +831,7 @@ lane_state() {
     export LANE_STATE_DIR="$dir"
     printf 'not json at all' > "$dir/s-lane-ag.json"
     export CONTRACT_GATE_MODE=warn
-    export FAKE_BD_ACCEPTANCE=""
+    export FAKE_BD_ACCEPTANCE=$'CHECK:   x\nPASS-IF: y'
     export FAKE_BD_NOTES=""
     run --separate-stderr sh -c 'jq -cn "{tool_name:\"Bash\",session_id:\"s-lane-ag\",tool_input:{command:\"bd close beads_claude_docker-smo --reason done\"}}" | python3 '"$GATE"
     [ "$status" -eq 0 ]
@@ -820,7 +842,7 @@ lane_state() {
 @test "(ah) a hook payload with no session_id keeps today's behaviour (lane cannot be resolved)" {
     lane_state standard no-session-id-cannot-match
     export CONTRACT_GATE_MODE=warn
-    export FAKE_BD_ACCEPTANCE=""
+    export FAKE_BD_ACCEPTANCE=$'CHECK:   x\nPASS-IF: y'
     export FAKE_BD_NOTES=""
     run --separate-stderr sh -c 'jq -cn "{tool_name:\"Bash\",tool_input:{command:\"bd close beads_claude_docker-smo --reason done\"}}" | python3 '"$GATE"
     [ "$status" -eq 0 ]

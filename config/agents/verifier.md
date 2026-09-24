@@ -2,8 +2,8 @@
 name: verifier
 description: >
   Independent checker with FRESH context and NO stake in the answer it is
-  handed. USE once per bead that carries a pre-registered acceptance
-  contract (CHECK/PASS-IF/FROZEN/CLASS), at close time — not per
+  handed. USE only when the user asked for an acceptance contract: once
+  per bead that carries one (CHECK/PASS-IF/FROZEN/CLASS), at close time — not per
   claim-bundle, and not on every worker output. Given the bead id (or its
   contract text) plus the RED-AT/GREEN-AT SHAs from its notes, it runs
   six cheap checks plus C2b against that contract instead of re-deriving

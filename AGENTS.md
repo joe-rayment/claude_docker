@@ -134,7 +134,15 @@ bd prime                # Refresh Beads context
 ./run-tests.sh --all     # every file, ~8 minutes (CLAUDE_ORCA_TEST_ALL=1 does the same)
 bats tests/*.bats        # the whole suite, directly
 bats tests/docs.bats     # one file
+bats -f 'word cap' tests/rulebook.bats   # the cases in one file whose name matches
 ```
+
+**The full suite is the user's to run** -- by hand, or by asking (`/test`
+runs it and explains every failure in plain English). While working, run
+only the file(s) covering what you changed, and say what each one guards
+when you report it. A red file you did not touch is one line in your
+reply, never work. `tests/INDEX.md` says, for every file, what it guards,
+whether it checks behavior or only wording, and how to read a failure.
 
 The default run skips the dozen-odd files that stand up real processes or
 churn through big fixtures -- the slow set was picked by timing every file,
@@ -315,9 +323,10 @@ work stays on main where the user can see it.
   writes (tier state, the config-sync hash, the web URL, the port) lives in
   `.claude-dev/run`; anything the Mac side treats as authority lives in
   `.claude-dev/state`.
-- **Frozen contracts.** A bead's `FROZEN` files are frozen from its `RED-AT`
-  commit onward: the test is committed red first, the implementation second,
-  and the test is never edited to make an implementation pass.
+- **Frozen contracts, only when the user asks for one.** A bead's `FROZEN`
+  files are frozen from its `RED-AT` commit onward: the test is committed
+  red first, the implementation second, and the test is never edited to
+  make an implementation pass.
 - **The Mac side executes nothing it did not ship.** `claude-orca.json` is
   read as validated data through `jq`, never sourced and never run.
 <!-- END PROJECT SECTIONS -->
