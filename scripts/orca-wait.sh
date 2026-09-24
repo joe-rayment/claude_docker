@@ -374,41 +374,99 @@ release_worker() {
     printf '%s %s\n' "$released" "$terminal_closed"
 }
 
-# detect_handoff <body> -- prints the HANDOFF block (the line that is
-# exactly "HANDOFF", surrounding whitespace allowed, through the end of
-# <body>) when one is present; exit 1, no output, otherwise. "HANDOFF"
-# inside a longer line is not a handoff (epic claude-orca-7lz's SHARED
-# CONTRACT).
+# detect_handoff <body> -- prints the HANDOFF block (the ORIGINAL lines
+# from the HANDOFF line through the end of <body>) when one is present;
+# exit 1, no output, otherwise (epic claude-orca-7lz's SHARED CONTRACT,
+# revised by claude-orca-7lz.8 to read what real models write).
 #
-# claude-orca-7lz.6: a block whose left: value -- trimmed, lowercased, one
-# trailing "." dropped -- says nothing is left is NOT a handoff (a missing
-# left: line still IS one; relaying costs one spawn, losing work costs
-# more).
+# Matching runs on a NORMALISED copy of each line: every '*' removed, then
+# leading whitespace/'#'/'>' removed, then trailing whitespace removed. The
+# HANDOFF line is one whose normalised form is exactly "HANDOFF" or
+# "HANDOFF:" -- a longer line that merely contains HANDOFF is not one, and
+# neither is a normal ("**HANDOFF**", "## HANDOFF", ...) markdown line that
+# reduces to something else.
+#
+# The left: line is the first line after HANDOFF whose normalised form
+# starts with "left:" (case-insensitive); its value is the rest of that
+# normalised, lowercased line with one trailing "." dropped.
+#   - none/nothing/n/a/-               -> NOT a handoff.
+#   - empty, and every line up to the  -> NOT a handoff.
+#     next FIELD line (done:/left:/
+#     facts:/next:/relay:) or the end
+#     is blank
+#   - empty, and at least one of those -> a handoff (the value is a list).
+#     lines is non-blank
+#   - no left: line at all             -> a handoff, unchanged.
 detect_handoff() {
-    local block left_line left_val
-    block="$(printf '%s\n' "$1" | awk '
-        BEGIN { found = 0 }
-        {
-            trimmed = $0
-            gsub(/^[ \t]+|[ \t]+$/, "", trimmed)
-            if (!found && trimmed == "HANDOFF") { found = 1 }
-            if (found) { print }
+    local body="$1"
+    body="$(printf '%s\n' "$body" | awk '
+        function normalize(s,    c) {
+            gsub(/\*/, "", s)
+            while (length(s) > 0) {
+                c = substr(s, 1, 1)
+                if (c == " " || c == "\t" || c == "#" || c == ">") {
+                    s = substr(s, 2)
+                } else {
+                    break
+                }
+            }
+            sub(/[ \t]+$/, "", s)
+            return s
         }
-        END { exit(found ? 0 : 1) }
+        {
+            lines[NR] = $0
+            norm[NR] = normalize($0)
+        }
+        END {
+            n = NR
+            found = 0
+            for (i = 1; i <= n; i++) {
+                if (norm[i] == "HANDOFF" || norm[i] == "HANDOFF:") {
+                    found = i
+                    break
+                }
+            }
+            if (!found) { exit 1 }
+
+            left_idx = 0
+            for (i = found + 1; i <= n; i++) {
+                if (index(tolower(norm[i]), "left:") == 1) {
+                    left_idx = i
+                    break
+                }
+            }
+
+            handoff = 1
+            if (left_idx > 0) {
+                low = tolower(norm[left_idx])
+                val = substr(low, 6)
+                gsub(/^[ \t]+|[ \t]+$/, "", val)
+                sub(/\.$/, "", val)
+                if (val == "") {
+                    any_nonblank = 0
+                    for (j = left_idx + 1; j <= n; j++) {
+                        lowj = tolower(norm[j])
+                        if (lowj ~ /^(done:|left:|facts:|next:|relay:)/) {
+                            break
+                        }
+                        t = norm[j]
+                        gsub(/^[ \t]+|[ \t]+$/, "", t)
+                        if (t != "") { any_nonblank = 1 }
+                    }
+                    if (!any_nonblank) { handoff = 0 }
+                } else if (val == "none" || val == "nothing" || val == "n/a" || val == "-") {
+                    handoff = 0
+                }
+            }
+
+            if (!handoff) { exit 1 }
+            for (i = found; i <= n; i++) { print lines[i] }
+            exit 0
+        }
     ')" || return 1
-    [ -n "$block" ] || return 1
+    [ -n "$body" ] || return 1
 
-    left_line="$(printf '%s\n' "$block" | grep -m1 -e '^left:')"
-    if [ -n "$left_line" ]; then
-        left_val="${left_line#left:}"
-        left_val="$(printf '%s' "$left_val" | sed -e 's/^[ \t]*//' -e 's/[ \t]*$//' | tr '[:upper:]' '[:lower:]')"
-        case "$left_val" in *.) left_val="${left_val%.}" ;; esac
-        case "$left_val" in
-            ''|none|nothing|n/a|-) return 1 ;;
-        esac
-    fi
-
-    printf '%s\n' "$block"
+    printf '%s\n' "$body"
 }
 
 # --- the stall watch -----------------------------------------------------
