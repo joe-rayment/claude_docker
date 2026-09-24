@@ -47,18 +47,24 @@ esac
 IN=$(cat 2>/dev/null) || exit 0
 [ -n "$IN" ] || exit 0
 
-TOOL=$(printf '%s' "$IN" | jq -r '.tool_name // empty' 2>/dev/null) || exit 0
+# Every field in one jq call: four one-line fields, then the command
+# (which may span lines) as the rest.
+F=$(printf '%s' "$IN" | jq -r '(.tool_name // ""), (.agent_id // ""),
+    (.tool_input.run_in_background // false | tostring),
+    (.session_id // "session"), (.tool_input.command // empty)' 2>/dev/null) || exit 0
+TOOL=${F%%$'\n'*}; F=${F#*$'\n'}
+AGENT=${F%%$'\n'*}; F=${F#*$'\n'}
+BG=${F%%$'\n'*}; F=${F#*$'\n'}
+case "$F" in
+    *$'\n'*) SESSION=${F%%$'\n'*}; CMD=${F#*$'\n'} ;;
+    *) SESSION=$F; CMD="" ;;
+esac
 [ "$TOOL" = "Bash" ] || exit 0
 
 # Main loop only. A populated agent_id is the one positive subagent signal
 # (see python/delegation-gate.py's is_main_loop() for the evidence).
-AGENT=$(printf '%s' "$IN" | jq -r '.agent_id // empty' 2>/dev/null) || exit 0
 [ -n "$AGENT" ] && exit 0
-
-BG=$(printf '%s' "$IN" | jq -r '.tool_input.run_in_background // false' 2>/dev/null) || exit 0
 [ "$BG" = "true" ] && exit 0
-
-CMD=$(printf '%s' "$IN" | jq -r '.tool_input.command // empty' 2>/dev/null) || exit 0
 [ -n "$CMD" ] || exit 0
 
 # Already bounded by the caller: capping a cap only hides the tail they
@@ -106,7 +112,6 @@ is_bare_cd() {
 }
 is_bare_cd "$CMD" && exit 0
 
-SESSION=$(printf '%s' "$IN" | jq -r '.session_id // "session"' 2>/dev/null) || exit 0
 SESSION=$(printf '%s' "$SESSION" | tr -c 'A-Za-z0-9._-' '-')
 [ -n "$SESSION" ] || SESSION=session
 
@@ -115,7 +120,8 @@ mkdir -p "$DIR" 2>/dev/null || exit 0
 
 # A spill file per call. $$ plus the clock keeps two calls in the same
 # second apart; the directory is per session already.
-STAMP="$(date +%Y%m%d-%H%M%S)-$$"
+printf -v STAMP '%(%Y%m%d-%H%M%S)T' -1
+STAMP="$STAMP-$$"
 CMD_FILE="$DIR/cmd-$STAMP.sh"
 OUT_FILE="$DIR/out-$STAMP.log"
 RUN_FILE="$DIR/run-$STAMP.sh"
@@ -141,8 +147,16 @@ printf '%s' "$CMD" > "$CMD_FILE" 2>/dev/null || exit 0
 } > "$RUN_FILE" 2>/dev/null || exit 0
 chmod +x "$RUN_FILE" 2>/dev/null
 
-# Old spills are the session's own scrollback; a day is plenty.
-find "$DIR" -maxdepth 1 -type f -mmin +1440 -delete >/dev/null 2>&1 || true
+# Old spills are the session's own scrollback; a day is plenty. Nothing
+# else sweeps this directory, but once an hour is often enough.
+printf -v NOW '%(%s)T' -1
+LAST=0
+[ -r "$DIR/.last-sweep" ] && read -r LAST < "$DIR/.last-sweep"
+case "$LAST" in ''|*[!0-9]*) LAST=0 ;; esac
+if [ $((NOW - LAST)) -ge 3600 ]; then
+    find "$DIR" -maxdepth 1 -type f -mmin +1440 -delete >/dev/null 2>&1 || true
+    printf '%s\n' "$NOW" > "$DIR/.last-sweep" 2>/dev/null || true
+fi
 
 printf '%s' "$IN" | jq -c --arg c "bash '$RUN_FILE'" --arg cap "$CAP" --arg out "$OUT_FILE" '{
     systemMessage: ("output-cap: showing the first " + $cap + " bytes; full output in " + $out),

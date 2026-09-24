@@ -165,19 +165,26 @@ if [ "${1:-}" = "--prompt" ]; then
     payload=$(cat 2>/dev/null) || exit 0
     [ -n "$payload" ] || exit 0
 
-    has_sid=$(printf '%s' "$payload" | jq -r 'has("session_id")' 2>/dev/null) || exit 0
+    # One jq call: has-session-id, session id, then the prompt (which may
+    # span lines) as the rest.
+    fields=$(printf '%s' "$payload" | jq -r '(has("session_id") | tostring),
+        (.session_id // "" | tostring),
+        (if has("prompt") then (.prompt // "") else "" end)' 2>/dev/null) || exit 0
+    has_sid=${fields%%$'\n'*}; fields=${fields#*$'\n'}
+    case "$fields" in
+        *$'\n'*) sid=${fields%%$'\n'*}; prompt=${fields#*$'\n'} ;;
+        *) sid=$fields; prompt="" ;;
+    esac
     [ "$has_sid" = "true" ] || exit 0
-    sid=$(printf '%s' "$payload" | jq -r '.session_id // empty' 2>/dev/null) || exit 0
+    [ -n "$sid" ] || exit 0
     sid=$(sanitize_id "$sid")
     [ -n "$sid" ] || exit 0
 
-    prompt=$(printf '%s' "$payload" | jq -r 'if has("prompt") then (.prompt // "") else "" end' 2>/dev/null) || exit 0
-
-    mkdir -p "$STATE_DIR" 2>/dev/null || exit 0
+    [ -d "$STATE_DIR" ] || mkdir -p "$STATE_DIR" 2>/dev/null || exit 0
     f=$(marker_file "$sid")
     if printf '%s' "$prompt" | grep -qiE "$PROMPT_RE"; then
         printf '1\n' > "$f" 2>/dev/null
-    else
+    elif [ -e "$f" ] || [ -L "$f" ]; then
         rm -f "$f" 2>/dev/null
     fi
     exit 0
@@ -189,22 +196,39 @@ fi
 payload=$(cat 2>/dev/null) || exit 0
 [ -n "$payload" ] || exit 0
 
-tool_name=$(printf '%s' "$payload" | jq -r 'if has("tool_name") then .tool_name else empty end' 2>/dev/null) || exit 0
+# One jq call: tool name, has-session-id, session id, then the command
+# (which may span lines) as the rest.
+fields=$(printf '%s' "$payload" | jq -r '(if has("tool_name") then .tool_name else "" end | tostring),
+    (has("session_id") | tostring), (.session_id // "" | tostring),
+    (.tool_input.command? // empty)' 2>/dev/null) || exit 0
+tool_name=${fields%%$'\n'*}; fields=${fields#*$'\n'}
+has_sid=${fields%%$'\n'*}; fields=${fields#*$'\n'}
+case "$fields" in
+    *$'\n'*) sid=${fields%%$'\n'*}; cmd=${fields#*$'\n'} ;;
+    *) sid=$fields; cmd="" ;;
+esac
 [ "$tool_name" = "Bash" ] || exit 0
-
-cmd=$(printf '%s' "$payload" | jq -r '.tool_input.command? // empty' 2>/dev/null) || exit 0
 [ -n "$cmd" ] || exit 0
 
 # Fold tabs to spaces so a tab between tokens can't hide a match (same
 # defensive step scripts/bd-guard.sh takes before its own rules run).
-cmd_norm=$(printf '%s' "$cmd" | tr '\t' ' ')
+cmd_norm=${cmd//$'\t'/ }
+
+# Every rule below needs one of these words in the command; most Bash
+# calls have none of them and are done here.
+case "$cmd_norm" in
+    *"${_sno}w"*|*git*|*gh*|*bd*) ;;
+    *) exit 0 ;;
+esac
 
 # vendor-CLI/module: unconditional — evaluated before the session_id gate
 # below, so it fires regardless of whether this payload carries a
 # session_id. No override, no marker involved.
+case "$cmd_norm" in *"${_sno}w"*)
 if printf '%s' "$cmd_norm" | grep -Eq "$SNOW_RE" || printf '%s' "$cmd_norm" | grep -Eq "$SNOW_MODULE_RE"; then
     deny "outbound-guard: no Snowflake access from this sandbox — never install or run its CLI; mock Snowflake and run everything else locally."
-fi
+fi ;;
+esac
 
 # git push: gated on gh_connected, not the marker below. No session_id
 # needed at all — there's no marker to look up for this verb — so this
@@ -213,19 +237,21 @@ fi
 # command like `git push && gh pr create` still reaches MARKER_RE below
 # (claude-orca-cc5) — MARKER_RE doesn't match a lone `git push`, so that
 # case still ends in a clean allow at the bottom of the script.
+case "$cmd_norm" in *git*)
 if printf '%s' "$cmd_norm" | grep -Eq "$GIT_PUSH_RE"; then
     if ! gh_connected; then
         deny "outbound-guard: no GitHub connection (gh auth status failed) — a push would fail; run 'gh auth login' or commit locally."
     fi
-fi
+fi ;;
+esac
 
 # Everything past this point (gh pr/repo create, bd dolt push) needs a
 # session_id to look up its marker — fail open on a payload missing one,
 # same posture as every other incomplete-input case, but scoped to this
 # rule only.
-has_sid=$(printf '%s' "$payload" | jq -r 'has("session_id")' 2>/dev/null) || exit 0
+case "$cmd_norm" in *gh*|*bd*) ;; *) exit 0 ;; esac
 [ "$has_sid" = "true" ] || exit 0
-sid=$(printf '%s' "$payload" | jq -r '.session_id // empty' 2>/dev/null) || exit 0
+[ -n "$sid" ] || exit 0
 sid=$(sanitize_id "$sid")
 [ -n "$sid" ] || exit 0
 
