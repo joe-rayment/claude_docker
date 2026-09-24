@@ -19,9 +19,11 @@
 # Subcommands:
 #   lane express|standard|deep [--why "…"]   declare the lane for this session
 #   lane                                     print the current lane
-#   lane --reset                             UserPromptSubmit hook: read the
-#                                            hook JSON on stdin, clear the lane
-#                                            for that session, remember the id
+#   lane --prompt                            UserPromptSubmit hook: --reset then
+#                                            --prime --short, in one process
+#   lane --reset                             read the hook JSON on stdin, clear
+#                                            the lane for that session, remember
+#                                            the id
 #   lane --prime [--short]                   print the pointer to the rubric
 #
 # Token diet (the --short primer): Claude Code fires UserPromptSubmit more
@@ -138,8 +140,11 @@ try:
 except Exception:
     pass' 2>/dev/null)
     fi
-    PAYLOAD_SID=$(sanitize_id "$(printf '%s\n' "$fields" | sed -n 1p)")
-    prompt=$(printf '%s\n' "$fields" | sed -n 2p)
+    prompt=""
+    case "$fields" in
+        *$'\n'*) prompt=${fields#*$'\n'}; prompt=${prompt%%$'\n'*} ;;
+    esac
+    PAYLOAD_SID=$(sanitize_id "${fields%%$'\n'*}")
     [ -n "$prompt" ] && PAYLOAD_PROMPT=$(printf '%s' "$prompt" | cksum | tr -cd '0-9 ' | tr ' ' '-')
     return 0
 }
@@ -157,6 +162,7 @@ usage() {
 usage: lane express|standard|deep [--why "…"]   declare this prompt's lane
        lane                                     print the current lane
        lane --reset                             clear lane (hook JSON on stdin)
+       lane --prompt                            --reset, then --prime --short (the hook)
        lane --prime [--short]                   print the pointer to the rubric
 EOF
 }
@@ -174,6 +180,65 @@ prime_short() {
     printf '[lane] route first — lane express|standard|deep · rubric: %s/CLAUDE.md § Lanes\n' "$(claude_config_dir)"
 }
 
+# --prime --short's decision, from an already-read payload.
+prime_short_for_prompt() {
+    local sid f cur
+    sid="$PAYLOAD_SID"
+    [ -n "$sid" ] || sid=$(resolve_sid)
+    if [ -z "$sid" ]; then
+        prime_short                          # nowhere to look: always remind
+        return 0
+    fi
+    f=$(state_file "$sid")
+    cur=$(read_lane "$f")
+    if [ "$(lane_rank "$cur")" -eq 0 ]; then
+        prime_short                          # unset: the route is still owed
+        return 0
+    fi
+    # Declared. A new prompt (fingerprint differs from the one --reset
+    # stored, or none stored yet) still gets the reminder -- the reset
+    # racing beside us is about to clear the lane anyway.
+    if [ -n "$PAYLOAD_PROMPT" ] && [ "$PAYLOAD_PROMPT" != "$(read_prompt "$f")" ]; then
+        prime_short
+    fi
+    return 0
+}
+
+# --reset's work, from an already-read payload.
+reset_for_prompt() {
+    local sid f prev
+    sid="$PAYLOAD_SID"
+    [ -n "$sid" ] || return 0               # no piped payload / no id: nothing to do
+    [ -d "$STATE_DIR" ] || mkdir -p "$STATE_DIR" 2>/dev/null || return 0
+    f=$(state_file "$sid")
+    prev=$(read_lane "$f")
+    # A re-fire: same prompt as the last reset, and a lane was declared
+    # since -- the route was taken for this prompt, so keep it.
+    if [ -n "$PAYLOAD_PROMPT" ] && [ "$(lane_rank "$prev")" -gt 0 ] \
+       && [ "$PAYLOAD_PROMPT" = "$(read_prompt "$f")" ]; then
+        printf '%s\n' "$sid" > "$STATE_DIR/last-session" 2>/dev/null
+        return 0
+    fi
+    printf '{"lane":"unset","prev":"%s","prompt":"%s","ts":%s,"escalated":false}\n' \
+        "$prev" "$PAYLOAD_PROMPT" "$(date +%s)" > "$f" 2>/dev/null
+    printf '%s\n' "$sid" > "$STATE_DIR/last-session" 2>/dev/null
+    return 0
+}
+
+# ── --prompt (the UserPromptSubmit hook): --reset, then --prime --short ──────
+#
+# One process instead of two hooks. Run in this order, the reminder shows
+# on a new prompt and on an undeclared lane, and stays silent on a re-fire
+# of a prompt whose lane was declared -- the same outcomes the two hooks
+# reached running side by side.
+
+if [ "${1:-}" = "--prompt" ]; then
+    read_payload
+    reset_for_prompt
+    prime_short_for_prompt
+    exit 0
+fi
+
 # ── --prime ──────────────────────────────────────────────────────────────────
 
 if [ "${1:-}" = "--prime" ]; then
@@ -183,24 +248,7 @@ if [ "${1:-}" = "--prime" ]; then
     fi
     # --short: once per prompt, and silent once the lane is declared.
     read_payload
-    sid="$PAYLOAD_SID"
-    [ -n "$sid" ] || sid=$(resolve_sid)
-    if [ -z "$sid" ]; then
-        prime_short                          # nowhere to look: always remind
-        exit 0
-    fi
-    f=$(state_file "$sid")
-    cur=$(read_lane "$f")
-    if [ "$(lane_rank "$cur")" -eq 0 ]; then
-        prime_short                          # unset: the route is still owed
-        exit 0
-    fi
-    # Declared. A new prompt (fingerprint differs from the one --reset
-    # stored, or none stored yet) still gets the reminder -- the reset
-    # racing beside us is about to clear the lane anyway.
-    if [ -n "$PAYLOAD_PROMPT" ] && [ "$PAYLOAD_PROMPT" != "$(read_prompt "$f")" ]; then
-        prime_short
-    fi
+    prime_short_for_prompt
     exit 0
 fi
 
@@ -208,21 +256,7 @@ fi
 
 if [ "${1:-}" = "--reset" ]; then
     read_payload
-    sid="$PAYLOAD_SID"
-    [ -n "$sid" ] || exit 0                 # no piped payload / no id: nothing to do
-    mkdir -p "$STATE_DIR" 2>/dev/null || exit 0
-    f=$(state_file "$sid")
-    prev=$(read_lane "$f")
-    # A re-fire: same prompt as the last reset, and a lane was declared
-    # since -- the route was taken for this prompt, so keep it.
-    if [ -n "$PAYLOAD_PROMPT" ] && [ "$(lane_rank "$prev")" -gt 0 ] \
-       && [ "$PAYLOAD_PROMPT" = "$(read_prompt "$f")" ]; then
-        printf '%s\n' "$sid" > "$STATE_DIR/last-session" 2>/dev/null
-        exit 0
-    fi
-    printf '{"lane":"unset","prev":"%s","prompt":"%s","ts":%s,"escalated":false}\n' \
-        "$prev" "$PAYLOAD_PROMPT" "$(date +%s)" > "$f" 2>/dev/null
-    printf '%s\n' "$sid" > "$STATE_DIR/last-session" 2>/dev/null
+    reset_for_prompt
     exit 0
 fi
 

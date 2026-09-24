@@ -382,3 +382,31 @@ hook_prompt() { printf '{"session_id":"%s","hook_event_name":"UserPromptSubmit",
     [ -L "$REPO_ROOT/bin/lane" ]
     [ "$(readlink "$REPO_ROOT/bin/lane")" = "../scripts/lane.sh" ]
 }
+
+# ── --prompt: the UserPromptSubmit hook, --reset then --prime --short ───────
+
+# Guards:   the one-process prompt hook reaches the same outcomes the two
+#           separate hooks (--reset, --prime --short) did.
+# Fails if: --prompt forgets to clear a stale lane, stays silent on a new
+#           prompt, or nags on a re-fire after the lane was declared.
+# Run:      bats -f 'lane --prompt' tests/lane.bats
+@test "lane --prompt: a new prompt clears the lane and prints the reminder" {
+    run bash "$LANE" --prompt <<<"$(hook_prompt test-session-1 "first ask")"
+    [ "$status" -eq 0 ]
+    [[ "$output" == "[lane]"* ]]
+    lane standard >/dev/null
+    run bash "$LANE" --prompt <<<"$(hook_prompt test-session-1 "second ask")"
+    [[ "$output" == "[lane]"* ]]
+    run lane
+    [ "$output" = "[lane] current: unset" ]
+}
+
+@test "lane --prompt: a re-fire of a declared prompt keeps the lane and prints nothing" {
+    bash "$LANE" --prompt <<<"$(hook_prompt test-session-1 "same ask")" >/dev/null
+    lane deep >/dev/null
+    run bash "$LANE" --prompt <<<"$(hook_prompt test-session-1 "same ask")"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+    run lane
+    [ "$output" = "[lane] current: deep" ]
+}

@@ -45,11 +45,10 @@
       {
         "matcher": "",
         "hooks": [
-          { "type": "command", "command": "[ -x \"__HOST__/template/bin/lane\" ] && exec \"__HOST__/template/bin/lane\" --reset; exit 0" },
           { "type": "command", "command": "[ -x \"__HOST__/template/bin/outbound-guard\" ] && exec \"__HOST__/template/bin/outbound-guard\" --prompt; exit 0" },
           { "type": "command", "command": "[ -x \"__HOST__/template/bin/cost-mirror\" ] && exec \"__HOST__/template/bin/cost-mirror\"; exit 0" },
           { "type": "command", "command": "[ -x \"__HOST__/template/bin/tier-prime\" ] && exec \"__HOST__/template/bin/tier-prime\" --short; exit 0" },
-          { "type": "command", "command": "[ -x \"__HOST__/template/bin/lane\" ] && exec \"__HOST__/template/bin/lane\" --prime --short; exit 0" }
+          { "type": "command", "command": "[ -x \"__HOST__/template/bin/lane\" ] && exec \"__HOST__/template/bin/lane\" --prompt; exit 0" }
         ]
       }
     ],
