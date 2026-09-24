@@ -188,15 +188,8 @@ import sys
 # loading them up front cost ~8 ms on every other Bash call.
 
 
-def _claude_config_dir():
-    """Resolves the Claude config dir: $CLAUDE_CONFIG_DIR if set, else the
-    default under the user's home directory (kept out of a single literal
-    here on purpose -- see scripts/lib/paths.sh's header and the grep gate
-    in tests/config-sync.bats)."""
-    override = os.environ.get("CLAUDE_CONFIG_DIR")
-    if override:
-        return override
-    return os.path.join(os.path.expanduser("~"), ".claude")
+from hooklib import BASH_SPLIT_RE, safe_session_id  # noqa: E402
+from hooklib import claude_config_dir as _claude_config_dir  # noqa: E402
 
 MODE_FILE = os.path.join(_claude_config_dir(), "contract-gate.mode")
 RECOGNIZED_MODES = {"off", "warn", "enforce"}
@@ -210,11 +203,9 @@ BD_SHOW_TIMEOUT_SECONDS = 5
 LANE_STATE_DIR_ENV = "LANE_STATE_DIR"
 DEFAULT_LANE_STATE_DIR = os.path.join(_claude_config_dir(), "cache", "lane")
 LIGHT_LANES = {"express", "standard"}
-SESSION_ID_SAFE_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
-# Same compound-command splitter as delegation-gate: a single Bash tool
-# call is often several shell commands chained together.
-BASH_SPLIT_RE = re.compile(r"&&|\|\||\||;|\n")
+# BASH_SPLIT_RE (hooklib): a single Bash tool call is often several shell
+# commands chained together.
 BD_CLOSE_RE = re.compile(r"^(?:\S*/)?bd\s+(?:close|done)\b")
 BD_UPDATE_RE = re.compile(r"^(?:\S*/)?bd\s+update\b")
 # `bd update <id> --status closed` closes a bead without saying "close".
@@ -379,13 +370,7 @@ def lane_state_dir():
     return os.path.expanduser(os.environ.get(LANE_STATE_DIR_ENV) or DEFAULT_LANE_STATE_DIR)
 
 
-def sanitize_session_id(raw):
-    """Same character allowlist as lane.sh's sanitize_id(): strip everything
-    outside [A-Za-z0-9._-] so a hostile session_id can never escape the
-    state directory."""
-    if not isinstance(raw, str):
-        return ""
-    return SESSION_ID_SAFE_RE.sub("", raw)
+sanitize_session_id = safe_session_id  # hooklib; lane.sh's allowlist
 
 
 def current_lane(session_id):

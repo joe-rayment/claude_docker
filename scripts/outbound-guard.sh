@@ -1,75 +1,42 @@
 #!/usr/bin/env bash
-# outbound-guard — mechanically enforces "push and deploy are the user's
-# actions" (config/claude-user-memory.md), the same pattern as bd-guard: one
-# hook, one sentence of prose, instead of a paragraph the prior alone keeps
-# failing to hold (beads_claude_docker-y2qe).
+# outbound-guard — enforces "push and deploy are the user's actions"
+# (config/claude-user-memory.md) mechanically, like bd-guard: one hook
+# instead of prose the model keeps failing to hold (beads_claude_docker-y2qe).
 #
-# Two modes, two hook events:
-#
-#   PreToolUse (matcher Bash; hook JSON on stdin)
-#     - deny any command containing a bare `sno` + `w`/`sno` + `wsql`
-#       invocation, or a `sno` + `wflake.cli` module invocation
-#       (`python -m sno` + `wflake.cli …`, `python3 -m sno` + `wflake.cli
-#       …`, or the dotted module path appearing any other way) —
-#       word-boundary, anywhere in the line, including after &&/;/|.
-#       Evaluated BEFORE the session_id gate below and therefore truly
-#       unconditional: it fires for any valid-JSON payload naming
-#       tool_name "Bash" with a command, session_id or not. No override: no
-#       Snowflake credentials exist here and never will.
-#     - deny `git push` unless there is a live GitHub connection (`gh auth
-#       status` exits 0, within OUTBOUND_GUARD_GH_TIMEOUT seconds, default
-#       10) — connected -> allow; gh absent, not connected, or the check
-#       timing out -> deny. This check runs ONLY when the command matches
-#       `git push`, so an ordinary Bash call never pays for the ~0.4s `gh`
-#       invocation, and it needs no session_id at all: there's no marker
-#       to look up for this verb any more.
-#     - deny `gh pr create`, `gh repo create`, `bd dolt push` unless a
-#       per-session marker says the CURRENT prompt asked for it — this
-#       rule alone needs a session_id (to look up the marker), so a
-#       payload missing one fails OPEN for these commands specifically,
-#       same as every other incomplete-payload case.
+#   PreToolUse (matcher Bash; hook JSON on stdin), in this order:
+#     - deny any standalone `sno`+`w` / `sno`+`wsql` invocation, or the
+#       `sno`+`wflake.cli` module however it is run (`python -m …`, or the
+#       dotted path anywhere on the line) -- anywhere in the line, after
+#       &&/;/| too. Unconditional: no session id needed, no override (no
+#       Snowflake credentials exist here and never will).
+#     - deny `git push` unless `gh auth status` succeeds within
+#       OUTBOUND_GUARD_GH_TIMEOUT seconds (default 10). Checked only when
+#       the command matches `git push`, so other calls never pay for `gh`;
+#       needs no session id.
+#     - deny `gh pr create`, `gh repo create`, `bd dolt push` unless this
+#       session's marker says the CURRENT prompt asked for it. Only this
+#       rule needs a session id; a payload without one fails open here.
 #
 #   outbound-guard --prompt (UserPromptSubmit; hook JSON on stdin)
-#     - sets the marker for session_id when the prompt's own wording asks
-#       for a push/publish/PR (case-insensitive); clears it otherwise. This
-#       is the ONLY place the marker is written, so a prompt that doesn't
-#       ask for a push clears any marker a PRIOR prompt in the same session
-#       left set — "push only when asked, in that moment," never a standing
-#       grant.
+#     - sets the marker when the prompt's own wording asks for a
+#       push/publish/PR (case-insensitive) and clears it otherwise, so a
+#       grant lasts for that prompt only, never as a standing permission.
 #
-# State: one flag file per session under $OUTBOUND_GUARD_STATE_DIR (default
-# the config dir's cache/outbound-guard -- see lib/paths.sh's
-# claude_config_dir()), named <sanitized-session-id>.push -- presence means
-# "this prompt asked for a push"; same sanitize/state-dir pattern as
-# scripts/lane.sh.
+# State: $OUTBOUND_GUARD_STATE_DIR (default <config dir>/cache/outbound-guard,
+# via lib/paths.sh), one <sanitized-session-id>.push file per session;
+# presence means "this prompt asked for a push". Same sanitize/state-dir
+# pattern as scripts/lane.sh.
 #
-# Word-boundary matching deliberately avoids GNU grep's `\b` extension (same
-# reasoning as scripts/bd-guard.sh's own header comment: explicit character
-# classes keep behavior stable) — a match requires the token to be flanked
-# by start/end-of-string or a non `[A-Za-z0-9_-]` character, so the vendor
-# name does NOT fire inside its "-cli" or "-snowpark-python" packaged forms
-# (the next character is a letter, not a boundary), only for a genuinely
-# standalone CLI-name token. The module-form check (SNOW_MODULE_RE) reuses
-# the same boundary style around the literal dotted path for that vendor's
-# `cli` module — that exact substring (a literal `.`, not `-`) never
-# appears in the allowed hyphenated package names (`*-cli`,
-# `*-snowpark-python`, `*-connector-python`), so no interpreter/`-m`-specific
-# grammar is needed to keep those allowed while still catching `python -m
-# <vendor>.cli`/`python3 -m <vendor>.cli`/any other way that dotted path
-# shows up on the line.
+# Matching: explicit character classes rather than GNU grep's `\b` (as in
+# bd-guard.sh). A token matches only when flanked by start/end of line or a
+# character outside [A-Za-z0-9_-], so the vendor name does NOT fire inside
+# its hyphenated package names (`*-cli`, `*-snowpark-python`,
+# `*-connector-python`), and the module check's literal `.cli` never
+# appears in them either.
 #
-# Deny output follows scripts/workflow-lint.sh's hookSpecificOutput shape
-# (permissionDecision: "deny" + permissionDecisionReason), not bd-guard.sh's
-# older exit-2/stderr contract — this hook always exits 0; the JSON itself
-# is what blocks.
-#
-# MUST fail open, like every hook here: malformed/empty stdin or a non-Bash
-# tool all exit 0 with no output. A payload with no session_id fails open
-# for the marker-gated verbs (gh pr create, gh repo create, bd dolt push),
-# which need one to look up their marker — the vendor-CLI deny and the git
-# push connection check are evaluated first and need no session_id at all.
-# jq is a hard dependency of this template; its absence still fails open
-# rather than erroring.
+# Output: the hookSpecificOutput deny shape (as in workflow-lint.sh); always
+# exit 0 -- the JSON blocks, not the exit code. Fails open everywhere:
+# malformed or empty stdin, a non-Bash tool, or no jq -> exit 0, no output.
 
 set -u
 

@@ -206,15 +206,7 @@ import time
 from datetime import date, datetime, timezone
 
 
-def _claude_config_dir():
-    """Resolves the Claude config dir: $CLAUDE_CONFIG_DIR if set, else the
-    default under the user's home directory (kept out of a single literal
-    here on purpose -- see scripts/lib/paths.sh's header and the grep gate
-    in tests/config-sync.bats)."""
-    override = os.environ.get("CLAUDE_CONFIG_DIR")
-    if override:
-        return override
-    return os.path.join(os.path.expanduser("~"), ".claude")
+from hooklib import claude_config_dir as _claude_config_dir  # noqa: E402
 
 
 def fmt(n):

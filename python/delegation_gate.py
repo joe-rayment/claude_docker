@@ -146,15 +146,8 @@ import sys
 import time
 
 
-def _claude_config_dir():
-    """Resolves the Claude config dir: $CLAUDE_CONFIG_DIR if set, else the
-    default under the user's home directory (kept out of a single literal
-    here on purpose -- see scripts/lib/paths.sh's header and the grep gate
-    in tests/config-sync.bats)."""
-    override = os.environ.get("CLAUDE_CONFIG_DIR")
-    if override:
-        return override
-    return os.path.join(os.path.expanduser("~"), ".claude")
+from hooklib import BASH_SPLIT_RE, safe_session_id  # noqa: E402
+from hooklib import claude_config_dir as _claude_config_dir  # noqa: E402
 
 STATE_DIR = os.path.join(_claude_config_dir(), "cache", "delegation-gate")
 MODE_FILE = os.path.join(_claude_config_dir(), "delegation-gate.mode")
@@ -188,7 +181,6 @@ EXEMPT_BASH_RE = re.compile(
 # writes `cd /workspace && bd close ... && git push`). EXEMPT_BASH_RE
 # alone only ever sees the whole string, so it anchors on the FIRST
 # command -- a leading `cd` made an otherwise all-exempt line count.
-BASH_SPLIT_RE = re.compile(r"&&|\|\||\||;|\n")
 CD_SEGMENT_RE = re.compile(r"^cd\b")
 
 # Edit exemption: the harness auto-memory dir is $CLAUDE_CONFIG_DIR/projects/<slug>/memory/.
@@ -263,7 +255,7 @@ def get_lane(session_id):
     Session ids are sanitized the same way lane.sh sanitizes them so both
     sides agree on the filename."""
     try:
-        sid = re.sub(r"[^A-Za-z0-9._-]", "", session_id)
+        sid = safe_session_id(session_id)
         if not sid:
             return "unset"
         with open(os.path.join(lane_state_dir(), f"{sid}.json")) as fh:
@@ -408,33 +400,20 @@ def emit_note(text):
 
 
 def emit_warn(streak):
-    text = (
+    emit_note(
         f"[delegation-gate] {streak} consecutive inline tool calls in the main "
         "loop — batch remaining recon into a scout, or hand edits to an "
         "executor slice (`orca-dispatch <bead>`, else the Agent tool). Streak "
         "resets when you use the Agent tool."
     )
-    print(json.dumps({
-        "hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "permissionDecision": "allow",
-            "additionalContext": text,
-        }
-    }))
 
 
 def emit_express_warn(streak):
-    print(json.dumps({
-        "hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "permissionDecision": "allow",
-            "additionalContext": (
-                f"[delegation-gate] express lane, {streak} inline tool calls "
-                "— express tasks are small by definition. Mis-routed? "
-                "Escalate (`lane standard --why …`) or finish now."
-            ),
-        }
-    }))
+    emit_note(
+        f"[delegation-gate] express lane, {streak} inline tool calls "
+        "— express tasks are small by definition. Mis-routed? "
+        "Escalate (`lane standard --why …`) or finish now."
+    )
 
 
 def main():
