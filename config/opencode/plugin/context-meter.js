@@ -1,11 +1,15 @@
 // context-meter.js -- opencode plugin (ContextMeter), claude-orca-7lz.2,
-// the headless twin of scripts/context-meter.sh: meters a HEADLESS
-// opencode run's (an Orca worker or recon) own most-recent step-finish
-// token count, per session. A soft [context-meter] notice is appended to
-// every tool result once past CLAUDE_ORCA_CONTEXT_BUDGET; every tool call
-// is refused once past CLAUDE_ORCA_CONTEXT_CEILING, aborting the session
-// on the 3rd consecutive refusal. Plain ESM, no imports: opencode must be
-// able to load this with no node_modules present.
+// amended by claude-orca-7lz.4: the headless twin of
+// scripts/context-meter.sh, metering a HEADLESS opencode run's (an Orca
+// worker or recon) own most-recent step-finish token count, per session.
+// A soft [context-meter] notice rides in the system prompt of every model
+// call once past CLAUDE_ORCA_CONTEXT_BUDGET -- a real run showed the
+// model ignoring the same notice when it was appended to tool output
+// instead, and that channel's crossing step-finish arrives too late
+// anyway (after that step's own tool calls). Every tool call is refused
+// once past CLAUDE_ORCA_CONTEXT_CEILING, aborting the session on the 3rd
+// consecutive refusal. Plain ESM, no imports: opencode must be able to
+// load this with no node_modules present.
 
 export const ContextMeter = async ({ client }) => {
     function isNonNegInt(v) {
@@ -116,15 +120,17 @@ export const ContextMeter = async ({ client }) => {
             }
         },
 
-        "tool.execute.after": async (input, output) => {
+        "experimental.chat.system.transform": async (input, output) => {
             try {
-                const s = sessions.get(input && input.sessionID);
-                if (!s) return;
+                const sessionID = input && input.sessionID;
+                if (!sessionID) return; // no sessionID -> no-op
+                const s = sessions.get(sessionID);
+                if (!s) return; // unknown session -> no-op
                 if (s.pct >= BUDGET) {
-                    output.output = (output.output || "") + "\n\n" + softNotice(s.pct);
+                    output.system.push(softNotice(s.pct));
                 }
             } catch (e) {
-                // any error inside -> leave output untouched
+                // any error inside -> no-op
             }
         },
 
