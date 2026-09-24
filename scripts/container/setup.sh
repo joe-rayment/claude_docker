@@ -472,6 +472,10 @@ phase_orca() {
     test -x /opt/Orca/resources/bin/orca-ide
     orca_relink
     echo "${ORCA_VERSION}" > /opt/orca/VERSION
+    # Seed the default theme in the same step that unpacked the archive: a
+    # later image layer that rewrote app.asar carried a second ~113 MB copy
+    # of it. phase_template still re-seeds a folder's own theme at boot.
+    patch_orca_web_theme
 }
 
 # --- the agent user -----------------------------------------------------

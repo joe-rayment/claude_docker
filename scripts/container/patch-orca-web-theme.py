@@ -292,12 +292,13 @@ def main(argv=None):
               % (args.terminal_theme, DEFAULT_TERMINAL_THEME), file=sys.stderr)
         args.terminal_theme = DEFAULT_TERMINAL_THEME
 
-    # Read-only for the two modes that only read. setup.sh --check says
-    # it "installs nothing, needs no root", and opening the archive r+b
-    # made that false: every non-root caller got PermissionError on a
-    # root-owned app.asar and read it as the theme not being seeded.
-    mode = "rb" if (args.check or args.print) else "r+b"
-    with open(args.asar, mode) as f:
+    # Read-only until a write is actually needed. setup.sh --check says it
+    # "installs nothing, needs no root", and opening the archive r+b made
+    # that false (every non-root caller got PermissionError on a root-owned
+    # app.asar). And on an overlay filesystem -- a Docker layer, a
+    # container's writable layer -- merely opening for write copies the
+    # whole ~113 MB archive up, even when nothing changes.
+    with open(args.asar, "rb") as f:
         header_size, raw, header = read_header(f)
         entry = html_entry(header)
         icon = web_icon_asset(header)
@@ -390,12 +391,13 @@ def main(argv=None):
                 print("[patch-orca-web] warning: leaving the header hash "
                       "for web-index.html untouched", file=sys.stderr)
 
-        f.seek(offset)
-        f.write(new_b)
-        if new_raw != raw:
-            f.seek(16)
-            f.write(new_raw)
-        f.flush()
+        with open(args.asar, "r+b") as w:
+            w.seek(offset)
+            w.write(new_b)
+            if new_raw != raw:
+                w.seek(16)
+                w.write(new_raw)
+            w.flush()
 
     print("[patch-orca-web] web-index.html now seeds theme %s + terminal "
           "theme %s + the clipboard shim + %s (%s)"

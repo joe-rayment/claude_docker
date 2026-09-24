@@ -12,9 +12,6 @@
 .github
 attachments
 graphify-out
-tests/.cache
-.beads/backup
-.beads/embeddeddolt
 .playwright-mcp
 Orca.app
 **/__pycache__
@@ -22,3 +19,13 @@ Orca.app
 **/.DS_Store
 *.dmg
 *.AppImage
+
+# Repo-only material nothing in the image reads (slim-down D2). Most
+# commits touch only these paths -- tests, the bd export, plans -- and each
+# such commit used to invalidate the `COPY . /opt/claude-orca` layer on the
+# next `claude-dev --update`.
+tests
+.beads
+.claude
+.codex
+.agents

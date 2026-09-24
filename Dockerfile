@@ -52,6 +52,10 @@ RUN ORCA_VERSION=$ORCA_VERSION /opt/claude-orca-setup.sh --image
 RUN /opt/claude-orca-setup.sh --phase bats
 RUN /opt/claude-orca-setup.sh --phase dolt
 RUN /opt/claude-orca-setup.sh --phase bd
+# phase_orca seeds the default web theme into app.asar in the same layer
+# that unpacks it; a later layer rewriting the archive carried a second
+# ~113 MB copy (.claude/plans/recovery.md, `docker history`).
+COPY scripts/container/patch-orca-web-theme.py /opt/patch-orca-web-theme.py
 RUN /opt/claude-orca-setup.sh --phase orca
 RUN /opt/claude-orca-setup.sh --phase opencode
 
