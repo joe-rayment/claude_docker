@@ -1,7 +1,57 @@
 # Slim-down plan — smaller, faster, same behavior
 
-Status: PROPOSED (Sept 2026). Nothing here is implemented yet. Each item has
-an ID so it can be approved, dropped or turned into a bead one at a time.
+Status: IMPLEMENTED (Sept 2026) except D3, D5, E4 and G4 -- see "Outcome"
+below. B5, D1, D2, D4 and D6 touch the host side or the image and are
+UNVERIFIED until `tests/mac-e2e.sh` runs on a Mac against them.
+
+## Outcome
+
+Measured on the same Linux box before (commit 674228f) and after, medians
+of 30 calls:
+
+| What | Before | After |
+|---|---|---|
+| Hooks on one Bash call (CPU, 9 processes) | ~305 ms | ~195 ms |
+| Slowest hook on a Bash call | 55 ms (outbound-guard) | 32 ms (contract-gate, delegation-gate) |
+| Hooks on one prompt (CPU) | ~229 ms, 5 processes | ~132 ms, 4 processes |
+| Hook on an Agent spawn (tier-gate) | 52 ms | 24 ms |
+| Status line, per message | 65 ms, 20 processes, own API call | 27 ms, 5 processes, no API call |
+| Source (scripts, python, config, docs, bin) | 1,529 KB | 1,340 KB |
+| Test suite, everyday subset / all files | ~8 / ~15 min one file at a time | ~2 / ~4 min, files in parallel |
+
+Per item:
+- A1-A6, F1-F5, found-along-the-way: done.
+- B1-B8: done. branch-guard got the B1/B2 treatment too once the final
+  benchmark showed it had become the slowest Bash hook (31 -> 13 ms).
+- C1-C5: done. C5 keys its "already told this agent" marker by the
+  agent's transcript path, under $TMPDIR.
+- D1, D2, D4, D6: done, UNVERIFIED on a Mac. D4 went a safer way than
+  planned: the boot pass still checks every file but only chowns the
+  ones not already agent-owned, so the end state is unchanged.
+- D3: NOT done. Batching the inspects needs either a new combined Go
+  template, which can't be checked against a real Docker CLI from here
+  (and a bad one would make every open recreate a running container), or
+  JSON + jq with a fallback for Macs without jq, which adds more code
+  than it removes. The saving is ~0.3 s per `claude-dev` open.
+- D5: NOT done. The plan made it conditional on setup.sh changing often;
+  it is a risky refactor of the image build that can't be exercised
+  without Docker.
+- E1-E3, E5: done. E4: NOT done -- only two hooks could share the helper
+  without making branch-guard and workflow-lint load a library they skip
+  today, which saves ~3 lines.
+- G1-G3, G5: done (G5 kept SLOW_FILES: the slow files skip in under a
+  second on a box without Orca/Docker, and are slow where those exist).
+- G4: NOT done. Registering a project writes that test's own absolute
+  temp paths into claude-orca.json and the docker stub's state, so a
+  per-file snapshot copied into the next test would hand it a fixture the
+  real flow never produces. With files running in parallel the full
+  suite is ~4 minutes already.
+
+Tests after all of it: the full suite, 101 files / 1,229 cases, fails
+only the 8 cases that fail the same way on the original code on this box
+(no Docker, no Orca binary, no `agent` user; one of them,
+"entrypoint passes its own user-data dir", is flaky there before and
+after).
 
 How this was found: seven parallel reviews (hook timing, what the model
 reads, dead code, duplication, container/startup, test suite, docs), then

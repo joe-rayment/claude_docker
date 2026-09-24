@@ -7,7 +7,8 @@
 # applies here -- there is no baked image, and every suite lives at
 # tests/*.bats in the checkout being tested.
 #
-# FAST BY DEFAULT. The whole suite is ~8 minutes, and the bulk of that is a
+# FAST BY DEFAULT. The whole suite is ~15 minutes one file at a time (~4
+# with GNU parallel on 4 cores), and the bulk of that is a
 # handful of files that stand up real processes (a real Orca, a real local
 # end-to-end start) or churn through big fixtures. Those live in SLOW_FILES
 # below -- chosen by timing every file, not by guessing -- and are skipped
@@ -30,10 +31,15 @@ set -e
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TEST_DIR="$REPO_ROOT/tests"
 
-# Measured on this box (bats per file, seconds): orca-dispatch 44,
+# Measured on the dev box (bats per file, seconds): orca-dispatch 44,
 # orca-run 44, code-map 37, first-start-dns 33, container-entrypoint 32,
 # prime-hook 31, container-image 30, bootstrap 29, fresh-project 19,
 # bd-guard 18, launcher-v3-build 16, toolchain-cache 14, update-hygiene 11.
+# Re-timed on a 4-core Linux box without Orca or Docker (Sept 2026), where
+# the files that need them skip in under a second: container-entrypoint
+# 158, bd-guard 89, launcher-v3 72, bootstrap 51, first-start-dns 35,
+# launcher-v3-build 33, code-map 27. The list stays as it is: each file is
+# slow where the tools it needs are installed.
 # Everything else is under 9s and most of it under 1s. e2e-local is quick
 # but starts a real local run, so it goes here too.
 SLOW_FILES="

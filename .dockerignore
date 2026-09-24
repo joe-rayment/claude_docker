@@ -12,6 +12,7 @@
 .github
 attachments
 graphify-out
+tests/.cache
 .playwright-mcp
 Orca.app
 **/__pycache__

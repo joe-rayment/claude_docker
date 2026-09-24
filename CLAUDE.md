@@ -12,7 +12,7 @@ This file provides instructions and context for AI coding agents working on this
 
 ```bash
 ./run-tests.sh           # the fast subset -- the everyday run, ~2 minutes
-./run-tests.sh --all     # every file, ~8 minutes (CLAUDE_ORCA_TEST_ALL=1 does the same)
+./run-tests.sh --all     # every file, ~4 minutes (CLAUDE_ORCA_TEST_ALL=1 does the same)
 bats tests/*.bats        # the whole suite, directly
 bats tests/docs.bats     # one file
 bats -f 'git push' tests/outbound-guard.bats   # only the cases whose name contains "git push"
@@ -28,6 +28,9 @@ whether it checks behavior or only wording, and how to read a failure.
 The default run skips the dozen-odd files that stand up real processes or
 churn through big fixtures -- the slow set was picked by timing every file,
 and `run-tests.sh` names it in `SLOW_FILES` and prints how many it skipped.
+Both times assume GNU `parallel` (`brew install parallel`), which lets
+`run-tests.sh` run files side by side; one file at a time they are ~8 and
+~15 minutes on a 4-core Linux box.
 There is no CI in this repo: `.github/workflows/image.yml` used to build and
 publish the image on every push to main and run its own smoke and e2e
 checks, but once the image stopped being pulled from a registry and started

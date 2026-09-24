@@ -44,7 +44,7 @@ From the repo root:
 
 ```bash
 ./run-tests.sh                 # the everyday run: every file except the slow ones (~2 min)
-./run-tests.sh --all           # everything, slow files included (~8 min)
+./run-tests.sh --all           # everything, slow files included (~4 min)
 bats tests/lane.bats           # one file
 bats -f 'git push' tests/outbound-guard.bats   # only the cases in that file whose name contains "git push"
 ```
@@ -54,6 +54,9 @@ plain English; `/test lane` runs a subset; `/test explain lane.bats`
 explains a file without running it.
 
 bats itself has to be installed first (`brew install bats-core` on a Mac).
+Those times assume GNU parallel is installed too (`brew install parallel`):
+it lets `run-tests.sh` run several files at once. Without it the same runs
+take about four times as long.
 
 ### Reading the output
 

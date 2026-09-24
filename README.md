@@ -436,7 +436,7 @@ runs `./claude-dev --update` moves to a new image with the rebuild.
 ## Tests
 
 ```bash
-./run-tests.sh           # the fast subset (~2 min); --all for every file
+./run-tests.sh           # the fast subset (~2 min with GNU parallel); --all for every file
 bats tests/*.bats        # the suite directly
 bats tests/docs.bats     # one file
 ```
