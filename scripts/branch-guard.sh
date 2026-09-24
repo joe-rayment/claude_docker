@@ -181,18 +181,24 @@ check_segment() {
 payload=$(cat 2>/dev/null) || exit 0
 [ -n "$payload" ] || exit 0
 
-tool_name=$(printf '%s' "$payload" | jq -r 'if has("tool_name") then .tool_name else empty end' 2>/dev/null) || exit 0
+# One jq call: tool name, cwd, then the command (which may span lines) and
+# a "." so nothing empty falls off the end of $(...).
+fields=$(printf '%s' "$payload" | jq -r '(if has("tool_name") then .tool_name else "" end | tostring),
+    (.cwd? // "" | tostring), (.tool_input.command? // ""), "."' 2>/dev/null) || exit 0
+tool_name=${fields%%$'\n'*}; fields=${fields#*$'\n'}
+cwd=${fields%%$'\n'*}; fields=${fields#*$'\n'}
+cmd=${fields%.}; cmd=${cmd%$'\n'}
+while [ "${cmd%$'\n'}" != "$cmd" ]; do cmd=${cmd%$'\n'}; done   # as $(...) would
 [ "$tool_name" = "Bash" ] || exit 0
-
-cmd=$(printf '%s' "$payload" | jq -r '.tool_input.command? // empty' 2>/dev/null) || exit 0
 [ -n "$cmd" ] || exit 0
-
-cwd=$(printf '%s' "$payload" | jq -r '.cwd? // empty' 2>/dev/null) || exit 0
 [ -n "$cwd" ] && PAYLOAD_CWD="$cwd"
 
 # Fold tabs to spaces so a tab between tokens can't hide a match (same
 # defensive step scripts/outbound-guard.sh takes before its rules run).
-cmd_norm=$(printf '%s' "$cmd" | tr '\t' ' ')
+cmd_norm=${cmd//$'\t'/ }
+
+# Every rule below is about a `git` command; most Bash calls have none.
+case "$cmd_norm" in *git*) ;; *) exit 0 ;; esac
 
 # Escape hatch: BRANCH_OK=1 anywhere in the command text, word-bounded, as
 # an env prefix or after an operator.
