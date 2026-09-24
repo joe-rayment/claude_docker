@@ -65,7 +65,7 @@ run_case() {
     [ "$status" -eq 0 ]
     line="$(worker_done_line "$output")"
     [ -n "$line" ]
-    notes="$(orca_stub_calls 'bd update')"
+    notes="$(grep -A20 -e 'bd update' "$ORCA_STUB_LOG")"
 }
 
 @test "1 bold **HANDOFF** with a bold left: on its own line is a handoff, note carries the original bold line" {
