@@ -61,7 +61,7 @@ while [ "${CMD%$'\n'}" != "$CMD" ]; do CMD=${CMD%$'\n'}; done   # as $(...) woul
 [ "$TOOL" = "Bash" ] || exit 0
 
 # Main loop only. A populated agent_id is the one positive subagent signal
-# (see python/delegation-gate.py's is_main_loop() for the evidence).
+# (see python/delegation_gate.py's is_main_loop() for the evidence).
 [ -n "$AGENT" ] && exit 0
 [ "$BG" = "true" ] && exit 0
 [ -n "$CMD" ] || exit 0

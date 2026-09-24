@@ -26,7 +26,7 @@ IN=$(cat 2>/dev/null) || exit 0
 [ -n "$IN" ] || exit 0
 
 # Main loop only. A populated agent_id is the one positive subagent
-# signal (see python/delegation-gate.py's is_main_loop() for the
+# signal (see python/delegation_gate.py's is_main_loop() for the
 # evidence); absence -- or an empty string -- means the main loop.
 AGENT_ID=$(printf '%s' "$IN" | jq -r '.agent_id // empty' 2>/dev/null) || exit 0
 [ -n "$AGENT_ID" ] || exit 0

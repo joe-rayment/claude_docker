@@ -72,7 +72,7 @@ IN=$(cat 2>/dev/null) || exit 0
 # human-facing systemMessage is included. session_id comes off the hook's
 # stdin JSON (falls back to "nosession" when absent, same as an unnamed
 # session); the marker directory follows the same CLAUDE_CONFIG_DIR
-# convention python/delegation-gate.py uses for its own state dir. Fails
+# convention python/delegation_gate.py uses for its own state dir. Fails
 # OPEN: an unwritable cache dir means the marker never persists, so the
 # notice just keeps printing every call, same as before this existed.
 # Every field this hook reads, in one jq call, one per line, then a "."
