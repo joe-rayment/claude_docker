@@ -29,3 +29,6 @@ tests/.cache/
 .playwright-mcp/
 .claude-dev-snapshots/
 Orca.app/
+
+# harness-created agent worktrees
+.claude/worktrees/

@@ -1,7 +1,7 @@
 #!/usr/bin/env bats
 
 # fresh-project.bats — beads_claude_docker-b56o (B6 of the "one rulebook"
-# plan, .claude/plans/instruction-surface-fix.md): scripts/rules-effective.sh
+# plan, no longer in the repo): scripts/rules-effective.sh
 # is the integration probe for the whole plan — it prints what a FRESH,
 # user-shaped project actually loads (config/claude-user-memory.md, the
 # file that ships, plus every SessionStart hook's stdout, run against a

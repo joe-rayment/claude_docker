@@ -3,8 +3,8 @@
 # lint-bash32.sh -- greps a set of files/directories for shell constructs
 # that need bash >= 4 (macOS ships bash 3.2 at /bin/bash; see
 # .claude/plans/orca-port.md S3.2 and claude-orca-3sk.24 -- every script
-# under scripts/ must run under bash 3.2). Reusable: called from
-# tests/shell-entry.bats, but plain enough to run by hand too.
+# under scripts/ must run under bash 3.2). Reusable: tests/lint-bash32.bats
+# runs it over the Mac-side files, and it is plain enough to run by hand.
 #
 # Flags, one "path:lineno: reason" per violation on stdout:
 #   - `+=("${` (array-append with an array/glob expansion on the right)

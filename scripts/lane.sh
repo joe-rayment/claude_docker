@@ -162,7 +162,7 @@ EOF
 }
 
 # The rubric itself lives once, in the config dir's CLAUDE.md § Lanes
-# (Appendix A of .claude/plans/instruction-surface-fix.md) — these two
+# (the "one rulebook" plan, no longer in the repo) — these two
 # pointer lines are built with claude_config_dir() (Appendix B), so a hook
 # can never drift out of sync with the rule it is pointing at, and never
 # hardcodes a path lib/paths.sh already owns.
