@@ -55,7 +55,7 @@ worker_done_line() {
 }
 
 @test "worker_done whose body ends with a HANDOFF block relays it to the bead notes and the receipt" {
-    body=$'done: read the files\nleft: nothing\nfacts: f.sh:1\nHANDOFF\ndone: read the files\nleft: nothing\nfacts: f.sh:1\nnext: wire it up\nrelay: this agent is finished -- start a fresh one from this block; never message or resume it.'
+    body=$'done: read the files\nleft: nothing\nfacts: f.sh:1\nHANDOFF\ndone: read the files\nleft: wire it up\nfacts: f.sh:1\nnext: wire it up\nrelay: this agent is finished -- start a fresh one from this block; never message or resume it.'
     record d1 "$(jq -n -c --argjson s "$((NOW - 100))" \
         '{bead:"b1", dispatch_id:"d1", task_id:"t1", terminal:"term_d1",
           state:"running", started_at:$s, worktree_path:""}')"
