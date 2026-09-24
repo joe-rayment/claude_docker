@@ -1,0 +1,16 @@
+**HANDOFF**
+
+done: Read and extracted functions from `/workspace/claude-orca/scripts/orca-dispatch.sh` (lines 48–285)
+
+left: 
+1. Read `/workspace/claude-orca/scripts/lib/paths.sh` (sourced at line 61 of orca-dispatch.sh), extract its functions, identify one it sources
+2. Continue that pattern through 6 files total
+
+facts:
+- **File 1 (orca-dispatch.sh)** functions: `_resolve_script_path` (48), `note` (69), `die` (70), `disp_stagger` (250), `new_terminal` (271), `wt_dir_for_selector` (285)
+- orca-dispatch.sh sources: `lib/paths.sh` (61), `lib/tier-roles.sh` (63), `lib/orca-orch.sh` (65), `lib/frozen-hook.sh` (67)
+- Next step: pick whichever lib is sourced first and trace its dependencies
+
+next: start fresh agent to read `lib/paths.sh` and continue the chain through 5 more files
+
+relay: Resume from reading `/workspace/claude-orca/scripts/lib/paths.sh`, extract its function list with line numbers, then pick the first lib it sources and repeat until 6 files total are documented

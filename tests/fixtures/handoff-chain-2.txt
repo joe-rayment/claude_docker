@@ -1,0 +1,16 @@
+HANDOFF
+
+**done:** File 1 (`scripts/orca-dispatch.sh:48-285`) functions listed — 6 functions identified: `_resolve_script_path`, `note`, `die`, `disp_stagger`, `new_terminal`, `wt_dir_for_selector`
+
+**left:** 
+1. Read `scripts/lib/orca-orch.sh` and list its functions
+2. Pick one script from orca-orch.sh's mentions, read and list functions (File 3)
+3. Repeat for Files 4, 5, 6
+
+**facts:** 
+- orca-dispatch.sh sources 4 lib files (all in `scripts/lib/`): paths.sh, tier-roles.sh, orca-orch.sh (most heavily used), frozen-hook.sh — line 61, 63, 65, 67
+- orca-dispatch.sh is a bash 3.2-clean dispatcher for orchestrating bead work into Orca worker sessions, with fallback to subagent (exit 3) when Orca unreachable
+- Next file to read is `scripts/lib/orca-orch.sh` (the primary lib dependency used throughout orca-dispatch.sh)
+
+**next:**
+Start fresh agent. Read `scripts/lib/orca-orch.sh`, list functions, identify next script mention, continue chain through 6 files total.
