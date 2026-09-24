@@ -11,16 +11,6 @@ FIXTURES="${BATS_TEST_DIRNAME}/fixtures"
 
 setup() {
     export TMPDIR="$BATS_TEST_TMPDIR"
-    # statusline.sh reads a live usage-limits cache, refreshing it from a
-    # real API call once it's stale. STATUSLINE_CACHE_FILE (config/
-    # statusline.sh) redirects it to a private per-test path instead of the
-    # real, machine-wide /tmp/claude-usage-cache.json -- every concurrent
-    # session/test on this host shares that default path, so seeding a
-    # known-fresh value there raced (and could be clobbered by) any other
-    # session's own statusline hook. A private file makes the pre-existing
-    # session/weekly segments deterministic with no such race.
-    export STATUSLINE_CACHE_FILE="$BATS_TEST_TMPDIR/claude-usage-cache.json"
-    printf '{"five_hour":{"utilization":17.0},"seven_day":{"utilization":54.0}}\n' > "$STATUSLINE_CACHE_FILE"
 }
 
 @test "statusline: full fixture renders the prompt-cache hit-ratio percent" {
@@ -64,17 +54,28 @@ setup() {
 }
 
 @test "statusline: legacy fixture output is byte-identical to the pre-change script (regression guard)" {
-    # Golden captured from the pre-change script against this exact fixture,
-    # with the usage cache seeded as above (see setup()). At RED (script not
-    # yet touched) this case is expected to pass trivially — it only starts
-    # proving the no-op-on-absence guarantee once the new segments exist.
+    # Golden for this exact fixture. The session/weekly numbers are the
+    # fixture's own rate_limits (23.5 -> 23%, 41.2 -> 41%) -- the script
+    # reads them from Claude Code's JSON since Sept 2026 instead of fetching
+    # them itself (slim-down B7).
     # The branch segment is derived from the checkout itself, using the exact
     # git expression statusline.sh runs (claude-orca-640): a worktree branch
     # like joe-rayment/wt-640 must pass the same golden a `main` checkout
     # does -- the golden guards the script, not the checkout's branch name.
     branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "?")
-    golden=$'\033[32mSonnet\033[0m | \033[33m\xe2\x97\x8f\xe2\x97\x8f\xe2\x97\x8f\xe2\x97\x8f\xe2\x97\x8b\xe2\x97\x8b\xe2\x97\x8b\xe2\x97\x8b\xe2\x97\x8b\xe2\x97\x8b 45%\033[0m | \033[36m'"$branch"$'\033[0m | session: \033[32m17%\033[0m | weekly: \033[32m54%\033[0m'
+    golden=$'\033[32mSonnet\033[0m | \033[33m\xe2\x97\x8f\xe2\x97\x8f\xe2\x97\x8f\xe2\x97\x8f\xe2\x97\x8b\xe2\x97\x8b\xe2\x97\x8b\xe2\x97\x8b\xe2\x97\x8b\xe2\x97\x8b 45%\033[0m | \033[36m'"$branch"$'\033[0m | session: \033[32m23%\033[0m | weekly: \033[32m41%\033[0m'
     run bash "$STATUSLINE" < "$FIXTURES/statusline-legacy.json"
     [ "$status" -eq 0 ]
     [ "$output" = "$golden" ]
+}
+
+# Guards:   the usage segments show "?" (grey), not a made-up number, when
+#           Claude Code sends no rate_limits (not a subscriber, or before
+#           the session's first reply).
+# Fails if: the script invents a value, or reaches for the network.
+# Run:      bats -f 'no rate_limits' tests/statusline.bats
+@test "statusline: no rate_limits in the input shows ? for session and weekly" {
+    run bash "$STATUSLINE" <<< '{"model":{"display_name":"Opus"},"context_window":{"used_percentage":12}}'
+    [ "$status" -eq 0 ]
+    [[ "$output" == *$'session: \033[90m?\033[0m | weekly: \033[90m?\033[0m'* ]]
 }
