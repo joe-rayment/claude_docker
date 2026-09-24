@@ -1070,9 +1070,9 @@ re-injects the wording. Nothing else in the chain knows the rubric text.
   and falls back to `last-session` when the env var is absent (grep
   `resolve_sid`). With neither available, `lane` prints "no session id —
   lane not recorded" and exits 0 rather than guessing.
-- **`lane --reset` is the first UserPromptSubmit hook**, ahead of
-  tier-reconcile and cost-mirror, so a stale `express` from the previous
-  prompt can never leak into the next one. Reset writes `lane: "unset"`
+- **`lane --prompt` is the UserPromptSubmit hook**: one process that runs
+  `--reset` and then `--prime --short`, so a stale `express` from the
+  previous prompt can never leak into the next one. Reset writes `lane: "unset"`
   (carrying the previous value in `prev`) and appends **nothing** to
   `log.jsonl` — the log records declarations only.
 - **delegation-gate express behavior** (grep `KNOWN_LANES`, `get_lane`):
@@ -1173,9 +1173,9 @@ echo "$(grep -c '"escalated":true' "$L") escalations / $(wc -l < "$L") declarati
 
 `cost-mirror` reads the same log on two surfaces, so the rate is usually
 already in front of you. The per-prompt line ends with **`lane last-turn:
-<x>`** — "last-turn", not "current", because `lane --reset` runs earlier in
-the same UserPromptSubmit chain, so the state file already reads `unset` by
-the time the cost line renders and the log is the only honest source.
+<x>`** — "last-turn", not "current", because the lane hook's reset runs in
+the same UserPromptSubmit round, so the state file may already read `unset`
+when the cost line renders and the log is the only honest source.
 `tier-cost` grows a **lanes section** beneath the table: per-lane
 declaration counts for this session and all-time, the escalation count, and
 the rate annotated with the target band above. Both fail open — a missing

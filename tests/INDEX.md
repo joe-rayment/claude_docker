@@ -17,7 +17,7 @@ and names what changed. If everything behaves, it stays **green** (passes).
 
 - A **test case** is one check (one `@test "…"` block).
 - A **test file** (`tests/<name>.bats`) groups the cases for one script or feature.
-- The **suite** is all of them: 100 files, about 1,220 cases.
+- The **suite** is all of them: 101 files, about 1,230 cases.
 
 ### What bats is
 
@@ -115,7 +115,7 @@ are run by hand:
 
 ## Part 2 — the map
 
-100 files, 1,224 cases: 85 files check behavior only, 11 mix behavior with
+101 files, 1,229 cases: 86 files check behavior only, 11 mix behavior with
 a few config checks, and 4 are config checks only. **Speed** is from
 `run-tests.sh`'s timing: `slow` files are skipped by the everyday run.
 
@@ -151,7 +151,7 @@ catches no bugs.
 | `container-image.bats` | 5 | slow | setup.sh and the Dockerfile install the pinned Orca .deb and pinned opencode, and the Dockerfile itself makes no direct apt-get/curl calls. | behavior | — |
 | `container-provision-worktree-sweep.bats` | 6 | fast | Provision step 65-worktree-sweep removes stale git worktrees while keeping ones with uncommitted changes or a live process using them. | behavior | — |
 | `context-detect.bats` | 12 | fast | scripts/context-detect.sh (a SessionStart hook) injects project-type rules (e.g. a Snowflake warning) when workspace markers match, and stays silent otherwise. | behavior | — |
-| `context-meter.bats` | 17 | fast | scripts/context-meter.sh warns, then refuses, a sub-agent's tool calls as its transcript nears the context budget; the main loop is never metered. | mixed | 2 wiring checks: hook entries in settings.json, bin symlink |
+| `context-meter.bats` | 18 | fast | scripts/context-meter.sh warns, then refuses, a sub-agent's tool calls as its transcript nears the context budget (the full notice once, then a one-line reminder); the main loop is never metered. | mixed | 2 wiring checks: hook entries in settings.json, bin symlink |
 | `contract-gate.bats` | 39 | fast | python/contract-gate.py (a PreToolUse hook) warns, or in enforce mode denies, a `bd close` of a bead that carries an acceptance contract but has no verifier-corroborated "VERIFIED: PASS" note. Beads without a contract pass silently. | behavior | — |
 | `cpu-cap.bats` | 9 | fast | The launcher caps a new container at half the Docker VM's CPU cores (and applies it live to a kept one) unless claude-orca.json sets a value or 0 to opt out. | behavior | — |
 | `delegate.bats` | 39 | fast | scripts/delegate.sh runs work on cheaper external runners (opencode/codex/gemini) in scratch worktrees, scrubbing keys from logs and writing a JSON receipt plus bead notes. | behavior | — |
@@ -165,13 +165,14 @@ catches no bugs.
 | `first-start-dns.bats` | 6 | slow | scripts/container/entrypoint.sh's DNS auto-repair, setup.sh's DNS-not-package error message, and the launcher's `--dns` flag, fast-exit-on-crash, and install-log tail on a failed start | behavior | — |
 | `fresh-project.bats` | 2 | slow | scripts/rules-effective.sh runs against a fresh temp project and its output carries the shipped rulebook and the lane declaration. | behavior | — |
 | `frozen-hook.bats` | 6 | fast | scripts/lib/frozen-hook.sh's git pre-commit hook blocks commits touching a bead's FROZEN paths once a RED-AT commit exists, staying fail-open and chaining with an existing user hook | behavior | — |
-| `lane.bats` | 41 | fast | scripts/lane.sh, the per-prompt complexity-lane hook: declaring/reading/resetting a lane, escalation flags, log truncation, and failing open on bad input/no session id | behavior | — |
+| `lane.bats` | 43 | fast | scripts/lane.sh, the per-prompt complexity-lane hook: declaring/reading/resetting a lane, the one-process `--prompt` hook, escalation flags, log truncation, and failing open on bad input/no session id | behavior | — |
 | `launcher-desktop-datadir.bats` | 5 | fast | scripts/launcher.sh functions that locate/cache the Orca desktop app's user-data dir and safely strip this folder from its local-repo list without misfiring on symlinks or remote repos | behavior | — |
 | `launcher-orca-version-run.bats` | 3 | fast | scripts/launcher.sh passes the installed Orca app's version consistently into the image tag, the docker build arg, and the `docker run` env var | behavior | — |
 | `launcher-v3-build.bats` | 12 | slow | scripts/launcher.sh's acquire_image logic: build from the folder's template, reuse a daemon-held image, or fall back to the base image/runtime install when a build fails | behavior | — |
 | `launcher-v3-key.bats` | 3 | fast | `claude-dev key openrouter` stores the OpenRouter key at mode 600 in the folder-local home, never leaks it into container argv or logs, and `--doctor` reports it | behavior | — |
 | `launcher-v3.bats` | 33 | fast | scripts/launcher.sh end-to-end: register/open/stop/shell/logs/doctor/teardown, the desktop-Orca hand-off, and rules for adopting vs. recreating a running container | behavior | — |
 | `lifecycle.bats` | 1 | fast | `./claude-dev --teardown` snapshots the beads database to a documented location before deleting the install, leaving the user's own gitignore/files untouched | behavior | — |
+| `lint-bash32.bats` | 1 | fast | The Mac-side scripts (bootstrap.sh, launcher.sh, link-bin.sh, scripts/lib, run-tests.sh) stay runnable on macOS's stock bash 3.2 (scripts/lint-bash32.sh). | behavior | — |
 | `message-cap.bats` | 6 | fast | python/cost-mirror.py's per-message word-count cap readout in the UserPromptSubmit status line, and that its cap number matches the rulebook | mixed | 1 lockstep check: cost-mirror's cap number matches the rulebook's |
 | `no-card.bats` | 2 | fast | config/claude-settings.json is valid JSON with no empty hook array, and the Stop hook still runs export-logs alongside Orca's own entries. | config | both cases are settings.json wiring checks |
 | `no-residue.bats` | 1 | fast | config/claude-settings.json wires every required hook event and PreToolUse matcher -- a missing entry would silently switch a guard off. | config | the one case is a wiring check |
@@ -215,7 +216,7 @@ catches no bugs.
 | `session-end-audit.bats` | 6 | fast | `session-end-audit.sh` (SessionEnd hook) logs how many files are dirty when a session ends, stays silent on a clean tree, and fails open on bad input. | behavior | — |
 | `setup-check-uid.bats` | 3 | fast | `setup.sh --check`'s agent-user row compares against the container's real running uid (HOST_UID), not a hardcoded 1000, so Mac machines don't get a false FAIL. | behavior | — |
 | `start-professor.bats` | 5 | fast | `start-professor.sh` execs `claude --agent professor`, strips CLAUDECODE first, and only cd's to the project root when one can actually be resolved. | behavior | — |
-| `statusline.bats` | 5 | fast | `statusline.sh` renders cache-hit%, context%, and session-cost segments from newer Claude Code fields while staying byte-identical to the old output when those fields are absent. | behavior | — |
+| `statusline.bats` | 6 | fast | `statusline.sh` renders model, context, branch, the 5-hour/weekly usage Claude Code sends ("?" when it sends none), and the cache-hit/context-left/cost segments when those fields are present. | behavior | — |
 | `stub-write.bats` | 4 | fast | `launcher.sh`'s stub/key/config writers (write_project_stub, cmd_key_v3, register) never write through a symlink, which previously could brick the launcher or leak the OpenRouter key. | behavior | — |
 | `take-screenshot.bats` | 7 | fast | `take-screenshot.sh` launches sandboxed headless Playwright correctly for `url` mode, rejects the removed term/display modes, and installs Playwright on demand when missing. | behavior | — |
 | `teardown-git.bats` | 4 | fast | `claude-dev --teardown` removes `.git` only when claude_orca created that repo's root commit, never a user's own repo or one nested in a larger repo. | behavior | — |
