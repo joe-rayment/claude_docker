@@ -169,12 +169,11 @@ if [ "${1:-}" = "--prompt" ]; then
     # span lines) as the rest.
     fields=$(printf '%s' "$payload" | jq -r '(has("session_id") | tostring),
         (.session_id // "" | tostring),
-        (if has("prompt") then (.prompt // "") else "" end)' 2>/dev/null) || exit 0
+        (if has("prompt") then (.prompt // "") else "" end), "."' 2>/dev/null) || exit 0
     has_sid=${fields%%$'\n'*}; fields=${fields#*$'\n'}
-    case "$fields" in
-        *$'\n'*) sid=${fields%%$'\n'*}; prompt=${fields#*$'\n'} ;;
-        *) sid=$fields; prompt="" ;;
-    esac
+    sid=${fields%%$'\n'*}; fields=${fields#*$'\n'}
+    prompt=${fields%.}; prompt=${prompt%$'\n'}
+    while [ "${prompt%$'\n'}" != "$prompt" ]; do prompt=${prompt%$'\n'}; done
     [ "$has_sid" = "true" ] || exit 0
     [ -n "$sid" ] || exit 0
     sid=$(sanitize_id "$sid")
@@ -200,13 +199,12 @@ payload=$(cat 2>/dev/null) || exit 0
 # (which may span lines) as the rest.
 fields=$(printf '%s' "$payload" | jq -r '(if has("tool_name") then .tool_name else "" end | tostring),
     (has("session_id") | tostring), (.session_id // "" | tostring),
-    (.tool_input.command? // empty)' 2>/dev/null) || exit 0
+    (.tool_input.command? // ""), "."' 2>/dev/null) || exit 0
 tool_name=${fields%%$'\n'*}; fields=${fields#*$'\n'}
 has_sid=${fields%%$'\n'*}; fields=${fields#*$'\n'}
-case "$fields" in
-    *$'\n'*) sid=${fields%%$'\n'*}; cmd=${fields#*$'\n'} ;;
-    *) sid=$fields; cmd="" ;;
-esac
+sid=${fields%%$'\n'*}; fields=${fields#*$'\n'}
+cmd=${fields%.}; cmd=${cmd%$'\n'}
+while [ "${cmd%$'\n'}" != "$cmd" ]; do cmd=${cmd%$'\n'}; done   # as $(...) would
 [ "$tool_name" = "Bash" ] || exit 0
 [ -n "$cmd" ] || exit 0
 

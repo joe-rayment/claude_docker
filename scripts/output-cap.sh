@@ -47,18 +47,17 @@ esac
 IN=$(cat 2>/dev/null) || exit 0
 [ -n "$IN" ] || exit 0
 
-# Every field in one jq call: four one-line fields, then the command
-# (which may span lines) as the rest.
-F=$(printf '%s' "$IN" | jq -r '(.tool_name // ""), (.agent_id // ""),
+# Every field in one jq call: four one-line fields, the command (which may
+# span lines), then a "." so nothing empty falls off the end of $(...).
+F=$(printf '%s' "$IN" | jq -r '(.tool_name // "" | tostring), (.agent_id // "" | tostring),
     (.tool_input.run_in_background // false | tostring),
-    (.session_id // "session"), (.tool_input.command // empty)' 2>/dev/null) || exit 0
+    (.session_id // "session" | tostring), (.tool_input.command // ""), "."' 2>/dev/null) || exit 0
 TOOL=${F%%$'\n'*}; F=${F#*$'\n'}
 AGENT=${F%%$'\n'*}; F=${F#*$'\n'}
 BG=${F%%$'\n'*}; F=${F#*$'\n'}
-case "$F" in
-    *$'\n'*) SESSION=${F%%$'\n'*}; CMD=${F#*$'\n'} ;;
-    *) SESSION=$F; CMD="" ;;
-esac
+SESSION=${F%%$'\n'*}; F=${F#*$'\n'}
+CMD=${F%.}; CMD=${CMD%$'\n'}
+while [ "${CMD%$'\n'}" != "$CMD" ]; do CMD=${CMD%$'\n'}; done   # as $(...) would
 [ "$TOOL" = "Bash" ] || exit 0
 
 # Main loop only. A populated agent_id is the one positive subagent signal

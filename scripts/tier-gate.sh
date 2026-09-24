@@ -75,7 +75,16 @@ IN=$(cat 2>/dev/null) || exit 0
 # convention python/delegation-gate.py uses for its own state dir. Fails
 # OPEN: an unwritable cache dir means the marker never persists, so the
 # notice just keeps printing every call, same as before this existed.
-SESSION_ID=$(printf '%s' "$IN" | jq -r '.session_id // empty' 2>/dev/null)
+# Every field this hook reads, in one jq call, one per line, then a "."
+# so an empty last field survives $(...) dropping trailing newlines.
+F=$(printf '%s' "$IN" | jq -r '(.session_id, .tool_name, .transcript_path,
+    .tool_input.model, .tool_input.subagent_type
+    | (. // "") | tostring | gsub("\n"; " ")), "."' 2>/dev/null) || F=""
+SESSION_ID=${F%%$'\n'*}; F=${F#*$'\n'}
+TOOL=${F%%$'\n'*}; F=${F#*$'\n'}
+TP=${F%%$'\n'*}; F=${F#*$'\n'}
+MODEL=${F%%$'\n'*}; F=${F#*$'\n'}
+ST=${F%%$'\n'*}
 [ -n "$SESSION_ID" ] || SESSION_ID="nosession"
 TIER_GATE_NOTICE_DIR="$(claude_config_dir)/cache/tier-gate"
 
@@ -90,18 +99,14 @@ _tier_gate_announce_once() {
     return 0
 }
 
-TOOL=$(printf '%s' "$IN" | jq -r '.tool_name // empty' 2>/dev/null) || exit 0
 case "$TOOL" in Agent|Task) : ;; *) exit 0 ;; esac   # Task = legacy tool name
 
 # Inside a subagent? Leave it alone (its parent already went through the gate).
-TP=$(printf '%s' "$IN" | jq -r '.transcript_path // empty' 2>/dev/null)
 case "$TP" in */subagents/*) exit 0 ;; esac
 
 # Explicit model: the orchestrator chose — never override.
-MODEL=$(printf '%s' "$IN" | jq -r '.tool_input.model // empty' 2>/dev/null)
 [ -n "$MODEL" ] && exit 0
 
-ST=$(printf '%s' "$IN" | jq -r '.tool_input.subagent_type // empty' 2>/dev/null)
 
 SLOT=worker   # default: generic/unnamed spawns get the worker tier
 case "$ST" in
@@ -149,7 +154,7 @@ if [ "$SLOT" = "checker" ]; then
         fi
         if [ -z "$TOP_ID" ]; then
             SETTINGS="${TIER_GATE_SETTINGS:-$(claude_config_dir)/settings.json}"
-            TOP_ID=$(jq -r '.model // empty' "$SETTINGS" 2>/dev/null)
+            [ -f "$SETTINGS" ] && TOP_ID=$(jq -r '.model // empty' "$SETTINGS" 2>/dev/null)
         fi
         [ -n "$TOP_ID" ] || exit 0
         TARGET_ID=$("$DERIVE" --checker "$TOP_ID" 2>/dev/null) || TARGET_ID=""
@@ -218,7 +223,8 @@ if [ -z "$TARGET_ID" ]; then
     # deriving straight from settings .model, same as the first /tier run
     # would have recorded.
     SETTINGS="${TIER_GATE_SETTINGS:-$(claude_config_dir)/settings.json}"
-    TOP=$(jq -r '.model // empty' "$SETTINGS" 2>/dev/null)
+    TOP=""
+    [ -f "$SETTINGS" ] && TOP=$(jq -r '.model // empty' "$SETTINGS" 2>/dev/null)
     [ -n "$TOP" ] || exit 0
     TRIO=$("$DERIVE" "$TOP" 2>/dev/null) || exit 0
     case "$SLOT" in
