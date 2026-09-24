@@ -383,10 +383,7 @@ release_worker() {
 # claude-orca-7lz.6: a block whose left: value -- trimmed, lowercased, one
 # trailing "." dropped -- says nothing is left is NOT a handoff (a missing
 # left: line still IS one; relaying costs one spawn, losing work costs
-# more). "nothing" is deliberately left out of the excluded set below: the
-# already-FROZEN happy-path case in tests/orca-relay.bats uses "left:
-# nothing" as its "work remains" fixture, predating this bead, and existing
-# cases are never edited -- see this bead's final report for the conflict.
+# more).
 detect_handoff() {
     local block left_line left_val
     block="$(printf '%s\n' "$1" | awk '
@@ -407,7 +404,7 @@ detect_handoff() {
         left_val="$(printf '%s' "$left_val" | sed -e 's/^[ \t]*//' -e 's/[ \t]*$//' | tr '[:upper:]' '[:lower:]')"
         case "$left_val" in *.) left_val="${left_val%.}" ;; esac
         case "$left_val" in
-            ''|none|n/a|-) return 1 ;;
+            ''|none|nothing|n/a|-) return 1 ;;
         esac
     fi
 
