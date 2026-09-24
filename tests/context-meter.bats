@@ -214,3 +214,37 @@ meter() {
         grep -q '\[context-meter\]' "$REPO_ROOT/config/agents/$f.md"
     done
 }
+
+@test "16 --pre at 45%: the deny reason carries the HANDOFF template" {
+    write_meta sonnet
+    usage_row 90000 0 0 0
+    PAYLOAD="$(sub_payload)"
+    meter --pre
+    [ "$status" -eq 0 ]
+    reason="$(echo "$output" | jq -r '.hookSpecificOutput.permissionDecisionReason')"
+    case "$reason" in
+        *"Write your final report now and stop. If work remains, end it with this block:"*) ;;
+        *) false ;;
+    esac
+    printf '%s\n' "$reason" | grep -qx 'HANDOFF'
+    printf '%s\n' "$reason" | grep -q '^relay: '
+}
+
+@test "17 --post at 45% is the HARD REFUSAL (no budget text); --post at 35% still says 'just report'" {
+    write_meta sonnet
+    usage_row 90000 0 0 0
+    PAYLOAD="$(sub_payload)"
+    meter --post
+    [ "$status" -eq 0 ]
+    ctx="$(echo "$output" | jq -r '.hookSpecificOutput.additionalContext')"
+    case "$ctx" in *"past the 40% ceiling"*) ;; *) false ;; esac
+    printf '%s\n' "$ctx" | grep -qx 'HANDOFF'
+    case "$ctx" in *"(budget 30%)"*) false ;; esac
+
+    usage_row 70000 0 0 0
+    PAYLOAD="$(sub_payload)"
+    meter --post
+    [ "$status" -eq 0 ]
+    ctx2="$(echo "$output" | jq -r '.hookSpecificOutput.additionalContext')"
+    case "$ctx2" in *"if the task is complete, just report"*) ;; *) false ;; esac
+}

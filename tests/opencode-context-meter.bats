@@ -364,6 +364,47 @@ refusals_scenario() {
     [ "$output" = '["SYSTEM_ORIGINAL"]' ]
 }
 
+@test "13 at 45% -- system.transform pushes the HARD REFUSAL only, not the soft notice" {
+    run_scenario '{
+        "env": {"CLAUDE_ORCA_CONTEXT_WINDOW": "100000"},
+        "steps": [
+            {"op":"step-finish","sessionID":"A","tokens":{"total":45000}},
+            {"op":"system","sessionID":"A","system":["SYSTEM_ORIGINAL"]}
+        ]
+    }'
+    [ "$status" -eq 0 ]
+    RAW="$output"
+    run jq -r '.results[0].system | length' <<<"$RAW"
+    [ "$output" = "2" ]
+    run jq -r '.results[0].system[-1]' <<<"$RAW"
+    NOTICE="$output"
+    run grep -qF "past the 40% ceiling" <<<"$NOTICE"
+    [ "$status" -eq 0 ]
+    run bash -c "grep -qxE '[[:space:]]*HANDOFF[[:space:]]*' <<<\"\$1\"" _ "$NOTICE"
+    [ "$status" -eq 0 ]
+    run bash -c "grep -qE '^relay: ' <<<\"\$1\"" _ "$NOTICE"
+    [ "$status" -eq 0 ]
+    run grep -qF "(budget 30%)" <<<"$NOTICE"
+    [ "$status" -ne 0 ]
+}
+
+@test "14 at 45% -- before() throws a message carrying the HANDOFF template" {
+    run_scenario '{
+        "env": {"CLAUDE_ORCA_CONTEXT_WINDOW": "100000"},
+        "steps": [
+            {"op":"step-finish","sessionID":"A","tokens":{"total":45000}},
+            {"op":"before","sessionID":"A","callID":"c1","tool":"bash"}
+        ]
+    }'
+    [ "$status" -eq 0 ]
+    run jq -r '.results[-1].error' <<<"$output"
+    ERR="$output"
+    run bash -c "grep -qxE '[[:space:]]*HANDOFF[[:space:]]*' <<<\"\$1\"" _ "$ERR"
+    [ "$status" -eq 0 ]
+    run bash -c "grep -qE '^relay: ' <<<\"\$1\"" _ "$ERR"
+    [ "$status" -eq 0 ]
+}
+
 @test "config-sync installs the plugin byte-identical at .config/opencode/plugin/context-meter.js" {
     make_project "$PROJECT_DIR"
     primary="$(abspath "$PROJECT_DIR")"

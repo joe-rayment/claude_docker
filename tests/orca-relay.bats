@@ -230,6 +230,57 @@ relay: this agent is finished -- start a fresh one from this block; never messag
     [ "$status" -eq 0 ]
 }
 
+@test "10 a HANDOFF block whose left: value is 'None.' is not a handoff" {
+    body=$'HANDOFF\ndone: read the files\nleft: None.\nfacts: f.sh:1\nnext:\nrelay: this agent is finished -- start a fresh one from this block; never message or resume it.'
+    record d10 "$(jq -n -c --argjson s "$((NOW - 100))" \
+        '{bead:"b1", dispatch_id:"d10", task_id:"t1", terminal:"term_d10",
+          state:"running", started_at:$s, worktree_path:""}')"
+    orca_stub_reply_nth orchestration-check 1 \
+        "$(worker_done_msg d10 term_d10 "$(jq -n --arg b "$body" '$b')")"
+
+    run "$WAIT" --poll-loop --timeout-ms 1 --poll 1 --stall-after 60
+    [ "$status" -eq 0 ]
+    out="$output"
+
+    line="$(worker_done_line "$out")"
+    [ -n "$line" ]
+    run jq -e '.handoff == false' <<<"$line"
+    [ "$status" -eq 0 ]
+    run jq -e 'has("relay_with") | not' <<<"$line"
+    [ "$status" -eq 0 ]
+
+    run jq -e '.handoff == true' "$ODIR/dispatch/d10.json"
+    [ "$status" -ne 0 ]
+
+    notes="$(orca_stub_calls 'bd update')"
+    run bash -c "printf '%s\n' \"\$1\" | grep -q -e 'HANDOFF-AT '" _ "$notes"
+    [ "$status" -ne 0 ]
+}
+
+@test "11 a HANDOFF block whose left: value is '  -  ' is not a handoff either" {
+    body=$'HANDOFF\ndone: read the files\nleft:   -  \nfacts: f.sh:1\nnext:\nrelay: this agent is finished -- start a fresh one from this block; never message or resume it.'
+    record d11 "$(jq -n -c --argjson s "$((NOW - 100))" \
+        '{bead:"b1", dispatch_id:"d11", task_id:"t1", terminal:"term_d11",
+          state:"running", started_at:$s, worktree_path:""}')"
+    orca_stub_reply_nth orchestration-check 1 \
+        "$(worker_done_msg d11 term_d11 "$(jq -n --arg b "$body" '$b')")"
+
+    run "$WAIT" --poll-loop --timeout-ms 1 --poll 1 --stall-after 60
+    [ "$status" -eq 0 ]
+    out="$output"
+
+    line="$(worker_done_line "$out")"
+    [ -n "$line" ]
+    run jq -e '.handoff == false' <<<"$line"
+    [ "$status" -eq 0 ]
+    run jq -e 'has("relay_with") | not' <<<"$line"
+    [ "$status" -eq 0 ]
+
+    notes="$(orca_stub_calls 'bd update')"
+    run bash -c "printf '%s\n' \"\$1\" | grep -q -e 'HANDOFF-AT '" _ "$notes"
+    [ "$status" -ne 0 ]
+}
+
 @test "--keep on a second stall releases nothing and closes no terminal" {
     wt="$BATS_TEST_TMPDIR/wt-keep"
     orca_stub_git_fixture "$wt" "2020-01-01T00:00:00 +0000"
