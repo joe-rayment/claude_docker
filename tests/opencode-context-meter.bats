@@ -1,21 +1,30 @@
 #!/usr/bin/env bats
 #
-# opencode-context-meter.bats -- claude-orca-7lz.2, the opencode half of
-# the shared context-budget contract (claude-orca-7lz): a plugin at
-# config/opencode/plugin/context-meter.js enforces the same
+# opencode-context-meter.bats -- claude-orca-7lz.4, amending claude-orca-7lz.2:
+# a plugin at config/opencode/plugin/context-meter.js enforces the same
 # CLAUDE_ORCA_CONTEXT_BUDGET / _CEILING / _WINDOW settings and the same
 # SOFT NOTICE / HARD REFUSAL text in headless opencode runs (Orca workers,
 # recon) that scripts/context-meter.sh enforces for in-process Claude
-# sub-agents.
+# sub-agents -- but the SOFT NOTICE now rides in every model call's system
+# prompt (experimental.chat.system.transform), not appended to tool output:
+# a real run proved models ignore an instruction embedded in a tool result,
+# and the crossing step-finish arrives after that step's tool calls anyway.
 #
-# Cases 1-9 run node directly against the pinned plugin file through a
-# small ESM harness (helpers/context-meter-harness.mjs) written once to
-# $BATS_TEST_TMPDIR: it imports { ContextMeter }, builds a fake `client`
-# (config.providers() returns the shape client.config.providers() really
-# returns; session.abort records its calls), replays events, calls the
-# tool hooks, and prints one JSON result object bats reads back with jq.
-# Case 10 exercises scripts/config-sync.sh against a temp home, the way
-# tests/config-sync.bats does.
+# Cases 1-11 run node directly against the pinned plugin file through a
+# small ESM harness (written once per test to $BATS_TEST_TMPDIR): it
+# imports { ContextMeter }, builds a fake `client` (config.providers()
+# returns the shape client.config.providers() really returns; session.abort
+# records its calls), replays events, calls the hooks, and prints one JSON
+# result object bats reads back with jq. Case 12 exercises
+# scripts/config-sync.sh against a temp home, the way tests/config-sync.bats
+# does.
+#
+# tests/helpers/setup.bash's setup() puts a stub node (always exit 0, no
+# output) first on PATH for the template fixture it builds, so NODE_BIN is
+# resolved to the REAL node ONCE, at file load, before any setup() runs, and
+# every harness invocation below goes through "$NODE_BIN" -- never a bare
+# `node` -- so cases 1-11 actually exercise the plugin instead of silently
+# no-op'ing against the stub.
 #
 # FROZEN from RED-AT onward: this file must not be edited after its RED
 # commit. If a case here turns out to be wrong, stop and report -- do not
@@ -23,13 +32,15 @@
 
 bats_require_minimum_version 1.5.0
 
+NODE_BIN="$(command -v node)"
+
 load helpers/setup
 
 PLUGIN_SRC="$BATS_TEST_DIRNAME/../config/opencode/plugin/context-meter.js"
 
 # Writes the harness lazily, into this TEST's own tmpdir -- helpers/setup.bash
 # owns setup_file()/setup() for the template fixture make_project() (case
-# 10) needs, so nothing here may redefine either hook.
+# 12) needs, so nothing here may redefine either hook.
 write_harness() {
     HARNESS="$BATS_TEST_TMPDIR/context-meter-harness.mjs"
     cat > "$HARNESS" <<'HARNESS_EOF'
@@ -38,10 +49,10 @@ write_harness() {
 // steps, applied in order:
 //   {"op":"message.updated","sessionID":..,"providerID":..,"modelID":..}
 //   {"op":"step-finish","sessionID":..,"tokens":{...}}
-//   {"op":"after","sessionID":..,"callID":..,"tool":..,"output":{title,output,metadata}}
+//   {"op":"system","sessionID":..,"model":..,"system":[...]}
 //   {"op":"before","sessionID":..,"callID":..,"tool":..}
 // Prints {results:[...], abortCalls:[...]} -- one results[] entry per
-// "after"/"before" step, in order.
+// "system"/"before" step, in order.
 async function main() {
     const { ContextMeter } = await import(process.argv[2]);
     const raw = await new Promise((resolve) => {
@@ -76,44 +87,53 @@ async function main() {
 
     for (const step of scenario.steps || []) {
         if (step.op === "message.updated") {
-            await hooks.event({
-                event: {
-                    type: "message.updated",
-                    properties: {
-                        info: {
-                            role: "assistant",
-                            sessionID: step.sessionID,
-                            providerID: step.providerID,
-                            modelID: step.modelID,
+            if (hooks.event) {
+                await hooks.event({
+                    event: {
+                        type: "message.updated",
+                        properties: {
+                            info: {
+                                role: "assistant",
+                                sessionID: step.sessionID,
+                                providerID: step.providerID,
+                                modelID: step.modelID,
+                            },
                         },
                     },
-                },
-            });
+                });
+            }
         } else if (step.op === "step-finish") {
-            await hooks.event({
-                event: {
-                    type: "message.part.updated",
-                    properties: {
-                        part: {
-                            type: "step-finish",
-                            sessionID: step.sessionID,
-                            tokens: step.tokens || {},
+            if (hooks.event) {
+                await hooks.event({
+                    event: {
+                        type: "message.part.updated",
+                        properties: {
+                            part: {
+                                type: "step-finish",
+                                sessionID: step.sessionID,
+                                tokens: step.tokens || {},
+                            },
                         },
                     },
-                },
-            });
-        } else if (step.op === "after") {
-            const output = JSON.parse(JSON.stringify(step.output || { title: "t", output: "", metadata: {} }));
+                });
+            }
+        } else if (step.op === "system") {
+            const output = { system: JSON.parse(JSON.stringify(step.system || ["SYSTEM_ORIGINAL"])) };
             let threw = false;
             let error = null;
             try {
-                const fn = hooks["tool.execute.after"];
-                if (fn) await fn({ tool: step.tool, sessionID: step.sessionID, callID: step.callID, args: {} }, output);
+                const fn = hooks["experimental.chat.system.transform"];
+                if (fn) {
+                    await fn(
+                        { sessionID: step.sessionID, model: step.model || { id: "m", providerID: "p", modelID: "m" } },
+                        output
+                    );
+                }
             } catch (e) {
                 threw = true;
                 error = String(e && e.message ? e.message : e);
             }
-            results.push({ op: "after", output, threw, error });
+            results.push({ op: "system", system: output.system, threw, error });
         } else if (step.op === "before") {
             const output = { args: {} };
             let threw = false;
@@ -129,7 +149,7 @@ async function main() {
         }
     }
 
-    process.stdout.write(JSON.stringify({ results, abortCalls }));
+    process.stdout.write(JSON.stringify({ results, abortCalls, hookKeys: Object.keys(hooks).sort() }));
 }
 
 main().catch((e) => {
@@ -144,11 +164,11 @@ HARNESS_EOF
 # and $status to node's exit code.
 run_scenario() {
     write_harness
-    run node "$HARNESS" "$PLUGIN_SRC" <<<"$1"
+    run "$NODE_BIN" "$HARNESS" "$PLUGIN_SRC" <<<"$1"
 }
 
 @test "the module has exactly one export, ContextMeter" {
-    run node --input-type=module -e "
+    run "$NODE_BIN" --input-type=module -e "
 import * as m from '$PLUGIN_SRC';
 process.stdout.write(JSON.stringify(Object.keys(m)));
 "
@@ -157,53 +177,53 @@ process.stdout.write(JSON.stringify(Object.keys(m)));
     [ "$output" = '["ContextMeter"]' ]
 }
 
-@test "below budget -- after() leaves output.output unchanged" {
+@test "below budget -- system.transform leaves output.system unchanged" {
     run_scenario '{
         "env": {"CLAUDE_ORCA_CONTEXT_WINDOW": "100000"},
         "steps": [
             {"op":"step-finish","sessionID":"A","tokens":{"total":20000}},
-            {"op":"after","sessionID":"A","callID":"c1","tool":"read",
-             "output":{"title":"t","output":"hello","metadata":{}}}
+            {"op":"system","sessionID":"A","system":["SYSTEM_ORIGINAL"]}
         ]
     }'
     [ "$status" -eq 0 ]
-    run jq -r '.results[0].output.output' <<<"$output"
-    [ "$output" = "hello" ]
+    run jq -c '.results[0].system' <<<"$output"
+    [ "$output" = '["SYSTEM_ORIGINAL"]' ]
 }
 
-@test "at 35% -- after() output ends with the SOFT NOTICE" {
+@test "at 35% -- system.transform's last element is the SOFT NOTICE" {
     run_scenario '{
         "env": {"CLAUDE_ORCA_CONTEXT_WINDOW": "100000"},
         "steps": [
             {"op":"step-finish","sessionID":"A","tokens":{"total":35000}},
-            {"op":"after","sessionID":"A","callID":"c1","tool":"read",
-             "output":{"title":"t","output":"hello","metadata":{}}}
+            {"op":"system","sessionID":"A","system":["SYSTEM_ORIGINAL"]}
         ]
     }'
     [ "$status" -eq 0 ]
-    run jq -r '.results[0].output.output' <<<"$output"
-    OUT="$output"
-    run grep -qF "context is at 35% of this agent's window (budget 30%)" <<<"$OUT"
+    RAW="$output"
+    run jq -r '.results[0].system | length' <<<"$RAW"
+    [ "$output" = "2" ]
+    run jq -r '.results[0].system[-1]' <<<"$RAW"
+    NOTICE="$output"
+    run grep -qF "context is at 35% of this agent's window (budget 30%)" <<<"$NOTICE"
     [ "$status" -eq 0 ]
-    run bash -c "grep -qxE '[[:space:]]*HANDOFF[[:space:]]*' <<<\"\$1\"" _ "$OUT"
+    run bash -c "grep -qxE '[[:space:]]*HANDOFF[[:space:]]*' <<<\"\$1\"" _ "$NOTICE"
     [ "$status" -eq 0 ]
-    run bash -c "grep -qE '^relay: ' <<<\"\$1\"" _ "$OUT"
+    run bash -c "grep -qE '^relay: ' <<<\"\$1\"" _ "$NOTICE"
     [ "$status" -eq 0 ]
 }
 
-@test "sessions are separate: session A at 35%, session B at 10% -> B's output unchanged" {
+@test "sessions are separate: session A at 35%, session B at 10% -> B unchanged" {
     run_scenario '{
         "env": {"CLAUDE_ORCA_CONTEXT_WINDOW": "100000"},
         "steps": [
             {"op":"step-finish","sessionID":"A","tokens":{"total":35000}},
             {"op":"step-finish","sessionID":"B","tokens":{"total":10000}},
-            {"op":"after","sessionID":"B","callID":"c1","tool":"read",
-             "output":{"title":"t","output":"hello","metadata":{}}}
+            {"op":"system","sessionID":"B","system":["SYSTEM_ORIGINAL"]}
         ]
     }'
     [ "$status" -eq 0 ]
-    run jq -r '.results[0].output.output' <<<"$output"
-    [ "$output" = "hello" ]
+    run jq -c '.results[0].system' <<<"$output"
+    [ "$output" = '["SYSTEM_ORIGINAL"]' ]
 }
 
 @test "total absent/0 -- summed fields are used (62001 of 200000 -> at 31%)" {
@@ -213,12 +233,11 @@ process.stdout.write(JSON.stringify(Object.keys(m)));
         "steps": [
             {"op":"message.updated","sessionID":"A","providerID":"openrouter","modelID":"unknown-model"},
             {"op":"step-finish","sessionID":"A","tokens":{"total":0,"input":1,"output":2000,"reasoning":0,"cache":{"read":50000,"write":10000}}},
-            {"op":"after","sessionID":"A","callID":"c1","tool":"read",
-             "output":{"title":"t","output":"hello","metadata":{}}}
+            {"op":"system","sessionID":"A","system":["SYSTEM_ORIGINAL"]}
         ]
     }'
     [ "$status" -eq 0 ]
-    run jq -r '.results[0].output.output' <<<"$output"
+    run jq -r '.results[0].system[-1]' <<<"$output"
     run grep -qF "at 31%" <<<"$output"
     [ "$status" -eq 0 ]
 }
@@ -230,12 +249,11 @@ process.stdout.write(JSON.stringify(Object.keys(m)));
         "steps": [
             {"op":"message.updated","sessionID":"A","providerID":"openrouter","modelID":"z-ai/glm-5.3-flash"},
             {"op":"step-finish","sessionID":"A","tokens":{"total":400000}},
-            {"op":"after","sessionID":"A","callID":"c1","tool":"read",
-             "output":{"title":"t","output":"hello","metadata":{}}}
+            {"op":"system","sessionID":"A","system":["SYSTEM_ORIGINAL"]}
         ]
     }'
     [ "$status" -eq 0 ]
-    run jq -r '.results[0].output.output' <<<"$output"
+    run jq -r '.results[0].system[-1]' <<<"$output"
     run grep -qF "at 30%" <<<"$output"
     [ "$status" -eq 0 ]
 }
@@ -292,27 +310,58 @@ refusals_scenario() {
         ]
     }'
     [ "$status" -eq 0 ]
-    run jq -r '.results[0].threw' <<<"$output"
+    RAW="$output"
+    run jq -r '.results[0].threw' <<<"$RAW"
     [ "$output" = "true" ]
-    run jq -r '.results[1].threw' <<<"$output"
+    run jq -r '.results[1].threw' <<<"$RAW"
     [ "$output" = "false" ]
 }
 
-@test "CLAUDE_ORCA_CONTEXT_BUDGET=0 -- after() unchanged and before() never throws at 90%" {
+@test "CLAUDE_ORCA_CONTEXT_BUDGET=0 -- system.transform unchanged and before() never throws at 90%" {
     run_scenario '{
         "env": {"CLAUDE_ORCA_CONTEXT_BUDGET": "0", "CLAUDE_ORCA_CONTEXT_WINDOW": "100000"},
         "steps": [
             {"op":"step-finish","sessionID":"A","tokens":{"total":90000}},
-            {"op":"after","sessionID":"A","callID":"c1","tool":"read",
-             "output":{"title":"t","output":"hello","metadata":{}}},
+            {"op":"system","sessionID":"A","system":["SYSTEM_ORIGINAL"]},
             {"op":"before","sessionID":"A","callID":"c2","tool":"bash"}
         ]
     }'
     [ "$status" -eq 0 ]
-    run jq -r '.results[0].output.output' <<<"$output"
-    [ "$output" = "hello" ]
-    run jq -r '.results[1].threw' <<<"$output"
+    RAW="$output"
+    run jq -c '.results[0].system' <<<"$RAW"
+    [ "$output" = '["SYSTEM_ORIGINAL"]' ]
+    run jq -r '.results[1].threw' <<<"$RAW"
     [ "$output" = "false" ]
+}
+
+@test "the hooks object has no tool.execute.after key" {
+    run_scenario '{
+        "env": {"CLAUDE_ORCA_CONTEXT_WINDOW": "100000"},
+        "steps": [
+            {"op":"system","sessionID":"A"}
+        ]
+    }'
+    [ "$status" -eq 0 ]
+    RAW="$output"
+    run jq -r '.hookKeys | index("tool.execute.after")' <<<"$RAW"
+    [ "$output" = "null" ]
+    run jq -r '.hookKeys | index("experimental.chat.system.transform")' <<<"$RAW"
+    [ "$output" != "null" ]
+    run jq -r '.hookKeys | index("tool.execute.before")' <<<"$RAW"
+    [ "$output" != "null" ]
+}
+
+@test "system.transform without input.sessionID -- output.system unchanged" {
+    run_scenario '{
+        "env": {"CLAUDE_ORCA_CONTEXT_WINDOW": "100000"},
+        "steps": [
+            {"op":"step-finish","sessionID":"A","tokens":{"total":90000}},
+            {"op":"system","system":["SYSTEM_ORIGINAL"]}
+        ]
+    }'
+    [ "$status" -eq 0 ]
+    run jq -c '.results[0].system' <<<"$output"
+    [ "$output" = '["SYSTEM_ORIGINAL"]' ]
 }
 
 @test "config-sync installs the plugin byte-identical at .config/opencode/plugin/context-meter.js" {
