@@ -28,24 +28,26 @@ Per item:
 - D1, D2, D4, D6: done, UNVERIFIED on a Mac. D4 went a safer way than
   planned: the boot pass still checks every file but only chowns the
   ones not already agent-owned, so the end state is unchanged.
-- D3: NOT done. Batching the inspects needs either a new combined Go
-  template, which can't be checked against a real Docker CLI from here
-  (and a bad one would make every open recreate a running container), or
-  JSON + jq with a fallback for Macs without jq, which adds more code
-  than it removes. The saving is ~0.3 s per `claude-dev` open.
-- D5: NOT done. The plan made it conditional on setup.sh changing often;
-  it is a risky refactor of the image build that can't be exercised
-  without Docker.
-- E1-E3, E5: done. E4: NOT done -- only two hooks could share the helper
-  without making branch-guard and workflow-lint load a library they skip
-  today, which saves ~3 lines.
+- D3: done, UNVERIFIED on a Mac. `container_matches` reads image, image
+  id, port and mounts from one `docker inspect` (JSON through jq); a Mac
+  without jq keeps the old per-field templates.
+- D5: done, UNVERIFIED on a Mac. Each payload phase's pin and functions
+  live in `scripts/container/phases/<name>.sh`, copied right before its
+  own RUN; functions byte-identical, `--check`/`--list` output unchanged.
+  Not built here (no Docker).
+- E1-E5: done. E4 is `scripts/lib/hook.sh` (`hook_deny`), used by
+  outbound-guard, tier-gate, branch-guard and workflow-lint.
 - G1-G3, G5: done (G5 kept SLOW_FILES: the slow files skip in under a
   second on a box without Orca/Docker, and are slow where those exist).
-- G4: NOT done. Registering a project writes that test's own absolute
-  temp paths into claude-orca.json and the docker stub's state, so a
-  per-file snapshot copied into the next test would hand it a fixture the
-  real flow never produces. With files running in parallel the full
-  suite is ~4 minutes already.
+- G4: built, measured, NOT landed. A per-file cache of make_project
+  (keyed on args, env and the tmpdir tree; replay rewrites the recorded
+  temp paths) passed every one of the 33 files that use it, with the
+  same results as without it. It hit 81 of 149 calls, a hit costs 0.48 s
+  against 1.9 s for a real bootstrap -- and the 33 files went from 601 s
+  to 544 s run one at a time, and from 164 s to 165 s run in parallel,
+  because container-entrypoint.bats (154 s, one fixture call) is the
+  critical path either way. ~110 lines of fixture code for no wall-clock
+  gain, so it was dropped.
 
 Tests after all of it: the full suite, 101 files / 1,229 cases, fails
 only the 8 cases that fail the same way on the original code on this box
