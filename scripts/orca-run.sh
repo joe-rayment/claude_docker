@@ -124,7 +124,6 @@ FAILED=" "
 EPICS_DONE=" "
 
 map_get() { printf '%s\n' "$1" | awk -F'\t' -v k="$2" '$1 == k { print $2; exit }'; }
-map_col3() { printf '%s\n' "$1" | awk -F'\t' -v k="$2" '$1 == k { print $3; exit }'; }
 map_keys() { printf '%s\n' "$1" | awk -F'\t' 'NF { print $1 }'; }
 map_vals() { printf '%s\n' "$1" | awk -F'\t' -v k="$2" '$1 == k { print $2 }'; }
 in_set() { case "$2" in *" $1 "*) return 0 ;; esac; return 1; }

@@ -4,7 +4,7 @@
 # stdout of every SessionStart hook in config/claude-settings.json, run
 # against a throwaway project (git init; bd init --skip-agents). Repo-local
 # dev tool, not part of the shipped template. Integration probe for the
-# "one rulebook" plan (.claude/plans/instruction-surface-fix.md): green
+# "one rulebook" plan (no longer in the repo): green
 # means a fix landed where a real project loads it, not just in this
 # repo's own CLAUDE.md.
 #
@@ -66,10 +66,10 @@ if [ -n "$BIN_DIR" ]; then
     for pair in \
         tier-set:tier-set.sh tier-derive:tier-derive.sh tier-reconcile:tier-reconcile.sh \
         tier-gate:tier-gate.sh tier-prime:tier-prime.sh prime-memories:prime-memories.sh \
-        lane:lane.sh workflow-lint:workflow-lint.sh cost-mirror:cost-mirror.sh \
+        lane:lane.sh workflow-lint:workflow-lint.sh cost-mirror:../python/cost-mirror.py \
         disk-cleanup:disk-cleanup.sh session-end-audit:session-end-audit.sh \
         bd-guard:bd-guard.sh outbound-guard:outbound-guard.sh context-detect:context-detect.sh \
-        delegation-gate:delegation-gate.sh contract-gate:contract-gate.sh \
+        delegation-gate:../python/delegation-gate.py contract-gate:../python/contract-gate.py \
         code-map-prime:code-map-prime.sh code-map:code-map.sh csearch:csearch.sh dev-log:dev-log.sh
     do
         name="${pair%%:*}"; script="${pair#*:}"
