@@ -17,12 +17,13 @@ count as done (CLAUDE.md, "Definition of done").
 |---|---|---|
 | Hooks on one Bash tool call | every Bash call | 9 processes, ~340 ms CPU. Claude Code runs matching hooks in parallel, so the felt delay is the slowest one (~70 ms, `output-cap`) plus CPU contention in a CPU-capped container |
 | Hooks on one prompt | every prompt | 5 processes, ~217 ms CPU; slowest `cost-mirror` 72 ms |
-| Status line | every assistant message (300 ms debounce) | ~68 ms, 20 processes, plus its own call to the usage API every 60 s |
+| Status line | every assistant message (300 ms debounce) | ~68 ms and 20 process launches, plus its own call to the usage API at most once a minute |
 | Always-loaded context | every session | rulebook ~2.3k tokens, 6 agent descriptions ~1k, skill + command descriptions ~240 |
 | Image | per build | 3.66 GB (recovery.md, `docker history`), of which 113 MB is `app.asar` written twice |
-| Rebuild after editing `setup.sh` | per edit, per Mac | every payload layer rebuilds (~11 min, ~1.3 GB downloads) |
+| Rebuild after editing `setup.sh` | per edit, per Mac | every payload layer rebuilds (~11 min, over 1.3 GB of downloads) |
 | `claude-dev` on a running folder | every open | 5–6 separate `docker inspect` calls |
 | Reading the biggest files | whenever an agent edits them | `cost-mirror.py` ~40k tokens, `launcher.sh` ~37k, `bd-guard.sh` ~29k (81% comments) |
+| Test suite | every run you start | everyday subset 8.5 min, all files 16 min (measured while other reviews were running, so inflated). It can't safely run files in parallel today (G1) |
 
 ---
 
@@ -52,15 +53,15 @@ its output and exit code on a corpus of real payloads before and after.
 |---|---|---|---|
 | B1 | Parse the hook input once. `output-cap.sh` calls `jq` up to 6 times on the same input (lines 50–109 + the emit), `outbound-guard.sh` 4 (192–228), `tier-gate.sh` 5–6 (78–104, plus an unguarded read of a settings file that may not exist). One `jq … @tsv` read replaces each set | measured `jq` start ~6 ms each | ~20–30 ms per hook per call |
 | B2 | Exit early when a guard can't match. `outbound-guard.sh` looks up the session id for every Bash call, though only `gh pr create`, `gh repo create` and `bd dolt push` need it. A cheap substring check first skips the rest (`bd-guard.sh` already works this way, which is why it's the fastest guard at 19 ms despite being 115 KB) | code read | 2 `jq` calls on most Bash calls |
-| B3 | `contract-gate.py` imports `subprocess` and `glob` at the top but only uses them when the command really is a `bd close` (~1% of calls). Import them inside those functions | measured +6.4 ms and +1.5 ms | ~8 ms per Bash call |
+| B3 | `contract-gate.py` imports `subprocess` and `glob` at the top but only uses them when the command really is a `bd close` (rare). Import them inside those functions | measured +6.4 ms and +1.5 ms | ~8 ms per Bash call |
 | B4 | Let Python cache the compiled hooks. A script run directly is recompiled from source on every call; only imported modules get a `.pyc`. Split each `.py` into a 3-line entry that imports its body | measured compile time: cost-mirror 15.4 ms, contract-gate 2.3, delegation-gate 1.9 | ~15 ms per prompt, ~4 ms per Bash call |
 | B5 | `_resolve_script_path` (copied into 35 scripts) spawns `readlink` plus two `dirname`s on every run. Replace `dirname` with `${x%/*}` (same result for these absolute paths) | measured ~7 ms tax per script | ~4–5 ms per hook that carries it |
 | B6 | `output-cap.sh:145` sweeps its spill folder with `find … -delete` on every qualifying Bash call. Nothing else cleans that folder, so keep the sweep but run it at most hourly (stamp file) or move it into `disk-cleanup` at session start. Also `date` → bash's built-in `printf '%(…)T'` | code read | 1–2 processes per Bash call |
 | B7 | Status line: read every field with one `jq` call and format with one `awk`. Then drop its own usage-API call: Claude Code now passes `rate_limits.five_hour/seven_day.used_percentage` to the status line, so the OAuth-token read, the `curl`, the `/tmp` cache file and 2 more `jq` calls go away | prototype diffed identical on every real input; 68→35 ms and 20→7 processes before dropping the API call | ~35–45 ms per message, one less network call, no script reading the OAuth token |
-| B8 | Merge `lane --reset` and `lane --prime --short` into one process (they're two hooks on every prompt, designed to tolerate running in parallel) | code read | ~30–45 ms CPU per prompt |
+| B8 | Merge `lane --reset` and `lane --prime --short` into one process (they're two hooks on every prompt, designed to tolerate running in parallel) | measured 48 ms + 31 ms today | ~15–30 ms CPU per prompt |
 
 Expected result of B1–B8 plus A6: a Bash call goes from ~340 ms to about
-~230 ms of CPU, and its slowest hook from ~70 ms to ~40 ms. A prompt goes
+~240 ms of CPU, and its slowest hook from ~70 ms to ~35 ms. A prompt goes
 from ~217 ms to ~150 ms of CPU. All of these are estimates until B is done
 and re-measured.
 
@@ -121,6 +122,21 @@ extractions; each has bats coverage (see tests/INDEX.md).
 | F4 | Dangling references: 4 comments cite `tests/shell-entry.bats` and 3 cite `.claude/plans/instruction-surface-fix.md`; neither exists |
 | F5 | README's route list names 3 routes; `config/delegate-routes.json` ships 10 |
 
+## G. Test suite — faster runs, same coverage
+
+| ID | What | Evidence | Saves |
+|---|---|---|---|
+| G1 | `tests/helpers/setup.bash:37` builds each file's fixture template under `$BATS_RUN_TMPDIR`, which every file in one run shares. Use `$BATS_FILE_TMPDIR` (one per file) | `bats --jobs 4` on a 165-test sample: files overwrote each other's fixture and 27 tests silently never ran (only a one-line "Executed 138 instead of expected 165" warning) | makes G2 possible; costs nothing, each file already rebuilds its own copy |
+| G2 | After G1, `run-tests.sh` passes `--jobs <cores>` when GNU `parallel` is installed (it is here; `brew install parallel` on a Mac). Check the full suite once; a file whose own tests share state opts out of running them side by side with `BATS_NO_PARALLELIZE_WITHIN_FILE=true` | same sample: 164 s serial, 71 s with each file's tests in parallel, 35 s with files in parallel too | roughly 3–4× faster runs (estimate for the full suite; the 90 s+ files set the floor) |
+| G3 | `setup()` writes 17 stub commands on every test in the 34 files that use the shared helper; most tests use none of them. Build them once per file and copy them in per test | ~145 ms per test × ~300 tests | ~40 s per full run |
+| G4 | `make_project` runs the real bootstrap + register (~2 s) 224 times across 33 files. Outside `bootstrap.bats`, register once per file and copy the result into each test | 312 processes per call (strace) | ~150–300 s per full run. Medium risk: some tests check what that registration itself logged, so it needs a file-by-file pass |
+| G5 | Re-time every file on a quiet machine, then refresh `SLOW_FILES` in `run-tests.sh` and the speed column in `tests/INDEX.md` | this sweep ran alongside six other reviews | accurate numbers |
+
+Kept as they are: `container-entrypoint.bats`'s fixed sleeps (they prove
+something did *not* happen, so shortening them weakens the test) and the
+two large fixtures (faithful copies of real output; they parse in
+milliseconds).
+
 ## Found along the way (not waste, but worth fixing)
 
 - **The bash 3.2 lint isn't run by anything.** CLAUDE.md says
@@ -142,7 +158,7 @@ extractions; each has bats coverage (see tests/INDEX.md).
   keeps them in sync.
 - **`bats` in the image:** agents use it on your projects' tests.
 - **`build-essential`, `python3-pip`, `wget`, `gnupg`, `unzip`, `xz-utils`
-  in the base image:** nothing in this repo calls them, but agents may need
+  in the base image:** nothing in this repo's scripts calls them, but agents may need
   a compiler or pip for your projects. Removing them is a policy choice,
   not waste; it needs an `apt-get --dry-run` on a Mac first.
 - **Gating the Snowflake skill to Snowflake projects:** saves ~139 tokens
@@ -157,11 +173,13 @@ extractions; each has bats coverage (see tests/INDEX.md).
 
 ## Order of work
 
-1. **A, F** — deletions and doc fixes. No behavior change; one commit each.
-2. **B** — one hook per commit, each with its bats file green and a
+1. **G1–G3** first. They make every later check faster, and G1 is one line.
+2. **A, F** — deletions and doc fixes. No behavior change; one commit each.
+3. **B** — one hook per commit, each with its bats file green and a
    before/after timing in the commit message. Re-measure the whole hook set
    at the end.
-3. **C** — text edits, one commit.
-4. **E** — comment and duplicate trims, one file per commit.
-5. **D** — each item separately, each with `mac-e2e.sh` and a before/after
+4. **C** — text edits, one commit.
+5. **E** — comment and duplicate trims, one file per commit.
+6. **G4–G5** — the bigger test-fixture change, then fresh timings.
+7. **D** — each item separately, each with `mac-e2e.sh` and a before/after
    measurement. Until a Mac run, the commit subject says UNVERIFIED.
