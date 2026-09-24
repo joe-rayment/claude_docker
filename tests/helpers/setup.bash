@@ -469,6 +469,22 @@ case "$cmd" in
         [ -f "$state/containers/$name" ] || exit 1
         meta="$state/containers/$name.meta"
         meta_get() { [ -f "$meta" ] && sed -n "s/^$1=//p" "$meta"; }
+        # No -f: the whole record as JSON, the shape `docker inspect NAME`
+        # prints (a one-element array), built from what `run` recorded.
+        if [ -z "$fmt" ]; then
+            jq -n --arg status "$(cat "$state/containers/$name")" \
+                --arg image "$(meta_get image)" --arg imageid "$(meta_get imageid)" \
+                --arg mounts "$(meta_get mount)" --arg ports "$(meta_get port)" \
+                --arg nano "${CONTAINER_STUB_NANOCPUS:-0}" '
+                [{State: {Status: $status}, Config: {Image: $image}, Image: $imageid,
+                  Mounts: [$mounts | split("\n")[] | select(length > 0)
+                           | capture("^(?<Source>.*):(?<Destination>[^:]*)$")],
+                  NetworkSettings: {Ports: (reduce ($ports | split("\n")[] | select(length > 0)) as $l
+                      ({}; .[($l | split(":")[1]) + "/tcp"] =
+                           [{HostIp: "127.0.0.1", HostPort: ($l | split(":")[0])}]))},
+                  HostConfig: {NanoCpus: ($nano | tonumber)}}]'
+            exit 0
+        fi
         case "$fmt" in
             *State.Status*)
                 cat "$state/containers/$name" ;;
