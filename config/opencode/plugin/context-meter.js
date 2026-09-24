@@ -62,25 +62,31 @@ export const ContextMeter = async ({ client }) => {
         return win;
     }
 
+    // The HANDOFF template, shared byte-for-byte by the SOFT NOTICE and the
+    // HARD REFUSAL (claude-orca-7lz's shared contract, revised by
+    // claude-orca-7lz.6).
+    const HANDOFF_BLOCK =
+        `HANDOFF\n` +
+        `done: <what is finished, with file:line>\n` +
+        `left: <what remains, in order>\n` +
+        `facts: <file:line facts the next agent must not re-derive>\n` +
+        `next:\n` +
+        `relay: this agent is finished -- start a fresh one from this block; never message or resume it.`;
+
     function softNotice(pct) {
         return (
             `[context-meter] context is at ${pct}% of this agent's window (budget ${BUDGET}%); ` +
-            `past this point answer quality drops. Stop exploring: finish the step in hand, ` +
-            `then end your final report with this block and stop.\n` +
-            `HANDOFF\n` +
-            `done: <what is finished, with file:line>\n` +
-            `left: <what remains, in order>\n` +
-            `facts: <file:line facts the next agent must not re-derive>\n` +
-            `next: <the exact prompt a fresh agent should start from>\n` +
-            `relay: this agent is finished -- start a fresh one from this block; never message or resume it.`
+            `past this point answer quality drops. Stop exploring: finish the step in hand and stop. ` +
+            `If work remains, end your final report with this block; if the task is complete, just report.\n` +
+            HANDOFF_BLOCK
         );
     }
 
     function hardRefusal(pct) {
         return (
             `[context-meter] context is at ${pct}% of this agent's window, past the ${CEILING}% ceiling: ` +
-            `tool calls are refused. Write your final report now, ending with the HANDOFF block ` +
-            `(done, left, facts, next, relay), and stop.`
+            `tool calls are refused. Write your final report now and stop. If work remains, end it with this block:\n` +
+            HANDOFF_BLOCK
         );
     }
 
@@ -126,7 +132,9 @@ export const ContextMeter = async ({ client }) => {
                 if (!sessionID) return; // no sessionID -> no-op
                 const s = sessions.get(sessionID);
                 if (!s) return; // unknown session -> no-op
-                if (s.pct >= BUDGET) {
+                if (s.pct >= CEILING) {
+                    output.system.push(hardRefusal(s.pct));
+                } else if (s.pct >= BUDGET) {
                     output.system.push(softNotice(s.pct));
                 }
             } catch (e) {

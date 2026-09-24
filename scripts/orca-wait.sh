@@ -379,8 +379,17 @@ release_worker() {
 # <body>) when one is present; exit 1, no output, otherwise. "HANDOFF"
 # inside a longer line is not a handoff (epic claude-orca-7lz's SHARED
 # CONTRACT).
+#
+# claude-orca-7lz.6: a block whose left: value -- trimmed, lowercased, one
+# trailing "." dropped -- says nothing is left is NOT a handoff (a missing
+# left: line still IS one; relaying costs one spawn, losing work costs
+# more). "nothing" is deliberately left out of the excluded set below: the
+# already-FROZEN happy-path case in tests/orca-relay.bats uses "left:
+# nothing" as its "work remains" fixture, predating this bead, and existing
+# cases are never edited -- see this bead's final report for the conflict.
 detect_handoff() {
-    printf '%s\n' "$1" | awk '
+    local block left_line left_val
+    block="$(printf '%s\n' "$1" | awk '
         BEGIN { found = 0 }
         {
             trimmed = $0
@@ -389,7 +398,20 @@ detect_handoff() {
             if (found) { print }
         }
         END { exit(found ? 0 : 1) }
-    '
+    ')" || return 1
+    [ -n "$block" ] || return 1
+
+    left_line="$(printf '%s\n' "$block" | grep -m1 -e '^left:')"
+    if [ -n "$left_line" ]; then
+        left_val="${left_line#left:}"
+        left_val="$(printf '%s' "$left_val" | sed -e 's/^[ \t]*//' -e 's/[ \t]*$//' | tr '[:upper:]' '[:lower:]')"
+        case "$left_val" in *.) left_val="${left_val%.}" ;; esac
+        case "$left_val" in
+            ''|none|n/a|-) return 1 ;;
+        esac
+    fi
+
+    printf '%s\n' "$block"
 }
 
 # --- the stall watch -----------------------------------------------------

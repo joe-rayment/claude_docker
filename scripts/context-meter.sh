@@ -88,21 +88,35 @@ fi
 
 PCT=$(( CONTEXT * 100 / WINDOW ))
 
-if [ "$MODE" = "--post" ]; then
-    [ "$PCT" -ge "$BUDGET" ] || exit 0
-    TEXT="[context-meter] context is at ${PCT}% of this agent's window (budget ${BUDGET}%); past this point answer quality drops. Stop exploring: finish the step in hand, then end your final report with this block and stop.
-HANDOFF
+# The HANDOFF template, shared byte-for-byte by the SOFT NOTICE and the HARD
+# REFUSAL (claude-orca-7lz's shared contract, revised by claude-orca-7lz.6).
+HANDOFF_BLOCK="HANDOFF
 done: <what is finished, with file:line>
 left: <what remains, in order>
 facts: <file:line facts the next agent must not re-derive>
-next: <the exact prompt a fresh agent should start from>
+next:
 relay: this agent is finished -- start a fresh one from this block; never message or resume it."
+
+hard_refusal_text() {
+    printf '[context-meter] context is at %s%% of this agent'"'"'s window, past the %s%% ceiling: tool calls are refused. Write your final report now and stop. If work remains, end it with this block:\n%s' \
+        "$1" "$CEILING" "$HANDOFF_BLOCK"
+}
+
+if [ "$MODE" = "--post" ]; then
+    if [ "$PCT" -ge "$CEILING" ]; then
+        TEXT="$(hard_refusal_text "$PCT")"
+        jq -n --arg t "$TEXT" '{hookSpecificOutput:{hookEventName:"PostToolUse", additionalContext:$t}}' 2>/dev/null || exit 0
+        exit 0
+    fi
+    [ "$PCT" -ge "$BUDGET" ] || exit 0
+    TEXT="[context-meter] context is at ${PCT}% of this agent's window (budget ${BUDGET}%); past this point answer quality drops. Stop exploring: finish the step in hand and stop. If work remains, end your final report with this block; if the task is complete, just report.
+${HANDOFF_BLOCK}"
     jq -n --arg t "$TEXT" '{hookSpecificOutput:{hookEventName:"PostToolUse", additionalContext:$t}}' 2>/dev/null || exit 0
     exit 0
 fi
 
 # --pre
 [ "$PCT" -ge "$CEILING" ] || exit 0
-REASON="[context-meter] context is at ${PCT}% of this agent's window, past the ${CEILING}% ceiling: tool calls are refused. Write your final report now, ending with the HANDOFF block (done, left, facts, next, relay), and stop."
+REASON="$(hard_refusal_text "$PCT")"
 jq -n --arg r "$REASON" '{hookSpecificOutput:{hookEventName:"PreToolUse", permissionDecision:"deny", permissionDecisionReason:$r}}' 2>/dev/null || exit 0
 exit 0
