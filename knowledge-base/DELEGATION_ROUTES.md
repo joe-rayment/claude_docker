@@ -64,16 +64,23 @@ rather than treated as an extra provider. Shipped routes:
 
 | Route | Model | Grade |
 |---|---|---|
-| `glm` | `openrouter/z-ai/glm-5.2` (provider-pinned: novita, parasail, no fallbacks) | executor |
-| `deepseek` | `openrouter/deepseek/deepseek-chat` | executor |
-| `qwen-coder` | `openrouter/qwen/qwen3-coder` | executor |
+| `glm` | `openrouter/~z-ai/glm-latest` (provider-pinned: deepinfra, parasail, no fallbacks) | executor |
+| `glm-flash` | `openrouter/~z-ai/glm-flash-latest` | scout |
+| `luna` / `luna-high` | `openrouter/~openai/gpt-luna-latest` (`luna-high` adds the `high` effort) | executor |
+| `deepseek` | `openrouter/~deepseek/deepseek-pro-latest` | executor |
+| `deepseek-flash` | `openrouter/~deepseek/deepseek-flash-latest` | scout |
+| `qwen-coder` | `openrouter/qwen/qwen3-coder` (no OpenRouter alias yet: a fixed version) | executor |
 | `local` | `ollama/qwen3-coder:30b` (loopback, no egress) | scout |
 | `codex` / `gemini` | first-party examples for those runners | executor |
 
 `config/delegate-routes.json` is **user-editable configuration, not a fixed
 list**: any id from [openrouter.ai/models](https://openrouter.ai/models)
 works as `"model": "openrouter/<id>"`, and the provider prefix is what
-`delegate.sh` maps to a key variable and an egress host.
+`delegate.sh` maps to a key variable and an egress host. A `~<vendor>/<family>-latest`
+id is OpenRouter's newest-in-family alias (its catalogue entry names the
+current `alias_target`): OpenRouter resolves it per request, so a route or a
+`/tier` binding written that way picks up a new release with no edit and no
+re-bind — the OpenRouter twin of Claude Code's `fable`/`opus`/`sonnet`.
 
 ### Where the key goes
 

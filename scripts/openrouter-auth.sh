@@ -167,4 +167,4 @@ echo
 echo "Key file: $key_file_abs"
 echo "Guard port: $CLAUDE_ORCA_GUARD_PORT"
 echo "Done. Run this next:"
-echo "  /tier worker openrouter:z-ai/glm-5.3-flash"
+echo "  /tier worker glm-flash"

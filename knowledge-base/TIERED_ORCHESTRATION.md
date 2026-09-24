@@ -116,7 +116,7 @@ Defaults: the **worker backend is `orca`** whenever the Orca runtime answers
 `orca-ide status --json` with `.runtime.reachable`, `subagent` otherwise; the
 **worker vendor** is decided by the OpenRouter key — with one present (the
 file `claude-dev key openrouter` writes) the derived worker is `opencode` on
-`openrouter/z-ai/glm-5.3`, the default GLM executor; without one it is
+`openrouter/~z-ai/glm-latest`, the default GLM executor; without one it is
 `claude:<derived worker rung>`. **Recon = `subagent` haiku** and **checker = `subagent`
 at the derived checker rung** (the top capped at opus), both in-process on
 purpose — recon is cheap and read-only, and a checker never grades a claim
@@ -130,7 +130,7 @@ no worktree, the answer on stdout, the cost in the delegate ledger.
 the in-process fallback. `/tier worker openrouter:qwen/qwen3-coder`,
 `/tier worker claude:sonnet` or `/tier worker subagent` rebinds the worker
 seat, and **`/tier recon openrouter` puts recon on the flash-class rung**
-(`openrouter/z-ai/glm-5.3-flash` run by `opencode` on the orca backend) —
+(`openrouter/~z-ai/glm-flash-latest` run by `opencode` on the orca backend) —
 the bare `openrouter` spec takes the role's own OpenRouter default, so the
 same word means the full-size GLM for the worker and the flash sibling for
 recon. The matching delegate routes are `glm-flash` and `deepseek-flash`,

@@ -557,10 +557,10 @@ STUB
     TIER_OPENROUTER_KEY_FILE="$keyfile" TIER_ORCA_PROBE_CMD="$orca_up" \
         TIER_DERIVE="$DERIVE" tier_set fable
     [ "$status" -eq 0 ]
-    run jq -e '.roles.worker | .backend == "orca" and .agent == "opencode" and .model == "openrouter/z-ai/glm-5.3"' "$STATE_FILE"
+    run jq -e '.roles.worker | .backend == "orca" and .agent == "opencode" and .model == "openrouter/~z-ai/glm-latest"' "$STATE_FILE"
     [ "$status" -eq 0 ]
     # the v1 mirror follows, the top is untouched, and only the worker moved
-    run jq -e '.worker == "openrouter/z-ai/glm-5.3" and .top == "fable"' "$STATE_FILE"
+    run jq -e '.worker == "openrouter/~z-ai/glm-latest" and .top == "fable"' "$STATE_FILE"
     [ "$status" -eq 0 ]
     run jq -e '.roles.recon | .backend == "subagent" and .agent == "claude" and .model == "haiku"' "$STATE_FILE"
     [ "$status" -eq 0 ]
@@ -570,7 +570,7 @@ STUB
     # tier-prime shows it
     prime
     [ "$status" -eq 0 ]
-    [[ "$output" == *"worker=orca:opencode:openrouter/z-ai/glm-5.3"* ]]
+    [[ "$output" == *"worker=orca:opencode:openrouter/~z-ai/glm-latest"* ]]
 
     # the env var alone is enough; with no Orca the vendor still holds and
     # only the backend falls back -- "no Orca" is pinned by the probe switch
@@ -578,7 +578,7 @@ STUB
     OPENROUTER_API_KEY=sk-or-v1-fromenv TIER_ORCA_PROBE_DISABLE=1 \
         TIER_DERIVE="$DERIVE" tier_set opus
     [ "$status" -eq 0 ]
-    run jq -e '.top == "opus" and (.roles.worker | .backend == "subagent" and .agent == "opencode" and .model == "openrouter/z-ai/glm-5.3")' "$STATE_FILE"
+    run jq -e '.top == "opus" and (.roles.worker | .backend == "subagent" and .agent == "opencode" and .model == "openrouter/~z-ai/glm-latest")' "$STATE_FILE"
     [ "$status" -eq 0 ]
 
     # an explicit /tier worker claude:<x> still overrides the default
@@ -806,20 +806,20 @@ STUB
     # recon that is the flash-class model, not the full-size worker GLM.
     TIER_DERIVE="$DERIVE" tier_set recon openrouter
     [ "$status" -eq 0 ]
-    run jq -e '.roles.recon | .backend == "orca" and .agent == "opencode" and .model == "openrouter/z-ai/glm-5.3-flash" and .pinned == true' "$STATE_FILE"
+    run jq -e '.roles.recon | .backend == "orca" and .agent == "opencode" and .model == "openrouter/~z-ai/glm-flash-latest" and .pinned == true' "$STATE_FILE"
     [ "$status" -eq 0 ]
     # the v1 mirror follows, and the other roles are untouched
-    run jq -e '.recon == "openrouter/z-ai/glm-5.3-flash" and .roles.worker.model == "sonnet"' "$STATE_FILE"
+    run jq -e '.recon == "openrouter/~z-ai/glm-flash-latest" and .roles.worker.model == "sonnet"' "$STATE_FILE"
     [ "$status" -eq 0 ]
 
     # the default is a named constant in lib/tier-roles.sh, not a literal
-    run grep -c 'TIER_OPENROUTER_RECON_MODEL="openrouter/z-ai/glm-5.3-flash"' "$REPO_ROOT/scripts/lib/tier-roles.sh"
+    run grep -c 'TIER_OPENROUTER_RECON_MODEL="openrouter/~z-ai/glm-flash-latest"' "$REPO_ROOT/scripts/lib/tier-roles.sh"
     [ "$output" = "1" ]
 
     # the explicit spelling still works and lands on the same binding
-    TIER_DERIVE="$DERIVE" tier_set recon openrouter:z-ai/glm-5.3-flash
+    TIER_DERIVE="$DERIVE" tier_set recon openrouter:~z-ai/glm-flash-latest
     [ "$status" -eq 0 ]
-    run jq -e '.roles.recon.model == "openrouter/z-ai/glm-5.3-flash"' "$STATE_FILE"
+    run jq -e '.roles.recon.model == "openrouter/~z-ai/glm-flash-latest"' "$STATE_FILE"
     [ "$status" -eq 0 ]
 
     # and the command is documented where the roles are explained

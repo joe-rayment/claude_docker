@@ -194,10 +194,11 @@ state_field() {  # state_field <field> -- '' if the file/field is absent
     jq -r ".$1 // empty" "$STATE_FILE" 2>/dev/null
 }
 
-# A model REFERENCE may also carry '/' (openrouter/qwen/qwen3-coder).
+# A model REFERENCE may also carry '/' (openrouter/qwen/qwen3-coder) and '~'
+# (OpenRouter's newest-in-family aliases, openrouter/~openai/gpt-luna-latest).
 valid_model_ref() {
     case "$1" in
-        ''|*[!a-zA-Z0-9._/\[\]-]*) return 1 ;;
+        ''|*[!a-zA-Z0-9._/~\[\]-]*) return 1 ;;
         *) return 0 ;;
     esac
 }
@@ -278,7 +279,7 @@ parse_effort() {
 # claude-orca-qa2.20: on the AUTO-DERIVED path only ($6 = true, i.e. a plain
 # `/tier <top>`), a folder that has an OpenRouter key gets the GLM worker
 # instead of the claude rung -- the key decides the VENDOR (opencode running
-# openrouter/z-ai/glm-5.3), the Orca probe decides only the BACKEND. An
+# openrouter/~z-ai/glm-latest), the Orca probe decides only the BACKEND. An
 # explicit 2/3-arg pin and `overdrive` are explicit requests for a claude
 # model and are left alone. TIER_EFFECTIVE_WORKER carries the model actually
 # bound back to the caller, for the message it prints.
@@ -516,8 +517,9 @@ HOW TO SET IT -- always in this order: top, worker, recon
   /tier opus                                               one Claude model; worker and recon are derived from it
   /tier <preset>                                           a preset -- one name for a whole combination; bare /tier lists them
 NAMES
-  Claude:     fable  opus  sonnet  haiku
-  OpenRouter: ${routes}(the short names are the routes in config/delegate-routes.json)
+  Claude:     fable  opus  sonnet  haiku                   each always runs the family's newest release
+  OpenRouter: ${routes}(the short names are the routes in config/delegate-routes.json;
+              most are OpenRouter ~...-latest aliases, so they follow new releases too)
               any other name is looked up in OpenRouter's catalogue; when it matches several models
               nothing is bound and the candidates are listed -- /tier models <words> previews that lookup
 EFFORT -- OpenRouter models only (a Claude role ignores it)
@@ -540,7 +542,7 @@ show_help() {
 /tier overdrive lifts the worker cap so the executor runs the TOP model (recon stays cheap) and keeps it lifted as /model moves the top; it is expensive, says so on every session-start tier line, and a 1-arg /tier <top> clears it.
 1-arg /tier <top> auto-derives worker/recon: worker = one rung down capped at sonnet-class, recon = one below the worker (fable>opus>sonnet>haiku, floored). 2/3-arg /tier <top> <worker> [<recon>] pins those bindings explicitly.
 the checker (verifier) rung is derived too: the top capped at opus, so a fable top is graded from opus; oracle still inherits the orchestrator's model. /model is the primary in-session lever for the derived default.
-each role (worker · recon · checker) also carries a backend: orca (a supervised Orca worker terminal, dispatched with orca-dispatch) or subagent (the in-process Agent tool). /tier worker openrouter:z-ai/glm-5.3-flash binds OpenRouter's GLM 5.3 Flash run by opencode on the orca backend, /tier worker claude:sonnet an orca-backed Claude worker, /tier worker subagent puts it back in-process on the derived model; recon and checker take the same specs. /tier recon openrouter (bare spec, no model named) binds the role's own OpenRouter default, for recon the flash-class rung $TIER_OPENROUTER_RECON_MODEL.
+each role (worker · recon · checker) also carries a backend: orca (a supervised Orca worker terminal, dispatched with orca-dispatch) or subagent (the in-process Agent tool). /tier worker glm-flash binds OpenRouter's newest GLM Flash (openrouter/~z-ai/glm-flash-latest) run by opencode on the orca backend, /tier worker claude:sonnet an orca-backed Claude worker, /tier worker subagent puts it back in-process on the derived model; recon and checker take the same specs. /tier recon openrouter (bare spec, no model named) binds the role's own OpenRouter default, for recon the flash-class rung $TIER_OPENROUTER_RECON_MODEL.
 a 1-arg /tier <top> resets all three to the defaults: worker orca+claude when the Orca runtime is reachable, else subagent; recon subagent haiku; checker subagent at the derived checker rung (the top capped at opus), so a fable top is graded from opus. An off-ladder top leaves the checker on inherit. With an OpenRouter key in this folder the default worker is the GLM rung on opencode, and every OpenRouter request goes through the in-VM guard, which forces config/provider-policy.json's provider allowlist -- a Chinese model is fine, a China-hosted one is not: requests are served in the US, Canada or Europe only; /tier worker claude:sonnet puts the claude rung back.
 an openrouter: bind still saves with no credential in this folder -- it names /tier auth openrouter as the next step, which opens a focused Orca tab that gets a key, validates it and starts the guard; with no Orca runtime it prints the same command to run by hand.
 a reasoning effort (luna@high) is stored as roles.<role>.variant and reaches opencode through a per-launch config file (OPENCODE_CONFIG) on both the orca-dispatch and delegate paths; it has no effect on a Claude role.

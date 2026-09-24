@@ -257,11 +257,11 @@ EOF
 @test "config/delegate-routes.json ships luna and luna-high, and delegate check lists every route" {
     SHIPPED="$REPO_ROOT/config/delegate-routes.json"
     [ "$(jq -r '.routes.luna.runner' "$SHIPPED")" = "opencode" ]
-    [ "$(jq -r '.routes.luna.model' "$SHIPPED")" = "openrouter/openai/gpt-5.6-luna" ]
+    [ "$(jq -r '.routes.luna.model' "$SHIPPED")" = "openrouter/~openai/gpt-luna-latest" ]
     [ "$(jq -r '.routes.luna.grade' "$SHIPPED")" = "executor" ]
     [ "$(jq -r '.routes.luna | has("variant")' "$SHIPPED")" = "false" ]
     [ "$(jq -r '.routes["luna-high"].runner' "$SHIPPED")" = "opencode" ]
-    [ "$(jq -r '.routes["luna-high"].model' "$SHIPPED")" = "openrouter/openai/gpt-5.6-luna" ]
+    [ "$(jq -r '.routes["luna-high"].model' "$SHIPPED")" = "openrouter/~openai/gpt-luna-latest" ]
     [ "$(jq -r '.routes["luna-high"].variant' "$SHIPPED")" = "high" ]
     [ "$(jq -r '.routes["luna-high"].grade' "$SHIPPED")" = "executor" ]
 

@@ -99,14 +99,21 @@ tier_role_label() {
 # in-VM guard forces config/provider-policy.json's allowlist onto every
 # request, which is what keeps a Chinese model on US/Canadian/European
 # hardware.
-TIER_OPENROUTER_DEFAULT_MODEL="openrouter/z-ai/glm-5.3"
+#
+# Both defaults (and every OpenRouter route in config/delegate-routes.json
+# that has one) are OpenRouter's "~<vendor>/<family>-latest" aliases, the
+# OpenRouter twin of Claude Code's fable/opus/sonnet: OpenRouter redirects
+# each request to the family's newest model, so a release needs no edit here
+# and no re-bind -- the day luna still meant gpt-5.6-luna after gpt-6-luna
+# shipped is the day these stopped naming versions.
+TIER_OPENROUTER_DEFAULT_MODEL="openrouter/~z-ai/glm-latest"
 
 # The RECON rung's OpenRouter default (claude-orca-8a0.2). Recon is fan-out
 # lookup work -- find the callers, list the usages, summarise the directory --
 # where latency and price matter and depth does not, so the flash-class sibling
 # of the worker GLM is the right seat for it. `/tier recon openrouter` (the
 # bare spec, no model named) binds exactly this.
-TIER_OPENROUTER_RECON_MODEL="openrouter/z-ai/glm-5.3-flash"
+TIER_OPENROUTER_RECON_MODEL="openrouter/~z-ai/glm-flash-latest"
 
 # tier_openrouter_role_default <worker|recon|checker> -- the OpenRouter model
 # a bare `openrouter` spec binds for that role: the flash rung for recon, the

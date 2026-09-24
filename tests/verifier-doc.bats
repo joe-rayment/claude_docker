@@ -51,15 +51,15 @@ ROUTES="$REPO_ROOT/config/delegate-routes.json"
     run jq -e . "$ROUTES"
     [ "$status" -eq 0 ]
 
-    run jq -e '.routes["glm-flash"] | .runner == "opencode" and .model == "openrouter/z-ai/glm-5.3-flash" and .grade == "scout"' "$ROUTES"
+    run jq -e '.routes["glm-flash"] | .runner == "opencode" and .model == "openrouter/~z-ai/glm-flash-latest" and .grade == "scout"' "$ROUTES"
     [ "$status" -eq 0 ]
-    run jq -e '.routes["deepseek-flash"] | .runner == "opencode" and .model == "openrouter/deepseek/deepseek-v4-flash" and .grade == "scout"' "$ROUTES"
+    run jq -e '.routes["deepseek-flash"] | .runner == "opencode" and .model == "openrouter/~deepseek/deepseek-flash-latest" and .grade == "scout"' "$ROUTES"
     [ "$status" -eq 0 ]
 
     # the six routes that were already shipped survive unchanged
     run jq -e '.routes | has("glm") and has("deepseek") and has("qwen-coder") and has("local") and has("codex") and has("gemini")' "$ROUTES"
     [ "$status" -eq 0 ]
-    [ "$(jq -r '.routes.glm.model' "$ROUTES")" = "openrouter/z-ai/glm-5.3" ]
+    [ "$(jq -r '.routes.glm.model' "$ROUTES")" = "openrouter/~z-ai/glm-latest" ]
     [ "$(jq -r '.routes.glm.grade' "$ROUTES")" = "executor" ]
 
     # every route still declares the shape delegate.sh needs

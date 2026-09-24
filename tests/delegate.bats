@@ -751,7 +751,7 @@ STUB
     # claude-orca-dav added the luna/luna-high reasoning-variant demo routes.
     [ "$(jq -r '.routes | keys | join(",")' "$SHIPPED_ROUTES")" = "codex,deepseek,deepseek-flash,gemini,glm,glm-flash,local,luna,luna-high,qwen-coder" ]
     [ "$(jq -r '.routes.glm.runner' "$SHIPPED_ROUTES")" = "opencode" ]
-    [ "$(jq -r '.routes.glm.model' "$SHIPPED_ROUTES")" = "openrouter/z-ai/glm-5.3" ]
+    [ "$(jq -r '.routes.glm.model' "$SHIPPED_ROUTES")" = "openrouter/~z-ai/glm-latest" ]
     [ "$(jq -r '.routes.glm.pin.order | join(",")' "$SHIPPED_ROUTES")" = "deepinfra,parasail" ]
     # claude-orca-qa2.20: every pinned provider is on the shipped allowlist,
     # so the shipped routes cannot ask for a host the guard would strip.
@@ -779,7 +779,7 @@ STUB
 # actually goes live under the same preflight every other route passes.
 @test "delegate routes include the openrouter defaults" {
     [ "$(jq -r '.routes.deepseek.runner' "$SHIPPED_ROUTES")" = "opencode" ]
-    [ "$(jq -r '.routes.deepseek.model' "$SHIPPED_ROUTES")" = "openrouter/deepseek/deepseek-chat" ]
+    [ "$(jq -r '.routes.deepseek.model' "$SHIPPED_ROUTES")" = "openrouter/~deepseek/deepseek-pro-latest" ]
     [ "$(jq -r '.routes.deepseek.grade' "$SHIPPED_ROUTES")" = "executor" ]
     [ "$(jq -r '.routes["qwen-coder"].runner' "$SHIPPED_ROUTES")" = "opencode" ]
     [ "$(jq -r '.routes["qwen-coder"].model' "$SHIPPED_ROUTES")" = "openrouter/qwen/qwen3-coder" ]

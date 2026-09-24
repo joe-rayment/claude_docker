@@ -1,7 +1,7 @@
 {
   "presets": [
-    {"name": "hybrid", "summary": "Fable orchestrates, GLM 5.3 flash works, GPT-5.6 Luna (high) scouts -- low-cost OpenRouter workers", "args": ["fable", "glm-flash", "luna@high"]},
-    {"name": "hybrid-glm", "summary": "as hybrid, with full-size GLM 5.3 workers for slices flash flounders on", "args": ["fable", "glm", "luna@high"]},
+    {"name": "hybrid", "summary": "Fable orchestrates, the newest GLM flash works, the newest GPT Luna (high) scouts -- low-cost OpenRouter workers", "args": ["fable", "glm-flash", "luna@high"]},
+    {"name": "hybrid-glm", "summary": "as hybrid, with full-size GLM workers for slices flash flounders on", "args": ["fable", "glm", "luna@high"]},
     {"name": "opus-hybrid", "summary": "Opus orchestrates over the same low-cost OpenRouter workers", "args": ["opus", "glm-flash", "luna@high"]},
     {"name": "all-claude", "summary": "no OpenRouter: Fable, with the Claude worker and recon it derives", "args": ["fable"]}
   ]
