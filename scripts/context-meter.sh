@@ -109,8 +109,19 @@ if [ "$MODE" = "--post" ]; then
         exit 0
     fi
     [ "$PCT" -ge "$BUDGET" ] || exit 0
-    TEXT="[context-meter] context is at ${PCT}% of this agent's window (budget ${BUDGET}%); past this point answer quality drops. Stop exploring: finish the step in hand and stop. If work remains, end your final report with this block; if the task is complete, just report.
+    # The full notice (with the HANDOFF template) once per agent; every
+    # later call past the budget gets a one-line reminder instead of the
+    # same ~500 bytes again. The marker is keyed by this agent's transcript
+    # path, so it never leaks to another agent or session.
+    NOTE_DIR="${TMPDIR:-/tmp}/claude-orca-context-meter"
+    NOTE="$NOTE_DIR/${SUB_T//\//_}"
+    if [ -e "$NOTE" ]; then
+        TEXT="[context-meter] still at ${PCT}% of this agent's window (budget ${BUDGET}%): finish the step in hand and stop; if work remains, end with the HANDOFF block from the first notice."
+    else
+        TEXT="[context-meter] context is at ${PCT}% of this agent's window (budget ${BUDGET}%); past this point answer quality drops. Stop exploring: finish the step in hand and stop. If work remains, end your final report with this block; if the task is complete, just report.
 ${HANDOFF_BLOCK}"
+        mkdir -p "$NOTE_DIR" 2>/dev/null && : > "$NOTE" 2>/dev/null
+    fi
     jq -n --arg t "$TEXT" '{hookSpecificOutput:{hookEventName:"PostToolUse", additionalContext:$t}}' 2>/dev/null || exit 0
     exit 0
 fi

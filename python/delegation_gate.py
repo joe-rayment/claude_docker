@@ -552,14 +552,11 @@ def main():
         state["warned_at"] = streak
         save_state(state_path, state)
         emit_note(
-            f"[delegation-gate] {streak} inline calls — this Bash "
-            "call is recon or editing the orchestrator should not be doing "
-            "itself: recon to the recon backend ("
-            '`recon "<question>"`'
-            " when it is orca-backed, a scout otherwise), edits and builds "
-            "to an executor slice (`orca-dispatch <bead>`, else the Agent "
-            "tool). Streak resets on Agent use; `bd`, `git`, `gh`, `bats`, "
-            "`lane`, `tier-` and `recon` calls never count."
+            f"[delegation-gate] {streak} inline calls — hand this off: recon "
+            'to `recon "<question>"` (orca) or a scout, edits and builds to '
+            "an executor (`orca-dispatch <bead>`, else the Agent tool). "
+            "Resets on Agent use; bd, git, gh, bats, lane, tier- and recon "
+            "calls don't count."
         )
         return
 

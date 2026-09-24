@@ -277,7 +277,7 @@ hook_json() { printf '{"session_id":"%s","hook_event_name":"UserPromptSubmit"}' 
 @test "lane --prime --short: exact one-liner (beads_claude_docker-mcuw)" {
     run lane --prime --short
     [ "$status" -eq 0 ]
-    [ "$output" = "[lane] route first — lane express|standard|deep · rubric: $CLAUDE_CONFIG_DIR/CLAUDE.md § Lanes" ]
+    [ "$output" = "[lane] route first — lane express|standard|deep (rulebook § Lanes)" ]
 }
 
 @test "lane --prime --short: starts with the route-first tag and names the rubric location (beads_claude_docker-mcuw)" {
@@ -298,7 +298,7 @@ hook_prompt() { printf '{"session_id":"%s","hook_event_name":"UserPromptSubmit",
     hook_prompt test-session-1 "fix the bug" | lane --reset
     run bash "$LANE" --prime --short <<<"$(hook_prompt test-session-1 "fix the bug")"
     [ "$status" -eq 0 ]
-    [ "$output" = "[lane] route first — lane express|standard|deep · rubric: $CLAUDE_CONFIG_DIR/CLAUDE.md § Lanes" ]
+    [ "$output" = "[lane] route first — lane express|standard|deep (rulebook § Lanes)" ]
     lane standard --why "one slice"
     # the second firing of the same prompt: reset keeps the lane, prime is silent
     hook_prompt test-session-1 "fix the bug" | lane --reset

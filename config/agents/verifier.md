@@ -41,12 +41,10 @@ rather than bouncing it back.
 
 ## Context budget
 
-Your answers get measurably worse once your context passes about 30% of
-your window. Keep it lean: search narrowly, read the lines you need
-rather than whole files, and never re-read what you already have. A
-[context-meter] notice is an order, not advice: finish the step in hand
-and end your report with the HANDOFF block it gives -- a fresh agent
-continues from it.
+Past ~30% of your context window your answers get measurably worse:
+search narrowly, read only the lines you need, never re-read. A
+[context-meter] notice is an order: finish the step in hand and end your
+report with its HANDOFF block, so a fresh agent can continue.
 
 ## The five checks plus C2b
 
@@ -165,5 +163,5 @@ Never restate the contract or narrate reasoning beyond the check lines.
 
 ## Report delivery
 
-Your final message IS the report: it comes back to the caller as the task
-result, so say everything you have to say there.
+Your final message is the report your caller receives; say everything
+there.

@@ -177,7 +177,10 @@ prime_full() {
 }
 
 prime_short() {
-    printf '[lane] route first — lane express|standard|deep · rubric: %s/CLAUDE.md § Lanes\n' "$(claude_config_dir)"
+    # The rulebook path is on tier-prime's session-start line; the rubric
+    # itself is already in context, so the per-prompt line names only the
+    # command and the section.
+    printf '[lane] route first — lane express|standard|deep (rulebook § Lanes)\n'
 }
 
 # --prime --short's decision, from an already-read payload.

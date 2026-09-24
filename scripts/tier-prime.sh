@@ -108,6 +108,6 @@ echo "$line"
 # The backend line is separate from the model line above on purpose: the
 # model line is what every existing reader (and tests/tier-hooks.bats)
 # parses, so backends are ADDED beside it rather than folded into it.
-[ "$bound" -eq 1 ] && [ -n "$backends" ] && echo "[tier] backends:${backends} — an orca-backed worker is dispatched with orca-dispatch, orca-backed recon is asked with recon \"<question>\", a subagent-backed role runs through the Agent tool"
+[ "$bound" -eq 1 ] && [ -n "$backends" ] && echo "[tier] backends:${backends}"   # how each backend is used: rulebook § Delegation
 echo "protocol: $(claude_config_dir)/CLAUDE.md § Delegation · § Lanes"
 exit 0

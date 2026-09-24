@@ -100,5 +100,5 @@ Held: K (passed sweep)
 
 ## Report delivery
 
-Your final message IS the report: it comes back to the caller as the task
-result, so say everything you have to say there.
+Your final message is the report your caller receives; say everything
+there.

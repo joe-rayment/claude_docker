@@ -248,3 +248,24 @@ meter() {
     ctx2="$(echo "$output" | jq -r '.hookSpecificOutput.additionalContext')"
     case "$ctx2" in *"if the task is complete, just report"*) ;; *) false ;; esac
 }
+
+# Guards:   an agent over its context budget gets the full notice (with the
+#           HANDOFF template) once, then a one-line reminder, instead of the
+#           same ~500 bytes on every tool call.
+# Fails if: the reminder repeats the whole notice, never comes, or the
+#           marker from one agent silences another.
+# Run:      bats -f 'full notice once' tests/context-meter.bats
+@test "18 --post past the budget: full notice once per agent, then a one-line reminder" {
+    write_meta sonnet
+    usage_row 70000 0 0 0
+    PAYLOAD="$(sub_payload)"
+    meter --post
+    first="$(echo "$output" | jq -r '.hookSpecificOutput.additionalContext')"
+    printf '%s\n' "$first" | grep -qx 'HANDOFF'
+    meter --post
+    [ "$status" -eq 0 ]
+    second="$(echo "$output" | jq -r '.hookSpecificOutput.additionalContext')"
+    case "$second" in "[context-meter] still at 35%"*) ;; *) false ;; esac
+    ! printf '%s\n' "$second" | grep -qx 'HANDOFF'
+    [ "$(printf '%s\n' "$second" | wc -l)" -eq 1 ]
+}
