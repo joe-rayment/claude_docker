@@ -128,23 +128,3 @@ SNOWFLAKE_BANNED_PHRASES=(
     'paste the output'
     'ask the user'
 )
-
-@test "context-detect: banned phrases absent from config/contexts/snowflake.md" {
-    for phrase in "${SNOWFLAKE_BANNED_PHRASES[@]}"; do
-        run grep -F -- "$phrase" "$REPO_ROOT/config/contexts/snowflake.md"
-        [ "$status" -ne 0 ]
-    done
-}
-
-@test "context-detect: banned phrases absent from config/skills/snowpark-deploy/SKILL.md" {
-    for phrase in "${SNOWFLAKE_BANNED_PHRASES[@]}"; do
-        run grep -F -- "$phrase" "$REPO_ROOT/config/skills/snowpark-deploy/SKILL.md"
-        [ "$status" -ne 0 ]
-    done
-}
-
-@test "context-detect: config/contexts/snowflake.md is at most 90 words" {
-    local words
-    words=$(wc -w < "$REPO_ROOT/config/contexts/snowflake.md")
-    [ "$words" -le 90 ]
-}

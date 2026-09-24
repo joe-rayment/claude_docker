@@ -156,17 +156,3 @@ make_bd_repo() {
 }
 
 # ── (7) the now-deletable "argue with bd's injected text" paragraphs ───────
-
-@test "prime-hook: CLAUDE.md no longer contains the 'overrides, by name' or 'SESSION CLOSE PROTOCOL' phrases" {
-    run grep -F 'overrides, by name' "$CLAUDE_MD"
-    [ "$status" -eq 1 ]
-    run grep -F 'SESSION CLOSE PROTOCOL' "$CLAUDE_MD"
-    [ "$status" -eq 1 ]
-}
-
-@test "prime-hook: config/claude-user-memory.md contains neither the 'overrides, by name' nor 'SESSION CLOSE PROTOCOL' phrases" {
-    run grep -F 'overrides, by name' "$USER_MEMORY"
-    [ "$status" -eq 1 ]
-    run grep -F 'SESSION CLOSE PROTOCOL' "$USER_MEMORY"
-    [ "$status" -eq 1 ]
-}

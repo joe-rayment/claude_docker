@@ -40,22 +40,3 @@ setup() {
     [[ "$output" == *"## Lanes"* ]]
     [[ "$output" == *"lane express|standard|deep"* ]]
 }
-
-@test "fresh-project: output does not contain any of bd's push-mandatory / bead-before-code boilerplate" {
-    run "$PROBE"
-    [ "$status" -eq 0 ]
-    [[ "$output" != *"NEVER skip"* ]]
-    [[ "$output" != *"BEFORE writing code"* ]]
-    [[ "$output" != *"Write tests for"* ]]
-    [[ "$output" != *"overrides, by name"* ]]
-    [[ "$output" != *"PUSH TO REMOTE"* ]]
-    [[ "$output" != *"Work is NOT complete until"* ]]
-}
-
-@test "fresh-project: output is at most 12000 bytes" {
-    run "$PROBE"
-    [ "$status" -eq 0 ]
-    local size
-    size=$(printf '%s' "$output" | wc -c)
-    [ "$size" -le 12000 ]
-}

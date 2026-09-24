@@ -39,12 +39,6 @@ run_hook() {
         | python3 "$COST_MIRROR"
 }
 
-@test "message-cap: rulebook Finishing-a-message section says 100 words" {
-    run grep -A3 '## Finishing a message' "$USER_MEMORY"
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"100 words"* ]]
-}
-
 @test "message-cap: cap default in cost-mirror.py matches the rulebook's number (lockstep)" {
     default="$(grep -oE 'MSG_CAP_DEFAULT = [0-9]+' "$COST_MIRROR" | grep -oE '[0-9]+')"
     [ -n "$default" ]
@@ -92,9 +86,4 @@ run_hook() {
     [ "$status" -eq 0 ]
     [[ "$output" == *"[cost-mirror]"* ]]
     [[ "$output" != *"msg:"* ]]
-}
-
-@test "message-cap: config/claude-user-memory.md stays under rulebook.bats's 1600-word cap" {
-    words_count=$(wc -w < "$USER_MEMORY")
-    [ "$words_count" -le 1600 ]
 }

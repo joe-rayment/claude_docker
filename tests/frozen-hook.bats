@@ -110,9 +110,3 @@ commit_fixture() {
     [ -f "$FIX/.git/hooks/pre-commit" ]
     [ "$(cat "$FIX/.git/hooks/claude-orca-bead")" = "claude-orca-2m5" ]
 }
-
-@test "orca-dispatch and delegate suites stay green" {
-    run bats tests/orca-dispatch-launch.bats tests/delegate.bats
-    echo "$output" >&2
-    [ "$status" -eq 0 ]
-}

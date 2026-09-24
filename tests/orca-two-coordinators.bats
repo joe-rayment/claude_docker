@@ -163,7 +163,6 @@ receipt() { printf '%s\n' "$1" | tail -1; }
     run --separate-stderr "$DISPATCH" b1 --worker --agent claude --model sonnet \
         --worktree "path:$CLAUDE_ORCA_ROOT" --from "term/../../evil"
     [ "$status" -eq 4 ]
-    [ -e "$RUNS" ] || true
     [ "$(ls "$RUNS" 2>/dev/null | wc -l | tr -d ' ')" = "0" ]
 }
 

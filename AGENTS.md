@@ -134,7 +134,7 @@ bd prime                # Refresh Beads context
 ./run-tests.sh --all     # every file, ~8 minutes (CLAUDE_ORCA_TEST_ALL=1 does the same)
 bats tests/*.bats        # the whole suite, directly
 bats tests/docs.bats     # one file
-bats -f 'word cap' tests/rulebook.bats   # the cases in one file whose name matches
+bats -f 'git push' tests/outbound-guard.bats   # only the cases whose name contains "git push"
 ```
 
 **The full suite is the user's to run** -- by hand, or by asking (`/test`

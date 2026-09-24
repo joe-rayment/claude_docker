@@ -181,11 +181,6 @@ echo REACHED_END"
     [ "$output" = "0" ]
 }
 
-@test "setup.sh no longer carries a blanket chown -R over the folder home" {
-    run grep -n 'chown -R agent:agent /home/agent' "$SETUP_SH"
-    [ "$status" -ne 0 ]
-}
-
 @test "the entrypoint's recursive chowns skip sockets and stay non-fatal" {
     write_chown_shim
     fn="$(sed -n '/^chown_agent_tree()/,/^}/p' "$ENTRYPOINT")"

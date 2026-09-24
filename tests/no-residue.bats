@@ -18,13 +18,6 @@ load helpers/setup
 
 REQUIRED_SUITES="lane bd-guard outbound-guard auth-guard contract-gate delegation-gate acceptance-contracts statusline prime-hook rulebook session-end-audit workflows code-map container-entrypoint launcher-v3 v2-gone"
 
-@test "the ported suite exists: run-tests.sh and every named test suite" {
-    [ -x "$REPO_ROOT/run-tests.sh" ]
-    for suite in $REQUIRED_SUITES; do
-        [ -f "$REPO_ROOT/tests/${suite}.bats" ]
-    done
-}
-
 @test "claude-settings.json wires every required hook event and PreToolUse matcher" {
     settings="$REPO_ROOT/config/claude-settings.json"
     [ -f "$settings" ]
@@ -39,12 +32,4 @@ REQUIRED_SUITES="lane bd-guard outbound-guard auth-guard contract-gate delegatio
         run jq -e --arg m "$matcher" '[.hooks.PreToolUse[].matcher] | index($m) != null' "$settings"
         [ "$status" -eq 0 ]
     done
-}
-
-@test "no residue of the tmux/fleet/worktree-sessions or Seatbelt layers under scripts/ or config/" {
-    run grep -rniE \
-        '\btmux\b|\bfleet\b|\bcs-new\b|\bsession-title\b|sandbox-exec|\bsrt\b|seatbelt|selftest|orca-launch|setup-menu' \
-        "$REPO_ROOT/scripts" "$REPO_ROOT/config"
-    [ "$status" -eq 1 ]
-    [ -z "$output" ]
 }

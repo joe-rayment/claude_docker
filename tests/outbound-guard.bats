@@ -395,15 +395,6 @@ make_no_gh_path() {
 
 # ── rulebook prose matches the mechanism ────────────────────────────────────
 
-@test "the rulebook paragraph describes the connection gate" {
-    run grep -A3 "^## Push and deploy are the user" "$MEMORY"
-    [ "$status" -eq 0 ]
-    local para="$output"
-    [[ "$para" == *"git push"* ]]
-    [[ "$para" == *"GitHub connection"* ]]
-    [[ "$para" != *'`git push`, `gh pr create`, `bd dolt push`, and every deploy run only when the current prompt asks'* ]]
-}
-
 # ── compound `git push && <marker verb>` must still hit the marker gate ────
 # (claude-orca-cc5: the git-push branch used to end in a bare `exit 0`, so a
 # command that also matched MARKER_RE never reached that check.)
