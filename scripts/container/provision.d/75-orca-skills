@@ -88,6 +88,11 @@ if [ -z "$cli" ]; then
     exit 0
 fi
 
+# Every call names this container's Orca the way 60-orca-repo-add does:
+# without ORCA_USER_DATA_PATH the CLI asks whichever Orca its own default
+# user-data dir points at, not the one this entrypoint started.
+export ORCA_USER_DATA_PATH="${ORCA_USER_DATA_DIR:-$AGENT_HOME/.config/orca}"
+
 # Exact-name idempotency check -- see the file header for why this can
 # never be a substring match. already_installed stays 1 (attempt the
 # install) unless one of the checks below confidently says yes.
