@@ -117,28 +117,16 @@ start_ep() {
         setsid bash -c 'echo $$ > "$EP_PGID_FILE"; exec bash "$EP_SCRIPT"' \
         >"$TMP/$label.out" 2>&1 &
 
-    local urlfile="$proj/.claude-dev/run/orca-web-url.txt" i=0
+    # Provision step 50 (the tracker) runs after the web URL is published,
+    # and the cases read what it did -- so wait for its status, not the URL.
+    local done="$proj/.claude-dev/run/provision/50-seed-project.status" i=0
     while [ "$i" -lt 60 ]; do
-        [ -s "$urlfile" ] && return 0
+        [ -f "$done" ] && [ -s "$proj/.claude-dev/run/orca-web-url.txt" ] && return 0
         sleep 0.5
         i=$((i + 1))
     done
     echo "--- $label stdout ---" >&2
     cat "$TMP/$label.out" >&2 || true
-    return 1
-}
-
-# The tracker is provision step 50's, and provision runs only after the
-# web URL is published -- which is all start_ep waits for. So a case that
-# reads what bd did waits for that step to record its status first.
-wait_seeded() {
-    local status="$1/.claude-dev/run/provision/50-seed-project.status" i=0
-    while [ "$i" -lt 60 ]; do
-        [ -f "$status" ] && return 0
-        sleep 0.5
-        i=$((i + 1))
-    done
-    echo "provision step 50-seed-project never finished in $1" >&2
     return 1
 }
 
@@ -182,7 +170,6 @@ teardown() {
     local proj="$TMP/p1" home="$TMP/h1" data
     make_project "$proj"
     EP_THEME="" EP_PROJECT_NAME="" start_ep p1 "$proj" "$home"
-    wait_seeded "$proj"
 
     data="$home/$data_rel"
     [ -f "$data" ]
@@ -219,7 +206,6 @@ teardown() {
     : > "$TMP/bd.log"
 
     EP_THEME="" EP_PROJECT_NAME="" start_ep p2 "$proj2" "$home2"
-    wait_seeded "$proj2"
 
     after="$(md5sum < "$data2")"
     [ "$before" = "$after" ]
@@ -246,7 +232,6 @@ teardown() {
     : > "$TMP/bd.log"
 
     EP_THEME="system" EP_PROJECT_NAME="my-proj" start_ep p3 "$proj3" "$home3"
-    wait_seeded "$proj3"
 
     data3="$home3/$data_rel"
     [ -f "$data3" ]

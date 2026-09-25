@@ -60,7 +60,6 @@ SCRIPT_DIR="$(_s="$(_resolve_script_path)"; case "$_s" in (*/*) cd "${_s%/*}/" ;
 . "$SCRIPT_DIR/lib/paths.sh"
 # shellcheck source=lib/tier-roles.sh
 . "$SCRIPT_DIR/lib/tier-roles.sh"
-. "$SCRIPT_DIR/lib/hook.sh"
 
 IN=$(cat 2>/dev/null) || exit 0
 [ -n "$IN" ] || exit 0
@@ -205,7 +204,13 @@ elif [ -n "$STATE_FILE" ] && [ -f "$STATE_FILE" ]; then
                 recon) REASON=$(printf 'tier-gate: recon backend is orca (%s %s) -- run `recon "<question>"` in Bash (several in one message, run_in_background, to fan out) instead of an in-process scout; an explicit model on the Agent call (model: haiku) is the deliberate in-process fallback when the recon backend is down.' "$RA" "$RM_LABEL") ;;
                 *)     REASON=$(printf 'tier-gate: worker backend is orca (%s %s) -- dispatch the slice with `orca-dispatch <bead>` instead of an in-process executor; an explicit model on the Agent call is the deliberate in-process fallback when Orca is unreachable (orca-dispatch exits 3 and prints the spec).' "$RA" "$RM_LABEL") ;;
             esac
-            hook_deny "$REASON"
+            jq -cn --arg r "$REASON" '{
+                hookSpecificOutput: {
+                    hookEventName: "PreToolUse",
+                    permissionDecision: "deny",
+                    permissionDecisionReason: $r
+                }
+            }' 2>/dev/null || exit 0
             exit 0
         fi
     else

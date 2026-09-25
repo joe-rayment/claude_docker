@@ -2441,8 +2441,7 @@ EXTRA
 # It never looks at the state volume -- that is Orca's own user-data dir,
 # it survives a recreate on purpose, and it is keyed by container name.
 container_matches() {
-    local name="$1" dir="$2" port="$3" guest want have want_id have_id mounts m found=""
-    local facts="" have_port="" use_jq=""
+    local name="$1" dir="$2" port="$3" guest want have want_id have_id have_port mounts m found="" facts
     # CTR_RUNTIME=local runs the entrypoint as a host process: no image, no
     # mounts and no port map exist, and ctr_local's `inspect` answers the
     # state word to every template whatever it asks for. There is nothing
@@ -2457,29 +2456,18 @@ container_matches() {
     # is the same filesystem -- so the name differing only counts once the
     # id does too. An image inspect that cannot answer at all leaves the
     # name comparison standing.
-    # Everything compared below comes from ONE `docker inspect` (each is a
-    # round trip to the daemon), read with jq: image name, image id, the
-    # published port, then one Source:Destination line per mount. Without
-    # jq, one templated inspect per field, as before.
     want="$(folder_image_ref "$dir")"
-    if command -v jq >/dev/null 2>&1; then
-        use_jq=1
-        facts="$(ctr inspect "$name" 2>/dev/null | jq -r --arg p "$port/tcp" '.[0] // {} |
-            (.Config.Image // ""), (.Image // ""),
-            ((((.NetworkSettings // {}).Ports // {})[$p] // [])[0].HostPort // ""),
-            ((.Mounts // [])[] | "\(.Source):\(.Destination)")' 2>/dev/null)" || facts=""
-        { IFS= read -r have; IFS= read -r have_id; IFS= read -r have_port
-          mounts="$(cat)"; } <<FACTS
+    # Everything compared below comes from ONE `docker inspect` (each is a
+    # round trip to the daemon): image name, image id, the published port
+    # (blank when it publishes none), then one Source:Destination per mount.
+    facts="$(ctr inspect -f "{{println .Config.Image}}{{println .Image}}{{with index .NetworkSettings.Ports \"$port/tcp\"}}{{(index . 0).HostPort}}{{end}}{{println}}{{range .Mounts}}{{.Source}}:{{println .Destination}}{{end}}" "$name" 2>/dev/null || true)"
+    { IFS= read -r have; IFS= read -r have_id; IFS= read -r have_port
+      mounts="$(cat)"; } <<FACTS
 $facts
 FACTS
-        have="${have//[[:space:]]/}"; have_id="${have_id//[[:space:]]/}"
-        have_port="${have_port//[[:space:]]/}"
-    else
-        have="$(ctr inspect -f '{{.Config.Image}}' "$name" 2>/dev/null | head -1 | tr -d '[:space:]')"
-    fi
+    have="${have//[[:space:]]/}"; have_id="${have_id//[[:space:]]/}"
+    have_port="${have_port//[[:space:]]/}"
     if [ "$have" != "$want" ]; then
-        [ -n "$use_jq" ] || \
-            have_id="$(ctr inspect -f '{{.Image}}' "$name" 2>/dev/null | head -1 | tr -d '[:space:]')"
         want_id="$(ctr image inspect "$want" --format '{{.Id}}' 2>/dev/null | head -1 | tr -d '[:space:]')"
         if [ -z "$have_id" ] || [ -z "$want_id" ] || [ "$have_id" != "$want_id" ]; then
             echo "  container $name is not this folder's (image: ${have:-unknown} vs $want) -- recreating it" >&2
@@ -2492,8 +2480,6 @@ FACTS
     # usually caught here: it mounts ANOTHER folder, or mounts this kind of
     # folder at a path this generation no longer uses.
     guest="$(guest_project_dir "$dir")"
-    [ -n "$use_jq" ] || \
-        mounts="$(ctr inspect -f '{{range .Mounts}}{{.Source}}:{{.Destination}}{{"\n"}}{{end}}' "$name" 2>/dev/null || true)"
     have=""
     while IFS= read -r m; do
         [ -n "$m" ] || continue
@@ -2540,18 +2526,10 @@ MOUNTS
         fi
     done
 
-    # The published port. A container that publishes nothing at all makes
-    # the index template error out; that is a mismatch (the URL this folder
-    # is about to open would reach nothing), and the `|| true` is what keeps
-    # a template error from taking the whole script down under errexit.
-    if [ -n "$use_jq" ]; then
-        have="$have_port"
-    else
-        have="$(ctr inspect -f "{{(index (index .NetworkSettings.Ports \"$port/tcp\") 0).HostPort}}" "$name" 2>/dev/null || true)"
-        have="$(printf '%s' "$have" | head -1 | tr -d '[:space:]')"
-    fi
-    if [ "$have" != "$port" ]; then
-        echo "  container $name is not this folder's (port: ${have:-none} vs $port) -- recreating it" >&2
+    # The published port. A container that publishes none reads blank --
+    # a mismatch: the URL this folder is about to open would reach nothing.
+    if [ "$have_port" != "$port" ]; then
+        echo "  container $name is not this folder's (port: ${have_port:-none} vs $port) -- recreating it" >&2
         return 1
     fi
     return 0

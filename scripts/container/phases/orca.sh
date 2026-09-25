@@ -1,10 +1,6 @@
-# phases/orca.sh -- setup.sh's `orca` phase: its pin and its code, in a
-# file of their own so the Dockerfile can copy it in right before the one
-# RUN that uses it -- editing this phase (or bumping its pin) rebuilds this
-# layer and the ones after it, not the whole image. Sourced by setup.sh,
-# which owns the shared helpers (say, need_root, stamp, deb_arch, ...).
-
-# Pinned, and overridable by env (the Dockerfile's ARG reaches it that way).
+# setup.sh's orca phase, sourced by it. A file of its own so the Dockerfile
+# copies it just before its RUN: an edit rebuilds this layer on, not all.
+# The pin is overridable by env, which is how the Dockerfile's ARG reaches it.
 ORCA_VERSION="${ORCA_VERSION:-1.4.197}"
 
 # --- Orca Linux, pinned, from the release .deb --------------------------

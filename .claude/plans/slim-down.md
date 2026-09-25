@@ -29,14 +29,19 @@ Per item:
   planned: the boot pass still checks every file but only chowns the
   ones not already agent-owned, so the end state is unchanged.
 - D3: done, UNVERIFIED on a Mac. `container_matches` reads image, image
-  id, port and mounts from one `docker inspect` (JSON through jq); a Mac
-  without jq keeps the old per-field templates.
+  id, port and mounts from one `docker inspect` with one combined Go
+  template (the old per-field templates joined; no jq, no fallback path),
+  net -7 lines. Checked with Go's text/template against docker-shaped
+  typed and raw data: the port lookup falls through to docker's raw-JSON
+  fallback, exactly as the old port template already did.
 - D5: done, UNVERIFIED on a Mac. Each payload phase's pin and functions
   live in `scripts/container/phases/<name>.sh`, copied right before its
   own RUN; functions byte-identical, `--check`/`--list` output unchanged.
   Not built here (no Docker).
-- E1-E5: done. E4 is `scripts/lib/hook.sh` (`hook_deny`), used by
-  outbound-guard, tier-gate, branch-guard and workflow-lint.
+- E1-E3, E5: done. E4: done, then reverted on review -- sharing one
+  7-line JSON literal cost a new file, a bin/ symlink, a path workaround
+  in two hooks and one more file read per hot-path hook call, for +7
+  lines net.
 - G1-G3, G5: done (G5 kept SLOW_FILES: the slow files skip in under a
   second on a box without Orca/Docker, and are slow where those exist).
 - G4: built, measured, NOT landed. A per-file cache of make_project

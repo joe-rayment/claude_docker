@@ -74,13 +74,6 @@ set -u
 
 [ "${WORKFLOW_LINT_DISABLE:-}" = "1" ] && exit 0
 command -v jq >/dev/null 2>&1 || exit 0
-# lib/hook.sh sits next to this file's directory whether it runs as
-# scripts/workflow-lint.sh or through bin/workflow-lint (bin/lib links to
-# scripts/lib).
-case "$0" in
-    (*/*) . "${0%/*}/lib/hook.sh" ;;
-    (*)   . ./lib/hook.sh ;;
-esac
 
 IN=$(cat 2>/dev/null) || exit 0
 [ -n "$IN" ] || exit 0
@@ -219,5 +212,11 @@ REASON="workflow-lint: every agent() call in a workflow script must set an expli
 $OFFENDERS
 Fix: add model: to each call's opts, choosing the cheapest capable tier (recon/mechanical -> the scout tier, implementation -> the worker tier; run tier-derive for the session's concrete ids). If a call's model is genuinely set dynamically, add /* workflow-lint: model-ok */ anywhere from the call line through 2 lines past the line holding its closing paren. Then re-issue the Workflow call with the revised script."
 
-hook_deny "$REASON"
+jq -cn --arg r "$REASON" '{
+    hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        permissionDecision: "deny",
+        permissionDecisionReason: $r
+    }
+}' 2>/dev/null || exit 0
 exit 0

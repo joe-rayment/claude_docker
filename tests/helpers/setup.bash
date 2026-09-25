@@ -441,9 +441,8 @@ case "$cmd" in
         exit 0 ;;
     inspect)
         # `docker inspect -f TEMPLATE NAME`: the name is the last argument.
-        # The state word was the only template the launcher ever asked for;
-        # container_matches asks four more, so the stub answers by template
-        # out of what the `run` below recorded for that container.
+        # The stub answers by template, out of what the `run` below
+        # recorded for that container.
         [ "${CLAUDE_ORCA_TEST_SERVICE_DOWN:-0}" = "1" ] && exit 1
         name=""; fmt=""; prev=""
         for a in "$@"; do
@@ -469,49 +468,24 @@ case "$cmd" in
         [ -f "$state/containers/$name" ] || exit 1
         meta="$state/containers/$name.meta"
         meta_get() { [ -f "$meta" ] && sed -n "s/^$1=//p" "$meta"; }
-        # No -f: the whole record as JSON, the shape `docker inspect NAME`
-        # prints (a one-element array), built from what `run` recorded.
-        if [ -z "$fmt" ]; then
-            jq -n --arg status "$(cat "$state/containers/$name")" \
-                --arg image "$(meta_get image)" --arg imageid "$(meta_get imageid)" \
-                --arg mounts "$(meta_get mount)" --arg ports "$(meta_get port)" \
-                --arg nano "${CONTAINER_STUB_NANOCPUS:-0}" '
-                [{State: {Status: $status}, Config: {Image: $image}, Image: $imageid,
-                  Mounts: [$mounts | split("\n")[] | select(length > 0)
-                           | capture("^(?<Source>.*):(?<Destination>[^:]*)$")],
-                  NetworkSettings: {Ports: (reduce ($ports | split("\n")[] | select(length > 0)) as $l
-                      ({}; .[($l | split(":")[1]) + "/tcp"] =
-                           [{HostIp: "127.0.0.1", HostPort: ($l | split(":")[0])}]))},
-                  HostConfig: {NanoCpus: ($nano | tonumber)}}]'
-            exit 0
-        fi
         case "$fmt" in
             *State.Status*)
                 cat "$state/containers/$name" ;;
+            *Config.Image*Mounts*)
+                # container_matches' one template: image, image id, the
+                # host port for the asked port (blank if none), mounts.
+                want="${fmt#*NetworkSettings.Ports \"}"; want="${want%%/tcp*}"
+                meta_get image; meta_get imageid
+                meta_get port | sed -n "s|:$want\$||p" | grep . || echo
+                meta_get mount ;;
             *Config.Image*)
                 meta_get image ;;
-            *range\ .Mounts*)
-                meta_get mount ;;
             *HostConfig.NanoCpus*)
                 # `docker inspect -f '{{.HostConfig.NanoCpus}}' NAME` -- the
                 # cpu cap the container actually runs under (claude-orca-wda).
                 # Nanoseconds of CPU per second: 5e9 is five cores, 0 is
                 # docker's own "no limit", which is also the stub's default.
                 printf '%s\n' "${CONTAINER_STUB_NANOCPUS:-0}" ;;
-            *NetworkSettings.Ports*)
-                # `{{(index (index .NetworkSettings.Ports "6768/tcp") 0).HostPort}}`
-                # -- and on a container that publishes no such port, real
-                # docker fails the template rather than printing nothing.
-                want="${fmt#*NetworkSettings.Ports \"}"
-                want="${want%%/tcp*}"
-                hostport="$(meta_get port | sed -n "s|:$want\$||p")"
-                if [ -z "$hostport" ]; then
-                    echo "template: :1:2: executing \"\" at <index (index .NetworkSettings.Ports \"$want/tcp\") 0>: error calling index: index of untyped nil" >&2
-                    exit 1
-                fi
-                printf '%s\n' "$hostport" ;;
-            *.Image*)
-                meta_get imageid ;;
             *)
                 cat "$state/containers/$name" ;;
         esac
