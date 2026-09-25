@@ -49,11 +49,15 @@ Per item:
   critical path either way. ~110 lines of fixture code for no wall-clock
   gain, so it was dropped.
 
-Tests after all of it: the full suite, 101 files / 1,229 cases, fails
-only the 8 cases that fail the same way on the original code on this box
-(no Docker, no Orca binary, no `agent` user; one of them,
-"entrypoint passes its own user-data dir", is flaky there before and
-after).
+Tests after all of it: the full suite, 101 files / 1,229 cases. The 8
+cases that used to fail on this box were fixed afterwards: one was a real
+bug (provision step 75-orca-skills called the Orca CLI without
+ORCA_USER_DATA_PATH, so it could ask the wrong Orca -- the "flaky" case
+lost that race only when it stopped early), two were races on provision
+running after the web URL, one expected an Orca reachability probe the
+worktree sweep only makes when it has something to remove, and four
+assumed tools this box lacks (gh/bd/dolt, an `agent` user, Docker 29's
+new no-daemon wording, Orca/Xvfb) -- those now follow the box or skip.
 
 How this was found: seven parallel reviews (hook timing, what the model
 reads, dead code, duplication, container/startup, test suite, docs), then

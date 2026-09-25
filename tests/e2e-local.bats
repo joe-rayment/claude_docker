@@ -35,9 +35,12 @@ REPO_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd -P)"
 E2E_TIMEOUT=240
 
 setup() {
-    command -v Xvfb >/dev/null 2>&1
-    command -v curl >/dev/null 2>&1
-    [ -x "${CLAUDE_ORCA_ORCA_BIN:-/opt/Orca/orca-ide}" ]
+    # A box without these cannot run this case at all: skip and name it,
+    # the way the other real-Orca cases do, rather than fail in setup.
+    command -v Xvfb >/dev/null 2>&1 || skip "no Xvfb on this box"
+    command -v curl >/dev/null 2>&1 || skip "no curl on this box"
+    [ -x "${CLAUDE_ORCA_ORCA_BIN:-/opt/Orca/orca-ide}" ] \
+        || skip "no Orca binary at ${CLAUDE_ORCA_ORCA_BIN:-/opt/Orca/orca-ide}"
 
     # A short path, for the unix-socket limit, and unique, so teardown can
     # match this run's processes and only this run's.

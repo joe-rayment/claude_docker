@@ -166,10 +166,17 @@ setup_steps() {
 
     run bash "$SETUP" --check
     [[ "$output" == *"ok    node"* ]]
-    [[ "$output" == *"ok    gh"* ]]
     [[ "$output" == *"ok    bats"* ]]
-    [[ "$output" == *"ok    bd"* ]]
-    [[ "$output" == *"ok    dolt"* ]]
+    # gh, bd and dolt follow the box too: ok where it has them, a FAIL row
+    # naming them where it does not (a bare dev box has none of the three).
+    local tool
+    for tool in gh bd dolt; do
+        if command -v "$tool" >/dev/null 2>&1; then
+            [[ "$output" == *"ok    $tool"* ]]
+        else
+            [[ "$output" == *"FAIL  $tool:"* ]]
+        fi
+    done
 
     # The web-theme row follows the box for the same reason: the image gets
     # its seed at build, but a shared dev box's /opt/Orca is left alone, so

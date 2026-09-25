@@ -128,6 +128,20 @@ start_ep() {
     return 1
 }
 
+# The tracker is provision step 50's, and provision runs only after the
+# web URL is published -- which is all start_ep waits for. So a case that
+# reads what bd did waits for that step to record its status first.
+wait_seeded() {
+    local status="$1/.claude-dev/run/provision/50-seed-project.status" i=0
+    while [ "$i" -lt 60 ]; do
+        [ -f "$status" ] && return 0
+        sleep 0.5
+        i=$((i + 1))
+    done
+    echo "provision step 50-seed-project never finished in $1" >&2
+    return 1
+}
+
 stop_all() {
     local f pgid
     for f in "$TMP"/*.pgid; do
@@ -168,6 +182,7 @@ teardown() {
     local proj="$TMP/p1" home="$TMP/h1" data
     make_project "$proj"
     EP_THEME="" EP_PROJECT_NAME="" start_ep p1 "$proj" "$home"
+    wait_seeded "$proj"
 
     data="$home/$data_rel"
     [ -f "$data" ]
@@ -204,6 +219,7 @@ teardown() {
     : > "$TMP/bd.log"
 
     EP_THEME="" EP_PROJECT_NAME="" start_ep p2 "$proj2" "$home2"
+    wait_seeded "$proj2"
 
     after="$(md5sum < "$data2")"
     [ "$before" = "$after" ]
@@ -230,6 +246,7 @@ teardown() {
     : > "$TMP/bd.log"
 
     EP_THEME="system" EP_PROJECT_NAME="my-proj" start_ep p3 "$proj3" "$home3"
+    wait_seeded "$proj3"
 
     data3="$home3/$data_rel"
     [ -f "$data3" ]

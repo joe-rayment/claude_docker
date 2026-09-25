@@ -127,7 +127,8 @@ project_with_all_knobs() {
     [[ "$output" != *"template parsing error"* ]]
     [[ "$output" != *"template: "* ]]
     case "$output" in
-        *"annot connect to the Docker daemon"*|*"docker daemon is not running"*)
+        # Docker 29 says "failed to connect to the docker API" instead.
+        *"annot connect to the Docker daemon"*|*"docker daemon is not running"*|*"ailed to connect to the docker API"*)
             skip "no docker daemon reachable: template parse could not be separated from lookup" ;;
     esac
     [[ "$output" == *"o such object"* ]] || [[ "$output" == *"o such container"* ]]

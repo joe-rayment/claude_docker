@@ -116,6 +116,31 @@ SHIM
     : > "$TMP/chown.log"
 }
 
+# The owner the lifted chown hands files to. The image's is agent:agent; a
+# box without that user can still run the real command as root against
+# another account that is not the fixture's owner (so the ownership filter
+# still selects every file). Anywhere else there is no one to chown to.
+chown_target() {
+    if id agent >/dev/null 2>&1; then
+        printf 'agent %s\n' "$(id -gn agent)"
+    elif [ "$(id -u)" = 0 ] && id nobody >/dev/null 2>&1; then
+        printf 'nobody %s\n' "$(id -gn nobody)"
+    else
+        return 1
+    fi
+}
+
+# lift_phase_user_chown, pointed at <home> and chown_target's owner.
+lifted_for() {
+    local home="$1" u g lifted
+    read -r u g < <(chown_target) || return 1
+    lifted="$(lift_phase_user_chown)"
+    lifted="${lifted//\/home\/agent/$home}"
+    lifted="${lifted//-user agent/-user $u}"
+    lifted="${lifted//-group agent/-group $g}"
+    printf '%s\n' "${lifted//chown -h agent:agent/chown -h $u:$g}"
+}
+
 # The chown phase_user actually runs, lifted from setup.sh and pointed at
 # the fixture instead of /home/agent.
 lift_phase_user_chown() {
@@ -134,13 +159,14 @@ lift_phase_user_chown() {
     [[ "$lifted" == *"! -type s"* ]]
     [[ "$lifted" == *"xargs -0 -r chown -h agent:agent"* ]]
 
+    chown_target >/dev/null || skip "no agent user, and not root to chown to another"
     home="$TMP/home"
     make_home "$home"
 
     # The real command, with the real chown, under phase_user's own
     # shell options.
     run bash -c "set -Eeuo pipefail
-${lifted//\/home\/agent/$home}"
+$(lifted_for "$home")"
     [ "$status" -eq 0 ]
 
     # The socket is still there: nothing was deleted to make chown work.
@@ -163,11 +189,11 @@ ${lifted//\/home\/agent/$home}"
     [[ "$output" != *"REACHED_END"* ]]
 
     # NEW form: same fixture, same shim, same shell options.
-    lifted="$(lift_phase_user_chown)"
+    chown_target >/dev/null || skip "no agent user, and not root to chown to another"
     : > "$TMP/new.log"
     run env PATH="$TMP/bin:$PATH" CHOWN_LOG="$TMP/new.log" \
         bash -c "set -Eeuo pipefail
-${lifted//\/home\/agent/$home}
+$(lifted_for "$home")
 echo REACHED_END"
     [ "$status" -eq 0 ]
     [[ "$output" == *"REACHED_END"* ]]
