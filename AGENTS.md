@@ -195,7 +195,7 @@ that name a file to open on the Mac, and `BEADS_DIR` names the folder's
 tracker so `bd` answers from any directory.
 
 The image carries the whole install: apt state (`setup.sh`'s `IMAGE_PHASES`)
-plus the payload — Orca, opencode, bd, dolt, bats — one
+plus the payload — Orca, opencode, bd, dolt, helix, bats — one
 Docker layer per phase, rarest-changing first, with the repo copy below them
 so editing a script rebuilds no payload layer. That payload was briefly
 installed per folder into `<project>/.claude-dev/toolchain` instead; the

@@ -35,7 +35,7 @@ export DEBIAN_FRONTEND="${DEBIAN_FRONTEND:-noninteractive}"
 NPM_PREFIX="${NPM_PREFIX:-/usr/local}"
 npm_global_root() { printf '%s/lib/node_modules\n' "$NPM_PREFIX"; }
 
-PHASES="base node gh orcadeps bats bd dolt opencode orca user template"
+PHASES="base node gh orcadeps bats bd dolt helix opencode orca user template"
 
 # WHERE EACH PHASE RUNS, and why the line falls here.
 #
@@ -48,7 +48,7 @@ PHASES="base node gh orcadeps bats bd dolt opencode orca user template"
 #   IMAGE_PHASES      everything apt-managed -- the base packages, node,
 #                     gh, and the GTK/at-spi/xvfb libraries Orca links
 #                     against. Slow (~340 s) and almost never changes.
-#   TOOLCHAIN_PHASES  the payload: five pinned tools that land under
+#   TOOLCHAIN_PHASES  the payload: six pinned tools that land under
 #                     /usr/local and /opt/Orca and nowhere
 #                     else. ~1.2 GB, ~340 s, and the half that actually
 #                     churns -- a version bump here is a template pull,
@@ -62,7 +62,7 @@ PHASES="base node gh orcadeps bats bd dolt opencode orca user template"
 # has to be COPYed in first, so the Dockerfile runs it by name after the
 # copy, and a folder running the base image has nothing to link.
 IMAGE_PHASES="base node gh orcadeps user"
-TOOLCHAIN_PHASES="bats bd dolt opencode orca"
+TOOLCHAIN_PHASES="bats bd dolt helix opencode orca"
 
 # The base apt set: only what Orca's own package does NOT already depend
 # on. The .deb pulls libgtk-3-0, libnss3, libnotify4, libxss1, libxtst6,
@@ -410,6 +410,13 @@ run_checks() {
         ck_fail "dolt: want ${DOLT_VERSION}, got ${v:-none}"
     fi
 
+    v="$(installed_helix 2>/dev/null || true)"
+    if [ "$v" = "$HELIX_VERSION" ] && [ -d /usr/local/lib/helix/runtime ]; then
+        ck_ok "helix ${v}"
+    else
+        ck_fail "helix: want ${HELIX_VERSION} with /usr/local/lib/helix/runtime, got ${v:-none}"
+    fi
+
     v="$(installed_opencode 2>/dev/null || true)"
     if [ "$v" = "$OPENCODE_VERSION" ]; then
         ck_ok "opencode ${v}"
@@ -470,7 +477,7 @@ run_checks() {
 
 run_phase() {
     case "$1" in
-        base|node|gh|orcadeps|bats|bd|dolt|opencode|orca|user|template)
+        base|node|gh|orcadeps|bats|bd|dolt|helix|opencode|orca|user|template)
             # A phase whose file under phases/ was not copied next to
             # this script (the Dockerfile copies each one before its RUN).
             command -v "phase_$1" >/dev/null 2>&1 \
@@ -524,7 +531,7 @@ main() {
     esac
 }
 
-# The toolchain phases (bats bd dolt opencode orca) live one per file:
+# The toolchain phases (bats bd dolt helix opencode orca) live one per file:
 # phases/ next to this script in a checkout, /opt/claude-orca-phases/ next
 # to the copy the Dockerfile runs. A phase whose file is not here yet (an
 # earlier image layer) simply is not defined.
