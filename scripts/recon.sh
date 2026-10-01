@@ -14,11 +14,17 @@
 # workers source that file when their terminal starts, and rewriting it
 # would hand them this read-only config.
 #
+# The run follows the provider in the recon role's model: an openrouter/
+# model rides the local OpenRouter guard the workers do, an openai/ model
+# runs on the user's ChatGPT subscription through opencode's own login, no
+# guard involved (claude-orca-c3p.2).
+#
 # Exit codes:
 #   0 / opencode's own exit code -- the run happened (124 when timed out)
-#   3 -- the recon backend is not orca:opencode, or the guard token is
-#        missing: spawn a scout (Agent tool, subagent_type "scout") instead;
-#        the same knowing fallback orca-dispatch uses
+#   3 -- the recon backend is not orca:opencode, the guard token is
+#        missing, or OpenAI is not signed in for an openai/ model:
+#        spawn a scout (Agent tool, subagent_type "scout") instead; the
+#        same knowing fallback orca-dispatch uses
 #   64 -- usage
 #   124 -- the run was killed after the timeout
 #
@@ -56,6 +62,8 @@ SCRIPT_DIR="$(_s="$(_resolve_script_path)"; case "$_s" in (*/*) cd "${_s%/*}/" ;
 . "$SCRIPT_DIR/lib/paths.sh"
 # shellcheck source=lib/tier-roles.sh
 . "$SCRIPT_DIR/lib/tier-roles.sh"
+# shellcheck source=lib/opencode-launch.sh
+. "$SCRIPT_DIR/lib/opencode-launch.sh"
 
 usage() {
     cat <<'USAGE'
@@ -130,48 +138,59 @@ if [ -z "$BACKEND" ] || [ "$BACKEND" != "orca" ] || [ "$AGENT" != "opencode" ]; 
     exit 3
 fi
 
-# 2. The guard token. Recon rides the same local OpenRouter guard the
-#    workers do; a missing or empty token means the guard is down and the
-#    run would fail anyway -- say so and fall back.
+# 2. The credential. RD is computed either way -- the launch config and
+#    logs live there. An openai/ model needs no guard: opencode's own
+#    ChatGPT login serves it, so readiness is the auth store, and an
+#    unsigned-in folder is the same exit-3 knowing fallback as a down
+#    guard. An openrouter/ model (and anything else) rides the same local
+#    guard the workers do; a missing or empty token means the guard is
+#    down and the run would fail anyway -- say so and fall back.
 RD="${RECON_RUN_DIR:-$(run_dir 2>/dev/null || true)}"
-TOKEN_FILE="$RD/openrouter-guard.token"
 TOKEN=""
-[ -n "$RD" ] && [ -f "$TOKEN_FILE" ] && TOKEN="$(cat "$TOKEN_FILE" 2>/dev/null || true)"
-if [ -z "$TOKEN" ]; then
-    printf 'recon: no OpenRouter guard token at %s -- the guard is down; spawn a scout\n' \
-        "$TOKEN_FILE" >&2
-    exit 3
-fi
+case "$MODEL" in
+    openai/*)
+        if ! tier_openai_ready; then
+            printf 'recon: OpenAI is not signed in in this folder (/tier auth openai) -- spawn a scout\n' >&2
+            exit 3
+        fi
+        if [ -z "$RD" ]; then
+            printf 'recon: no run dir for the launch config -- spawn a scout\n' >&2
+            exit 3
+        fi
+        resolved="$(tier_openai_resolve "$MODEL" 2>&1)" || {
+            printf 'recon: %s -- spawn a scout\n' "$resolved" >&2
+            exit 3
+        }
+        MODEL="$resolved"
+        ;;
+    *)
+        TOKEN_FILE="$RD/openrouter-guard.token"
+        [ -n "$RD" ] && [ -f "$TOKEN_FILE" ] && TOKEN="$(cat "$TOKEN_FILE" 2>/dev/null || true)"
+        if [ -z "$TOKEN" ]; then
+            printf 'recon: no OpenRouter guard token at %s -- the guard is down; spawn a scout\n' \
+                "$TOKEN_FILE" >&2
+            exit 3
+        fi
+        ;;
+esac
 
-# 3. The launch config: the same shape orca_opencode_command
-#    (scripts/lib/orca-orch.sh) writes, pinned read-only -- edit/write
+# 3. The launch config: the ONE writer orca_opencode_command
+#    (scripts/lib/opencode-launch.sh) uses, pinned read-only -- edit/write
 #    denied, git push denied -- with the reasoning-effort variant carried
-#    when the role has one. openrouter-guard.env is deliberately NOT
-#    written here (see the header).
+#    when the role has one. The guard base URL rides in only for an
+#    openrouter/ model; openrouter-guard.env is deliberately NOT written
+#    here (see the header).
 SLUG="$(printf '%s' "$MODEL" | tr '/:' '-')"
 [ -n "$VARIANT" ] && SLUG="${SLUG}-${VARIANT}"
 CFG_DIR="$RD/opencode-launch"
 mkdir -p "$CFG_DIR"
 CFG="$CFG_DIR/recon-$SLUG.json"
 PORT="${CLAUDE_ORCA_GUARD_PORT:-4141}"
-( umask 077 && jq -n \
-    --arg vm "${MODEL#openrouter/}" \
-    --arg eff "$VARIANT" \
-    --arg port "$PORT" \
-    '{"$schema": "https://opencode.ai/config.json"}
-     + { permission: {
-             "*": "allow",
-             edit: "deny",
-             write: "deny",
-             bash: { "*": "allow", "git push": "deny", "git push *": "deny" },
-             external_directory: { "*": "allow" } } }
-     + { provider: { openrouter: (
-             { options: {
-                 apiKey: "{env:OPENROUTER_API_KEY}",
-                 baseURL: ("http://127.0.0.1:" + $port + "/api/v1") } }
-             + (if $eff != "" then
-                   { models: { ($vm): { options: { reasoning: { effort: $eff } } } } }
-                else {} end) ) } }' >"$CFG" )
+case "$MODEL" in
+    openrouter/*) opencode_launch_config "$MODEL" "$VARIANT" readonly "$CFG" \
+                      "http://127.0.0.1:$PORT/api/v1" ;;
+    *)            opencode_launch_config "$MODEL" "$VARIANT" readonly "$CFG" ;;
+esac
 chmod 600 "$CFG" 2>/dev/null || true
 
 # 4. The prompt: the read-only recon preamble, a blank line, then the
@@ -192,9 +211,11 @@ fi
 
 # 5. The run, in the foreground, with the timeout as a background watchdog
 #    (orca-worker-run.sh's pattern; coreutils `timeout` is absent on macOS).
-#    opencode's stdout+stderr go to the log; the key and the config ride in
-#    this one process's environment -- the token never touches a command
-#    line, a log or a receipt.
+#    opencode's stdout+stderr go to the log; the credential and the config
+#    ride in this one process's environment -- the token never touches a
+#    command line, a log or a receipt. An openai/ run carries no
+#    OPENROUTER_API_KEY at all (the ChatGPT login lives in opencode's own
+#    auth store), so any ambient one is stripped from the environment.
 LOG_DIR="$RD/recon"
 mkdir -p "$LOG_DIR"
 STEM="$(date -u +%Y%m%dT%H%M%SZ)-$SLUG"
@@ -209,8 +230,16 @@ START_EPOCH="$(date +%s)"
 FLAG="$LOG_DIR/.timedout.$$"
 rm -f "$FLAG"
 : >"$LOG"
-OPENROUTER_API_KEY="$TOKEN" OPENCODE_CONFIG="$CFG" \
-    opencode run -m "$MODEL" --dir "$DIR" --auto --format json "$PROMPT" >"$LOG" 2>&1 &
+case "$MODEL" in
+    openai/*)
+        env -u OPENROUTER_API_KEY OPENCODE_CONFIG="$CFG" \
+            opencode run -m "$MODEL" --dir "$DIR" --auto --format json "$PROMPT" >"$LOG" 2>&1 &
+        ;;
+    *)
+        OPENROUTER_API_KEY="$TOKEN" OPENCODE_CONFIG="$CFG" \
+            opencode run -m "$MODEL" --dir "$DIR" --auto --format json "$PROMPT" >"$LOG" 2>&1 &
+        ;;
+esac
 OC_PID=$!
 (
     elapsed=0

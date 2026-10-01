@@ -388,23 +388,31 @@ orch_fallback() {
 # a blanket-allow permission block unless
 # CLAUDE_ORCA_OPENCODE_PERMISSIONS=ask opts back into opencode's
 # interactive defaults (the config is still written either way).
+#
+# The config itself is composed by the ONE writer shared with recon
+# (scripts/lib/opencode-launch.sh, claude-orca-c3p.2), which sits next to
+# this file and is sourced the way the other libs resolve siblings. An
+# openai/ model takes the openai provider branch: no guard token is read,
+# and the env file carries ONLY the OPENCODE_CONFIG line -- opencode's own
+# ChatGPT login supplies the credential, so the token lines would be dead
+# weight (and the OPENROUTER_API_KEY a lie about who serves the request).
+# The env file keeps the openrouter-guard.env name either way: headless
+# dispatch passes it to orca-worker-run by name.
+if ! command -v opencode_launch_config >/dev/null 2>&1; then
+    # shellcheck source=opencode-launch.sh
+    . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/opencode-launch.sh"
+fi
+
 orca_opencode_command() {
     local model="$1" run_dir="$2" variant="${3:-}"
-    local token_file token="" port env_file slug cfg_dir cfg vendor_model
-    local base_url="" api_key_json="null" perm_mode haveperm
-
-    token_file="$run_dir/openrouter-guard.token"
-    if [ -s "$token_file" ]; then
-        token="$(cat "$token_file" 2>/dev/null)"
-    fi
-
-    perm_mode="${CLAUDE_ORCA_OPENCODE_PERMISSIONS:-allow}"
-    haveperm=true
-    [ "$perm_mode" = "ask" ] && haveperm=false
+    local token_file token="" port env_file slug cfg_dir cfg
+    local base_url="" perm
 
     port="${CLAUDE_ORCA_GUARD_PORT:-4141}"
     env_file="$run_dir/openrouter-guard.env"
-    vendor_model="${model#openrouter/}"
+
+    perm="allow"
+    [ "${CLAUDE_ORCA_OPENCODE_PERMISSIONS:-allow}" = "ask" ] && perm="ask"
 
     slug="$(printf '%s' "$model" | tr '/:' '-')"
     [ -n "$variant" ] && slug="${slug}-${variant}"
@@ -412,37 +420,28 @@ orca_opencode_command() {
     mkdir -p "$cfg_dir"
     cfg="$cfg_dir/$slug.json"
 
-    if [ -n "$token" ]; then
-        base_url="http://127.0.0.1:${port}/api/v1"
-        api_key_json='{"apiKey":"{env:OPENROUTER_API_KEY}","baseURL":"'"$base_url"'"}'
-    fi
-
-    ( umask 077 && jq -n \
-        --argjson options "$api_key_json" \
-        --arg vm "$vendor_model" --arg eff "$variant" --argjson havemodels "$([ -n "$variant" ] && echo true || echo false)" \
-        --argjson haveperm "$haveperm" \
-        '{"$schema": "https://opencode.ai/config.json"}
-          + (if $haveperm then {
-              permission: {
-                "*": "allow",
-                bash: { "*": "allow", "git push *": "deny", "git push": "deny" },
-                external_directory: { "*": "allow" }
-              }
-            } else {} end)
-          + { provider: { openrouter: (
-            { }
-            + (if $options != null then { options: $options } else {} end)
-            + (if $havemodels then { models: { ($vm): { options: { reasoning: { effort: $eff } } } } } else {} end)
-          ) } }' >"$cfg" )
-    chmod 600 "$cfg"
-
-    {
-        if [ -n "$token" ]; then
-            printf "OPENROUTER_API_KEY='%s'\n" "$token"
-            printf "OPENROUTER_BASE_URL='http://127.0.0.1:%s/api/v1'\n" "$port"
-        fi
-        printf "OPENCODE_CONFIG='%s'\n" "$cfg"
-    } > "$env_file"
+    case "$model" in
+        openai/*)
+            opencode_launch_config "$model" "$variant" "$perm" "$cfg"
+            printf "OPENCODE_CONFIG='%s'\n" "$cfg" > "$env_file"
+            ;;
+        *)
+            # OpenRouter (and anything else): today's env file, unchanged.
+            token_file="$run_dir/openrouter-guard.token"
+            if [ -s "$token_file" ]; then
+                token="$(cat "$token_file" 2>/dev/null)"
+            fi
+            [ -n "$token" ] && base_url="http://127.0.0.1:${port}/api/v1"
+            opencode_launch_config "$model" "$variant" "$perm" "$cfg" "$base_url"
+            {
+                if [ -n "$token" ]; then
+                    printf "OPENROUTER_API_KEY='%s'\n" "$token"
+                    printf "OPENROUTER_BASE_URL='http://127.0.0.1:%s/api/v1'\n" "$port"
+                fi
+                printf "OPENCODE_CONFIG='%s'\n" "$cfg"
+            } > "$env_file"
+            ;;
+    esac
     chmod 600 "$env_file"
 
     printf "set -a; . '%s'; set +a; opencode --model %s" "$env_file" "$model"

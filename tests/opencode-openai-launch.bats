@@ -218,7 +218,7 @@ recon_fixture() {
 
 # ── tier_openai_catalogue ─────────────────────────────────────────────────
 
-@test "tier_openai_catalogue: the signed-in `opencode models openai --verbose` listing is parsed" {
+@test "tier_openai_catalogue: the signed-in opencode models openai --verbose listing is parsed" {
     # Guards: with no fixture file, the catalogue comes from opencode's own
     # listing of what the subscription serves -- header lines dropped, the
     # JSON objects mapped to {id, family, release_date}.

@@ -148,9 +148,10 @@ if [ -n "$FROZEN_WT" ]; then
         note "frozen-hook: could not install pre-commit hook into $FROZEN_WT"
 fi
 
-# An openrouter/… model is opencode's business whatever the binding says.
+# An openrouter/… or openai/… model is opencode's business whatever the
+# binding says (claude-orca-c3p.2 adds the OpenAI-direct provider).
 case "$MODEL" in
-    openrouter/*) AGENT="opencode" ;;
+    openrouter/*|openai/*) AGENT="opencode" ;;
 esac
 case "$AGENT" in
     openrouter) AGENT="opencode" ;;
@@ -212,6 +213,17 @@ fi
 OP_RUN_DIR=""; SPEC_FILE=""; MODE=""
 case "$AGENT" in
     opencode)
+        # An openai/ model is served by the user's ChatGPT subscription
+        # through opencode's own login (claude-orca-c3p.2): refuse cleanly
+        # when the folder is not signed in, and expand an
+        # openai/~<family>-latest alias to the concrete id HERE, so both
+        # the headless command (--model) and the TUI command carry it.
+        case "$MODEL" in openai/*)
+            tier_openai_ready ||
+                die "OpenAI is not signed in in this folder -- run /tier auth openai, then dispatch again" 2
+            MODEL="$(tier_openai_resolve "$MODEL")" ||
+                die "cannot resolve $MODEL to a model your OpenAI subscription serves (see: opencode models openai)" 2 ;;
+        esac
         if [ "$TUI" -eq 1 ]; then
             MODE="tui"
         else

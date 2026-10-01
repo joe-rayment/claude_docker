@@ -232,3 +232,137 @@ tier_openrouter_ready() {
     port="${CLAUDE_ORCA_GUARD_PORT:-4141}"
     ( exec 3<>"/dev/tcp/127.0.0.1/$port" ) 2>/dev/null
 }
+
+# --- OpenAI direct (claude-orca-c3p.2) -------------------------------------
+#
+# The second opencode provider beside OpenRouter: the user's own ChatGPT
+# subscription, signed in with opencode's own login (`/tier auth openai`
+# -> scripts/openai-auth.sh, opencode's headless device flow). Tokens land
+# in opencode's auth store and opencode refreshes them itself, so -- unlike
+# OpenRouter -- no guard proxy and no key file: the credential never leaves
+# opencode. Models are spelled openai/<id> (or the openai/~<family>-latest
+# alias, resolved AT LAUNCH to the newest id the subscription serves, the
+# same way OpenRouter's ~-latest aliases work server-side).
+
+# The default worker/recon models for a bare `openai` bind, in the same
+# ~<family>-latest alias form (epic claude-orca-c3p DESIGN 2): the newest
+# balanced GPT Terra executes, the newest efficient GPT Luna recons.
+TIER_OPENAI_WORKER_MODEL="openai/~gpt-terra-latest"
+TIER_OPENAI_RECON_MODEL="openai/~gpt-luna-latest"
+
+# tier_openai_role_default <worker|recon|checker> -- the OpenAI model a
+# bare `openai` spec binds for that role.
+tier_openai_role_default() {
+    case "${1:-}" in
+        recon) printf '%s\n' "$TIER_OPENAI_RECON_MODEL" ;;
+        *)     printf '%s\n' "$TIER_OPENAI_WORKER_MODEL" ;;
+    esac
+}
+
+# tier_openai_auth_file -- where opencode's own credential store lives:
+# ${XDG_DATA_HOME:-$HOME/.local/share}/opencode/auth.json, the file
+# `opencode auth login --provider openai` writes. TIER_OPENAI_AUTH_FILE
+# overrides it (tests). Never checks that the file exists.
+tier_openai_auth_file() {
+    if [ -n "${TIER_OPENAI_AUTH_FILE:-}" ]; then
+        printf '%s\n' "$TIER_OPENAI_AUTH_FILE"
+        return 0
+    fi
+    printf '%s/opencode/auth.json\n' "${XDG_DATA_HOME:-$HOME/.local/share}"
+}
+
+# tier_openai_ready -- is this folder signed in to OpenAI through
+# opencode? True (0) when the auth store is readable JSON carrying either
+# an oauth login with a non-empty refresh token (the ChatGPT sign-in;
+# opencode rotates the access token itself) or an api login with a
+# non-empty key. Never prints (stdout or stderr); jq missing or any
+# doubt -> 1, i.e. signed out.
+tier_openai_ready() {
+    local f
+    command -v jq >/dev/null 2>&1 || return 1
+    f="$(tier_openai_auth_file)"
+    [ -n "$f" ] && [ -f "$f" ] || return 1
+    jq -e '(.openai.type == "oauth"
+              and (.openai.refresh | type == "string" and length > 0))
+           or (.openai.type == "api"
+              and (.openai.key | type == "string" and length > 0))' \
+        "$f" >/dev/null 2>&1
+}
+
+# tier_openai_catalogue -- what the subscription serves, as a JSON array of
+# {id, family, release_date} (strings; missing -> ""). Sources, first that
+# yields a non-empty array:
+#   a) $TIER_OPENAI_MODELS_FILE  that file's JSON array, verbatim (tests)
+#   b) when tier_openai_ready: `${TIER_OPENCODE_BIN:-opencode} models openai
+#      --verbose` -- model header lines ("openai/<id>") dropped, the JSON
+#      objects that follow them mapped to the array shape
+#   c) ${TIER_OPENCODE_MODELS_CACHE:-$HOME/.cache/opencode/models.json} --
+#      .openai.models of opencode's own cache
+# Nothing usable: print nothing, exit 1.
+tier_openai_catalogue() {
+    local norm='map({id: (.id // ""), family: (.family // ""), release_date: (.release_date // "")})'
+    local out=""
+
+    # a) the test fixture, when set.
+    if [ -n "${TIER_OPENAI_MODELS_FILE:-}" ] \
+        && [ -f "${TIER_OPENAI_MODELS_FILE:-}" ]; then
+        out="$(jq -e -c "$norm" "$TIER_OPENAI_MODELS_FILE" 2>/dev/null)" || out=""
+        [ -n "$out" ] && [ "$out" != "[]" ] && { printf '%s\n' "$out"; return 0; }
+    fi
+
+    # b) the live listing, only when this folder is actually signed in.
+    if tier_openai_ready; then
+        out="$("${TIER_OPENCODE_BIN:-opencode}" models openai --verbose 2>/dev/null |
+            grep -v '^openai/' |
+            jq -s -c "$norm" 2>/dev/null)" || out=""
+        [ -n "$out" ] && [ "$out" != "[]" ] && { printf '%s\n' "$out"; return 0; }
+    fi
+
+    # c) opencode's own models cache.
+    local cache
+    cache="${TIER_OPENCODE_MODELS_CACHE:-$HOME/.cache/opencode/models.json}"
+    if [ -f "$cache" ]; then
+        out="$(jq -e -c '.openai.models | to_entries
+            | map({id: .key, family: (.value.family // ""),
+                   release_date: (.value.release_date // "")})' \
+            "$cache" 2>/dev/null)" || out=""
+        [ -n "$out" ] && [ "$out" != "[]" ] && { printf '%s\n' "$out"; return 0; }
+    fi
+
+    return 1
+}
+
+# tier_openai_resolve <model> -- the model to launch, on stdout.
+#   openai/~<fam>-latest -> openai/<id>, the newest catalogue entry whose
+#     .family == <fam>: highest release_date, then the SHORTEST id
+#     (gpt-5.6-luna beats gpt-5.6-luna-fast), then the lexically larger id.
+#     No entry for <fam> (or no catalogue at all): one stderr line naming
+#     the family and `opencode models openai`, exit 1.
+#   anything else (openai/<id>, openrouter/..., other) -> printed unchanged,
+#     exit 0; the catalogue is never consulted.
+tier_openai_resolve() {
+    local model="${1:-}" fam best
+    case "$model" in
+        openai/~*) fam="${model#openai/~}" ;;
+        *) printf '%s\n' "$model"; return 0 ;;
+    esac
+    fam="${fam%-latest}"
+    best="$(tier_openai_catalogue 2>/dev/null | jq -r --arg fam "$fam" '
+        [ .[] | select(.family == $fam) ]
+        | if length == 0 then empty
+          else ( map(.release_date) | max ) as $d
+          | [ .[] | select(.release_date == $d) ]
+          | sort_by(.id | length)
+          | group_by(.id | length)
+          | .[0]
+          | sort_by(.id)
+          | .[-1]
+          | "openai/\(.id)"
+          end' 2>/dev/null)" || best=""
+    if [ -z "$best" ]; then
+        printf 'no OpenAI model serves family "%s" in this folder -- run `opencode models openai`\n' \
+            "$fam" >&2
+        return 1
+    fi
+    printf '%s\n' "$best"
+}
