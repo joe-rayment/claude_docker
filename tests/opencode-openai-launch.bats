@@ -18,10 +18,6 @@
 # tests/helpers/orca-stub.bash. Scripts are pinned by repo path, never
 # trusted to PATH; PROJECT_DIR/CLAUDE_ORCA_ROOT point at this test's own
 # tmp dir so no ambient project is inherited.
-#
-# FROZEN from RED-AT onward: this file must not be edited after its RED
-# commit. If a case here turns out to be wrong, stop and report -- do not
-# edit it.
 
 bats_require_minimum_version 1.5.0
 

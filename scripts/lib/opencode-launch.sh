@@ -44,7 +44,7 @@ opencode_launch_config() {
 
     case "$model" in
         openrouter/*) provider_key="openrouter"; vendor_model="${model#openrouter/}" ;;
-        openai/*)     provider_key="openai"      vendor_model="${model#openai/}" ;;
+        openai/*)     provider_key="openai"; vendor_model="${model#openai/}" ;;
         *)            provider_key="" ;;
     esac
     [ -n "$base_url" ] && havebase=true
