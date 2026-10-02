@@ -184,3 +184,21 @@ STUB
     grep -q "npx playwright install chromium" "$STUB_LOG"
     [[ "$output" == *"npm i -g playwright@1.61.1"* ]]
 }
+
+# --- invocation through a symlink (claude-orca-3wd) --------------------------
+
+# Guards: running take-screenshot through a symlink (bin/take-screenshot ->
+# ../scripts/take-screenshot.sh, the way PATH finds it) still finds
+# lib/paths.sh beside the real script.
+# Fails if: the script resolves only the directory of BASH_SOURCE (pwd -P),
+# so it looks for lib/paths.sh beside the link (bin/lib/paths.sh).
+# Run: bats tests/take-screenshot.bats -f symlink
+@test "--help works when invoked through a symlink (claude-orca-3wd)" {
+    mkdir -p "$BATS_TEST_TMPDIR/bin"
+    ln -s "$REPO_ROOT/scripts/take-screenshot.sh" "$BATS_TEST_TMPDIR/bin/take-screenshot"
+
+    run "$BATS_TEST_TMPDIR/bin/take-screenshot" --help
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Usage"* ]]
+    ! grep -q "lib/paths.sh: No such file" <<<"$output"
+}
