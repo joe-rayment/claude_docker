@@ -349,3 +349,94 @@ JSON
         return 1
     }
 }
+
+# claude-orca-qxc: skills/ is no longer mirrored wholesale. The template's
+# own skills are; everything else in there -- the home-scope orchestration
+# link provision.d/75-orca-skills creates, Claude Code's own 'synced'
+# directory -- is not this script's to remove. The previous sync's shipped
+# entries are recorded in skills/.claude-orca-shipped (one name per line),
+# which is what still lets a template drop remove its own leftovers.
+@test "a skill entry config-sync did not ship survives a resync (claude-orca-qxc)" {
+    # Guards: the home-scope orchestration install and Claude Code's own
+    # 'synced' skills directory survive every later config-sync -- skills/
+    # entries that are neither template-shipped nor previously-shipped are
+    # preserved, the way Orca's managed hook entries are.
+    # Fails if: any resync rm -rf's skills/ wholesale and wipes the
+    # ~/.claude/skills link the Orca panel's agent coverage reads.
+    # Run: bats -f 'survives a resync' tests/config-sync.bats
+    make_project "$PROJECT_DIR"
+    primary="$(abspath "$PROJECT_DIR")"
+    dest="$primary/.claude-dev/home/.claude"
+
+    run CONFIG_SYNC --project "$primary" --host "$ORCA_HOST"
+    [ "$status" -eq 0 ]
+
+    # Foreign entries, the way the container really has them: a symlink
+    # into ~/.agents/skills (what `orca skills install` leaves) and the
+    # directory Claude Code's skill sync manages.
+    ln -s "$primary/.claude-dev/home/.agents/skills/orchestration" \
+        "$dest/skills/orchestration"
+    mkdir -p "$dest/skills/synced"
+    : > "$dest/skills/synced/marker.txt"
+
+    rm -f "$primary/.claude-dev/run/config-hash"
+    run CONFIG_SYNC --project "$primary" --host "$ORCA_HOST"
+    [ "$status" -eq 0 ]
+
+    [ -L "$dest/skills/orchestration" ]
+    [ -f "$dest/skills/synced/marker.txt" ]
+    # the shipped skill is still mirrored alongside them
+    [ -f "$dest/skills/snowpark-deploy/SKILL.md" ]
+}
+
+@test "a skill the template shipped last sync but no longer ships is removed (claude-orca-qxc)" {
+    # Guards: the .claude-orca-shipped manifest -- ownership is what the
+    # previous sync shipped, so a skill dropped from the template is still
+    # cleaned up even though skills/ is no longer wiped.
+    # Fails if: a dropped-from-template skill lingers forever, or the
+    # manifest is not rewritten after the copy.
+    # Run: bats -f 'no longer ships' tests/config-sync.bats
+    make_project "$PROJECT_DIR"
+    primary="$(abspath "$PROJECT_DIR")"
+    dest="$primary/.claude-dev/home/.claude"
+
+    run CONFIG_SYNC --project "$primary" --host "$ORCA_HOST"
+    [ "$status" -eq 0 ]
+    [ -f "$dest/skills/snowpark-deploy/SKILL.md" ]
+    grep -qx "snowpark-deploy" "$dest/skills/.claude-orca-shipped"
+
+    # the template drops it, then the folder syncs again
+    rm -rf "$ORCA_HOST/template/config/skills/snowpark-deploy"
+    rm -f "$primary/.claude-dev/run/config-hash"
+    run CONFIG_SYNC --project "$primary" --host "$ORCA_HOST"
+    [ "$status" -eq 0 ]
+
+    [ ! -e "$dest/skills/snowpark-deploy" ]
+    grep -qx "snowpark-deploy" "$dest/skills/.claude-orca-shipped"
+    [ "$status" -eq 1 ]
+}
+
+@test "a shipped skill's content is replaced by the template's on resync (claude-orca-qxc)" {
+    # Guards: preserving foreign entries must not freeze shipped content --
+    # an entry the template still ships is removed and re-copied, so
+    # template edits land in the folder.
+    # Fails if: the preserve change leaves a stale on-disk copy of a
+    # shipped skill.
+    # Run: bats -f "content is replaced" tests/config-sync.bats
+    make_project "$PROJECT_DIR"
+    primary="$(abspath "$PROJECT_DIR")"
+    dest="$primary/.claude-dev/home/.claude"
+
+    run CONFIG_SYNC --project "$primary" --host "$ORCA_HOST"
+    [ "$status" -eq 0 ]
+
+    printf '\n# template update\n' \
+        >> "$ORCA_HOST/template/config/skills/snowpark-deploy/SKILL.md"
+    rm -f "$primary/.claude-dev/run/config-hash"
+    run CONFIG_SYNC --project "$primary" --host "$ORCA_HOST"
+    [ "$status" -eq 0 ]
+
+    diff "$ORCA_HOST/template/config/skills/snowpark-deploy/SKILL.md" \
+        "$dest/skills/snowpark-deploy/SKILL.md"
+    grep -qx "snowpark-deploy" "$dest/skills/.claude-orca-shipped"
+}
