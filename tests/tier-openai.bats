@@ -67,12 +67,13 @@ tier_set() { run "$TSET" "$@"; }
     # Run: bats tests/tier-openai.bats
     tier_set opus openai:terra openai:luna@high
     [ "$status" -eq 0 ]
+    bound_output="$output"
 
     run jq -e '.roles.worker == {backend:"orca", agent:"opencode", model:"openai/~gpt-terra-latest", pinned:true}' "$TIER_STATE_FILE"
     [ "$status" -eq 0 ]
     run jq -e '.roles.recon == {backend:"orca", agent:"opencode", model:"openai/~gpt-luna-latest", pinned:true, variant:"high"}' "$TIER_STATE_FILE"
     [ "$status" -eq 0 ]
-    [[ "$output" == *"orca:opencode:openai/~gpt-luna-latest@high"* ]]
+    [[ "$bound_output" == *"orca:opencode:openai/~gpt-luna-latest@high"* ]]
 }
 
 # ── (2) the distinction from OpenRouter holds ───────────────────────────────
@@ -170,13 +171,16 @@ tier_set() { run "$TSET" "$@"; }
     signed_out
     tier_set worker openai:luna
     [ "$status" -eq 0 ]
+    signed_out_output="$output"
     run jq -e '.roles.worker.model == "openai/~gpt-luna-latest"' "$TIER_STATE_FILE"
     [ "$status" -eq 0 ]
-    [[ "$output" == *"/tier auth openai"* ]]
+    [[ "$signed_out_output" == *"/tier auth openai"* ]]
 
+    export TIER_OPENAI_AUTH_FILE="$BATS_TEST_TMPDIR/opencode-auth.json"
     tier_set worker openai:sol
     [ "$status" -eq 0 ]
-    [[ "$output" != *"/tier auth openai"* ]]
+    signed_in_output="$output"
+    [[ "$signed_in_output" != *"/tier auth openai"* ]]
 }
 
 # ── (7) the positional trio prints the pair exactly once ────────────────────
@@ -257,7 +261,8 @@ tier_set() { run "$TSET" "$@"; }
 
     tier_set worker openai:luna
     [ "$status" -eq 0 ]
+    unchecked_output="$output"
     run jq -e '.roles.worker.model == "openai/~gpt-luna-latest"' "$TIER_STATE_FILE"
     [ "$status" -eq 0 ]
-    [[ "$output" == *"bound unchecked"* ]]
+    [[ "$unchecked_output" == *"bound unchecked"* ]]
 }
