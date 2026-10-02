@@ -266,3 +266,153 @@ tier_set() { run "$TSET" "$@"; }
     [ "$status" -eq 0 ]
     [[ "$unchecked_output" == *"bound unchecked"* ]]
 }
+
+# ── (12) auth openai: the sign-in tab, the manual fallback, the usage line ──
+
+# An Orca CLI stub, the exact technique of tests/tier-openrouter-auth.bats:
+# records argv one line per arg, answers `terminal create` with the
+# envelope orca_call expects.
+stub_orca() {
+    local mode="${1:-ok}"
+    cat > "$BATS_TEST_TMPDIR/orca-stub" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$@" >> "$BATS_TEST_TMPDIR/orca-argv"
+if [ "$mode" = "down" ]; then printf '%s' '{"ok":false,"error":{"message":"unreachable"}}'; exit 1; fi
+case "\$1 \$2" in
+  "terminal create") printf '%s' '{"ok":true,"result":{"terminal":{"handle":"term_stub"}}}' ;;
+  "status --json"|"status")   printf '%s' '{"ok":true,"result":{"runtime":{"reachable":true}}}' ;;
+  *) printf '%s' '{"ok":true,"result":{}}' ;;
+esac
+STUB
+    chmod +x "$BATS_TEST_TMPDIR/orca-stub"
+    export ORCA_CLI_BIN="$BATS_TEST_TMPDIR/orca-stub"
+    : > "$BATS_TEST_TMPDIR/orca-argv"
+}
+
+@test "auth openai creates a focused titled Orca terminal running the openai helper" {
+    # Guards: /tier auth openai opens the same kind of focused sign-in tab
+    #   `auth openrouter` does, titled "OpenAI sign-in", running this
+    #   folder's scripts/openai-auth.sh.
+    # Fails if: the tab ran the OpenRouter helper, carried another title,
+    #   or was not focused.
+    # Run: bats -f 'focused titled Orca terminal' tests/tier-openai.bats
+    stub_orca ok
+    run "$TSET" auth openai
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"OpenAI sign-in"* ]]
+    grep -qx 'terminal' "$BATS_TEST_TMPDIR/orca-argv"
+    grep -qx 'create' "$BATS_TEST_TMPDIR/orca-argv"
+    grep -qx -- '--focus' "$BATS_TEST_TMPDIR/orca-argv"
+    grep -qx 'OpenAI sign-in' "$BATS_TEST_TMPDIR/orca-argv"
+    grep -q 'openai-auth.sh' "$BATS_TEST_TMPDIR/orca-argv"
+}
+
+@test "auth openai with an unreachable Orca prints the manual command and exits 0" {
+    # Guards: an unreachable Orca runtime is not an error -- the two-line
+    #   manual fallback names the helper path and the command still exits 0.
+    # Fails if: the fallback printed the OpenRouter helper's path or exited
+    #   non-zero.
+    # Run: bats -f 'unreachable Orca prints the manual command' tests/tier-openai.bats
+    stub_orca down
+    run "$TSET" auth openai
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"openai-auth.sh"* ]]
+}
+
+@test "auth bogus is a usage error naming both providers" {
+    # Guards: the auth subcommand only takes openrouter and openai -- any
+    #   other provider is a usage error, exit 1.
+    # Fails if: an unknown provider silently succeeded or the usage line
+    #   stopped naming the two providers.
+    # Run: bats -f 'usage error naming both providers' tests/tier-openai.bats
+    run "$TSET" auth bogus
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"openrouter|openai"* ]]
+}
+
+# ── (13) openai-auth.sh: the helper behind the tab ─────────────────────────
+
+# A stub opencode for the helper: logs its argv one line per invocation,
+# and on `auth login` writes an oauth login to TIER_OPENAI_AUTH_FILE, so
+# tier_openai_ready flips true afterwards. `models openai` prints two lines.
+stub_opencode() {
+    local mode="${1:-ok}"
+    cat > "$BATS_TEST_TMPDIR/oc-stub" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$BATS_TEST_TMPDIR/oc-argv"
+case "\$1 \$2" in
+  "auth login")
+      [ "$mode" = "fail" ] && exit 1
+      jq -n '{openai: {type: "oauth", refresh: "rt-stub",
+                       access: "at-stub-secret", expires: 1, accountId: "acct"}}' \
+          > "\${TIER_OPENAI_AUTH_FILE:-$BATS_TEST_TMPDIR/opencode-auth.json}"
+      exit 0 ;;
+  "models openai")
+      printf 'openai/gpt-5.6-luna\nopenai/gpt-5.6-terra\n'
+      exit 0 ;;
+esac
+exit 0
+STUB
+    chmod +x "$BATS_TEST_TMPDIR/oc-stub"
+    export OPENAI_AUTH_OPENCODE_BIN="$BATS_TEST_TMPDIR/oc-stub"
+    : > "$BATS_TEST_TMPDIR/oc-argv"
+}
+
+helper() {
+    run "$REPO_ROOT/scripts/openai-auth.sh"
+}
+
+@test "openai-auth.sh signs in through opencode, lists the models, never prints a token" {
+    # Guards: the helper runs `opencode auth login --provider openai
+    #   --method "ChatGPT Pro/Plus (headless)"` exactly, prints the
+    #   subscription's model list indented, ends with the bind-a-role next
+    #   step, and never leaks the access or refresh token it just handled.
+    # Fails if: the login went out with a different provider/method, the
+    #   next-step line went missing, or a token reached stdout/stderr.
+    # Run: bats -f 'signs in through opencode' tests/tier-openai.bats
+    signed_out
+    stub_opencode ok
+    helper
+    [ "$status" -eq 0 ]
+    tr '\n' ' ' < "$BATS_TEST_TMPDIR/oc-argv" > "$BATS_TEST_TMPDIR/oc-argv.flat"
+    grep -q 'auth login --provider openai --method ChatGPT Pro/Plus (headless)' \
+        "$BATS_TEST_TMPDIR/oc-argv.flat"
+    [[ "$output" == *"/tier opus openai:terra openai:luna@high"* ]]
+    [[ "$output" != *"at-stub-secret"* ]]
+    [[ "$output" != *"rt-stub"* ]]
+    [[ "$output" == *"openai/gpt-5.6-luna"* ]]
+}
+
+@test "openai-auth.sh reports a failed sign-in and exits 1" {
+    # Guards: when the opencode login fails, the folder is still signed
+    #   out -- the helper says so, names the retry (/tier auth openai), and
+    #   exits 1 instead of printing model lists on a dead credential.
+    # Fails if: a failed login was swallowed (exit 0) or the failure line
+    #   went missing.
+    # Run: bats -f 'reports a failed sign-in' tests/tier-openai.bats
+    signed_out
+    stub_opencode fail
+    helper
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"did not complete"* ]]
+    [[ "$output" != *"Models your subscription serves"* ]]
+}
+
+@test "openai-auth.sh skips the login when already signed in, unless --force" {
+    # Guards: a signed-in folder is not made to sign in again -- the
+    #   helper says "Already signed in" and goes straight to the model
+    #   list; --force runs the login anyway.
+    # Fails if: the helper re-ran `auth login` on a signed-in folder, or
+    #   --force stopped skipping it.
+    # Run: bats -f 'already signed in' tests/tier-openai.bats
+    stub_opencode ok
+    helper
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Already signed in to OpenAI in this folder."* ]]
+    ! grep -q 'auth login' "$BATS_TEST_TMPDIR/oc-argv"
+
+    : > "$BATS_TEST_TMPDIR/oc-argv"
+    run "$REPO_ROOT/scripts/openai-auth.sh" --force
+    [ "$status" -eq 0 ]
+    grep -q 'auth login' "$BATS_TEST_TMPDIR/oc-argv"
+}
