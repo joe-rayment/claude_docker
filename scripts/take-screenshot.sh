@@ -51,8 +51,25 @@ DEFAULT_WAIT_MS=5000
 # not be the default outcome.
 BODY_TIMEOUT_MS=15000
 
+# The _resolve_script_path loop scripts/recon.sh uses, verbatim: resolving the
+# FILE symlink (bin/take-screenshot -> ../scripts/take-screenshot.sh) before
+# looking for lib/paths.sh -- pwd -P resolves the directory only, so a symlink
+# resolved the old way made PATH invocations look in bin/lib (claude-orca-3wd).
+_resolve_script_path() {
+    local src="${BASH_SOURCE[0]}"
+    while [ -L "$src" ]; do
+        local link dir
+        link="$(readlink "$src")"
+        case "$link" in
+            /*) src="$link" ;;
+            *)  dir="$(case "$src" in (*/*) cd "${src%/*}/" ;; esac && pwd)"; src="$dir/$link" ;;
+        esac
+    done
+    echo "$src"
+}
+SCRIPT_DIR="$(_s="$(_resolve_script_path)"; case "$_s" in (*/*) cd "${_s%/*}/" ;; esac && pwd)"
 # shellcheck source=scripts/lib/paths.sh
-. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/lib/paths.sh"
+. "$SCRIPT_DIR/lib/paths.sh"
 
 usage() {
     cat <<EOF
