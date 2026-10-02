@@ -640,25 +640,35 @@ fi
 
 # --- auth: tier-set auth <provider> -----------------------------------------
 #
-# Opens a focused Orca tab running scripts/openrouter-auth.sh so sign-in
+# Opens a focused Orca tab running the provider's sign-in helper --
+# scripts/openrouter-auth.sh or scripts/openai-auth.sh -- so sign-in
 # happens without leaving the session (plan .claude/plans/openrouter-auth.md
-# "Auth happens in a tab"). An unreachable Orca runtime is not an error --
-# there is a manual fallback -- so this always exits 0 once the provider
-# name itself checks out.
+# "Auth happens in a tab"; the OpenAI twin is claude-orca-c3p.4). An
+# unreachable Orca runtime is not an error -- there is a manual fallback --
+# so this always exits 0 once the provider name itself checks out.
 if [ "${1:-}" = "auth" ]; then
     provider="${2:-}"
-    if [ "$provider" != "openrouter" ]; then
-        echo "tier-set: usage: tier-set auth openrouter" >&2
-        exit 1
-    fi
+    case "$provider" in
+        openrouter|openai) ;;
+        *)
+            echo "tier-set: usage: tier-set auth openrouter|openai" >&2
+            exit 1
+            ;;
+    esac
     # shellcheck source=lib/orca-orch.sh
     . "$SCRIPT_DIR/lib/orca-orch.sh"
-    HELPER="$SCRIPT_DIR/openrouter-auth.sh"
+    if [ "$provider" = "openrouter" ]; then
+        HELPER="$SCRIPT_DIR/openrouter-auth.sh"
+        TITLE="OpenRouter sign-in"
+    else
+        HELPER="$SCRIPT_DIR/openai-auth.sh"
+        TITLE="OpenAI sign-in"
+    fi
     root="$(orch_root 2>/dev/null)" || root="$PWD"
     if out="$(orca_call terminal create --worktree "path:$root" \
-                --title "OpenRouter sign-in" --command "$HELPER" \
+                --title "$TITLE" --command "$HELPER" \
                 --focus --json)"; then
-        echo "tier-set: opened an Orca tab \"OpenRouter sign-in\" — complete sign-in there."
+        echo "tier-set: opened an Orca tab \"$TITLE\" — complete sign-in there."
         exit 0
     fi
     err="$(orca_error "$out" 2>/dev/null)"; [ -n "$err" ] || err="Orca runtime unreachable"
