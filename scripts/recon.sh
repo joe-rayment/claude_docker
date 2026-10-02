@@ -218,7 +218,7 @@ fi
 #    auth store), so any ambient one is stripped from the environment.
 LOG_DIR="$RD/recon"
 mkdir -p "$LOG_DIR"
-STEM="$(date -u +%Y%m%dT%H%M%SZ)-$SLUG"
+STEM="$(date -u +%Y%m%dT%H%M%SZ)-$$-$SLUG"
 LOG="$LOG_DIR/$STEM.log"
 RECEIPT="$LOG_DIR/$STEM.receipt.json"
 
