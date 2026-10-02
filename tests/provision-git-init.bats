@@ -202,14 +202,24 @@ says() {  # says <needle>: the last run's output contains it
 }
 
 @test "a .git that git cannot read is reported in git's own words and never re-initialised" {
-    local d
-    d="$(unborn_repo dubious main)"
-    run git_init_step "$d" "" GIT_TEST_ASSUME_DIFFERENT_OWNER=1
+    # Amended for claude-orca-1te (orchestrator OK 2026-10-02): dubious
+    # ownership is no longer an unreadable-repository case -- the step now
+    # cures it by marking the project a safe.directory (the cases below).
+    # This case keeps the intent for a .git that stays unreadable: a .git
+    # FILE whose gitdir: points nowhere. (A plain `git init`ed repo under
+    # GIT_TEST_ASSUME_DIFFERENT_OWNER=1 used to stand in; that folder is
+    # exactly what the remedy makes readable now.)
+    local d why
+    d="$BATS_TEST_TMPDIR/unreadable"
+    mkdir -p "$d"
+    why="$(mktemp -d "$BATS_TEST_TMPDIR"/nowhere.XXXX)/nonexistent"
+    printf 'gitdir: %s\n' "$why" > "$d/.git"
+    run git_init_step "$d"
     [ "$status" -eq 1 ]
-    says "dubious ownership"
     says "cannot read the repository"
+    says "$why"
     [ "$(commit_count "$d")" = "0" ]
-    [ -d "$d/.git" ]
+    [ "$(cat "$d/.git")" = "gitdir: $why" ]
 }
 
 @test "the step is executable and runs after 50-seed-project, before 60-orca-repo-add" {
@@ -306,5 +316,9 @@ says() {  # says <needle>: the last run's output contains it
     [ "$status" -eq 0 ]
     run git_init_step "$d" "$h" GIT_TEST_ASSUME_DIFFERENT_OWNER=1
     [ "$status" -eq 0 ]
-    [ "$(grep -cxF -- "$d" "$h/.gitconfig")" = "1" ]
+    # Read the value back the way git itself would (amended per the
+    # orchestrator, 2026-10-02: the raw file stores the entry as a
+    # tab-indented `directory = <path>` line, so a whole-line match against
+    # $d has to go through the config, not the file).
+    [ "$(GIT_CONFIG_GLOBAL="$h/.gitconfig" git config --global --get-all safe.directory | grep -cxF "$d")" = "1" ]
 }
