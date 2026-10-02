@@ -19,34 +19,34 @@
 # lives here in provision.d and not in the early-sync path claude-orca-0jn
 # added, which is reserved for fast, non-network, must-not-race work.
 #
-# --local, and never the bare command's default: every other piece of state
-# in this codebase is scoped to the folder that started it (one container
-# per folder, no central install -- CLAUDE.md's Architecture Overview). The
-# plain command installs GLOBALLY, for every project on the host sharing
-# this Orca -- the one thing in this whole system that would reach outside
-# the folder it started in. Do not drop it.
+# HOME scope, and never --local (claude-orca-qxc): the install used to be
+# --local, project-scoped, because the bare command's default installs for
+# "every project on the host sharing this Orca" -- and when Orca ran
+# unsandboxed on the Mac that would have reached outside the folder it
+# started in. Since the 8uo epic moved Orca inside this container, HOME is
+# <project>/.claude-dev/home and belongs to this one folder, so the home
+# scope IS the folder scope now. And home scope is the only one that counts
+# for the user-visible goal: Orca's Settings > Orchestration panel and its
+# per-agent coverage rows read home-scope installs only -- a --local
+# install left the panel reading 'Not installed' with every agent
+# 'Missing' (measured 2026-09-19 in Orca 1.4.197, claude-orca-qxc).
 #
-# Idempotent: `orca skills installed` is asked first, and install only runs
-# when "orchestration" is not already in what it lists -- never on every
-# boot. That check must match the skill's NAME exactly, never a substring
-# over the whole output (claude-orca-4gx, superseding claude-orca-ndy):
-# `orca skills installed` prints a name (hash) selector line AND an
-# indented prose description per skill, and Orca's bundled descriptions
-# cross-reference each other by name ("pairs with the orchestration
-# skill..."), so an unanchored `*orchestration*` match on another skill's
-# description alone claims orchestration is installed and skips forever,
-# with a green status row every boot. The primary check is therefore
-# `skills installed --json`'s structured name field via jq -e, exact
-# equality; the fallback (jq missing, or --json unsupported by an older
-# Orca) requires the real selector shape exactly -- "orchestration" at
-# column 0 followed by a space and an open paren, the one thing every
-# other line Orca prints (indented descriptions, warnings, prose) is not
-# (claude-orca-8v9, superseding claude-orca-01u). If neither check can
-# give a confident yes, this step falls through to attempting the install
-# rather than skipping it:
+# Idempotent: `orca skills installed --json` is asked first, and the
+# install only runs when it does not confidently report orchestration at
+# HOME scope with a Claude provider -- an entry whose name is exactly
+# "orchestration", whose sourceKind is exactly "home", and whose providers
+# contain "claude" (the .claude/skills link under the agent's own home;
+# .agents/skills alone is
+# only the agent-skills provider and does not satisfy the check). Anything
+# else -- no such entry, a repo-scope entry, a home entry without the
+# claude provider, --json unsupported, a zero exit carrying non-JSON, jq
+# missing -- falls through to attempting the install:
 # skills install is itself idempotent, so a redundant install only costs
 # one network call, while a wrongful skip costs the whole feature,
-# silently.
+# silently. There is no plain-text fallback (claude-orca-qxc, superseding
+# the 4gx/01u/8v9/clw line): `skills installed` prose cannot tell home
+# from repo scope, and a scope-blind check is what let a --local install
+# read as installed while the panel said 'Not installed'.
 #
 # Non-fatal like every sibling step: a failed install (offline, npx
 # missing, registry down) is logged and this step exits non-zero so
@@ -93,61 +93,25 @@ fi
 # user-data dir points at, not the one this entrypoint started.
 export ORCA_USER_DATA_PATH="${ORCA_USER_DATA_DIR:-$AGENT_HOME/.config/orca}"
 
-# Exact-name idempotency check -- see the file header for why this can
-# never be a substring match. already_installed stays 1 (attempt the
-# install) unless one of the checks below confidently says yes.
-#
-# --json is AUTHORITATIVE: once it exits 0 AND its output actually parses
-# as JSON, that answer is final in BOTH directions and the plain fallback
-# below is never consulted, whether it found a match or not (claude-orca-
-# 01u, superseding claude-orca-4gx). A confident "not installed" from
-# --json must not be overruled by a fuzzy plain-text match, and a zero
-# exit carrying non-JSON garbage must not count as confident either --
-# hence the separate `jq -e .` parse check before ever asking the
-# .result.skills[] question.
+# Exact-name, exact-scope idempotency check -- see the file header for why
+# this can never be a substring match or a scope-blind match.
+# already_installed stays 1 (attempt the install) unless the --json answer
+# below confidently says yes. A zero exit from --json whose output does not
+# even parse is NOT a confident answer either way -- hence the separate
+# `jq -e .` parse check before the structured question.
 already_installed=1
 json_output="$("$cli" skills installed --json 2>/dev/null)"
 json_rc=$?
-json_authoritative=1
 if [ "$json_rc" -eq 0 ] && command -v jq >/dev/null 2>&1 \
-    && printf '%s' "$json_output" | jq -e . >/dev/null 2>&1
+    && printf '%s' "$json_output" | jq -e . >/dev/null 2>&1 \
+    && printf '%s' "$json_output" | jq -e '
+        .result.skills[]
+        | select(.name == "orchestration"
+            and .sourceKind == "home"
+            and any(.providers[]?; . == "claude"))
+    ' >/dev/null 2>&1
 then
-    json_authoritative=0
-    if printf '%s' "$json_output" \
-        | jq -e '.result.skills[] | select(.name == "orchestration")' >/dev/null 2>&1
-    then
-        already_installed=0
-    fi
-fi
-
-if [ "$json_authoritative" -ne 0 ]; then
-    # --json didn't give a confident answer (unsupported, non-zero exit,
-    # or a zero exit that didn't even parse) -- fall through to the
-    # plain-text fallback. A real selector line is a name (hash) pair at
-    # column 0 -- "orchestration (<hash>)" -- with its prose description
-    # indented beneath it; nothing else Orca prints is both flush-left AND
-    # followed immediately by an open paren. Requiring the paren, not just
-    # the start-of-line anchor, is what rejects "warning: orchestration
-    # index stale", a bare "orchestration" line, and unpunctuated prose
-    # like "pairs with the orchestration skill" or "requires the
-    # orchestration skill present" -- all of them either lack the name at
-    # column 0, or have it without the parenthesised hex id that only a
-    # real selector entry carries.
-    #
-    # The paren alone was not enough, and that cost a fourth pass: a
-    # flush-left "orchestration (see docs)" -- an Orca notice, a changelog
-    # line, a "(deprecated)" banner, a description whose first word is the
-    # skill name -- is parenthesised prose, not an entry. Real entries
-    # carry a hex id ("beads (4fd0b6c853425a56)"), so the id is what is
-    # matched (claude-orca-clw, superseding claude-orca-8v9). Any
-    # input this does not confidently recognise falls through to
-    # attempting the install rather than skipping it: a redundant install
-    # costs one idempotent network call, a wrongful skip costs the whole
-    # feature, silently, forever.
-    plain_output="$("$cli" skills installed 2>/dev/null)"
-    if printf '%s\n' "$plain_output" | grep -qE '^orchestration \([0-9a-f]{6,}\)$'; then
-        already_installed=0
-    fi
+    already_installed=0
 fi
 
 if [ "$already_installed" -eq 0 ]; then
@@ -155,8 +119,8 @@ if [ "$already_installed" -eq 0 ]; then
     exit 0
 fi
 
-echo "installing Orca's orchestration skill: $cli skills install --skill orchestration --local"
-if "$cli" skills install --skill orchestration --local; then
+echo "installing Orca's orchestration skill: $cli skills install --skill orchestration"
+if "$cli" skills install --skill orchestration; then
     echo "orchestration skill installed"
     exit 0
 fi
