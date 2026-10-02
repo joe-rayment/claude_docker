@@ -73,6 +73,13 @@ done
     printf 'OPENCODE_CONFIG=%s\n' "$OPENCODE_CONFIG"
     printf 'PWD=%s\n' "$PWD"
 } >>"$STUB_ENV"
+if [ -n "${STUB_ANSWER_WORD:-}" ]; then
+    # Answer with the question's last word, so two concurrent runs asking
+    # different questions can be told apart in their captured stdout.
+    last_arg=""
+    for a in "$@"; do last_arg="$a"; done
+    printf '%s\n' "{\"type\":\"text\",\"part\":{\"text\":\"ANSWER-${last_arg##* }\"}}"
+fi
 printf '%s\n' '{"type":"text","part":{"text":"- scripts/a.sh:12 does X"}}'
 printf '%s\n' '{"type":"step_finish","part":{"tokens":{"input":10,"output":20,"reasoning":5},"cost":0.001}}'
 printf '%s\n' '{"type":"text","part":{"text":"- nothing under src/ matches"}}'
@@ -198,4 +205,29 @@ JSON
     run --separate-stderr "$RECON" --timeout 1 "q"
     [ "$status" -eq 124 ]
     grep -q "timed out" <<<"$stderr"
+}
+
+# Guards: two recon runs launched in the same second (the normal
+# run_in_background fan-out) each get their own log under <run>/recon/ and
+# each print their own answer, not one clobbered by the other's.
+# Fails if: recon.sh's STEM has no per-process part, so same-second calls
+# on the same model share one log/receipt -- each truncates the shared log
+# and parses the other's events.
+# Run: bats tests/recon.bats -f 'same-second'
+@test "two same-second runs each get their own log and their own answer" {
+    export STUB_ANSWER_WORD=1
+    "$RECON" "which callers check tier-roles-first alpha" >"$T/out1" 2>"$T/err1" &
+    p1=$!
+    "$RECON" "which callers check tier-roles-first zebra" >"$T/out2" 2>"$T/err2" &
+    p2=$!
+    wait "$p1"; s1=$?
+    wait "$p2"; s2=$?
+    [ "$s1" -eq 0 ]
+    [ "$s2" -eq 0 ]
+    grep -q 'ANSWER-alpha' "$T/out1"
+    grep -q 'ANSWER-zebra' "$T/out2"
+    ! grep -q 'ANSWER-zebra' "$T/out1"
+    ! grep -q 'ANSWER-alpha' "$T/out2"
+    logs=("$RUN"/recon/*.log)
+    [ "${#logs[@]}" -eq 2 ]
 }
