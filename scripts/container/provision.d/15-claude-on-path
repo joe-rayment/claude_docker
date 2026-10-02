@@ -10,6 +10,9 @@
 # every rebuild; zsh had hashed the image's copy, so `cs` ran it even after
 # `claude update`; and a link at the image's binary is one `claude update`
 # refuses to move.
+# claude-orca-11c: the download temp file lives beside versions/, not inside
+# it -- versions/ is managed by Claude Code's own installer, which can clean
+# or truncate a file there mid-download, as on the 2026-10-01 Mac boot.
 
 set -uo pipefail
 . "$(dirname "$0")/../provision-lib.sh"
@@ -60,9 +63,10 @@ if [ -n "$home_v" ]; then
     fi
 fi
 
-# Install: download to a temp file, verify the checksum, and only then move
-# it into versions/ and move the link -- a half-written binary is never
-# linked.
+# Install: download to a UNIQUE temp file beside versions/, never inside it,
+# verify the checksum, and only then move it into versions/ and move the
+# link -- a half-written binary is never linked, and nothing in versions/ is
+# read or written before the binary is whole.
 case "$(uname -m)" in
     aarch64|arm64) platform="linux-arm64" ;;
     x86_64|amd64)  platform="linux-x64" ;;
@@ -82,15 +86,39 @@ mkdir -p "$VDIR" "$(dirname "$HOME_BIN")" || {
     echo "cannot create $VDIR or $(dirname "$HOME_BIN")" >&2
     exit 1
 }
-tmp="$VDIR/.$latest.claude-orca.tmp"
-if curl -fsSL --max-time 120 "$RELEASES/$latest/$platform/claude" -o "$tmp" \
-        && echo "$checksum  $tmp" | sha256sum -c - >/dev/null \
-        && chmod 755 "$tmp" \
-        && mv -f "$tmp" "$VDIR/$latest" \
-        && ln -sfn "$VDIR/$latest" "$HOME_BIN"; then
-    echo "claude: $HOME_BIN -> $VDIR/$latest (was ${home_v:-no native install})"
-else
-    rm -f "$tmp"
+DL_DIR="$(dirname "$VDIR")"
+if ! tmp="$(mktemp "$DL_DIR/.claude-orca-dl.XXXXXX")"; then
+    echo "claude: cannot create a download temp file in $DL_DIR" >&2
     echo "claude: installing $latest failed; $HOME_BIN is untouched" >&2
     exit 1
 fi
+rc=0
+# ~243 MB; 600 s covers the ~2.5 MB/s a Mac measured (CLAUDE.md).
+curl -fsSL --max-time 600 "$RELEASES/$latest/$platform/claude" -o "$tmp" || rc=$?
+if [ "$rc" -ne 0 ]; then
+    rm -f "$tmp"
+    echo "claude: download of $latest failed (curl exit $rc)" >&2
+    echo "claude: installing $latest failed; $HOME_BIN is untouched" >&2
+    exit 1
+fi
+if [ ! -s "$tmp" ]; then
+    rm -f "$tmp"
+    echo "claude: download of $latest came back empty" >&2
+    echo "claude: installing $latest failed; $HOME_BIN is untouched" >&2
+    exit 1
+fi
+got="$(sha256sum "$tmp" | awk '{print $1}')"
+if [ "$got" != "$checksum" ]; then
+    rm -f "$tmp"
+    echo "claude: $latest failed its sha256 check (want $checksum, got $got)" >&2
+    echo "claude: installing $latest failed; $HOME_BIN is untouched" >&2
+    exit 1
+fi
+chmod 755 "$tmp" \
+    && mv -f "$tmp" "$VDIR/$latest" \
+    && ln -sfn "$VDIR/$latest" "$HOME_BIN" || {
+    rm -f "$tmp"
+    echo "claude: installing $latest failed; $HOME_BIN is untouched" >&2
+    exit 1
+}
+echo "claude: $HOME_BIN -> $VDIR/$latest (was ${home_v:-no native install})"
