@@ -67,6 +67,13 @@ no_tmp_left() {
     return 0
 }
 
+no_dl_strays() {  # no file of either temp-file name anywhere under .local/share/claude
+    local strays
+    strays="$(find "$H/.local/share/claude" \
+        \( -name '.claude-orca-dl.*' -o -name '.*claude-orca.tmp' \) -print)"
+    [ -z "$strays" ]
+}
+
 @test "1: no home install -> the latest release is downloaded and linked" {
     release 2.1.280
     latest 2.1.280
@@ -186,4 +193,75 @@ no_tmp_left() {
     run claude_step
     [ "$status" -eq 0 ]
     [ "$(stat -c %Y "$V/2.1.280")" = "$(date -d '2020-01-01' +%s)" ]
+}
+
+@test "13: after a successful install nothing temp-like is left under .local/share/claude" {
+    # Guards: the download lands in a unique temp file BESIDE versions/, is
+    #   moved into place on success, and no temp file of either name
+    #   survives anywhere under .local/share/claude (claude-orca-11c).
+    # Fails if: a .claude-orca-dl.* or .*claude-orca.tmp file is left
+    #   behind, or versions/ holds anything but the installed version.
+    # Run: bats tests/provision-claude-on-path.bats
+    release 2.1.280
+    latest 2.1.280
+    run claude_step
+    [ "$status" -eq 0 ]
+    [ "$(link_target)" = "$V/2.1.280" ]
+    [ "$(find "$V" -mindepth 1 | wc -l)" = "1" ]
+    no_dl_strays
+}
+
+@test "14: an empty download is refused as 'came back empty', link untouched" {
+    # Guards: a zero-byte body never reaches the checksum or the link --
+    #   the step names emptiness on its own stderr line (claude-orca-11c).
+    # Fails if: an empty body is reported as a curl failure or a checksum
+    #   mismatch, or the home link is moved anyway.
+    # Run: bats tests/provision-claude-on-path.bats
+    release 2.1.280
+    latest 2.1.280
+    : > "$R/2.1.280/linux-$ARCH/claude"
+    home_claude 2.1.99
+    run claude_step
+    [ "$status" -eq 1 ]
+    echo "$output" | grep -q 'came back empty'
+    [ "$(link_target)" = "$V/2.1.99" ]
+    no_dl_strays
+}
+
+@test "15: a checksum mismatch names the sha256 check with want and got" {
+    # Guards: a bad checksum reports its own reason -- 'failed its sha256
+    #   check (want <want>, got <got>)' -- not a bare failure line
+    #   (claude-orca-11c).
+    # Fails if: the mismatch is reported as a curl failure, the message
+    #   lacks either checksum, or the home link is moved anyway.
+    # Run: bats tests/provision-claude-on-path.bats
+    release 2.1.280
+    latest 2.1.280
+    want="$(printf 'not claude\n' | sha256sum | cut -d' ' -f1)"
+    printf '{"platforms":{"linux-%s":{"checksum":"%s"}}}\n' "$ARCH" "$want" \
+        > "$R/2.1.280/manifest.json"
+    home_claude 2.1.99
+    run claude_step
+    [ "$status" -eq 1 ]
+    echo "$output" | grep -q "failed its sha256 check (want $want, got"
+    [ "$(link_target)" = "$V/2.1.99" ]
+    no_dl_strays
+}
+
+@test "16: a stale .<v>.claude-orca.tmp in versions/ is never read or written" {
+    # Guards: the step no longer downloads to the old fixed temp name inside
+    #   versions/; a file left there by an interrupted old run (or Claude
+    #   Code's own installer) is neither required nor clobbered
+    #   (claude-orca-11c).
+    # Fails if: the step downloads to versions/.<v>.claude-orca.tmp, so the
+    #   stale file is overwritten or moved away by the install.
+    # Run: bats tests/provision-claude-on-path.bats
+    release 2.1.280
+    latest 2.1.280
+    printf 'stale temp from an interrupted old run\n' > "$V/.2.1.280.claude-orca.tmp"
+    run claude_step
+    [ "$status" -eq 0 ]
+    [ "$(link_target)" = "$V/2.1.280" ]
+    cmp -s "$V/2.1.280" "$R/2.1.280/linux-$ARCH/claude"
+    [ "$(cat "$V/.2.1.280.claude-orca.tmp")" = "stale temp from an interrupted old run" ]
 }
