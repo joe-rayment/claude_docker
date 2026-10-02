@@ -2,6 +2,7 @@
   "model": "opus",
   "respondToBashCommands": false,
   "skipDangerousModePermissionPrompt": true,
+  "promptSuggestionEnabled": false,
   "env": {
     "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1",
     "CLAUDE_CODE_SILENT_TURN_REMINDER": "false",
