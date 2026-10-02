@@ -64,7 +64,7 @@ rather than treated as an extra provider. Shipped routes:
 
 | Route | Model | Grade |
 |---|---|---|
-| `glm` | `openrouter/~z-ai/glm-latest` (provider-pinned: deepinfra, parasail, no fallbacks) | executor |
+| `glm` | `openrouter/~z-ai/glm-latest` (no pin: the guard's policy order picks the host) | executor |
 | `glm-flash` | `openrouter/~z-ai/glm-flash-latest` | scout |
 | `luna` / `luna-high` | `openrouter/~openai/gpt-luna-latest` (`luna-high` adds the `high` effort) | executor |
 | `deepseek` | `openrouter/~deepseek/deepseek-pro-latest` | executor |

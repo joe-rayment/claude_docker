@@ -3,7 +3,6 @@
     "glm": {
       "runner": "opencode",
       "model": "openrouter/~z-ai/glm-latest",
-      "pin": { "order": ["deepinfra", "parasail"], "allow_fallbacks": false },
       "grade": "executor"
     },
     "glm-flash": {

@@ -752,7 +752,10 @@ STUB
     [ "$(jq -r '.routes | keys | join(",")' "$SHIPPED_ROUTES")" = "codex,deepseek,deepseek-flash,gemini,glm,glm-flash,local,luna,luna-high,qwen-coder" ]
     [ "$(jq -r '.routes.glm.runner' "$SHIPPED_ROUTES")" = "opencode" ]
     [ "$(jq -r '.routes.glm.model' "$SHIPPED_ROUTES")" = "openrouter/~z-ai/glm-latest" ]
-    [ "$(jq -r '.routes.glm.pin.order | join(",")' "$SHIPPED_ROUTES")" = "deepinfra,parasail" ]
+    # claude-orca-k8t: the glm route carries no provider pin -- the in-VM
+    # guard's policy order picks the host, so the route follows whatever
+    # GLM the ~z-ai/glm-latest alias currently points at.
+    [ "$(jq -r '.routes.glm | has("pin") | not' "$SHIPPED_ROUTES")" = "true" ]
     # claude-orca-qa2.20: every pinned provider is on the shipped allowlist,
     # so the shipped routes cannot ask for a host the guard would strip.
     for slug in $(jq -r '.routes[].pin.order // [] | .[]' "$SHIPPED_ROUTES"); do
@@ -760,7 +763,6 @@ STUB
             "$REPO_ROOT/config/provider-policy.json"
         [ "$status" -eq 0 ]
     done
-    [ "$(jq -r '.routes.glm.pin.allow_fallbacks' "$SHIPPED_ROUTES")" = "false" ]
     [ "$(jq -r '.routes.glm.grade' "$SHIPPED_ROUTES")" = "executor" ]
     [ "$(jq -r '.routes.local.runner' "$SHIPPED_ROUTES")" = "opencode" ]
     [ "$(jq -r '.routes.local.grade' "$SHIPPED_ROUTES")" = "scout" ]
