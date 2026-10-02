@@ -82,6 +82,15 @@ current `alias_target`): OpenRouter resolves it per request, so a route or a
 `/tier` binding written that way picks up a new release with no edit and no
 re-bind — the OpenRouter twin of Claude Code's `fable`/`opus`/`sonnet`.
 
+The OpenAI (ChatGPT) subscription is deliberately **not** a delegate route:
+the shipped routes stay OpenRouter/ollama/codex/gemini, and the subscription
+is reached through `/tier` instead — an `openai:…` worker binding rides
+`orca-dispatch`, and a recon question runs through `recon "<question>"` —
+because `delegate.sh` runs each job under its own scrubbed `HOME`, which has
+no opencode sign-in in it (the ChatGPT credential lives in opencode's auth
+store under the session's own home). See
+[TIERED_ORCHESTRATION.md](TIERED_ORCHESTRATION.md) for the OpenAI grammar.
+
 ### Where the key goes
 
 `./claude-dev key openrouter` on the Mac reads the key without echoing it

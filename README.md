@@ -387,6 +387,15 @@ gitignored), and every container from then on gets it as
 `OPENROUTER_API_KEY not set` until it is there, and no key means no
 OpenRouter surface at all.
 
+**Your OpenAI (ChatGPT) subscription** works the same way without a key:
+`/tier auth openai` opens a sign-in tab (opencode's headless device login —
+you enter the code it shows in a browser), then
+`/tier opus openai:terra openai:luna@high` binds the worker and recon seats
+to the subscription's newest GPT Terra and GPT Luna. No key file and no
+guard — opencode signs in itself and talks to OpenAI directly.
+[TIERED_ORCHESTRATION.md](knowledge-base/TIERED_ORCHESTRATION.md) has the
+full grammar and what the subscription serves.
+
 ## Knowledge base
 
 Deeper documentation lives in [knowledge-base/](knowledge-base/README.md).

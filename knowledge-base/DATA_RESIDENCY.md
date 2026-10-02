@@ -77,6 +77,20 @@ explicit 2- or 3-argument pins are explicit requests for a Claude model and
 are never overridden by the key. `/tier` (tier-prime) shows the bound
 worker as `orca:opencode:openrouter/~z-ai/glm-latest`.
 
+## The OpenAI subscription path (2026-10-02)
+
+opencode's ChatGPT sign-in adds a second provider, and this one needs no
+policing: an `openai/…` model's traffic goes from opencode straight to
+OpenAI — `chatgpt.com`'s codex endpoint for the model calls,
+`auth.openai.com` for the OAuth token dance — and OpenAI itself serves
+every request, in the US, which is inside `allowed_countries`. There is no
+provider choice to pin, so there is no guard on this path and no entry in
+`config/provider-policy.json`: that file governs OpenRouter only and is
+unchanged. The credential never passes through the guard either — it lives
+in opencode's own auth store
+(`~/.local/share/opencode/auth.json`), read and refreshed by opencode
+itself.
+
 ## Allowlist (verified 2026-09-06, re-read 2026-09-20)
 
 Slugs are the `tag` prefix in `GET /api/v1/models/<model>/endpoints`,
