@@ -145,6 +145,29 @@ receipt() { printf '%s\n' "$1" | tail -1; }
     [ "$status" -eq 0 ]
 }
 
+@test "headless command carries the GIT_CONFIG core.hooksPath env prefix naming the worktree's private hooks dir" {
+    # Guards: the frozen hook lives in a per-worktree private dir switched
+    #   on only through git's env config (claude-orca-cdu) -- a headless
+    #   opencode worker must be started with those assignments or every
+    #   commit it makes bypasses the frozen check entirely.
+    # Fails if: the composed command no longer begins with the three
+    #   GIT_CONFIG_* assignments pointing at the worktree's own
+    #   .git/claude-orca-hooks.
+    # Run: bats tests/orca-dispatch-headless.bats -f 'GIT_CONFIG core.hooksPath'
+    git init -q "$CLAUDE_ORCA_ROOT"
+    git -C "$CLAUDE_ORCA_ROOT" config user.email orca@test
+    git -C "$CLAUDE_ORCA_ROOT" config user.name orca
+    run --separate-stderr "$DISPATCH" b1 --agent opencode --model "$MODEL" \
+        --worktree "path:$CLAUDE_ORCA_ROOT"
+    [ "$status" -eq 0 ]
+
+    local create
+    create="$(orca_stub_calls 'terminal create')"
+    printf '%s\n' "$create" | grep -q -F \
+        -e "env GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=$CLAUDE_ORCA_ROOT/.git/claude-orca-hooks"
+    printf '%s\n' "$create" | grep -q -F -e "$REPO_ROOT/bin/orca-worker-run"
+}
+
 @test "the spec file exists, is mode 600 and contains the bead title" {
     run "$DISPATCH" b1 --agent opencode --model "$MODEL" \
         --worktree "path:$CLAUDE_ORCA_ROOT"

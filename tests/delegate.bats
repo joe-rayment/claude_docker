@@ -504,6 +504,32 @@ ROUTES_EOF
 
 # ── run: receipt, redaction, bead stamping ───────────────────────────────
 
+@test "run --route glm --bead: the job env record carries the frozen hook's GIT_CONFIG assignments" {
+    # Guards: a delegated --bead job must run git with the job worktree's
+    #   private frozen hooks dir (claude-orca-cdu), or every commit the
+    #   runner makes bypasses the frozen check entirely.
+    # Fails if: the job's env record no longer lists GIT_CONFIG_COUNT=1,
+    #   GIT_CONFIG_KEY_0=core.hooksPath and a GIT_CONFIG_VALUE_0 naming an
+    #   existing claude-orca-hooks dir holding this job's bead id.
+    # Run: bats tests/delegate.bats -f 'GIT_CONFIG'
+    repo="$BATS_TEST_TMPDIR/repo"
+    make_repo "$repo" openrouter.ai
+    bead="$(make_bead "$repo" "delegated slice")"
+
+    run env DELEGATE_REPO="$repo" OPENROUTER_API_KEY=sk-test \
+        bash "$SCRIPT" run --route glm --bead "$bead"
+    [ "$status" -eq 0 ]
+
+    job_env="$(job_dirs "$repo")/env"
+    grep -qx 'GIT_CONFIG_COUNT=1' "$job_env"
+    grep -qx 'GIT_CONFIG_KEY_0=core.hooksPath' "$job_env"
+    hooks_dir="$(sed -n 's/^GIT_CONFIG_VALUE_0=//p' "$job_env")"
+    [ -n "$hooks_dir" ]
+    case "$hooks_dir" in *claude-orca-hooks) ;; *) return 1 ;; esac
+    [ -d "$hooks_dir" ]
+    [ "$(cat "$hooks_dir/claude-orca-bead")" = "$bead" ]
+}
+
 @test "run --route glm --bead: writes a receipt with the full schema and correct values" {
     repo="$BATS_TEST_TMPDIR/repo"
     make_repo "$repo" openrouter.ai
