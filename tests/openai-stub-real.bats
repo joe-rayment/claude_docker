@@ -15,8 +15,6 @@
 # the first certificate"}}} (opencode 1.18.25, 2026-10-01), and adding
 # NODE_EXTRA_CA_CERTS=<dir>/ca.pem makes the same run succeed. So opencode
 # honours NODE_EXTRA_CA_CERTS; NODE_TLS_REJECT_UNAUTHORIZED=0 is not needed.
-#
-# FROZEN from RED-AT onward.
 
 bats_require_minimum_version 1.5.0
 
@@ -64,7 +62,10 @@ oc() {
     run oc run -m openai/gpt-5.6-luna --format json "say hi"
     [ "$status" -eq 0 ]
     grep -q "STUB-OK" <<<"$output"
-    jq -e --arg tok "$ACCESS" '
+    # requests.jsonl is JSONL (one object per line); jq -s slurps it into
+    # one array so map() runs over the request objects, not a single
+    # object's string values.
+    jq -s -e --arg tok "$ACCESS" '
         map(select(.host == "chatgpt.com" and .method == "POST"
                    and .path == "/backend-api/codex/responses"))
         | map(select(.headers.authorization == "Bearer " + $tok
@@ -85,7 +86,7 @@ oc() {
     run oc run -m openai/gpt-5.6-luna --format json "say hi"
     [ "$status" -eq 0 ]
     grep -q "STUB-OK" <<<"$output"
-    jq -e '
+    jq -s -e '
         map(select(.host == "auth.openai.com" and .method == "POST"
                    and .path == "/oauth/token"
                    and .body.grant_type == "refresh_token"
@@ -101,10 +102,11 @@ oc() {
     # Fails if: opencode drops the variant (all codex requests show effort
     # "none" or another level) or errors out on the flag.
     # Run: bats tests/openai-stub-real.bats
+    openai_stub_login "$T/data"
     run oc run -m openai/gpt-5.6-luna --variant high --format json "say hi"
     [ "$status" -eq 0 ]
     grep -q "STUB-OK" <<<"$output"
-    jq -e '
+    jq -s -e '
         map(select(.host == "chatgpt.com" and .method == "POST"
                    and .path == "/backend-api/codex/responses"
                    and .body.reasoning.effort == "high"))
