@@ -135,16 +135,21 @@ fi
 # Frozen contract (claude-orca-ljl): install the frozen-hook pre-commit
 # hook into the worktree the worker will commit in, before it starts, so an
 # agent with no Claude-side hooks still cannot edit a frozen test after its
-# RED commit. Only possible when the directory is known now; a new-child
-# worktree gets the hook after worker-start reports its path. Failure to
-# install is noted, never fatal -- protection, not a gate on dispatching.
-FROZEN_WT=""
+# RED commit. The hook lives in a private hooks dir per worktree and is
+# switched on for the worker's processes only through git's env config
+# (frozen_hook_env; claude-orca-cdu) -- so the workers whose COMMAND we
+# compose here carry the assignments themselves, and nothing in the repo's
+# own config or tracked tree is touched. Only possible when the directory
+# is known now; a new-child worktree gets the hook after worker-start
+# reports its path. Failure to install is noted, never fatal -- protection,
+# not a gate on dispatching.
+FROZEN_WT=""; FROZEN_HOOK_DIR=""
 case "$WORKTREE" in
     path:*) FROZEN_WT="${WORKTREE#path:}" ;;
     current) FROZEN_WT="$PWD" ;;
 esac
 if [ -n "$FROZEN_WT" ]; then
-    install_frozen_hook "$FROZEN_WT" "$BEAD" ||
+    FROZEN_HOOK_DIR="$(install_frozen_hook "$FROZEN_WT" "$BEAD")" ||
         note "frozen-hook: could not install pre-commit hook into $FROZEN_WT"
 fi
 
@@ -330,9 +335,18 @@ case "$AGENT" in
             # the headless run too. The composed command names the env
             # file explicitly.
             orca_opencode_command "$MODEL" "$OP_RUN_DIR" "$VARIANT" >/dev/null
-            COMMAND="$(printf '%s/bin/orca-worker-run --task %s --spec %s --model %s --dir %s --run-dir %s --env %s/openrouter-guard.env --bead %s' \
+            WORKER_CMD="$(printf '%s/bin/orca-worker-run --task %s --spec %s --model %s --dir %s --run-dir %s --env %s/openrouter-guard.env --bead %s' \
                 "$(template_dir)" "$TASK_ID" "$SPEC_FILE" "$MODEL" \
                 "$WORKTREE_PATH" "$OP_RUN_DIR" "$OP_RUN_DIR" "$BEAD")"
+            # The worker's git processes must see the worktree's private
+            # frozen hooks dir (claude-orca-cdu): the env config rides in
+            # front of the composed command.
+            if [ -n "$FROZEN_HOOK_DIR" ]; then
+                COMMAND="$(printf 'env GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=%s %s' \
+                    "$FROZEN_HOOK_DIR" "$WORKER_CMD")"
+            else
+                COMMAND="$WORKER_CMD"
+            fi
             new_terminal "$COMMAND" "$BEAD worker"
             out="$(orca_call orchestration dispatch --task "$TASK_ID" \
                 --to "$TERMINAL" --run "$RUN_ID" \
@@ -342,6 +356,11 @@ case "$AGENT" in
             STATE="$(orca_field "$out" '.result.dispatch.status')"
         else
             COMMAND="$(orca_opencode_command "$MODEL" "$ROOT/.claude-dev/run" "$VARIANT")"
+            # TUI workers get the private hooks dir through the shell too
+            # (claude-orca-cdu): the export runs before the agent starts.
+            if [ -n "$FROZEN_HOOK_DIR" ]; then
+                COMMAND="export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=$FROZEN_HOOK_DIR; $COMMAND"
+            fi
             new_terminal "$COMMAND" "$BEAD $MODEL"
             orca_call terminal wait --terminal "$TERMINAL" --for tui-idle \
                 --timeout-ms 30000 --json >/dev/null 2>&1 ||
@@ -401,6 +420,10 @@ fi
 if [ -n "$WORKTREE_PATH" ] && [ "$WORKTREE_PATH" != "$FROZEN_WT" ]; then
     install_frozen_hook "$WORKTREE_PATH" "$BEAD" ||
         note "frozen-hook: could not install pre-commit hook into $WORKTREE_PATH"
+    # The hook is switched on per process through git's env config, which
+    # only commands WE compose carry (claude-orca-cdu) -- a worker the
+    # runtime launched itself, a new child among them, runs without it.
+    note "frozen-hook: hook installed in $WORKTREE_PATH, but it only reaches processes started with the frozen_hook_env assignments, so this worker's own commits are unprotected"
 fi
 STARTED_AT="$(date +%s)"
 
