@@ -202,14 +202,24 @@ says() {  # says <needle>: the last run's output contains it
 }
 
 @test "a .git that git cannot read is reported in git's own words and never re-initialised" {
-    local d
-    d="$(unborn_repo dubious main)"
-    run git_init_step "$d" "" GIT_TEST_ASSUME_DIFFERENT_OWNER=1
+    # Amended for claude-orca-1te (orchestrator OK 2026-10-02): dubious
+    # ownership is no longer an unreadable-repository case -- the step now
+    # cures it by marking the project a safe.directory (the cases below).
+    # This case keeps the intent for a .git that stays unreadable: a .git
+    # FILE whose gitdir: points nowhere. (A plain `git init`ed repo under
+    # GIT_TEST_ASSUME_DIFFERENT_OWNER=1 used to stand in; that folder is
+    # exactly what the remedy makes readable now.)
+    local d why
+    d="$BATS_TEST_TMPDIR/unreadable"
+    mkdir -p "$d"
+    why="$(mktemp -d "$BATS_TEST_TMPDIR"/nowhere.XXXX)/nonexistent"
+    printf 'gitdir: %s\n' "$why" > "$d/.git"
+    run git_init_step "$d"
     [ "$status" -eq 1 ]
-    says "dubious ownership"
     says "cannot read the repository"
+    says "$why"
     [ "$(commit_count "$d")" = "0" ]
-    [ -d "$d/.git" ]
+    [ "$(cat "$d/.git")" = "gitdir: $why" ]
 }
 
 @test "the step is executable and runs after 50-seed-project, before 60-orca-repo-add" {
@@ -239,4 +249,76 @@ says() {  # says <needle>: the last run's output contains it
     [ "$(tracked "$d")" = ".beads/.gitignore .beads/config.yaml .beads/issues.jsonl .gitignore" ]
     run git -C "$d" status --porcelain
     [ "$output" = "?? data.csv" ]
+}
+
+# --- claude-orca-1te: the safe.directory remedy -----------------------------
+#
+# The mounted project root can read as owned by root (uid 0) even though the
+# agent owns everything under it; git then refuses the folder ("detected
+# dubious ownership") and every git call in it dies. GIT_TEST_ASSUME_DIFFERENT_OWNER=1
+# stands in for that: git 2.43 treats every repository as owned by someone
+# else. Each case runs the step with HOME at a scratch dir and the variable
+# set, passing PROJECT_DIR explicitly, so the only escape is the step's own
+# remedy -- PROJECT_DIR in the global git config's safe.directory before its
+# first git call.
+
+@test "under simulated dubious ownership a fresh folder still becomes a repository with a commit on main" {
+    # Guards: claude-orca-1te -- the step must mark PROJECT_DIR a
+    #   safe.directory in the global git config before its first git call,
+    #   so a folder whose mount reads as uid 0 still gets its seed commit.
+    # Fails if: the step runs git before adding safe.directory -- init
+    #   succeeds but the seed commit dies with "detected dubious ownership"
+    #   and the step exits 1.
+    # Run: bats tests/provision-git-init.bats -f "simulated dubious ownership a fresh"
+    local d h
+    d="$(plain_folder dubious-fresh)"
+    h="$BATS_TEST_TMPDIR/dubious-fresh-home"
+    run git_init_step "$d" "$h" GIT_TEST_ASSUME_DIFFERENT_OWNER=1
+    [ "$status" -eq 0 ]
+    [ -d "$d/.git" ]
+    [ "$(head_branch "$d")" = "main" ]
+    [ "$(commit_count "$d")" = "1" ]
+}
+
+@test "under simulated dubious ownership an existing repository with commits is nothing to do" {
+    # Guards: claude-orca-1te -- a folder that is already a repository must
+    #   be recognised once PROJECT_DIR is marked safe, never reported as a
+    #   repository git cannot read.
+    # Fails if: the step's first git call still runs before safe.directory
+    #   -- rev-parse dies with "dubious ownership", the step takes the
+    #   "git cannot read the repository" exit and fails.
+    # Run: bats tests/provision-git-init.bats -f "simulated dubious ownership an existing"
+    local d h before
+    d="$(plain_folder dubious-existing)"
+    git -C "$d" init -q -b main >/dev/null 2>&1
+    git -C "$d" add -- data.csv
+    git -C "$d" -c user.name=test -c user.email=test@example.com \
+        commit -q -m "the user's own history" >/dev/null 2>&1
+    before="$(git -C "$d" rev-parse HEAD)"
+    h="$BATS_TEST_TMPDIR/dubious-existing-home"
+    run git_init_step "$d" "$h" GIT_TEST_ASSUME_DIFFERENT_OWNER=1
+    [ "$status" -eq 0 ]
+    says "nothing to do"
+    [ "$(git -C "$d" rev-parse HEAD)" = "$before" ]
+}
+
+@test "under simulated dubious ownership running it twice leaves exactly one safe.directory line for the project" {
+    # Guards: claude-orca-1te -- the remedy is idempotent: a second run of
+    #   the step adds no second safe.directory entry to the global git
+    #   config.
+    # Fails if: the step adds safe.directory unconditionally -- the second
+    #   run leaves two identical lines in $HOME/.gitconfig.
+    # Run: bats tests/provision-git-init.bats -f "exactly one safe.directory"
+    local d h
+    d="$(plain_folder dubious-twice)"
+    h="$BATS_TEST_TMPDIR/dubious-twice-home"
+    run git_init_step "$d" "$h" GIT_TEST_ASSUME_DIFFERENT_OWNER=1
+    [ "$status" -eq 0 ]
+    run git_init_step "$d" "$h" GIT_TEST_ASSUME_DIFFERENT_OWNER=1
+    [ "$status" -eq 0 ]
+    # Read the value back the way git itself would (amended per the
+    # orchestrator, 2026-10-02: the raw file stores the entry as a
+    # tab-indented `directory = <path>` line, so a whole-line match against
+    # $d has to go through the config, not the file).
+    [ "$(GIT_CONFIG_GLOBAL="$h/.gitconfig" git config --global --get-all safe.directory | grep -cxF "$d")" = "1" ]
 }

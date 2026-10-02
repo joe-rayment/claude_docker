@@ -33,6 +33,21 @@ if ! command -v git >/dev/null 2>&1; then
     exit 1
 fi
 
+# claude-orca-1te: the mounted project root can read as owned by root (uid
+# 0) even though the agent owns everything under it, and git then refuses
+# the folder with "detected dubious ownership" -- every git call in the
+# folder dies, including this step's own and every later commit, sweep and
+# Orca worktree. The documented remedy, applied before this step's first
+# git call: mark the folder safe in the agent's global git config.
+# Idempotent: a line exactly equal to $PROJECT_DIR is only ever added once.
+if ! git config --global --get-all safe.directory 2>/dev/null | grep -qxF -- "$PROJECT_DIR"; then
+    if ! git config --global --add safe.directory "$PROJECT_DIR"; then
+        echo "could not mark $PROJECT_DIR as a safe.directory in the global git config; git may refuse this folder with 'detected dubious ownership'" >&2
+    else
+        echo "marked $PROJECT_DIR as a safe.directory in the global git config (its mount can read as owned by root)"
+    fi
+fi
+
 # --- what is here already ---------------------------------------------------
 
 # stdout alone: a warning on stderr must not turn "true" into "unreadable".
