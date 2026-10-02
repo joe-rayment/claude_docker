@@ -441,9 +441,13 @@ cmd_run() {
 
     # Frozen contract (claude-orca-ljl): a --bead job's FROZEN files are
     # guarded in git, not by spec text -- the runner may have no Claude-side
-    # hooks. Prompt-only jobs have no bead to read the contract from.
+    # hooks. The hook lives in a private hooks dir under the job worktree's
+    # git dir and is switched on for the runner's git processes through
+    # git's env config below (claude-orca-cdu). Prompt-only jobs have no
+    # bead to read the contract from.
+    FROZEN_HOOK_DIR=""
     if [ "$have_bead" -eq 1 ]; then
-        install_frozen_hook "$job_dir/worktree" "$bead" ||
+        FROZEN_HOOK_DIR="$(install_frozen_hook "$job_dir/worktree" "$bead")" ||
             err "frozen-hook: could not install pre-commit hook into $job_dir/worktree"
     fi
 
@@ -477,6 +481,13 @@ cmd_run() {
     # OPENAI_BASE_URL from its environment.
     if [ "$provider" = "openrouter" ]; then
         env_args+=("OPENROUTER_BASE_URL=$OPENROUTER_BASE_URL" "OPENAI_BASE_URL=$OPENROUTER_BASE_URL")
+    fi
+    # The frozen hook is private to this job's worktree and reached only
+    # through git's env config (claude-orca-cdu); a path, never a secret.
+    if [ -n "$FROZEN_HOOK_DIR" ]; then
+        while IFS= read -r frozen_env_entry; do
+            env_args+=("$frozen_env_entry")
+        done < <(frozen_hook_env "$FROZEN_HOOK_DIR")
     fi
     local entry name
     : > "$job_dir/env"

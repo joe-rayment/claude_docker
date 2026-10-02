@@ -6,13 +6,30 @@
 # frozen test file could be edited after its RED commit. A pre-commit hook
 # reaches all of them, because they all commit through git.
 #
-#   install_frozen_hook <worktree-dir> <bead-id>
+#   install_frozen_hook <worktree-dir> <bead-id>     -> prints the hooks dir
+#   frozen_hook_env <hooks-dir>                      -> the git env config
 #
-# Installs <git-path>/hooks/pre-commit (shared hooks dir for a linked
-# worktree resolves through `git rev-parse --git-path hooks`). An existing
-# non-ours hook is chained: renamed to pre-commit.orig and run first, its
-# failure still aborting the commit. Idempotent: a second call replaces the
-# generated hook in place and rewrites the bead id file.
+# The hook lives in a PRIVATE hooks dir per worktree,
+# <abs-git-dir>/claude-orca-hooks — for a linked worktree that is its own
+# .git/worktrees/<name>/, for the main tree the .git/ beside it — and it is
+# switched on for the worker's processes only through git's env config
+# (git >= 2.31: GIT_CONFIG_COUNT / GIT_CONFIG_KEY_<n> / GIT_CONFIG_VALUE_<n>
+# beat repo config). No repo config is changed and no tracked file is
+# touched. The shared hooks dir the first design wrote into was wrong twice
+# over: it is shared by every worktree, so one claude-orca-bead file would
+# be overwritten by parallel dispatches, and in this repo .beads/hooks is
+# TRACKED, so writing into it would rewrite tracked files in the main tree
+# — and this repo's own core.hooksPath is a stale absolute path from an
+# older mount (/workspace/.beads/hooks), which is what the "mkdir:
+# Permission denied" on dispatch was (claude-orca-cdu).
+#
+# Before anything is written, the repo's OWN hooks dir — what
+# `git rev-parse --git-path hooks` answers, made absolute — is recorded in
+# <dir>/claude-orca-chain. The generated pre-commit chains to that dir's
+# pre-commit first when it exists, is executable and is not this same file;
+# its failure still aborts the commit. Nothing in the repo's own hooks dir
+# is renamed or removed. Idempotent: a second install replaces the
+# generated hook and the bead id file in place.
 #
 # The hook itself is fail-open everywhere: no bd on PATH, no bead id, a bd
 # failure, no RED-AT sha, or a sha not in this repo's history all mean exit
@@ -30,15 +47,22 @@ _FROZEN_HOOK_MARKER="claude-orca frozen-hook"
 frozen_hook_body() {
     cat <<'BODY'
 #!/bin/sh
-# claude-orca frozen-hook v1 (generated; edits are overwritten by the installer)
-gp="$(git rev-parse --git-path hooks 2>/dev/null)" || exit 0
-orig="$gp/pre-commit.orig"
-if [ -f "$orig" ]; then
-    "$orig" "$@" || exit $?
+# claude-orca frozen-hook v2 (generated; edits are overwritten by the installer)
+self_dir="$(cd "$(dirname "$0")" && pwd)"
+chain="$self_dir/claude-orca-chain"
+if [ -f "$chain" ]; then
+    own_dir="$(cat "$chain" 2>/dev/null)"
+    if [ -n "$own_dir" ] && [ -x "$own_dir/pre-commit" ]; then
+        own_real="$(cd "$own_dir" && pwd)/pre-commit"
+        self_real="$self_dir/pre-commit"
+        if [ "$own_real" != "$self_real" ]; then
+            "$own_real" "$@" || exit $?
+        fi
+    fi
 fi
 bead="${CLAUDE_ORCA_BEAD:-}"
-if [ -z "$bead" ] && [ -f "$gp/claude-orca-bead" ]; then
-    bead="$(cat "$gp/claude-orca-bead" 2>/dev/null)"
+if [ -z "$bead" ] && [ -f "$self_dir/claude-orca-bead" ]; then
+    bead="$(cat "$self_dir/claude-orca-bead" 2>/dev/null)"
 fi
 [ -n "$bead" ] || exit 0
 command -v bd >/dev/null 2>&1 || exit 0
@@ -83,38 +107,50 @@ exit 0
 BODY
 }
 
+# frozen_hook_env <hooks-dir> — print the three git env-config assignments
+# that make the prefixed processes use <hooks-dir> as their hooks dir, one
+# per line (GIT_CONFIG_* beats a repo's core.hooksPath; git >= 2.31).
+frozen_hook_env() {
+    [ "$#" -eq 1 ] || return 1
+    [ -n "$1" ] || return 1
+    printf 'GIT_CONFIG_COUNT=1\n'
+    printf 'GIT_CONFIG_KEY_0=core.hooksPath\n'
+    printf 'GIT_CONFIG_VALUE_0=%s\n' "$1"
+}
+
 # install_frozen_hook <worktree-dir> <bead-id> — write the pre-commit hook
-# into the worktree's hooks dir and record the bead id for the hook to read.
-# Returns non-zero only when the worktree is not a git repository; the
-# callers in orca-dispatch/delegate treat that as "nothing to protect".
+# into a PRIVATE hooks dir under the worktree's absolute git dir and record
+# the bead id for the hook to read. The repo's own hooks dir is recorded in
+# claude-orca-chain for the generated hook to chain to. Prints the hooks
+# dir on stdout. Returns non-zero only when the worktree is not a git work
+# tree or the dir cannot be written; the callers in orca-dispatch/delegate
+# treat that as "nothing to protect".
 install_frozen_hook() {
     [ "$#" -eq 2 ] || return 1
     wt="$1"; bead="$2"
     [ -n "$wt" ] && [ -n "$bead" ] || return 1
-    # Everything runs from inside the worktree: `git rev-parse --git-path
-    # hooks` answers worktree-relative, and in a linked worktree the
-    # caller's cwd may not even contain a `.git` (it is a file there).
+    # Everything runs from inside the worktree: `git rev-parse
+    # --absolute-git-dir` answers the worktree's own git dir (for a linked
+    # worktree, .git/worktrees/<name> in the main tree; never a path the
+    # caller's cwd could not contain), and `--git-path hooks` answers the
+    # hooks dir the repo's own config selects — core.hooksPath when set,
+    # else .git/hooks — which is what the generated hook chains to.
     (
         cd "$wt" || exit 1
-        hooks="$(git rev-parse --git-path hooks 2>/dev/null)" || exit 1
+        gitdir="$(git rev-parse --absolute-git-dir 2>/dev/null)" || exit 1
+        hooks="$gitdir/claude-orca-hooks"
+        own="$(git rev-parse --git-path hooks 2>/dev/null)" || exit 1
+        case "$own" in
+            /*) ;;
+            *) own="$PWD/$own" ;;
+        esac
         mkdir -p "$hooks" || exit 1
 
+        printf '%s\n' "$own" > "$hooks/claude-orca-chain"
         printf '%s\n' "$bead" > "$hooks/claude-orca-bead"
 
-        # The frozen contract counts pre-commit* files: one hook means no
-        # pre-commit.orig after a re-install, and git's pre-commit.sample
-        # (created by init's template) does not get to pretend to be a hook.
-        rm -f "$hooks/pre-commit.sample"
-
-        target="$hooks/pre-commit"
-        if [ -f "$target" ] && grep -q "$_FROZEN_HOOK_MARKER" "$target" 2>/dev/null; then
-            : # ours already; fall through and regenerate it
-        elif [ -e "$target" ] || [ -L "$target" ]; then
-            # A user hook: chain it (run first, failure aborts) rather than clobber.
-            mv -f "$target" "$hooks/pre-commit.orig"
-        fi
-
-        frozen_hook_body > "$target"
-        chmod +x "$target"
+        frozen_hook_body > "$hooks/pre-commit"
+        chmod +x "$hooks/pre-commit"
+        printf '%s\n' "$hooks"
     )
 }
