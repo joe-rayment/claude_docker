@@ -282,3 +282,39 @@ cd '$primary' && ./claude-dev"
     [[ "$output" == *"E: Unable to locate package fonts-liberation"* ]]
 }
 
+@test "an early-exit start shows Orca's serve log tail, with the pairing code redacted" {
+    # Guards:   a container that dies before Orca publishes a URL shows the
+    #           serve log's own last words on the Mac side, with the
+    #           '#pairing=' fragment and any 'code=' query value redacted --
+    #           the diagnosis must not cost a secret.
+    # Fails if: the tail is dropped, or 'SECRET' survives into the output.
+    # Run:      bats tests/first-start-dns.bats
+    mkdir -p "$PROJECT_DIR"
+    primary="$(abspath "$PROJECT_DIR")"
+    run make_project_v3 "$primary"
+    [ "$status" -eq 0 ]
+
+    mkdir -p "$primary/.claude-dev/run"
+    {
+        echo "[serve] starting up"
+        echo "handoff http://127.0.0.1:6770/?next=1#pairing=SECRETFRAG"
+        echo "oauth callback http://127.0.0.1:1/?code=SECRETCODE"
+        echo "[serve] died"
+    } > "$primary/.claude-dev/run/orca-serve.log"
+
+    name="claude-orca-$(basename "$primary")"
+    marker="$CONTAINER_STUB_STATE/containers/$name"
+    rm -f "$primary/.claude-dev/run/orca-web-url.txt"
+    export CLAUDE_ORCA_TEST_NO_URL=1
+    export CLAUDE_ORCA_WEBURL_TIMEOUT=60
+    run bash -c "( sleep 2; rm -f '$marker' ) >/dev/null 2>&1 &
+cd '$primary' && ./claude-dev"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"exited during startup"* ]]
+    [[ "$output" == *"Last lines of Orca's serve log:"* ]]
+    [[ "$output" == *"[serve] died"* ]]
+    [[ "$output" == *"#pairing=<redacted>"* ]]
+    [[ "$output" == *"?code=<redacted>"* ]]
+    [[ "$output" != *"SECRET"* ]]
+}
+
