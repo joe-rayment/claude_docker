@@ -90,10 +90,10 @@ lacks() {
     done
 }
 
-@test "the toolchain set is exactly the five tools that live under the cached paths" {
+@test "the toolchain set is exactly the six tools that live under the cached paths" {
     local toolchain
     toolchain="$(bash "$SETUP" --list toolchain | sort | tr '\n' ' ')"
-    [ "$toolchain" = "bats bd dolt opencode orca " ]
+    [ "$toolchain" = "bats bd dolt helix opencode orca " ]
 }
 
 @test "the Dockerfile bakes the apt half in one layer and each toolchain phase in its own" {

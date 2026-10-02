@@ -21,6 +21,10 @@ for _co_bin in "${PROJECT_DIR:-/nonexistent}/.claude-dev/template/bin" \
 done
 unset _co_bin
 
+# Preferred editor (Helix, baked into the image by setup.sh's helix phase)
+export EDITOR='hx'
+export VISUAL='hx'
+
 # Language environment
 export LANG=en_US.UTF-8
 export LC_ALL=en_US.UTF-8
@@ -83,6 +87,9 @@ alias gc='git commit'
 alias gp='git push'
 alias gl='git log --oneline --graph --decorate'
 
+# Helix aliases
+alias vim='hx'
+alias vi='hx'
 
 # Claude Code shortcuts
 cs()  { claude --dangerously-skip-permissions "$@" }

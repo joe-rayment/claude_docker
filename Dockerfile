@@ -32,7 +32,7 @@ ARG ORCA_VERSION=1.4.197
 COPY scripts/container/setup.sh /opt/claude-orca-setup.sh
 RUN ORCA_VERSION=$ORCA_VERSION /opt/claude-orca-setup.sh --image
 
-# ... and the payload: Orca, opencode, bd, dolt and bats,
+# ... and the payload: Orca, opencode, bd, dolt, helix and bats,
 # ~1.3 GB of pinned tools. Claude Code is the exception: it is installed
 # per folder by provision.d/15-claude-on-path, never baked here.
 #
@@ -56,6 +56,8 @@ COPY scripts/container/phases/bats.sh /opt/claude-orca-phases/bats.sh
 RUN /opt/claude-orca-setup.sh --phase bats
 COPY scripts/container/phases/dolt.sh /opt/claude-orca-phases/dolt.sh
 RUN /opt/claude-orca-setup.sh --phase dolt
+COPY scripts/container/phases/helix.sh /opt/claude-orca-phases/helix.sh
+RUN /opt/claude-orca-setup.sh --phase helix
 COPY scripts/container/phases/bd.sh /opt/claude-orca-phases/bd.sh
 RUN /opt/claude-orca-setup.sh --phase bd
 # phase_orca seeds the default web theme into app.asar in the same layer
