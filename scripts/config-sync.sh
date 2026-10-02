@@ -24,7 +24,11 @@
 #   statusline.sh         -> .claude/statusline.sh (executable)
 #   agents/*.md           -> .claude/agents/
 #   claude-commands/*.md  -> .claude/commands/
-#   skills/**             -> .claude/skills/
+#   skills/**             -> .claude/skills/ (template entries mirrored;
+#                            entries nothing shipped -- an Orca/npx-installed
+#                            skill link, Claude Code's own 'synced' dir --
+#                            survive; previously-shipped entries are tracked
+#                            in skills/.claude-orca-shipped, claude-orca-qxc)
 #   workflows/*.js        -> .claude/workflows/
 #   opencode/opencode.json -> .config/opencode/opencode.json (opencode's own
 #                             provider config, outside .claude/)
@@ -188,22 +192,55 @@ cp "$TEMPLATE_CONFIG/claude-user-memory.md" "$CONFIG_DIR/CLAUDE.md"
 cp "$TEMPLATE_CONFIG/statusline.sh" "$CONFIG_DIR/statusline.sh"
 chmod +x "$CONFIG_DIR/statusline.sh"
 
-# agents/commands/skills/workflows are fully mirrored (removed-in-template
-# files are removed here too), never hand-edited in the project --
+# agents/commands/workflows are fully mirrored (removed-in-template files
+# are removed here too), never hand-edited in the project --
 # settings.local.json is the one sanctioned local-override channel.
-rm -rf "$CONFIG_DIR/agents" "$CONFIG_DIR/commands" "$CONFIG_DIR/skills" "$CONFIG_DIR/workflows"
-mkdir -p "$CONFIG_DIR/agents" "$CONFIG_DIR/commands" "$CONFIG_DIR/skills" "$CONFIG_DIR/workflows"
+rm -rf "$CONFIG_DIR/agents" "$CONFIG_DIR/commands" "$CONFIG_DIR/workflows"
+mkdir -p "$CONFIG_DIR/agents" "$CONFIG_DIR/commands" "$CONFIG_DIR/workflows"
 if [ -d "$TEMPLATE_CONFIG/agents" ]; then
     cp "$TEMPLATE_CONFIG"/agents/*.md "$CONFIG_DIR/agents/" 2>/dev/null || true
 fi
 if [ -d "$TEMPLATE_CONFIG/claude-commands" ]; then
     cp "$TEMPLATE_CONFIG"/claude-commands/*.md "$CONFIG_DIR/commands/" 2>/dev/null || true
 fi
+if [ -d "$TEMPLATE_CONFIG/workflows" ]; then
+    cp "$TEMPLATE_CONFIG"/workflows/*.js "$CONFIG_DIR/workflows/" 2>/dev/null || true
+fi
+
+# skills is NOT fully mirrored (claude-orca-qxc): the entries this template
+# ships are mirrored, but entries anything else put there survive -- the
+# home-scope orchestration link provision.d/75-orca-skills creates and
+# Claude Code's own 'synced' directory are not this script's to remove,
+# and Orca's Settings > Orchestration panel reads exactly that link. What
+# the previous sync shipped is recorded in skills/.claude-orca-shipped
+# (one name per line, rewritten after every copy), so a skill the template
+# dropped since the last sync is still removed; a first run with no
+# manifest removes only what the template ships now. agents/commands/
+# workflows stay wholesale because nothing else writes there; skills/ is
+# where foreign installers write.
+shipped_manifest="$CONFIG_DIR/skills/.claude-orca-shipped"
+if [ -f "$shipped_manifest" ]; then
+    while IFS= read -r skill_name; do
+        case "$skill_name" in ""|.|..|*/*|.*) continue ;; esac
+        rm -rf "$CONFIG_DIR/skills/$skill_name"
+    done < "$shipped_manifest"
+fi
+if [ -d "$TEMPLATE_CONFIG/skills" ]; then
+    for skill_name in "$TEMPLATE_CONFIG"/skills/*; do
+        [ -e "$skill_name" ] || continue
+        rm -rf "$CONFIG_DIR/skills/$(basename "$skill_name")"
+    done
+fi
+mkdir -p "$CONFIG_DIR/skills"
 if [ -d "$TEMPLATE_CONFIG/skills" ]; then
     cp -R "$TEMPLATE_CONFIG"/skills/. "$CONFIG_DIR/skills/" 2>/dev/null || true
 fi
-if [ -d "$TEMPLATE_CONFIG/workflows" ]; then
-    cp "$TEMPLATE_CONFIG"/workflows/*.js "$CONFIG_DIR/workflows/" 2>/dev/null || true
+: > "$shipped_manifest"
+if [ -d "$TEMPLATE_CONFIG/skills" ]; then
+    for skill_name in "$TEMPLATE_CONFIG"/skills/*; do
+        [ -e "$skill_name" ] || continue
+        printf '%s\n' "$(basename "$skill_name")" >> "$shipped_manifest"
+    done
 fi
 
 if [ -f "$TEMPLATE_CONFIG/.zshrc" ]; then
