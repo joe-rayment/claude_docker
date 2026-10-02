@@ -140,6 +140,66 @@ a China-hosted GLM is not, and the rule (served only in the US, Canada or
 Europe) plus the default Fable + GLM stack are in
 `knowledge-base/DATA_RESIDENCY.md`.
 
+### OpenAI subscription (ChatGPT sign-in) (2026-10-02)
+
+A second opencode provider beside OpenRouter: the user's own ChatGPT
+subscription, signed in with opencode's own login. There is no guard and no
+key file on this path — the credential lives in opencode's auth store
+(`${XDG_DATA_HOME:-$HOME/.local/share}/opencode/auth.json`), opencode
+refreshes its own tokens, and requests go straight to OpenAI (the residency
+story is in [DATA_RESIDENCY.md](DATA_RESIDENCY.md)).
+
+**Grammar.** `/tier worker openai:<family|id>` (or `recon …`) binds the
+subscription: backend orca, agent opencode, model `openai/...`. A bare
+`openai` binds the role's default — the newest balanced **GPT Terra**
+executes (`openai/~gpt-terra-latest`), the newest efficient **GPT Luna**
+recons (`openai/~gpt-luna-latest`). The distinction rule: **no `openai:`
+prefix means OpenRouter** — `luna` and `openai/gpt-5.6-luna` (slash) both
+name OpenRouter's copy of the model, while `openai:gpt-5.6-luna` (colon)
+names the subscription's. An `@<effort>` suffix rides along as everywhere
+else and reaches opencode as its own `reasoningEffort` key for provider
+openai (OpenRouter's `reasoning.effort` does not apply). Launches go through
+the same one writer (scripts/lib/opencode-launch.sh) OpenRouter dispatches
+use; an `openai/` launch carries no guard env at all — opencode's own login
+supplies the credential, so the env file holds only the config path.
+
+**Family aliases resolve at launch.** `openai:luna` binds the alias
+`openai/~gpt-luna-latest`; when a worker actually starts,
+`tier_openai_resolve` (scripts/lib/tier-roles.sh) resolves it to the newest
+id of that family the subscription serves — highest `release_date`, then the
+shortest id (`gpt-5.6-luna` beats `gpt-5.6-luna-fast`). Like OpenRouter's
+`~-latest` aliases these name a family, not a version, so a release needs no
+re-bind — but OpenAI publishes no redirect of its own, so the resolution
+happens at launch against the live catalogue rather than server-side per
+request. `openai:gpt-5.6-luna` pins one exact id.
+
+**Sign-in and readiness.** `/tier auth openai` opens a focused Orca tab
+running `scripts/openai-auth.sh` — opencode's headless device login
+(`opencode auth login --provider openai --method "ChatGPT Pro/Plus
+(headless)"`); opencode prints a one-time code that is entered in a browser.
+The helper reports success only when the auth store actually reads as signed
+in, then lists what the subscription serves. Readiness (`tier_openai_ready`)
+is that auth store carrying an `openai` entry with a non-empty refresh token
+(or an API key). An unsigned folder still *saves* an `openai:`/`openai/`
+binding; what refuses to run is the launch — `orca-dispatch` dies with
+"run /tier auth openai" (exit 2), and `recon` takes the same exit-3 "spawn a
+scout" fallback it takes when the OpenRouter guard is down. If the Orca
+runtime is unreachable, `tier-set auth openai` still exits 0 and prints the
+helper's path to run by hand instead.
+
+**What the subscription serves.** `/tier models openai` lists the families
+with each one's newest-resolved pin and every bindable id (from
+`opencode models openai` when signed in, opencode's own cache when not).
+One filter to know: opencode's model list drops `gpt-6-luna` and
+`gpt-6-sol` today even though models.dev lists them, so the catalogue
+`/tier` binds against is what the subscription actually serves, not
+models.dev.
+
+**Known race.** Two opencode processes that find the access token expired
+at the same instant both spend the same refresh token; OpenAI rotates
+refresh tokens, so one of the two can fail its refresh and needs
+`/tier auth openai` again.
+
 ### The dispatch loop
 
 One bead, one worker, one receipt:

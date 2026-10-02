@@ -17,7 +17,7 @@ and names what changed. If everything behaves, it stays **green** (passes).
 
 - A **test case** is one check (one `@test "…"` block).
 - A **test file** (`tests/<name>.bats`) groups the cases for one script or feature.
-- The **suite** is all of them: 101 files, about 1,230 cases.
+- The **suite** is all of them: 104 files, about 1,270 cases.
 
 ### What bats is
 
@@ -118,7 +118,7 @@ are run by hand:
 
 ## Part 2 — the map
 
-101 files, 1,229 cases: 86 files check behavior only, 11 mix behavior with
+104 files, 1,267 cases: 89 files check behavior only, 11 mix behavior with
 a few config checks, and 4 are config checks only. **Speed** is from
 `run-tests.sh`'s timing: `slow` files are skipped by the everyday run.
 
@@ -228,7 +228,7 @@ catches no bugs.
 | `teardown-orca-residue.bats` | 4 | fast | `claude-dev --teardown` removes Orca's worktrees/`.orca` state and unseeds the gitignore lines, leaving the user's own gitignore and branches untouched. | behavior | — |
 | `tier-gate-orca.bats` | 9 | fast | `tier-gate.sh` under the Orca backend: injects Claude models as usual but denies (instead of silently misrouting) a model-less spawn onto a non-Claude Orca worker/recon role. | behavior | — |
 | `tier-hooks.bats` | 43 | fast | The whole `/tier` model system (`tier-derive/set/gate/prime/reconcile.sh`): deriving, binding, injecting and reconciling the worker/recon/checker models correctly. | behavior | — |
-| `tier-openai.bats` | 17 | fast | `openai` / `openai:<family|id>` binds a role to the user's ChatGPT subscription (orca + opencode, model `openai/...`) -- visibly distinct from the same model on OpenRouter; unknown families error with the list, a signed-out bind saves and names `/tier auth openai`, `models openai` lists families and pins, and `auth openai` opens the sign-in tab (or the manual fallback) behind scripts/openai-auth.sh | behavior | — |
+| `tier-openai.bats` | 17 | fast | `openai` / `openai:<family\|id>` binds a role to the user's ChatGPT subscription (orca + opencode, model `openai/...`) -- visibly distinct from the same model on OpenRouter; unknown families error with the list, a signed-out bind saves and names `/tier auth openai`, `models openai` lists families and pins, and `auth openai` opens the sign-in tab (or the manual fallback) behind scripts/openai-auth.sh | behavior | — |
 | `tier-openrouter-auth-2.bats` | 4 | fast | `openrouter-auth.sh` gives a clear, distinct refusal message for a malformed key vs. one OpenRouter itself rejects, and reports success without ever printing the key. | behavior | — |
 | `tier-openrouter-auth.bats` | 12 | fast | `openrouter-auth.sh`/`tier-set.sh` write the key mode 600, start the local guard proxy, and dispatch never puts the credential on a command line. | behavior | — |
 | `tier-phrases.bats` | 12 | fast | `tier-set.sh` accepts natural-language `/tier` phrases (comma/space-separated, `@high` effort suffixes, short route names) and resolves them identically to explicit vendor/model ids. | behavior | — |
