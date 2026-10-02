@@ -412,7 +412,9 @@ JSON
     [ "$status" -eq 0 ]
 
     [ ! -e "$dest/skills/snowpark-deploy" ]
-    grep -qx "snowpark-deploy" "$dest/skills/.claude-orca-shipped"
+    # ...and the manifest no longer claims it (a run-grep, never a bare
+    # failing command, so the negative assertion is the status check itself)
+    run grep -qx "snowpark-deploy" "$dest/skills/.claude-orca-shipped"
     [ "$status" -eq 1 ]
 }
 
