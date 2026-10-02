@@ -21,6 +21,7 @@
 #
 # v2 (claude-orca-qa2.12): <role> is worker|recon|checker and <spec> is one of
 #   openrouter:<vendor/model>   -> backend orca,     agent opencode
+#   openai | openai:<family|id> -> backend orca,     agent opencode, model openai/...
 #   claude:[<alias|id>]         -> backend orca,     agent claude
 #   codex:<id> | gemini:<id>    -> backend orca,     agent codex|gemini
 #   orca | subagent             -> that backend,     agent claude, derived model
@@ -165,7 +166,7 @@ preset_reserved() {
     local w
     w="$(printf '%s' "$1" | tr 'A-Z' 'a-z')"
     case "$w" in
-        show|help|overdrive|auth|models|checker|worker|recon|fable|opus|sonnet|haiku) return 0 ;;
+        show|help|overdrive|auth|models|checker|worker|recon|fable|opus|sonnet|haiku|openai|openrouter) return 0 ;;
     esac
     if [ -n "$ROUTES_FILE" ] && [ -f "$ROUTES_FILE" ] && command -v jq >/dev/null 2>&1; then
         [ "$(jq -r --arg n "$w" '(.routes // {}) | has($n)' "$ROUTES_FILE" 2>/dev/null)" = "true" ] && return 0
@@ -514,6 +515,7 @@ HOW TO SET IT -- always in this order: top, worker, recon
   /tier fable, GLM 5.3 flash, GPT-5.6 Luna (high)          free text: commas between the roles
   /tier fable z-ai/glm-5.3-flash openai/gpt-5.6-luna@high  exact OpenRouter ids
   /tier recon luna high                                    one role at a time: worker | recon | checker
+  /tier opus openai:terra openai:luna@high                 your OpenAI (ChatGPT) subscription: openai: before the name
   /tier opus                                               one Claude model; worker and recon are derived from it
   /tier <preset>                                           a preset -- one name for a whole combination; bare /tier lists them
 NAMES
@@ -522,12 +524,16 @@ NAMES
               most are OpenRouter ~...-latest aliases, so they follow new releases too)
               any other name is looked up in OpenRouter's catalogue; when it matches several models
               nothing is bound and the candidates are listed -- /tier models <words> previews that lookup
-EFFORT -- OpenRouter models only (a Claude role ignores it)
+  OpenAI:     openai:luna  openai:terra  openai:sol  openai:astra   your ChatGPT subscription, through opencode
+              a family follows its newest release your plan serves; openai:gpt-5.6-luna pins one; bare openai = the role's default
+              no openai: prefix = OpenRouter -- luna and openai/gpt-5.6-luna both name OpenRouter's copy
+EFFORT -- OpenRouter and OpenAI models (a Claude role ignores it)
   none  minimal  low  medium  high  xhigh  max      written as  luna@high  or  Luna (high)  or  luna high
 ALSO
   /tier worker claude:sonnet   an Orca-backed Claude worker      /tier worker subagent   back in-process, derived model
   /tier recon openrouter       the cheap OpenRouter default      /tier overdrive         lifts the worker cap so the executor runs the TOP model
   /tier auth openrouter        sign in to OpenRouter              /tier help              the long explanation
+  /tier auth openai            sign in with your ChatGPT subscription    /tier models openai  what your subscription serves
 EOF
 }
 
@@ -545,6 +551,7 @@ the checker (verifier) rung is derived too: the top capped at opus, so a fable t
 each role (worker · recon · checker) also carries a backend: orca (a supervised Orca worker terminal, dispatched with orca-dispatch) or subagent (the in-process Agent tool). /tier worker glm-flash binds OpenRouter's newest GLM Flash (openrouter/~z-ai/glm-flash-latest) run by opencode on the orca backend, /tier worker claude:sonnet an orca-backed Claude worker, /tier worker subagent puts it back in-process on the derived model; recon and checker take the same specs. /tier recon openrouter (bare spec, no model named) binds the role's own OpenRouter default, for recon the flash-class rung $TIER_OPENROUTER_RECON_MODEL.
 a 1-arg /tier <top> resets all three to the defaults: worker orca+claude when the Orca runtime is reachable, else subagent; recon subagent haiku; checker subagent at the derived checker rung (the top capped at opus), so a fable top is graded from opus. An off-ladder top leaves the checker on inherit. With an OpenRouter key in this folder the default worker is the GLM rung on opencode, and every OpenRouter request goes through the in-VM guard, which forces config/provider-policy.json's provider allowlist -- a Chinese model is fine, a China-hosted one is not: requests are served in the US, Canada or Europe only; /tier worker claude:sonnet puts the claude rung back.
 an openrouter: bind still saves with no credential in this folder -- it names /tier auth openrouter as the next step, which opens a focused Orca tab that gets a key, validates it and starts the guard; with no Orca runtime it prints the same command to run by hand.
+an openai: binding is opencode on the openai provider, signed in with your ChatGPT subscription; a family alias (openai/~gpt-luna-latest) is resolved when the worker starts to the newest model of that family the subscription serves. Requests go straight to OpenAI, so no guard and no provider allowlist is involved (OpenAI serves them itself); an unsigned folder still saves the binding and names /tier auth openai.
 a reasoning effort (luna@high) is stored as roles.<role>.variant and reaches opencode through a per-launch config file (OPENCODE_CONFIG) on both the orca-dispatch and delegate paths; it has no effect on a Claude role.
 a binding applies to NEW spawns immediately (tier-gate reads tier.json at spawn time); /model <top> moves THIS session's own model now.
 EOF
@@ -835,6 +842,80 @@ catalogue_lookup() {
     return 1
 }
 
+# openai_spec_model <rest> -- resolve an `openai:<rest>` spec's model
+# (claude-orca-c3p.3). Prints "openai/<...>" on success; on an unknown
+# family/id prints an explanation to stderr and returns 1, nothing bound.
+#   <rest> is normalised: lower-cased, each run of whitespace -> "-", a
+#   leading "openai/" stripped. Empty after that is an error.
+#   "~<family>-latest" passes through as-is (an explicit alias).
+#   With a non-empty catalogue (tier_openai_catalogue): an exact .id binds
+#   as-is; otherwise the name (gpt- prefixed unless it already starts with
+#   gpt-) must be a .family -> the ~<family>-latest alias, resolved at
+#   launch to that family's newest release. Anything else is an error
+#   naming the families the catalogue knows.
+#   With NO catalogue at all: a digit-bearing name binds as an id, anything
+#   else as the ~gpt-<family>-latest alias -- both with a "bound unchecked"
+#   note, since nothing could be checked against.
+openai_spec_model() {
+    local rest="$1" n fam cat fams
+    n="$(printf '%s' "$rest" | tr 'A-Z' 'a-z' | tr -s '[:space:]' '-')"
+    case "$n" in
+        openai/*) n="${n#openai/}" ;;
+    esac
+    if [ -z "$n" ]; then
+        echo "tier-set: 'openai:' needs a model family or id, e.g. openai:luna or openai:gpt-5.6-luna -- nothing bound" >&2
+        return 1
+    fi
+    case "$n" in
+        ~*-latest)
+            printf 'openai/%s\n' "$n"
+            return 0
+            ;;
+    esac
+    cat="$(tier_openai_catalogue 2>/dev/null)" || cat=""
+    if [ -n "$cat" ]; then
+        if printf '%s' "$cat" | jq -e --arg n "$n" '[.[] | select(.id == $n)] | length > 0' >/dev/null 2>&1; then
+            printf 'openai/%s\n' "$n"
+            return 0
+        fi
+        case "$n" in
+            gpt-*) fam="$n" ;;
+            *)     fam="gpt-$n" ;;
+        esac
+        if printf '%s' "$cat" | jq -e --arg fam "$fam" '[.[] | select(.family == $fam)] | length > 0' >/dev/null 2>&1; then
+            printf 'openai/~%s-latest\n' "$fam"
+            return 0
+        fi
+        fams="$(printf '%s' "$cat" \
+            | jq -r '[.[].family] | map(select(length > 0)) | unique | sort | .[]' 2>/dev/null \
+            | sed 's/^gpt-//' | tr '\n' ' ')"
+        echo "tier-set: no OpenAI model or family '$rest' -- families: ${fams% }; or pin one with openai:<id> (/tier models openai lists them); nothing bound" >&2
+        return 1
+    fi
+    case "$n" in
+        *[0-9]*)
+            printf 'openai/%s\n' "$n"
+            ;;
+        *)
+            case "$n" in
+                gpt-*) fam="${n#gpt-}" ;;
+                *)     fam="$n" ;;
+            esac
+            printf 'openai/~gpt-%s-latest\n' "$fam"
+            ;;
+    esac
+    echo "tier-set: no OpenAI model list to check '$rest' against -- bound unchecked" >&2
+    return 0
+}
+
+# print_openai_auth_note -- the two lines an openai/ bind prints while this
+# folder is signed out of OpenAI (claude-orca-c3p.3): the binding is saved,
+# it just cannot run until the ChatGPT sign-in happened. Once per command.
+print_openai_auth_note() {
+    echo "→ not signed in to OpenAI yet -- this binding is saved but cannot run until this folder is signed in with your ChatGPT subscription."
+    echo "→ run  /tier auth openai  to open a sign-in tab now."
+}
+
 # resolve_worker_recon_phrase <worker|recon> <name> <positional|role>
 # The shared resolver behind both the trio positional form and the per-role
 # `tier-set worker|recon <spec>` form -- <name> already has any @effort
@@ -844,8 +925,10 @@ catalogue_lookup() {
 #
 # Resolution order (claude-orca-2j2, bead SPEC point 4):
 #   a. a Claude alias/id -- backend follows <ctx> (see below)
-#   b. an existing explicit spec: openrouter[:.../], claude:, codex:/gemini:,
-#      orca, subagent, inherit -- unchanged from the single-role grammar
+#   b. an existing explicit spec: openrouter[:.../], openai[:.../], claude:,
+#      codex:/gemini:, orca, subagent, inherit -- unchanged from the
+#      single-role grammar (openai/openai: bind the ChatGPT subscription,
+#      claude-orca-c3p.3)
 #   c. a route NAME in $ROUTES_FILE -- its .model, backend orca/opencode
 #   d. a phrase containing '/' -- an explicit OpenRouter id (a leading
 #      "openrouter/" is optional and normalised in)
@@ -868,6 +951,12 @@ resolve_worker_recon_phrase() {
                 b=subagent
             fi
             ;;
+        openai)
+            b=orca; a=opencode; m="$(tier_openai_role_default "$role")" ;;
+        openai:*)
+            rest="${name#openai:}"
+            m="$(openai_spec_model "$rest")" || return 1
+            b=orca; a=opencode ;;
         openrouter)
             b=orca; a=opencode; m="$(tier_openrouter_role_default "$role")" ;;
         openrouter:*)
@@ -926,6 +1015,16 @@ case "${1:-}" in
         [ $# -gt 2 ] && echo "tier: extra args ignored (dropped: ${*:3})" >&2
         B=subagent; A=claude; M=""; PIN=false; IS_OPENROUTER=false
         case "$spec" in
+            openai)
+                # The bare subscription spec: this role's OpenAI default
+                # (worker terra, recon luna -- the checker takes the worker
+                # model), orca + opencode like every opencode binding.
+                B=orca; A=opencode; M="$(tier_openai_role_default "$role")"
+                PIN=true ;;
+            openai:*)
+                rest="${spec#openai:}"
+                M="$(openai_spec_model "$rest")" || exit 1
+                B=orca; A=opencode; PIN=true ;;
             openrouter)
                 # No model named: the role's own OpenRouter default -- the
                 # flash rung for recon, the full-size GLM otherwise.
@@ -956,6 +1055,14 @@ case "${1:-}" in
         valid_model_ref "$M" || { echo "tier-set: unknown or unsafe model reference for '$role': '$spec' -- nothing bound" >&2; exit 1; }
         write_role "$role" "$B" "$A" "$M" "$PIN" || exit 1
         echo "tier role bound  $role = $(tier_role_label "$B" "$A" "$M")"
+        case "$M" in
+            openai/*)
+                # The subscription path: OpenAI's own readiness decides the
+                # note (claude-orca-c3p.3) -- never the OpenRouter one.
+                if ! tier_openai_ready; then
+                    print_openai_auth_note
+                fi ;;
+        esac
         if [ "$IS_OPENROUTER" = "true" ] && ! tier_openrouter_ready; then
             echo "→ not authenticated yet -- this binding is saved but cannot run until OpenRouter is set up in this folder."
             echo "→ run  /tier auth openrouter  to open a sign-in tab now."
@@ -992,16 +1099,25 @@ case "${1:-}" in
         IFS=$'\t' read -r B A M <<<"$role_line"
         role_note=""
         if [ -n "$role_effort" ] && [ "$A" != "opencode" ]; then
-            role_note="tier: effort '$role_effort' applies to OpenRouter roles only -- ignored for $role"
+            role_note="tier: effort '$role_effort' applies to opencode roles only (OpenRouter or OpenAI) -- ignored for $role"
             role_effort=""
         fi
         write_role "$role" "$B" "$A" "$M" true "$role_effort" || exit 1
         echo "tier role bound  $role = $(tier_role_label "$B" "$A" "$M" "$role_effort")"
         [ -n "$role_note" ] && echo "$role_note"
-        if [ "$A" = "opencode" ] && ! tier_openrouter_ready; then
-            echo "→ not authenticated yet -- this binding is saved but cannot run until OpenRouter is set up in this folder."
-            echo "→ run  /tier auth openrouter  to open a sign-in tab now."
-        fi
+        case "$M" in
+            openai/*)
+                # The subscription path: OpenAI's own readiness decides the
+                # note (claude-orca-c3p.3) -- never the OpenRouter one.
+                if ! tier_openai_ready; then
+                    print_openai_auth_note
+                fi ;;
+            *)
+                if [ "$A" = "opencode" ] && ! tier_openrouter_ready; then
+                    echo "→ not authenticated yet -- this binding is saved but cannot run until OpenRouter is set up in this folder."
+                    echo "→ run  /tier auth openrouter  to open a sign-in tab now."
+                fi ;;
+        esac
         if [ "$B" = "orca" ]; then
             echo "→ applies to NEW spawns: $role slices go through  orca-dispatch  (the Agent tool stays the fallback)."
         else
@@ -1010,6 +1126,48 @@ case "${1:-}" in
         exit 0
         ;;
 esac
+
+# --- models openai: what the subscription serves (claude-orca-c3p.3) --------
+
+# Handled before the generic `models` block, only when the first word after
+# `models` is exactly "openai": the ChatGPT subscription's own catalogue,
+# one family line (each follows its newest release) plus the pin list.
+if [ "${1:-}" = "models" ] && [ "${2:-}" = "openai" ]; then
+    shift 2
+    words="$*"
+    cat="$(tier_openai_catalogue 2>/dev/null)" || cat=""
+    if [ -z "$cat" ]; then
+        echo "tier-set: no OpenAI model list available -- run /tier auth openai first" >&2
+        exit 1
+    fi
+    if tier_openai_ready; then
+        echo "OpenAI models your ChatGPT subscription serves (opencode models openai):"
+    else
+        echo "OpenAI catalogue -- not signed in, so your subscription may serve fewer (/tier auth openai):"
+    fi
+    echo "families -- each follows its newest release:"
+    printf '%s' "$cat" \
+        | jq -r '[.[].family] | map(select(length > 0)) | unique | sort | .[]' 2>/dev/null \
+        | while IFS= read -r fam; do
+            resolved="$(tier_openai_resolve "openai/~$fam-latest" 2>/dev/null)" || continue
+            printf '  openai:%s  -> %s\n' "${fam#gpt-}" "${resolved#openai/}"
+        done
+    echo "pin one model:"
+    printf '%s' "$cat" | jq -r '.[].id' 2>/dev/null | sort -u | while IFS= read -r id; do
+        [ -n "$id" ] || continue
+        if [ -n "$words" ]; then
+            lid="$(printf '%s' "$id" | tr 'A-Z' 'a-z')"
+            ok=true
+            for w in $words; do
+                lw="$(printf '%s' "$w" | tr 'A-Z' 'a-z')"
+                case "$lid" in *"$lw"*) ;; *) ok=false ;; esac
+            done
+            [ "$ok" = true ] || continue
+        fi
+        printf '  openai:%s\n' "$id"
+    done
+    exit 0
+fi
 
 # --- models: tier-set models [<words>] --------------------------------------
 
@@ -1123,7 +1281,7 @@ top_effort="$(printf '%s\n' "$top_out" | sed -n 2p)"
 R="$(alias_id "$top_name")"
 valid_id "$R" || { echo "tier-set: unknown or unsafe top model id: '$1' -- nothing bound" >&2; exit 1; }
 top_note=""
-[ -n "$top_effort" ] && top_note="tier: effort '$top_effort' applies to OpenRouter roles only -- ignored for top"
+[ -n "$top_effort" ] && top_note="tier: effort '$top_effort' applies to opencode roles only (OpenRouter or OpenAI) -- ignored for top"
 
 worker_out="$(parse_effort "$2")" || exit 1
 worker_name="$(printf '%s\n' "$worker_out" | sed -n 1p)"
@@ -1132,7 +1290,7 @@ worker_line="$(resolve_worker_recon_phrase worker "$worker_name" positional)" ||
 IFS=$'\t' read -r WB WA WM <<<"$worker_line"
 worker_note=""
 if [ -n "$worker_effort" ] && [ "$WA" != "opencode" ]; then
-    worker_note="tier: effort '$worker_effort' applies to OpenRouter roles only -- ignored for worker"
+    worker_note="tier: effort '$worker_effort' applies to opencode roles only (OpenRouter or OpenAI) -- ignored for worker"
     worker_effort=""
 fi
 
@@ -1145,7 +1303,7 @@ if [ $# -ge 3 ]; then
     IFS=$'\t' read -r CB CA CM <<<"$recon_line"
     recon_note=""
     if [ -n "$recon_effort" ] && [ "$CA" != "opencode" ]; then
-        recon_note="tier: effort '$recon_effort' applies to OpenRouter roles only -- ignored for recon"
+        recon_note="tier: effort '$recon_effort' applies to opencode roles only (OpenRouter or OpenAI) -- ignored for recon"
         recon_effort=""
     fi
 else
@@ -1159,5 +1317,15 @@ echo "tier bound (explicit, pinned)  top=$R  worker=$(tier_role_label "$WB" "$WA
 [ -n "$top_note" ] && echo "$top_note"
 [ -n "$worker_note" ] && echo "$worker_note"
 [ -n "$recon_note" ] && echo "$recon_note"
+# The trio path prints no OpenRouter auth note (it never has); an openai/
+# worker or recon adds the OpenAI sign-in pair, once (claude-orca-c3p.3).
+if ! tier_openai_ready; then
+    case "$WM" in
+        openai/*) print_openai_auth_note ;;
+        *) case "$CM" in
+               openai/*) print_openai_auth_note ;;
+           esac ;;
+    esac
+fi
 echo "→ applies to NEW spawns (tier-gate reads tier.json at spawn time); /model $R moves THIS session now."
 exit 0

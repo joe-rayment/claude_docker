@@ -176,7 +176,7 @@ prime_short() { run "$PRIME" --short; }
 @test "an effort attached to a Claude worker is ignored, with a note, and the model still binds" {
     tier_set fable sonnet@high haiku
     [ "$status" -eq 0 ]
-    [[ "$output" == *"applies to OpenRouter roles only"* ]]
+    [[ "$output" == *"applies to opencode roles only (OpenRouter or OpenAI)"* ]]
 
     run jq -e '.roles.worker == {backend:"subagent", agent:"claude", model:"sonnet", pinned:true}' "$TIER_STATE_FILE"
     [ "$status" -eq 0 ]

@@ -1,6 +1,6 @@
 ---
-description: "Bind the model tier: /tier <preset> or /tier <top> <worker> <recon> — Claude aliases or OpenRouter models by name, effort as @high. A bare /tier offers the presets and prints the guide"
-argument-hint: "hybrid | fable glm-flash luna@high | fable, GLM 5.3 flash, GPT-5.6 Luna (high) | recon luna high | models <words> | opus | help"
+description: "Bind the model tier: /tier <preset> or /tier <top> <worker> <recon> — Claude aliases, OpenRouter models or the OpenAI subscription (openai:luna) by name, effort as @high. A bare /tier offers the presets and prints the guide"
+argument-hint: "hybrid | fable glm-flash luna@high | fable, GLM 5.3 flash, GPT-5.6 Luna (high) | fable openai:terra openai:luna@high | recon luna high | models <words> | opus | help"
 allowed-tools: Bash(tier-set:*), AskUserQuestion
 model: haiku
 effort: low
