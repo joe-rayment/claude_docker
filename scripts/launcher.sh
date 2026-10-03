@@ -2460,7 +2460,14 @@ container_matches() {
     # Everything compared below comes from ONE `docker inspect` (each is a
     # round trip to the daemon): image name, image id, the published port
     # (blank when it publishes none), then one Source:Destination per mount.
-    facts="$(ctr inspect -f "{{println .Config.Image}}{{println .Image}}{{with index .NetworkSettings.Ports \"$port/tcp\"}}{{(index . 0).HostPort}}{{end}}{{println}}{{range .Mounts}}{{.Source}}:{{println .Destination}}{{end}}" "$name" 2>/dev/null || true)"
+    # The port comes from .HostConfig.PortBindings, not .NetworkSettings.Ports:
+    # moby's releaseNetwork empties the latter the moment a container stops
+    # (v27.5.1 daemon/container_operations.go:999, Ports = nil at :1016), so
+    # every stopped container of this folder read as "port: none" and was
+    # recreated instead of started. HostConfig.PortBindings is the record of
+    # what the container was created to publish, and the one place the claim
+    # survives a stop.
+    facts="$(ctr inspect -f "{{println .Config.Image}}{{println .Image}}{{with index .HostConfig.PortBindings \"$port/tcp\"}}{{(index . 0).HostPort}}{{end}}{{println}}{{range .Mounts}}{{.Source}}:{{println .Destination}}{{end}}" "$name" 2>/dev/null || true)"
     { IFS= read -r have; IFS= read -r have_id; IFS= read -r have_port
       mounts="$(cat)"; } <<FACTS
 $facts
