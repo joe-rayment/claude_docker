@@ -248,6 +248,47 @@ no_dl_strays() {  # no file of either temp-file name anywhere under .local/share
     no_dl_strays
 }
 
+@test "17: a manifest fetch that fails is named as a fetch, never as a parse" {
+    # Guards: a release dir with no manifest.json reads as a FETCH failure --
+    #   'claude: cannot fetch <url> (curl exit <rc>)' from stderr, status 1,
+    #   with --retry for transient errors (claude-orca-34g; the 2026-10-02
+    #   10:37 run misread a lost manifest as a missing checksum because the
+    #   fetch's stderr was discarded).
+    # Fails if: the step says 'cannot read a sha256' for a manifest it never
+    #   got, exits 0, or moves the home link.
+    # Run: bats tests/provision-claude-on-path.bats
+    release 2.1.280
+    latest 2.1.280
+    rm -f "$R/2.1.280/manifest.json"
+    home_claude 2.1.99
+    run claude_step
+    [ "$status" -eq 1 ]
+    echo "$output" | grep -q 'cannot fetch'
+    echo "$output" | grep -q 'curl exit'
+    ! echo "$output" | grep -q 'cannot read a sha256'
+    [ "$(link_target)" = "$V/2.1.99" ]
+    no_dl_strays
+}
+
+@test "18: a manifest without our platform still reads as a missing checksum" {
+    # Guards: a manifest that WAS fetched but lacks a 64-hex checksum for
+    #   this platform keeps its own name -- 'cannot read a sha256 for
+    #   <platform> from <url>' (claude-orca-34g).
+    # Fails if: the missing-platform case is reported as a fetch failure
+    #   ('cannot fetch'), exits 0, or moves the home link.
+    # Run: bats tests/provision-claude-on-path.bats
+    release 2.1.280
+    latest 2.1.280
+    printf '{"platforms":{}}\n' > "$R/2.1.280/manifest.json"
+    home_claude 2.1.99
+    run claude_step
+    [ "$status" -eq 1 ]
+    echo "$output" | grep -q "cannot read a sha256 for linux-$ARCH"
+    ! echo "$output" | grep -q 'cannot fetch'
+    [ "$(link_target)" = "$V/2.1.99" ]
+    no_dl_strays
+}
+
 @test "16: a stale .<v>.claude-orca.tmp in versions/ is never read or written" {
     # Guards: the step no longer downloads to the old fixed temp name inside
     #   versions/; a file left there by an interrupted old run (or Claude
