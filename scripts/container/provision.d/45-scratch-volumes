@@ -16,14 +16,38 @@
 # without the volumes mounted changes nothing, and says so.
 #
 # Runs as the agent, is idempotent (a migrated dir carries a
-# .migrated-from-home marker, and a deleted legacy is simply gone), and its
-# exit code is its status.
+# .migrated-from-home marker, and a legacy whose removal succeeds is simply
+# gone; one whose rmdir fails -- on the Mac it is the volume's mount point
+# in the other view -- is emptied and left behind, and the log says so),
+# and its exit code is its status.
 
 set -uo pipefail
 . "$(dirname "$0")/../provision-lib.sh"
 . "$STEP_TREE/scripts/container/volume-dirs.sh"
 
 AGENT_HOME="${CLAUDE_ORCA_AGENT_HOME:-${HOME:-/home/agent}}"
+
+# On the Mac the legacy path IS the volume's mount point in the /workspace
+# view, so rmdir fails EBUSY there on every boot: empty the shadowed copy
+# with find -delete, try rmdir, and say only what actually happened.
+clear_legacy() {  # clear_legacy <vol> <what> <legacy>
+    local vol="$1" what="$2" legacy="$3"
+    if [ -z "$(find "$legacy" -mindepth 1 -print -quit 2>/dev/null)" ]; then
+        echo "$vol: shadowed $what $legacy is already empty"
+        rmdir "$legacy" 2>/dev/null
+        return 0
+    fi
+    if ! find "$legacy" -mindepth 1 -delete 2>/dev/null \
+       || [ -n "$(find "$legacy" -mindepth 1 -print -quit 2>/dev/null)" ]; then
+        echo "$vol: could not empty $legacy" >&2
+        exit 1
+    fi
+    if rmdir "$legacy" 2>/dev/null; then
+        echo "$vol: removed shadowed $what $legacy"
+    else
+        echo "$vol: emptied shadowed $what $legacy; the directory stays (it is the volume's mount point)"
+    fi
+}
 
 while IFS= read -r vol; do
     rel="${vol#"$AGENT_HOME"/}"
@@ -43,16 +67,14 @@ while IFS= read -r vol; do
     case "$rel" in
         .cache|.npm)
             # Regenerable caches: the shadowed copy is disposable.
-            rm -rf "$legacy"
-            echo "$vol: removed shadowed cache $legacy"
+            clear_legacy "$vol" "cache" "$legacy"
             ;;
         .local/share/opencode)
             # The sessions db and auth: NOT regenerable, so copy first and
             # delete last. Entries already on the volume are never
             # overwritten -- a collision lands as <entry>.from-home.
             if [ -e "$vol/.migrated-from-home" ]; then
-                rm -rf "$legacy"
-                echo "$vol: already migrated; removed $legacy"
+                clear_legacy "$vol" "opencode data" "$legacy"
                 continue
             fi
             rm -rf "$vol/.migrating"
@@ -73,8 +95,8 @@ while IFS= read -r vol; do
             done
             rmdir "$vol/.migrating" 2>/dev/null || rm -rf "$vol/.migrating"
             : > "$vol/.migrated-from-home"
-            rm -rf "$legacy"
-            echo "$vol: migrated $legacy onto the volume and removed it"
+            echo "$vol: migrated $legacy onto the volume"
+            clear_legacy "$vol" "opencode data" "$legacy"
             ;;
         *)
             # Worktrees and anything else: nothing to migrate, nothing to
