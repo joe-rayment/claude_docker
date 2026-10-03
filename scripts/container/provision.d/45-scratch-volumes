@@ -95,6 +95,7 @@ while IFS= read -r vol; do
             done
             rmdir "$vol/.migrating" 2>/dev/null || rm -rf "$vol/.migrating"
             : > "$vol/.migrated-from-home"
+            echo "$vol: migrated $legacy onto the volume"
             clear_legacy "$vol" "opencode data" "$legacy"
             ;;
         *)
