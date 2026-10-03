@@ -822,6 +822,78 @@ print_serve_log_tail() {
                  -e 's/^/  /' >&2
 }
 
+# --- profile-state rollback (claude-orca-cey) ---------------------------
+#
+# Orca >= 1.4.219 keeps a profile's state in SQLite
+# (profiles/<id>/profile-state.db) and treats orca-data.json as its own
+# export; when the JSON export disagrees with the db, serve refuses to
+# start ("cannot safely choose a profile-state authority") and the folder
+# is bricked. Why SQLite is the right authority to keep here: inside this
+# container the only writer of that JSON besides Orca itself was this
+# repo's own seed -- which no longer touches a SQLite-era profile at all
+# -- so a disagreement on an existing folder was written by an earlier
+# boot of that seed, and the SQLite copy is the one holding what the user
+# actually did. `profile state rollback --current-sqlite` keeps the SQLite
+# copy and archives both, so the next serve regenerates the export to
+# match; the retry that follows then starts on fixed state.
+#
+# The CLI runs the way every agent command here does, as the agent with
+# the serve user-data dir; ELECTRON_DISABLE_SANDBOX is what the CLI needs
+# where serve gets --no-sandbox. Once per boot, and only when the serve
+# log actually names the refusal -- any other early exit is Orca's own
+# business and is not touched.
+resolve_orca_cli() {
+    if [ -n "${ORCA_CLI:-}" ] && [ -x "$ORCA_CLI" ]; then
+        printf '%s\n' "$ORCA_CLI"
+        return 0
+    fi
+    local candidate found
+    for candidate in \
+        "$(dirname "$ORCA_BIN")/resources/bin/orca-ide" \
+        "${AGENT_HOME:-/home/agent}/.local/bin/orca-ide" \
+        "${AGENT_HOME:-/home/agent}/.local/bin/orca"
+    do
+        [ -x "$candidate" ] && { printf '%s\n' "$candidate"; return 0; }
+    done
+    for candidate in orca orca-ide; do
+        found="$(command -v "$candidate" 2>/dev/null || true)"
+        [ -n "$found" ] && { printf '%s\n' "$found"; return 0; }
+    done
+    return 1
+}
+
+# The rollback answers --json; jq reads it when it is here, a plain
+# substring stands in when it is not.
+profile_state_rollback_said_ok() {
+    if command -v jq >/dev/null 2>&1; then
+        printf '%s\n' "$1" | jq -e '.ok == true' >/dev/null 2>&1
+    else
+        printf '%s\n' "$1" | grep -Eq '"ok"[[:space:]]*:[[:space:]]*true'
+    fi
+}
+
+maybe_rollback_profile_state() {
+    [ -s "$SERVE_LOG" ] || return 0
+    grep -q 'cannot safely choose a profile-state authority' "$SERVE_LOG" 2>/dev/null || return 0
+    [ "${PROFILE_STATE_ROLLBACK_RAN:-0}" = "0" ] || return 0
+    PROFILE_STATE_ROLLBACK_RAN=1
+    local cli out
+    cli="$(resolve_orca_cli || true)"
+    if [ -z "$cli" ]; then
+        warn "profile state: serve refused over its orca-data.json export, but no Orca CLI found to roll it back (set ORCA_CLI)"
+        return 0
+    fi
+    log "serve refused to start over a profile-state disagreement; rolling back to SQLite ($cli profile state rollback --current-sqlite)"
+    out="$(run_as_agent env ELECTRON_DISABLE_SANDBOX=1 \
+              ORCA_USER_DATA_PATH="$USER_DATA_DIR" \
+              "$cli" profile state rollback --current-sqlite --json 2>&1)" || true
+    if profile_state_rollback_said_ok "$out"; then
+        log "profile state: JSON and SQLite disagreed; kept SQLite (orca profile state rollback --current-sqlite; Orca archived both copies)"
+    else
+        warn "profile state rollback did not succeed: ${out:-<no output from $cli>}"
+    fi
+}
+
 log "starting Orca serve on port $ORCA_PORT (log: $SERVE_LOG)"
 start_orca_serve
 
@@ -841,6 +913,10 @@ while [ "$waited" -lt "$WEBURL_TIMEOUT" ]; do
     [ -n "$web_url" ] && break
     if ! kill -0 "$SERVE_PID" 2>/dev/null; then
         wait "$SERVE_PID"
+        # Before the retry, so the retry is the attempt that starts on
+        # fixed state -- but only when the log names the refusal, and
+        # only once per boot (see the rollback block above).
+        maybe_rollback_profile_state
         # One retry, once. Orca's own start is not perfectly reliable --
         # the display race above is one way it dies within a second of
         # being asked -- and a folder that will not open until a person

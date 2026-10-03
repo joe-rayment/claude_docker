@@ -547,17 +547,18 @@ STUB
     [ "$output" = "1" ]
 
     # And the CLI is called by exactly the provision steps that need it,
-    # in exactly this order: repo add (60-orca-repo-add), then the
-    # skill's --json check, plain-text fallback and install
-    # (75-orca-skills). 65-worktree-sweep asks Orca nothing here: it
-    # probes reachability only when it has a worktree to remove, and a
-    # fresh project has none. A fifth line -- or any reordering -- means
-    # some step grew a call it must not make.
+    # in exactly this order: repo add (60-orca-repo-add), then the --json
+    # idempotence check and the install (75-orca-skills). 65-worktree-sweep
+    # asks Orca nothing here: it probes reachability only when it has a
+    # worktree to remove, and a fresh project has none. A fourth line --
+    # or any reordering -- means some step grew a call it must not make.
+    # (Updated by the cey slice to the sequence qxc's 882a6fa made
+    # 75-orca-skills emit: no plain 'skills installed' fallback, no
+    # --local.)
     cat > "$TMP/expected-cli.log" <<EXPECTED
 repo add --path $proj --json
 skills installed --json
-skills installed
-skills install --skill orchestration --local
+skills install --skill orchestration
 EXPECTED
     run diff -u "$TMP/expected-cli.log" "$TMP/cli.log"
     [ "$status" -eq 0 ]
