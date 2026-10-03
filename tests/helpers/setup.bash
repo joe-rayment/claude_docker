@@ -454,9 +454,13 @@ case "$cmd" in
         # `docker inspect -f '...HostConfig.PortBindings...' ID...` -- the
         # one inspect that names MANY containers: "/<name> <host port>" per
         # port each was created to publish, whatever its state, which is
-        # what real docker keeps in HostConfig across a stop.
+        # what real docker keeps in HostConfig across a stop. Matched by the
+        # template's shape (container_port_claims' `$n := .Name` loop), not
+        # by the field alone: container_matches' per-container template asks
+        # for .HostConfig.PortBindings too, and a bare field match would
+        # answer it as if it named many.
         case "$fmt" in
-            *HostConfig.PortBindings*)
+            *'$n := .Name'*HostConfig.PortBindings*)
                 for a in "$@"; do
                     [ -f "$state/containers/$a.meta" ] || continue
                     sed -n 's/^port=\([0-9][0-9]*\):.*/\1/p' "$state/containers/$a.meta" \
