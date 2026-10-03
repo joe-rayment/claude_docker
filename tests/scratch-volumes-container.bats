@@ -419,3 +419,121 @@ JSON
     [ "$(find "$home" -mindepth 1 | sort)" = "$before" ]
     [ ! -e "$legacy" ]
 }
+
+# --- the legacy dir the step cannot remove (claude-orca-d89) ---------------
+#
+# On the Mac, $PROJECT_DIR/.claude-dev/home/<rel> IS the scratch volume's
+# mount point in the /workspace view, so the rmdir of the emptied legacy
+# dir fails EBUSY on every boot. The parent being read-only (chmod 555)
+# denies the same rmdir on this box; the contents inside are still
+# deletable, which is exactly the shape being contracted for.
+
+@test "a shadowed cache whose dir cannot be removed is emptied, and the log says so" {
+    # Guards: step 45 empties a legacy cache dir it cannot remove itself
+    # (the dir stays -- it is the volume's mount point), reports
+    # 'emptied shadowed', and never claims 'removed shadowed' nor leaks an
+    # rm/rmdir error into the log; a second run says 'already empty'.
+    # Fails if: the step claims a removal that did not happen, its log
+    # carries 'cannot remove'/'rmdir:' noise, the contents survive, or the
+    # second run is not clean.
+    # Run: setsid -w bats tests/scratch-volumes-container.bats </dev/null
+    local proj home legacy
+    home="$(real_second_fs_home)"
+    proj="$TMP/p10"
+    legacy="$proj/.claude-dev/home/.cache"
+    mkdir -p "$legacy" "$home/.cache"
+    printf 'l\n' > "$legacy/legacy.txt"
+    printf 'v\n' > "$home/.cache/volume-own.txt"
+    mark_mounts "$home" .cache
+    chmod 555 "$proj/.claude-dev/home"
+
+    run env -u BEADS_DIR PROJECT_DIR="$proj" HOME="$home" \
+        MOUNTS_FILE="$TMP/mounts" PATH="$TMP/bin:$PATH" \
+        CLAUDE_ORCA_VOLUME_DIRS="$home/.cache" \
+        bash "$PROV_STEP"
+    chmod u+w "$proj/.claude-dev/home"
+    [ "$status" -eq 0 ]
+    [ ! -e "$legacy/legacy.txt" ]
+    [ -d "$legacy" ]
+    [ "$(cat "$home/.cache/volume-own.txt")" = "v" ]
+    [[ "$output" == *"emptied shadowed"* ]]
+    [[ "$output" != *"removed shadowed"* ]]
+    [[ "$output" != *"cannot remove"* ]]
+    [[ "$output" != *"rmdir:"* ]]
+
+    run env -u BEADS_DIR PROJECT_DIR="$proj" HOME="$home" \
+        MOUNTS_FILE="$TMP/mounts" PATH="$TMP/bin:$PATH" \
+        CLAUDE_ORCA_VOLUME_DIRS="$home/.cache" \
+        bash "$PROV_STEP"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"is already empty"* ]]
+}
+
+@test "an already-migrated opencode legacy whose dir cannot be removed is emptied, and the log says so" {
+    # Guards: the opencode 'already migrated' path empties a legacy dir it
+    # cannot remove itself and reports it in the same honest vocabulary as
+    # the cache branch -- 'emptied shadowed', never 'removed shadowed',
+    # never an rm/rmdir error line; a second run says 'already empty'.
+    # Fails if: the already-migrated branch claims a removal that did not
+    # happen, leaks error text into the log, or leaves contents behind.
+    # Run: setsid -w bats tests/scratch-volumes-container.bats </dev/null
+    local proj home vol legacy
+    home="$(real_second_fs_home)"
+    proj="$TMP/p11"
+    vol="$home/.local/share/opencode"
+    legacy="$proj/.claude-dev/home/.local/share/opencode"
+    mkdir -p "$legacy" "$vol"
+    printf 'l\n' > "$legacy/legacy.txt"
+    printf 'own\n' > "$vol/auth.json"
+    : > "$vol/.migrated-from-home"
+    mark_mounts "$home" .local/share/opencode
+    chmod 555 "$proj/.claude-dev/home/.local/share"
+
+    run env -u BEADS_DIR PROJECT_DIR="$proj" HOME="$home" \
+        MOUNTS_FILE="$TMP/mounts" PATH="$TMP/bin:$PATH" \
+        CLAUDE_ORCA_VOLUME_DIRS="$home/.local/share/opencode" \
+        bash "$PROV_STEP"
+    chmod u+w "$proj/.claude-dev/home/.local/share"
+    [ "$status" -eq 0 ]
+    [ ! -e "$legacy/legacy.txt" ]
+    [ -d "$legacy" ]
+    [ "$(cat "$vol/auth.json")" = "own" ]
+    [[ "$output" == *"emptied shadowed"* ]]
+    [[ "$output" != *"removed shadowed"* ]]
+    [[ "$output" != *"cannot remove"* ]]
+    [[ "$output" != *"rmdir:"* ]]
+
+    run env -u BEADS_DIR PROJECT_DIR="$proj" HOME="$home" \
+        MOUNTS_FILE="$TMP/mounts" PATH="$TMP/bin:$PATH" \
+        CLAUDE_ORCA_VOLUME_DIRS="$home/.local/share/opencode" \
+        bash "$PROV_STEP"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"is already empty"* ]]
+}
+
+@test "contents that cannot be emptied fail the step and say so" {
+    # Guards: when the shadowed contents themselves survive (here the
+    # legacy dir is read-only, so its entries cannot be deleted), the step
+    # exits 1 with 'could not empty' on stderr instead of claiming success.
+    # Fails if: the step exits 0, claims any removal, or leaves no
+    # diagnostic behind.
+    # Run: setsid -w bats tests/scratch-volumes-container.bats </dev/null
+    local proj home legacy
+    home="$(real_second_fs_home)"
+    proj="$TMP/p12"
+    legacy="$proj/.claude-dev/home/.cache"
+    mkdir -p "$legacy" "$home/.cache"
+    printf 'l\n' > "$legacy/legacy.txt"
+    mark_mounts "$home" .cache
+    chmod 555 "$legacy"
+
+    run env -u BEADS_DIR PROJECT_DIR="$proj" HOME="$home" \
+        MOUNTS_FILE="$TMP/mounts" PATH="$TMP/bin:$PATH" \
+        CLAUDE_ORCA_VOLUME_DIRS="$home/.cache" \
+        bash "$PROV_STEP"
+    chmod u+w "$legacy"
+    [ "$status" -eq 1 ]
+    [ -f "$legacy/legacy.txt" ]
+    [[ "$output" == *"could not empty"* ]]
+    [[ "$output" != *"removed shadowed"* ]]
+}
