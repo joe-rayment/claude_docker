@@ -286,6 +286,72 @@ JSON
     [[ "$output" == *"could not rewrite"* ]]
 }
 
+@test "a SQLite-era profile (profile-state.db present) is never rewritten" {
+    # Guards:   Orca >= 1.4.219 keeps a profile's state in
+    #           profiles/<id>/profile-state.db and treats orca-data.json
+    #           as its own export -- a byte change behind the db makes the
+    #           next start refuse outright ("cannot safely choose a
+    #           profile-state authority", claude-orca-cey). With the db
+    #           present, the seed writes NOTHING, not even a rewrite it
+    #           would have made on its own pre-SQLite rules.
+    # Fails if: orca-data.json changes by a single byte, or the seed does
+    #           not say it is leaving the export alone.
+    # Run:      setsid -w bats -f 'SQLite-era profile' \
+    #               tests/scratch-volumes-container.bats </dev/null
+    local home="$TMP/h13" udd="$TMP/udd13" proj="$TMP/p13" data db before
+    mkdir -p "$home" "$udd/profiles/local-default"
+    mark_mounts "$home" worktrees
+    data="$udd/profiles/local-default/orca-data.json"
+    db="$udd/profiles/local-default/profile-state.db"
+    : > "$db"
+
+    # A record that WOULD be rewritten under the old rules: it still names
+    # the old in-folder default while the volume is mounted.
+    cat > "$data" <<JSON
+{"schemaVersion":1,"repos":[
+ {"id":"a","path":"$proj","worktreeBasePath":"$proj/.orca-worktrees"}]}
+JSON
+    before="$(sha256sum < "$data")"
+
+    run env -u PROJECT_DIR -u BEADS_DIR HOME="$home" \
+        CLAUDE_ORCA_VOLUME_DIRS="$home/worktrees" \
+        MOUNTS_FILE="$TMP/mounts" PATH="$TMP/bin:$PATH" \
+        bash "$SEED" --user-data-dir "$udd" --project "$proj"
+    [ "$status" -eq 0 ]
+    [ "$(sha256sum < "$data")" = "$before" ]
+    [[ "$output" == *"$db"* ]]
+    [[ "$output" == *"orca state present in SQLite ($db); orca-data.json is Orca's own export -- not rewriting it"* ]]
+}
+
+@test "without a db, an orca-data.json with nothing to rewrite is left byte-identical" {
+    # Guards:   the no-db rewrite fires only when at least one record
+    #           still names the old default; anything else -- here two
+    #           repos, neither naming it -- must not be written at all,
+    #           because a needless write of the export is exactly the byte
+    #           change a later Orca refuses to start over.
+    # Fails if: the file changes by a single byte when no record matches.
+    # Run:      setsid -w bats -f 'nothing to rewrite is left byte-identical' \
+    #               tests/scratch-volumes-container.bats </dev/null
+    local home="$TMP/h14" udd="$TMP/udd14" proj="$TMP/p14" data before
+    mkdir -p "$home" "$udd/profiles/local-default"
+    mark_mounts "$home" worktrees
+    data="$udd/profiles/local-default/orca-data.json"
+    cat > "$data" <<JSON
+{"schemaVersion":1,"repos":[
+ {"id":"a","path":"$proj","worktreeBasePath":"$proj/custom"},
+ {"id":"b","path":"$proj/other","worktreeBasePath":"$proj/other/.orca-worktrees"}]}
+JSON
+    before="$(sha256sum < "$data")"
+
+    run env -u PROJECT_DIR -u BEADS_DIR HOME="$home" \
+        CLAUDE_ORCA_VOLUME_DIRS="$home/worktrees" \
+        MOUNTS_FILE="$TMP/mounts" PATH="$TMP/bin:$PATH" \
+        bash "$SEED" --user-data-dir "$udd" --project "$proj"
+    [ "$status" -eq 0 ]
+    [ "$(sha256sum < "$data")" = "$before" ]
+    [[ "$output" == *"not seeded"* ]]
+}
+
 # --- the migration step ----------------------------------------------------
 
 @test "shadowed caches are deleted only behind a separate mount" {
