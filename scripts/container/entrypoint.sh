@@ -772,6 +772,10 @@ fi
 # 2026-10-03 (claude-orca-owb).
 clear_stale_display() {
     local x11_tmp="${CLAUDE_ORCA_X11_TMP:-/tmp}" lock pid n comm
+    # Without /proc (a Mac running the suite) there is no way to tell a
+    # live server from a stale lock, and every lock would read as stale --
+    # XQuartz's included. The container always has /proc.
+    [ -d /proc/self ] || return 0
     for lock in "$x11_tmp"/.X[0-9]*-lock; do
         [ -f "$lock" ] || continue
         # The PID is what the lock carries, blank-padded; anything that
