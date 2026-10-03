@@ -324,6 +324,19 @@ printf '%s\n' "$*" >> "${CONTAINER_STUB_LOG:-/dev/null}"
 state="${CONTAINER_STUB_STATE:-${TMPDIR:-/tmp}/container-stub}"
 mkdir -p "$state/containers" "$state/volumes"
 
+# CONTAINER_STUB_SOURCE_PREFIX: Docker Desktop answers a Mac bind mount's
+# .Mounts[].Source in its VM's own spelling -- /host_mnt/Users/... -- while
+# the launcher spells the Mac path. Set it to "/host_mnt" to make the stub
+# answer Sources the way Docker Desktop does; empty (the default) changes
+# nothing for any other case. Bind-mount sources only: a named volume lives
+# on the VM side and Docker Desktop does not spell those under /host_mnt.
+stub_mount_source() {
+    case "$1" in
+        /*) printf '%s%s\n' "${CONTAINER_STUB_SOURCE_PREFIX:-}" "$1" ;;
+        *)  printf '%s\n' "$1" ;;
+    esac
+}
+
 # A container this folder did NOT create -- what an older generation of the
 # template leaves behind under the same name. DOCKER_STUB_PRESET_CONTAINER
 # is <name>:<image>:<mount-src>:<port>, and the image may carry a tag of its
@@ -344,8 +357,9 @@ if [ -n "${DOCKER_STUB_PRESET_CONTAINER:-}" ] && [ ! -f "$state/preset-applied" 
         printf 'image=%s\n' "$p_image"
         printf 'imageid=sha256:%s\n' \
             "0ldd0ldd0ldd0ldd0ldd0ldd0ldd0ldd0ldd0ldd0ldd0ldd0ldd0ldd0ldd0ldd"
-        printf 'mount=%s:/workspace/%s\n' "$p_src" "$(basename "$p_src")"
-        printf 'mount=%s/.claude-dev/home:/home/agent\n' "$p_src"
+        printf 'mount=%s:/workspace/%s\n' \
+            "$(stub_mount_source "$p_src")" "$(basename "$p_src")"
+        printf 'mount=%s/.claude-dev/home:/home/agent\n' "$(stub_mount_source "$p_src")"
         printf 'port=%s:%s\n' "$p_port" "$p_port"
     } > "$state/containers/$p_name.meta"
 fi
@@ -603,7 +617,7 @@ case "$cmd" in
                 case "$prev" in
                     -v|--volume)
                         # Mounts carry no mode in docker's own inspect.
-                        printf 'mount=%s\n' "${a%:ro}" ;;
+                        printf 'mount=%s\n' "$(stub_mount_source "${a%:ro}")" ;;
                     -p|--publish)
                         # "127.0.0.1:6768:6768" or "6768:6768".
                         pub="${a##*:}"
