@@ -2425,6 +2425,23 @@ EXTRA
     fi
 }
 
+# Docker Desktop's VM spells a Mac bind mount's host path in its own
+# namespace: the folder the launcher mounts as /Users/joe/Harness test is
+# answered by `docker inspect` as /host_mnt/Users/joe/Harness test (real
+# Mac, 2026-10-03 -- every start read "not this folder's ... recreating it"
+# and no container survived two opens). The launcher spells paths the Mac
+# way, so a docker-reported Source is compared only after ONE leading
+# /host_mnt is stripped -- and only when what follows it is itself an
+# absolute path, so a Mac folder whose own name merely begins with
+# host_mnt is never mangled.
+docker_host_path() {
+    local p="$1"
+    case "$p" in
+        /host_mnt/*) p="${p#/host_mnt}" ;;
+    esac
+    printf '%s\n' "$p"
+}
+
 # A container with the right NAME is not necessarily this folder's
 # container. The name is derived from the folder's basename alone, an
 # older generation of this template used the same one, and bootstrap moves
@@ -2485,15 +2502,20 @@ FACTS
     # The project mount, then the home mount, each as one source:destination
     # pair out of the container's own Mounts. A stranger's container is
     # usually caught here: it mounts ANOTHER folder, or mounts this kind of
-    # folder at a path this generation no longer uses.
+    # folder at a path this generation no longer uses. The Source is
+    # docker-reported, so it goes through docker_host_path first: Docker
+    # Desktop spells a Mac path /host_mnt/Users/... and the launcher spells
+    # it /Users/....
     guest="$(guest_project_dir "$dir")"
     have=""
     while IFS= read -r m; do
         [ -n "$m" ] || continue
         case "$m" in
-            *":$guest") have="${m%:$guest}" ;;
+            *":$guest")
+                have="${m%:$guest}"
+                if [ "$(docker_host_path "$have")" = "$dir" ]; then found=1; fi
+                ;;
         esac
-        if [ "$m" = "$dir:$guest" ]; then found=1; fi
     done <<MOUNTS
 $mounts
 MOUNTS
@@ -2503,7 +2525,11 @@ MOUNTS
     fi
     found=""
     while IFS= read -r m; do
-        [ "$m" = "$dir/.claude-dev/home:/home/agent" ] && found=1
+        case "$m" in
+            *":/home/agent")
+                if [ "$(docker_host_path "${m%:/home/agent}")" = "$dir/.claude-dev/home" ]; then found=1; fi
+                ;;
+        esac
     done <<MOUNTS
 $mounts
 MOUNTS

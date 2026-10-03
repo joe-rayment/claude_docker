@@ -1133,3 +1133,63 @@ desktop_fixture() {
     ! grep -q "^stop " "$CONTAINER_STUB_LOG"
     [ "$(tail -1 "$OPEN_STUB_LOG")" = "$url" ]
 }
+
+# Guards: Docker Desktop spells a Mac bind mount's .Mounts[].Source in its
+# own VM's namespace -- the folder the launcher mounts as
+# /Users/joe/Documents/Harness test is answered by `docker inspect` as
+# /host_mnt/Users/joe/Documents/Harness test (real Mac, 2026-10-03) -- so a
+# Source compared exactly as docker reported it never matches and every
+# open recreates the container. container_matches must strip that ONE
+# /host_mnt prefix before comparing, including when the folder's path
+# contains a space, where a "find the substring anywhere" fix goes wrong.
+# Fails if: the Source is compared as reported (the first open below
+# recreates a container of this folder's own); or the strip is not
+# anchored -- a Source naming a different folder under /host_mnt would then
+# be adopted as this folder's own.
+# Run: bats tests/launcher-v3.bats
+@test "open reuses a running container whose mounts docker reported under /host_mnt, and still recreates a stranger's" {
+    mkdir -p "$PROJECT_DIR/Harness test"
+    primary="$(abspath "$PROJECT_DIR/Harness test")"
+    export CONTAINER_STUB_SOURCE_PREFIX=/host_mnt
+    run make_project_v3 "$primary"
+    [ "$status" -eq 0 ]
+
+    name="claude-orca-$(basename "$primary" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g')"
+    url="$(cat "$primary/.claude-dev/run/orca-web-url.txt")"
+
+    # The knob really is what put the prefix in the stub's answer.
+    grep -qF "mount=/host_mnt$primary:" "$CONTAINER_STUB_STATE/containers/$name.meta"
+    grep -qF "mount=/host_mnt$primary/.claude-dev/home:/home/agent" \
+        "$CONTAINER_STUB_STATE/containers/$name.meta"
+
+    # Running container of this folder's own, Sources spelled Docker
+    # Desktop's way: reused -- never "recreating", never "not this
+    # folder's", and the URL this run already published is the one opened.
+    : > "$CONTAINER_STUB_LOG"
+    : > "$OPEN_STUB_LOG"
+    run bash -c "cd '$primary' && ./claude-dev open"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Container $name is already running."* ]]
+    [[ "$output" != *"recreating"* ]]
+    [[ "$output" != *"is not this folder's"* ]]
+    ! grep -q "^run " "$CONTAINER_STUB_LOG"
+    ! grep -q "^stop " "$CONTAINER_STUB_LOG"
+    ! grep -q "^rm " "$CONTAINER_STUB_LOG"
+    [ "$(tail -1 "$OPEN_STUB_LOG")" = "$url" ]
+
+    # A container whose Sources name a DIFFERENT folder under /host_mnt is
+    # still a stranger: it goes, and this folder's own takes its place.
+    sed -i "s|^mount=/host_mnt$primary|mount=/host_mnt/not-this-folder|" \
+        "$CONTAINER_STUB_STATE/containers/$name.meta"
+    : > "$CONTAINER_STUB_LOG"
+    : > "$OPEN_STUB_LOG"
+    run bash -c "cd '$primary' && ./claude-dev open"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"is not this folder's (mount: /host_mnt/not-this-folder"* ]]
+    [[ "$output" == *"recreating"* ]]
+    rm_at="$(grep -n "^rm " "$CONTAINER_STUB_LOG" | head -1 | cut -d: -f1)"
+    run_at="$(grep -n "^run .*--name $name" "$CONTAINER_STUB_LOG" | head -1 | cut -d: -f1)"
+    [ -n "$rm_at" ]
+    [ -n "$run_at" ]
+    [ "$rm_at" -lt "$run_at" ]
+}
