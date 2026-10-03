@@ -474,9 +474,26 @@ case "$cmd" in
             *Config.Image*Mounts*)
                 # container_matches' one template: image, image id, the
                 # host port for the asked port (blank if none), mounts.
-                want="${fmt#*NetworkSettings.Ports \"}"; want="${want%%/tcp*}"
+                # The port is answered by whichever key the template asks
+                # for, the way real docker behaves: .NetworkSettings.Ports
+                # holds it only while the container is running -- moby's
+                # releaseNetwork empties it the moment the container stops
+                # (daemon/container_operations.go:951) -- and
+                # .HostConfig.PortBindings keeps it while stopped.
+                case "$fmt" in
+                    *NetworkSettings.Ports*)
+                        want="${fmt#*NetworkSettings.Ports \"}"; want="${want%%/tcp*}"
+                        if [ "$(cat "$state/containers/$name" 2>/dev/null)" = "running" ]; then
+                            have_port="$(meta_get port | sed -n "s|:$want\$||p" | grep . || true)"
+                        else
+                            have_port=""
+                        fi ;;
+                    *)
+                        want="${fmt#*HostConfig.PortBindings \"}"; want="${want%%/tcp*}"
+                        have_port="$(meta_get port | sed -n "s|:$want\$||p" | grep . || true)" ;;
+                esac
                 meta_get image; meta_get imageid
-                meta_get port | sed -n "s|:$want\$||p" | grep . || echo
+                printf '%s\n' "$have_port"
                 meta_get mount ;;
             *Config.Image*)
                 meta_get image ;;
