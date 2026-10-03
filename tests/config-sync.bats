@@ -56,14 +56,20 @@ CONFIG_SYNC() {
 # claude-orca-3tc: the template's settings are the whole default surface a
 # new folder starts from, so the top-level keys are pinned exactly -- a key
 # may not appear or vanish without this case naming it. Inline prompt
-# suggestions are off by default (promptSuggestionEnabled: false); a folder
-# that wants them back overrides through settings.local.json, the way the
-# skipDangerousModePermissionPrompt case below proves for its own key.
+# suggestions are off by default, twice over: promptSuggestionEnabled: false,
+# and env CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false -- Claude Code 2.1.288
+# checks that variable before the setting, and its jJt() gate is what a
+# host (the claude.ai remote view) passes through to switch suggestions on
+# mid-session (2026-10-03: they came back with the setting alone). A folder
+# that wants them back overrides both through settings.local.json, the way
+# the skipDangerousModePermissionPrompt case below proves for its own key.
 @test "the template's claude-settings.json pins its exact top-level keys, prompt suggestions off" {
     run jq -r 'keys | sort | join(",")' "$REPO_ROOT/config/claude-settings.json"
     [ "$status" -eq 0 ]
     [ "$output" = "enableAllProjectMcpServers,env,hooks,model,permissions,promptSuggestionEnabled,respondToBashCommands,skipDangerousModePermissionPrompt,statusLine,subagentPromptCacheTtl,subagentStatusLine" ]
     run jq -r '.promptSuggestionEnabled' "$REPO_ROOT/config/claude-settings.json"
+    [ "$output" = "false" ]
+    run jq -r '.env.CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION' "$REPO_ROOT/config/claude-settings.json"
     [ "$output" = "false" ]
 }
 
