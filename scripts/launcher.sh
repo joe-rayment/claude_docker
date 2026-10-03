@@ -1517,6 +1517,31 @@ orca_no_data_dir_message() {
         "$HOME/Library/Application Support/{Orca,ArchitectureGrammar}"
 }
 
+# The file Orca keeps its local project list in, under a user data dir.
+# Since Orca grew profiles (verified 1.4.197, still so on 1.4.218) that is
+# <dir>/profiles/<activeProfileId>/orca-data.json, with the active profile
+# named by <dir>/orca-profile-index.json -- the same resolution
+# seed-orca-state.sh does on the container side; the root <dir>/orca-data.json
+# is only the pre-profiles legacy copy Orca copies forward once and then
+# never reads again, so a reader aimed at it edits a file the app has
+# abandoned (the strip "succeeds", the app still lists the folder). One
+# helper, so no two readers of the list can disagree about which store
+# they read: the active profile's file when it exists, the legacy root
+# file when there is no profile (an Orca old enough to have neither).
+orca_data_json_file() {
+    local dir="$1" id="" f
+    if command -v jq >/dev/null 2>&1; then
+        id="$(jq -r '.activeProfileId // empty' "$dir/orca-profile-index.json" 2>/dev/null || true)"
+    fi
+    [ -n "$id" ] || id="local-default"
+    f="$dir/profiles/$id/orca-data.json"
+    if [ -f "$f" ]; then
+        printf '%s\n' "$f"
+        return 0
+    fi
+    printf '%s\n' "$dir/orca-data.json"
+}
+
 # The Mac's own Orca "user data" directory -- where it persists
 # orca-data.json, its local project list. In order: $ORCA_USER_DATA_PATH,
 # when the environment already carries one, is authoritative outright;
@@ -1525,7 +1550,9 @@ orca_no_data_dir_message() {
 # directory it named still exists; then discovery, while the app is
 # running ($2, its CLI) -- `status --json`'s own `.result.app.pid` and the
 # first line of `lsof -p <pid> -Fn` naming orca-environments.json or
-# orca-data.json, whose dirname IS the answer, cached for next time; and
+# orca-data.json, whose dirname is the answer -- or, when the open file is
+# a profile's own orca-data.json and the dirname ends in profiles/<id>,
+# that directory's grandparent -- cached for next time; and
 # only then the two Library guesses (the bundle's package name is
 # ArchitectureGrammar and the running app calls app.setName at startup, so
 # the ordinary default is one of the two -- the mac-e2e run settles
@@ -1533,7 +1560,7 @@ orca_no_data_dir_message() {
 # never invents a path to write one at, and every caller says so instead
 # of silently no-op'ing.
 orca_user_data_dir() {
-    local dir="${1:-}" cli="${2:-}" cache d pid lsof_line found=""
+    local dir="${1:-}" cli="${2:-}" cache d pid lsof_line found="" rest
     if [ -n "${ORCA_USER_DATA_PATH:-}" ]; then
         printf '%s\n' "$ORCA_USER_DATA_PATH"
         return 0
@@ -1555,6 +1582,18 @@ orca_user_data_dir() {
                 case "$lsof_line" in
                     n*orca-environments.json|n*orca-data.json)
                         found="$(dirname "${lsof_line#n}")"
+                        # Since Orca grew profiles, the open file can be
+                        # the active profile's orca-data.json, whose
+                        # dirname is .../profiles/<id> -- the user data
+                        # dir is that directory's grandparent.
+                        case "$found" in
+                            */profiles/*)
+                                rest="${found##*/profiles/}"
+                                case "$rest" in
+                                    */*) ;;   # deeper than one profile level
+                                    *) found="${found%/profiles/$rest}" ;;
+                                esac ;;
+                        esac
                         break ;;
                 esac
             done <<LSOF
@@ -1580,7 +1619,9 @@ LSOF
     return 0
 }
 
-# Rewrites the Mac's own orca-data.json, removing every LOCAL .repos entry
+# Rewrites the store orca_data_json_file resolves -- the active profile's
+# orca-data.json, or the pre-profiles root legacy file -- removing every
+# LOCAL .repos entry
 # that names this folder ($CLAUDE_ORCA_HOST_PROJECT_DIR too, when set) --
 # every other repo, every remote-host entry and every other top-level key
 # preserved untouched. Which entries those are is decided in shell, by the
@@ -1593,9 +1634,12 @@ LSOF
 # it and then quit that app again (claude-orca-tgr follow-up) -- every way
 # this can fail to land now says which on stderr and returns non-zero.
 #
-# Two kinds of non-zero, because they are two different situations:
+# Three kinds of non-zero, because they are three different situations:
 #   1  the folder IS listed and the rewrite did not remove it -- the
-#      caller must not hand this folder to the app.
+#      caller must not hand this folder to the app; OR the store is a
+#      SQLite-era profile (profile-state.db beside it), which must never
+#      be edited at all -- the caller's in-app removal steps are the
+#      answer for both (claude-orca-pow).
 #   2  there is no store to read here at all (no data folder, no
 #      orca-data.json, no jq): said out loud, but it is not evidence of a
 #      leak -- a Mac whose Orca has never been launched has neither a
@@ -1608,13 +1652,13 @@ LSOF
 # (claude-orca, 2026-09-13) -- it takes the one it is given, and says what
 # to remove by hand when there is none.
 orca_strip_local_repo() {
-    local dir="$1" cli="${2:-}" data f tmp p drop=""
+    local dir="$1" cli="${2:-}" data f tmp p db="" drop=""
     data="$(orca_user_data_dir "$dir" "$cli")"
     if [ -z "$data" ]; then
         echo "  $(orca_no_data_dir_message)" >&2
         return 2
     fi
-    f="$data/orca-data.json"
+    f="$(orca_data_json_file "$data")"
     if [ ! -f "$f" ]; then
         echo "  $f not found" >&2
         return 2
@@ -1625,6 +1669,20 @@ orca_strip_local_repo() {
     fi
     if ! orca_data_json_lists_dir "$f" "$dir"; then
         return 0
+    fi
+
+    # A SQLite-era profile (Orca 1.4.219+) keeps its state in
+    # profiles/<id>/profile-state.db and treats orca-data.json as its
+    # export: ANY byte change to that JSON makes the user's next Orca
+    # start refuse outright ("cannot safely choose a profile-state
+    # authority", proven on the real 1.4.219 .deb). The rewrite below
+    # would brick the desktop app it is trying to help -- so this never
+    # edits such a profile, and says why: the caller's could-not-strip
+    # path (the in-app removal steps) is the answer.
+    db="${f%/orca-data.json}/profile-state.db"
+    if [ -f "$db" ]; then
+        echo "  Orca keeps this profile in SQLite; the launcher will not edit it" >&2
+        return 1
     fi
 
     # The paths to drop, chosen here and handed to jq as data: string
@@ -1641,11 +1699,29 @@ $(orca_data_json_repo_paths "$f")
 REPOS
 
     tmp="$f.tmp.$$"
+    # The same removal in .projects[].sourceRepoIds: a project references
+    # its repos by id, so the ids this rewrite removes from .repos come out
+    # of every project's list too, and a project left referencing nothing
+    # goes with them. A project that never referenced anything is not
+    # touched.
     if jq --arg drop "$drop" '
         def islocal: ((.executionHostId // "local") | . == "" or . == "local");
         ($drop | split("\n") | map(select(. != ""))) as $d
-        | .repos = ((.repos // []) | map(. as $r | select(
-            (($r | islocal) and (($d | index($r.path)) != null)) | not)))
+        | (.repos // []) as $old
+        | ($old | map(. as $r | select(
+            (($r | islocal) and (($d | index($r.path)) != null)) | not))) as $kept
+        | ($old | map(. as $r
+              | select(($r | islocal) and (($d | index($r.path)) != null))
+              | (.id // ""))
+            | map(select(. != ""))) as $gone
+        | .repos = $kept
+        | .projects = ((.projects // []) | map(
+              (.sourceRepoIds // []) as $s
+              | if ($s | length) > 0
+                then .sourceRepoIds = ($s | map(
+                    . as $sid | select(($gone | index($sid)) == null)))
+                     | select((.sourceRepoIds | length) > 0)
+                else . end))
     ' "$f" > "$tmp" 2>/dev/null; then
         mv "$tmp" "$f" 2>/dev/null || rm -f "$tmp"
     else
@@ -1902,7 +1978,7 @@ PATHS
     fi
     echo "    this folder: $dir" >&2
     data="$(orca_user_data_dir "$dir" "$cli")"
-    if [ -n "$data" ]; then f="$data/orca-data.json"; fi
+    if [ -n "$data" ]; then f="$(orca_data_json_file "$data")"; fi
     if [ -n "$f" ] && [ -f "$f" ]; then
         while IFS= read -r p; do
             [ -n "$p" ] || continue
@@ -3129,7 +3205,7 @@ cmd_verify_v3() {
         else
             data="$(orca_user_data_dir "$dir" "$cli")"
             if [ -n "$data" ]; then
-                src="$data/orca-data.json"
+                src="$(orca_data_json_file "$data")"
                 if orca_data_json_lists_dir "$src" "$dir"; then
                     doctor_row FAIL "local repos" "the Mac's own Orca tracks this folder as a LOCAL repo ($src) -- agents opened there run on the Mac, outside this container; remove it in Orca"
                     rc=2

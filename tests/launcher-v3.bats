@@ -764,6 +764,63 @@ desktop_fixture() {
     ! grep -qF "opening Orca Web instead" <<< "$output"
 }
 
+# Guards: the case a SQLite-era Orca (1.4.219+) hits on every open -- the
+# active profile's orca-data.json is only its export and profile-state.db
+# is the authority, so the launcher must refuse the strip (SQLite line,
+# both files byte-identical), hand the folder over anyway, and the leak it
+# reports must READ the profile's store, not the stale root legacy file
+# sitting beside it.
+# Fails if: the open path rewrites either orca-data.json, or the leak
+# diagnostic (and so the "local entries" it prints) still aims at the
+# root file the app stopped reading when profiles arrived.
+# Run: bats -f 'never edits a SQLite-era profile' tests/launcher-v3.bats
+@test "open with ui desktop never edits a SQLite-era profile, and the leak it reports reads the profile's store" {
+    local primary name data f root sha_f sha_root
+    primary="$(desktop_fixture)"
+    name="remote-$(basename "$primary")"
+    # The app is not running (the default), so the strip is attempted --
+    # and its store is a profiled one, with a stale pre-profiles root file
+    # beside it that ALSO still lists this folder.
+    data="$BATS_TEST_TMPDIR/mac-orca-profile"
+    mkdir -p "$data/profiles/p2"
+    printf '{"activeProfileId":"p2"}\n' > "$data/orca-profile-index.json"
+    f="$data/profiles/p2/orca-data.json"
+    root="$data/orca-data.json"
+    printf '{"repos":[{"id":"r1","path":"%s"},{"id":"r9","path":"/Users/joe/profile-only"}]}\n' \
+        "$primary" > "$f"
+    printf '{"repos":[{"id":"r2","path":"%s"},{"id":"r8","path":"/Users/joe/root-only"}]}\n' \
+        "$primary" > "$root"
+    : > "$data/profiles/p2/profile-state.db"
+    export ORCA_USER_DATA_PATH="$data"
+    # The running app (after the launch) lists this folder locally, which
+    # is what sends the hand-off into the leak diagnostic.
+    export ORCA_STUB_LOCAL_REPOS="$primary"
+    sha_f="$(sha256sum "$f" | cut -d' ' -f1)"
+    sha_root="$(sha256sum "$root" | cut -d' ' -f1)"
+
+    run bash -c "cd '$primary' && ./claude-dev open"
+    [ "$status" -eq 0 ]
+
+    # Nothing written anywhere: the export is frozen, the legacy file is
+    # not the store the app reads.
+    [ "$(sha256sum "$f" | cut -d' ' -f1)" = "$sha_f" ]
+    [ "$(sha256sum "$root" | cut -d' ' -f1)" = "$sha_root" ]
+
+    # The strip said why it refused...
+    grep -qF "Orca keeps this profile in SQLite; the launcher will not edit it" <<< "$output"
+    # ... and the hand-off happened anyway, with the clicks that finish it.
+    grep -q -- "-a $CLAUDE_ORCA_APP" "$OPEN_STUB_LOG"
+    grep -qF "environment add --name $name" "$ORCA_STUB_LOG"
+    [ -s "$primary/.claude-dev/run/orca-environment.json" ]
+    grep -qF "ACTION NEEDED in Orca" <<< "$output"
+    grep -qF "Remove Project from Orca" <<< "$output"
+
+    # The diagnostic read the PROFILE's store: its entries, not the root
+    # file's.
+    grep -qF "$f local entries: $primary, /Users/joe/profile-only" <<< "$output"
+    ! grep -qF "/Users/joe/root-only" <<< "$output"
+}
+
 @test "desktop cli calls carry no ORCA_USER_DATA_PATH override" {
     local primary
     primary="$(desktop_fixture)"
