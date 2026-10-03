@@ -13,6 +13,9 @@
 # claude-orca-11c: the download temp file lives beside versions/, not inside
 # it -- versions/ is managed by Claude Code's own installer, which can clean
 # or truncate a file there mid-download, as on the 2026-10-01 Mac boot.
+# claude-orca-34g: the small fetches (the latest version file and
+# manifest.json) retry transient errors and name their own failures -- a
+# lost fetch must not read as a malformed manifest.
 
 set -uo pipefail
 . "$(dirname "$0")/../provision-lib.sh"
@@ -23,6 +26,19 @@ HOME_BIN="$AGENT_HOME/.local/bin/claude"
 VDIR="$AGENT_HOME/.local/share/claude/versions"
 
 semver() { grep -Eo '^[0-9]+\.[0-9]+\.[0-9]+' | head -1; }
+
+# fetch_small <url> <max-time> -- print the body of a small fetch, keeping
+# curl's exit code; on failure say it was a fetch, with the code, and return
+# that code. Retries transient errors (timeouts, HTTP 5xx) twice.
+fetch_small() {
+    local url="$1" max_time="$2" body rc=0
+    body="$(curl -fsSL --retry 2 --retry-delay 2 --max-time "$max_time" "$url" 2>/dev/null)" || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        echo "claude: cannot fetch $url (curl exit $rc)" >&2
+        return "$rc"
+    fi
+    printf '%s\n' "$body"
+}
 
 # A plain file where the link belongs is not ours to replace: someone put it
 # there on purpose.
@@ -44,8 +60,17 @@ if [ -L "$HOME_BIN" ]; then
     esac
 fi
 
-# What is the latest release?
-latest="$(curl -fsSL --max-time 10 "$RELEASES/latest" 2>/dev/null | tr -d '[:space:]')"
+# What is the latest release? A fetch that still fails after its retries
+# says so itself (fetch_small); a home install is kept, nothing to keep is
+# fatal.
+if ! latest="$(fetch_small "$RELEASES/latest" 10 | tr -d '[:space:]')"; then
+    if [ -n "$home_v" ]; then
+        echo "keeping claude $home_v" >&2
+        exit 0
+    fi
+    echo "no Claude Code in $HOME_BIN and cannot reach $RELEASES/latest" >&2
+    exit 1
+fi
 if ! printf '%s\n' "$latest" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
     if [ -n "$home_v" ]; then
         echo "cannot reach $RELEASES/latest; keeping claude $home_v"
@@ -75,7 +100,13 @@ case "$(uname -m)" in
         exit 1
         ;;
 esac
-manifest="$(curl -fsSL --max-time 30 "$RELEASES/$latest/manifest.json" 2>/dev/null)"
+# A manifest that was never fetched is a fetch failure (named above); only
+# a manifest in hand that lacks a 64-hex checksum for our platform is a
+# parse failure.
+if ! manifest="$(fetch_small "$RELEASES/$latest/manifest.json" 30)"; then
+    echo "claude: installing $latest failed; $HOME_BIN is untouched" >&2
+    exit 1
+fi
 checksum="$(printf '%s\n' "$manifest" | jq -r ".platforms[\"$platform\"].checksum // empty" 2>/dev/null)"
 if ! printf '%s\n' "$checksum" | grep -Eq '^[a-f0-9]{64}$'; then
     echo "cannot read a sha256 for $platform from $RELEASES/$latest/manifest.json" >&2
