@@ -1095,3 +1095,41 @@ desktop_fixture() {
     ! grep -q "^rm " "$CONTAINER_STUB_LOG"
     [ "$(tail -1 "$OPEN_STUB_LOG")" = "$url" ]
 }
+
+# Guards: container_matches reads this folder's published port from
+# .HostConfig.PortBindings, which docker keeps while a container is
+# stopped -- .NetworkSettings.Ports is emptied the moment it stops (moby's
+# releaseNetwork, daemon/container_operations.go:951) -- so a stopped
+# container of this folder's own is started, not recreated.
+# Fails if: the port is read from .NetworkSettings.Ports again; the stub
+# then answers "port: none" for the stopped container, exactly what real
+# docker answers, and open recreates the container instead of starting it.
+# Run: bats tests/launcher-v3.bats
+@test "open starts a stopped container of this folder's own instead of recreating it" {
+    mkdir -p "$PROJECT_DIR"
+    primary="$(abspath "$PROJECT_DIR")"
+    run make_project_v3 "$primary"
+    [ "$status" -eq 0 ]
+
+    name="claude-orca-$(basename "$primary")"
+    url="$(cat "$primary/.claude-dev/run/orca-web-url.txt")"
+
+    # The container this folder created, now stopped -- what real docker
+    # reports for it, and the state under which .NetworkSettings.Ports is
+    # empty and .HostConfig.PortBindings still carries the port.
+    printf 'exited\n' > "$CONTAINER_STUB_STATE/containers/$name"
+    : > "$CONTAINER_STUB_LOG"
+    : > "$OPEN_STUB_LOG"
+    run bash -c "cd '$primary' && ./claude-dev open"
+    [ "$status" -eq 0 ]
+
+    [[ "$output" == *"==> Starting $name (was exited)"* ]]
+    [[ "$output" != *"recreating"* ]]
+    [[ "$output" != *"is not this folder's"* ]]
+    [[ "$output" != *"port: none"* ]]
+    grep -qx "start $name" "$CONTAINER_STUB_LOG"
+    ! grep -q "^run " "$CONTAINER_STUB_LOG"
+    ! grep -q "^rm " "$CONTAINER_STUB_LOG"
+    ! grep -q "^stop " "$CONTAINER_STUB_LOG"
+    [ "$(tail -1 "$OPEN_STUB_LOG")" = "$url" ]
+}
