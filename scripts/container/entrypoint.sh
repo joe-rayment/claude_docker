@@ -758,11 +758,37 @@ fi
 # restart in three died with "Missing X server or $DISPLAY" and a
 # segfault, and this process exiting takes the whole container with it.
 #
-# Clearing the stale state costs nothing (nothing else in this container
-# is using a display: this is PID 1, at boot, before anything is started).
+# What actually blocks the restarted display is the LOCK, not the socket
+# path -- Xvfb unlinks a leftover socket itself before binding. And
+# because the restart keeps the writable layer, the lock can name a PID
+# that has since been REUSED by a process that is no X server at all; a
+# server whose PID is still the X server it names comes up fine. So this
+# removes only the locks whose PID is no longer an X server (Xvfb, Xorg,
+# X or Xwayland under /proc), each together with its socket file, and
+# never the .X11-unix directory itself: wherever this runs, something
+# else may hold a live display there -- this dev box's own Orca does, and
+# on a Mac running the suite it is XQuartz's -- and rm -rf'ing that
+# directory and every lock took the box's own displays down on
+# 2026-10-03 (claude-orca-owb).
 clear_stale_display() {
-    rm -f /tmp/.X[0-9]*-lock 2>/dev/null || true
-    rm -rf /tmp/.X11-unix 2>/dev/null || true
+    local x11_tmp="${CLAUDE_ORCA_X11_TMP:-/tmp}" lock pid n comm
+    for lock in "$x11_tmp"/.X[0-9]*-lock; do
+        [ -f "$lock" ] || continue
+        # The PID is what the lock carries, blank-padded; anything that
+        # does not reduce to digits was not written by an X server.
+        pid="$(tr -d '[:space:]' <"$lock" 2>/dev/null)" || pid=""
+        comm=""
+        case "$pid" in
+            '' | *[!0-9]*) ;;
+            *) comm="$(cat "/proc/$pid/comm" 2>/dev/null)" || comm="" ;;
+        esac
+        case "$comm" in
+            Xvfb | Xorg | X | Xwayland) continue ;;
+        esac
+        n="${lock#"$x11_tmp"/.X}"
+        n="${n%-lock}"
+        rm -f "$lock" "$x11_tmp/.X11-unix/X$n" 2>/dev/null || true
+    done
 }
 
 start_orca_serve() {
