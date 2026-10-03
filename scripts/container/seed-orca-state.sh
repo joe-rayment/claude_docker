@@ -25,7 +25,19 @@
 #                              worktree-gc is path-agnostic -- so an
 #                              existing orca-data.json is rewritten only
 #                              entry by entry, and only the ones still
-#                              naming the old default.
+#                              naming the old default. Orca >= 1.4.219
+#                              keeps a profile's state in SQLite
+#                              (profiles/<id>/profile-state.db) and
+#                              treats orca-data.json as its own export: a
+#                              byte change to the JSON behind the db makes
+#                              Orca's next start refuse outright
+#                              ("cannot safely choose a profile-state
+#                              authority", claude-orca-cey) -- so a
+#                              SQLite-era profile is never rewritten at
+#                              all, and without a db the rewrite only
+#                              happens when a record still names the old
+#                              default (a no-match file is left
+#                              byte-identical rather than re-serialized).
 #                              projects[] stays empty on purpose: Orca
 #                              derives the project row from repos[] on
 #                              load, and `orca repo add` later finds the
@@ -164,18 +176,48 @@ if [ -f "$PROFILE_INDEX" ] && command -v jq >/dev/null 2>&1; then
 fi
 DATA_FILE="$USER_DATA_DIR/profiles/$PROFILE_ID/orca-data.json"
 
+# The SQLite-era guard (claude-orca-cey): when Orca keeps this profile's
+# state in profiles/<id>/profile-state.db, orca-data.json beside it is
+# only Orca's own export of that state, and ANY byte change to the JSON
+# behind the db makes the next start refuse outright ("cannot safely
+# choose a profile-state authority") -- which is how the harness-test
+# folder bricked: a boot of an earlier seed rewrote the export behind
+# Orca's db. So when the db is here this script writes NOTHING: the seed
+# ran once before Orca's first start, whatever it wanted to set already
+# lives in SQLite, and the export is Orca's to regenerate.
+PROFILE_DB="$(dirname "$DATA_FILE")/profile-state.db"
+if [ -e "$PROFILE_DB" ]; then
+    log "orca state present in SQLite ($PROFILE_DB); orca-data.json is Orca's own export -- not rewriting it"
+    exit 0
+fi
+
 # An existing orca-data.json keeps whatever the user changed, forever --
 # except the one key this script owns the DEFAULT of: when the volume base
 # applies, records still naming the old in-folder default are rewritten to
 # the volume, so a folder that predates the volumes gets its worktrees
-# moved too. jq through a tmp file in the same directory and an mv, so a
-# failure mid-write cannot lose the file; jq missing or failing leaves the
-# file byte-identical and still exits 0 -- a base path left on the share is
-# a performance loss, not a broken folder. Safe because the entrypoint runs
+# moved too. The rewrite fires only when a record still names the old
+# default: piping the file through jq re-serializes it, and a byte change
+# to the export is exactly what a SQLite-era Orca refuses to start over
+# (see the guard above), so a no-match file is left byte-identical. jq
+# through a tmp file in the same directory and an mv, so a failure
+# mid-write cannot lose the file; jq missing or failing leaves the file
+# byte-identical and still exits 0 -- a base path left on the share is a
+# performance loss, not a broken folder. Safe because the entrypoint runs
 # this before `orca-ide --serve` starts: Orca is not holding the file.
 rewrite_worktree_base_to_volume() {
-    if ! command -v jq >/dev/null 2>&1; then
+    if ! command -v jq >/dev/null 2>&1 || ! jq --version >/dev/null 2>&1; then
         warn "no jq; could not rewrite worktreeBasePath to $volume_worktree_base"
+        return 0
+    fi
+    # Only a file with at least one record still naming the old default
+    # gets rewritten. jq --version above is what tells a missing/broken jq
+    # from a clean no-match: both leave the file alone, but only the
+    # missing-jq case owes the log a reason.
+    if ! jq -e --arg p "$PROJECT_DIR" \
+            --arg old "$PROJECT_DIR/.orca-worktrees" \
+            'any(.repos[]?; .path == $p and .worktreeBasePath == $old)' \
+            "$DATA_FILE" >/dev/null 2>&1; then
+        log "no record still names $PROJECT_DIR/.orca-worktrees; $DATA_FILE left byte-identical"
         return 0
     fi
     local tmp="$DATA_FILE.claude-orca.tmp"

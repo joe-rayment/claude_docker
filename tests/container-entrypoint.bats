@@ -547,17 +547,18 @@ STUB
     [ "$output" = "1" ]
 
     # And the CLI is called by exactly the provision steps that need it,
-    # in exactly this order: repo add (60-orca-repo-add), then the
-    # skill's --json check, plain-text fallback and install
-    # (75-orca-skills). 65-worktree-sweep asks Orca nothing here: it
-    # probes reachability only when it has a worktree to remove, and a
-    # fresh project has none. A fifth line -- or any reordering -- means
-    # some step grew a call it must not make.
+    # in exactly this order: repo add (60-orca-repo-add), then the --json
+    # idempotence check and the install (75-orca-skills). 65-worktree-sweep
+    # asks Orca nothing here: it probes reachability only when it has a
+    # worktree to remove, and a fresh project has none. A fourth line --
+    # or any reordering -- means some step grew a call it must not make.
+    # (Updated by the cey slice to the sequence qxc's 882a6fa made
+    # 75-orca-skills emit: no plain 'skills installed' fallback, no
+    # --local.)
     cat > "$TMP/expected-cli.log" <<EXPECTED
 repo add --path $proj --json
 skills installed --json
-skills installed
-skills install --skill orchestration --local
+skills install --skill orchestration
 EXPECTED
     run diff -u "$TMP/expected-cli.log" "$TMP/cli.log"
     [ "$status" -eq 0 ]
@@ -619,6 +620,140 @@ STUB
     [[ "$stderr" == *"#pairing=<redacted>"* ]]
     [[ "$stderr" == *"?code=<redacted>"* ]]
     [[ "$stderr" != *"SECRET"* ]]
+}
+
+@test "a profile-state refusal rolls back to SQLite once, before the retry, and the retry serves" {
+    # Guards:   when serve exits before announcing a URL and its log names
+    #           'cannot safely choose a profile-state authority'
+    #           (claude-orca-cey: a SQLite-era profile whose orca-data.json
+    #           export an earlier boot edited behind the db), the
+    #           entrypoint runs `orca profile state rollback
+    #           --current-sqlite` exactly ONCE per boot, as the agent, with
+    #           ELECTRON_DISABLE_SANDBOX=1 and the serve user-data dir, and
+    #           BEFORE the existing retry -- so the retry is the attempt
+    #           that starts on fixed state and publishes the web URL.
+    # Fails if: the rollback is skipped, runs twice, runs without the env
+    #           or the right user-data dir, runs after the retry started,
+    #           or the retry never publishes the web URL.
+    # Run:      setsid -w bats -f 'profile-state refusal rolls back' \
+    #               tests/container-entrypoint.bats </dev/null
+    local proj="$TMP/project-rollback" home="$TMP/home-rollback" port urlfile
+    make_project "$proj"
+    mkdir -p "$home" "$TMP/bin"
+    : > "$TMP/rollback-cli.log"
+
+    # Serve run 1 dies naming the refusal; run 2 refuses to serve unless
+    # the rollback actually happened first -- which is what "before the
+    # existing retry" means in a form the run can observe.
+    cat > "$TMP/bin/orca-flicker" <<STUB
+#!/usr/bin/env bash
+runs="\$(cat "$TMP/runs" 2>/dev/null || echo 0)"
+runs=\$((runs + 1))
+echo "\$runs" > "$TMP/runs"
+if [ "\$runs" -eq 1 ]; then
+    echo "Error: cannot safely choose a profile-state authority"
+    exit 1
+fi
+if [ ! -f "$TMP/rollback-done" ]; then
+    echo "second run started without a completed rollback" >&2
+    exit 1
+fi
+port=""
+prev=""
+for arg in "\$@"; do
+    [ "\$prev" = "--port" ] && port="\$arg"
+    prev="\$arg"
+done
+echo "Web client URL: http://127.0.0.1:\${port}/web-index.html#pairing=x"
+exec sleep 300
+STUB
+    chmod +x "$TMP/bin/orca-flicker"
+
+    # The CLI logs who called it with what, records that the rollback ran,
+    # and answers ok:true the way `--json` would.
+    cat > "$TMP/bin/orca-rollback-cli" <<STUB
+#!/usr/bin/env bash
+{
+    printf 'args: %s\n' "\$*"
+    printf 'ELECTRON_DISABLE_SANDBOX=%s\n' "\${ELECTRON_DISABLE_SANDBOX:-}"
+    printf 'ORCA_USER_DATA_PATH=%s\n' "\${ORCA_USER_DATA_PATH:-}"
+} >> "$TMP/rollback-cli.log"
+case "\$*" in
+    *"profile state rollback"*) : > "$TMP/rollback-done" ;;
+esac
+echo '{"ok":true}'
+STUB
+    chmod +x "$TMP/bin/orca-rollback-cli"
+
+    port="$(free_port)"
+    export HOME="$home"
+    export PROJECT_DIR="$proj"
+    export ORCA_PORT="$port"
+    export ORCA_BIN="$TMP/bin/orca-flicker"
+    export ORCA_CLI="$TMP/bin/orca-rollback-cli"
+    export CLAUDE_ORCA_ENTRYPOINT_NO_PRIVDROP=1
+    export CLAUDE_ORCA_WEBURL_TIMEOUT=30
+    export CLAUDE_ORCA_SKIP_SETUP=1
+    export CLAUDE_ORCA_SKIP_BEADS=1
+    export CLAUDE_ORCA_SKIP_PROVISION=1
+
+    start_entrypoint_bg
+
+    urlfile="$proj/.claude-dev/run/orca-web-url.txt"
+    if ! wait_for_file "$urlfile" 30; then
+        cat "$TMP/entrypoint.out" >&2 || true
+        stop_entrypoint
+        false
+    fi
+    stop_entrypoint
+
+    run cat "$urlfile"
+    [ "$status" -eq 0 ]
+    [ "$output" = "http://127.0.0.1:${port}/web-index.html#pairing=x" ]
+
+    # Exactly one rollback, with the contract's command, env and dir.
+    run grep -c 'profile state rollback' "$TMP/rollback-cli.log"
+    [ "$status" -eq 0 ]
+    [ "$output" = "1" ]
+    run grep -F 'args: profile state rollback --current-sqlite --json' "$TMP/rollback-cli.log"
+    [ "$status" -eq 0 ]
+    grep -qF 'ELECTRON_DISABLE_SANDBOX=1' "$TMP/rollback-cli.log"
+    grep -qF "ORCA_USER_DATA_PATH=$home/.config/orca" "$TMP/rollback-cli.log"
+}
+
+@test "an early exit without the profile-state refusal never rolls back" {
+    # Guards:   the rollback is triggered only by the profile-state
+    #           refusal in the serve log; any other early exit goes to the
+    #           existing retry and the twice-exited report without the
+    #           CLI ever being called.
+    # Fails if: the rollback CLI runs on an unrelated early exit.
+    # Run:      setsid -w bats -f 'never rolls back' \
+    #               tests/container-entrypoint.bats </dev/null
+    local proj2="$TMP/project-no-rollback" home2="$TMP/home-no-rollback"
+    make_project "$proj2"
+    mkdir -p "$home2" "$TMP/bin"
+    : > "$TMP/rollback-cli.log"
+    cat > "$TMP/bin/orca-dies" <<'STUB'
+#!/usr/bin/env bash
+echo "some other fatal error"
+exit 1
+STUB
+    cat > "$TMP/bin/orca-rollback-cli" <<'STUB'
+#!/usr/bin/env bash
+echo '{"ok":true}'
+STUB
+    chmod +x "$TMP/bin/orca-dies" "$TMP/bin/orca-rollback-cli"
+
+    run --separate-stderr env HOME="$home2" PROJECT_DIR="$proj2" \
+        ORCA_PORT="$(free_port)" \
+        ORCA_BIN="$TMP/bin/orca-dies" ORCA_CLI="$TMP/bin/orca-rollback-cli" \
+        CLAUDE_ORCA_ENTRYPOINT_NO_PRIVDROP=1 CLAUDE_ORCA_WEBURL_TIMEOUT=5 \
+        CLAUDE_ORCA_SKIP_SETUP=1 CLAUDE_ORCA_SKIP_BEADS=1 \
+        CLAUDE_ORCA_SKIP_PROVISION=1 \
+        bash "$ENTRYPOINT"
+    [ "$status" -ne 0 ]
+    [[ "$stderr" == *"exited before announcing a Web client URL, twice"* ]]
+    [ ! -s "$TMP/rollback-cli.log" ]
 }
 
 @test "clear_stale_display removes only stale X locks, never a live display (claude-orca-owb)" {
