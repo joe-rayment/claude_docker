@@ -2690,6 +2690,18 @@ cmd_open_v3() {
                 echo "Last lines of the toolchain install:"
                 tail -15 "$dir/.claude-dev/run/setup.log" | sed 's/^/  /'
             fi
+            # Orca's own output is the other half of the diagnosis, and a
+            # container that died is in no state to show it (claude-orca-cey):
+            # the pairing fragment and code query value are credentials, so
+            # the tail is printed only after they are replaced.
+            if [ -s "$dir/.claude-dev/run/orca-serve.log" ]; then
+                echo ""
+                echo "Last lines of Orca's serve log:"
+                tail -20 "$dir/.claude-dev/run/orca-serve.log" \
+                    | sed -E -e 's/#pairing=[^[:space:]]*/#pairing=<redacted>/g' \
+                             -e 's/([?&])code=[^&[:space:]]*/\1code=<redacted>/g' \
+                             -e 's/^/  /'
+            fi
         } >&2
         return 1
     fi

@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+bats_require_minimum_version 1.5.0
 #
 # v3 S1 acceptance contract (claude-orca-qa2.1) -- FROZEN from RED-AT
 # onward. The VM half of v3: the container image and the in-VM entrypoint
@@ -582,6 +583,42 @@ STUB
     [ "$status" -ne 0 ]
     [[ "$output" == *"$proj2/.claude-dev/run/orca-serve.log"* ]]
     [ ! -f "$proj2/.claude-dev/run/orca-web-url.txt" ]
+}
+
+@test "the twice-exited warn prints the serve log's tail to stderr, redacted" {
+    # Guards:   when Orca serve exits before announcing a Web client URL
+    #           twice, the entrypoint prints the serve log's own last
+    #           lines to stderr, with the '#pairing=' fragment and any
+    #           'code=' query value redacted -- a container that dies
+    #           names its cause without leaking a credential.
+    # Fails if: the tail is missing from stderr, or 'SECRET' survives.
+    # Run:      bats tests/container-entrypoint.bats
+    local proj2="$TMP/project-twice" home2="$TMP/home-twice"
+    make_project "$proj2"
+    mkdir -p "$home2" "$TMP/bin"
+    cat > "$TMP/bin/orca-dies" <<'STUB'
+#!/usr/bin/env bash
+echo "[serve] dying without announcing"
+echo "handoff http://127.0.0.1:1/?next=1#pairing=SECRETFRAG"
+echo "oauth callback http://127.0.0.1:1/?code=SECRETCODE"
+exit 1
+STUB
+    chmod +x "$TMP/bin/orca-dies"
+
+    run --separate-stderr env HOME="$home2" PROJECT_DIR="$proj2" \
+        ORCA_PORT="$(free_port)" \
+        ORCA_BIN="$TMP/bin/orca-dies" ORCA_CLI="$TMP/bin/orca" \
+        CLAUDE_ORCA_ENTRYPOINT_NO_PRIVDROP=1 CLAUDE_ORCA_WEBURL_TIMEOUT=5 \
+        CLAUDE_ORCA_SKIP_SETUP=1 CLAUDE_ORCA_SKIP_BEADS=1 \
+        CLAUDE_ORCA_SKIP_PROVISION=1 \
+        bash "$ENTRYPOINT"
+    [ "$status" -ne 0 ]
+    [[ "$stderr" == *"exited before announcing a Web client URL, twice"* ]]
+    [[ "$stderr" == *"last lines of $proj2/.claude-dev/run/orca-serve.log:"* ]]
+    [[ "$stderr" == *"[serve] dying without announcing"* ]]
+    [[ "$stderr" == *"#pairing=<redacted>"* ]]
+    [[ "$stderr" == *"?code=<redacted>"* ]]
+    [[ "$stderr" != *"SECRET"* ]]
 }
 
 @test "Dockerfile, setup.sh and smoke.sh exist, and setup.sh pins Orca 1.4.197" {

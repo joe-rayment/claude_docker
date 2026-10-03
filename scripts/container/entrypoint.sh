@@ -778,6 +778,20 @@ start_orca_serve() {
     SERVE_PID=$!
 }
 
+# On a pre-URL failure the serve log is the only witness -- but pointing at
+# it means a `docker logs` on the Mac and a file inside a dead container
+# (claude-orca-cey), so print its last words here, where `docker logs`
+# already shows them. The pairing fragment and the code query value are
+# credentials; the tail is printed only after they are replaced.
+print_serve_log_tail() {
+    [ -s "$SERVE_LOG" ] || return 0
+    printf 'last lines of %s:\n' "$SERVE_LOG" >&2
+    tail -30 "$SERVE_LOG" \
+        | sed -E -e 's/#pairing=[^[:space:]]*/#pairing=<redacted>/g' \
+                 -e 's/([?&])code=[^&[:space:]]*/\1code=<redacted>/g' \
+                 -e 's/^/  /' >&2
+}
+
 log "starting Orca serve on port $ORCA_PORT (log: $SERVE_LOG)"
 start_orca_serve
 
@@ -811,6 +825,7 @@ while [ "$waited" -lt "$WEBURL_TIMEOUT" ]; do
             continue
         fi
         warn "orca serve exited before announcing a Web client URL, twice -- see $SERVE_LOG"
+        print_serve_log_tail
         run_provision
         exit 1
     fi
@@ -821,6 +836,7 @@ done
 if [ -z "$web_url" ]; then
     stop_serve
     warn "orca serve did not become ready within ${WEBURL_TIMEOUT} s -- see $SERVE_LOG"
+    print_serve_log_tail
     run_provision
     exit 1
 fi
