@@ -621,6 +621,98 @@ STUB
     [[ "$stderr" != *"SECRET"* ]]
 }
 
+@test "clear_stale_display removes only stale X locks, never a live display (claude-orca-owb)" {
+    # Guards:   clear_stale_display must remove only X locks whose PID is
+    #           no longer an X server (Xvfb/Xorg/X/Xwayland) -- PID reuse
+    #           after a docker restart is what actually blocks a display
+    #           -- and, with a removed lock, its socket. A live server's
+    #           lock and socket are never touched, and the .X11-unix
+    #           directory itself is never removed: this dev box and a Mac
+    #           running the suite both have live X servers there.
+    # Fails if: a live Xvfb's lock or socket is removed, the .X11-unix
+    #           directory is removed, or a dead-PID or live-non-X lock
+    #           (with its socket) survives the run.
+    # Run:      setsid -w bats -f 'clear_stale_display removes only stale' \
+    #               tests/container-entrypoint.bats </dev/null
+    local x11tmp="$TMP/x11tmp" deadpid nonxpid xvfbpid
+    mkdir -p "$x11tmp/.X11-unix" "$TMP/bin"
+
+    # Every child detaches its stdio from the test's, and none outlives
+    # the case: a 300 s child holding bats' stdout open hangs the run
+    # (that hang killed the first attempt at this case). fd 3 is bats'.
+    # A process whose comm reads Xvfb: a copy of sleep under that name.
+    cp "$(command -v sleep)" "$TMP/bin/Xvfb"
+    "$TMP/bin/Xvfb" 300 >/dev/null 2>&1 </dev/null 3>&- &
+    xvfbpid=$!
+    sleep 300 >/dev/null 2>&1 </dev/null 3>&- &
+    nonxpid=$!
+    # The dead PID exits by itself, so nothing is left behind to kill.
+    sleep 0.05 >/dev/null 2>&1 </dev/null 3>&- &
+    deadpid=$!
+    wait "$deadpid" 2>/dev/null || true
+
+    printf '%8d\n' "$xvfbpid" > "$x11tmp/.X91-lock"
+    printf '%8d\n' "$deadpid" > "$x11tmp/.X92-lock"
+    printf '%8d\n' "$nonxpid" > "$x11tmp/.X93-lock"
+    : > "$x11tmp/.X11-unix/X91"
+    : > "$x11tmp/.X11-unix/X92"
+    : > "$x11tmp/.X11-unix/X93"
+
+    local proj="$TMP/project" home="$TMP/home"
+    make_project "$proj"
+    mkdir -p "$home"
+    cat > "$TMP/bin/orca-silent" <<'STUB'
+#!/usr/bin/env bash
+exec sleep 300
+STUB
+    chmod +x "$TMP/bin/orca-silent"
+    cat > "$TMP/bin/orca" <<STUB
+#!/usr/bin/env bash
+exit 0
+STUB
+    chmod +x "$TMP/bin/orca"
+
+    run --separate-stderr env HOME="$home" PROJECT_DIR="$proj" \
+        ORCA_PORT="$(free_port)" \
+        ORCA_BIN="$TMP/bin/orca-silent" ORCA_CLI="$TMP/bin/orca" \
+        CLAUDE_ORCA_ENTRYPOINT_NO_PRIVDROP=1 CLAUDE_ORCA_WEBURL_TIMEOUT=3 \
+        CLAUDE_ORCA_SKIP_SETUP=1 CLAUDE_ORCA_SKIP_BEADS=1 \
+        CLAUDE_ORCA_SKIP_PROVISION=1 \
+        CLAUDE_ORCA_X11_TMP="$x11tmp" \
+        bash "$ENTRYPOINT"
+
+    # Capture every check BEFORE killing the fakes: a failing assertion
+    # must never leave a 300 s child holding bats open.
+    local ep_status=$status
+    local xvfb_lock=0 xvfb_sock=0 dead_lock=1 dead_sock=1 \
+        nonx_lock=1 nonx_sock=1 x11_dir=0
+    [ -f "$x11tmp/.X91-lock" ] && xvfb_lock=1
+    [ -f "$x11tmp/.X11-unix/X91" ] && xvfb_sock=1
+    [ ! -e "$x11tmp/.X92-lock" ] && dead_lock=0
+    [ ! -e "$x11tmp/.X11-unix/X92" ] && dead_sock=0
+    [ ! -e "$x11tmp/.X93-lock" ] && nonx_lock=0
+    [ ! -e "$x11tmp/.X11-unix/X93" ] && nonx_sock=0
+    [ -d "$x11tmp/.X11-unix" ] && x11_dir=1
+
+    kill -KILL "$xvfbpid" "$nonxpid" 2>/dev/null || true
+    wait "$xvfbpid" "$nonxpid" 2>/dev/null || true
+
+    # The entrypoint reached its ready-wait timeout, which is after the
+    # clear.
+    [ "$ep_status" -ne 0 ]
+    # The live Xvfb's lock and socket survive...
+    [ "$xvfb_lock" -eq 1 ]
+    [ "$xvfb_sock" -eq 1 ]
+    # ...the dead-PID and live-non-X locks and their socket files are
+    # gone...
+    [ "$dead_lock" -eq 0 ]
+    [ "$dead_sock" -eq 0 ]
+    [ "$nonx_lock" -eq 0 ]
+    [ "$nonx_sock" -eq 0 ]
+    # ...and the directory itself is never removed.
+    [ "$x11_dir" -eq 1 ]
+}
+
 @test "Dockerfile, setup.sh and smoke.sh exist, and setup.sh pins Orca 1.4.197" {
     [ -f "$DOCKERFILE" ]
     [ -x "$SETUP" ]
