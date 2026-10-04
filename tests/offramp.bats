@@ -91,24 +91,22 @@ full_stop_text() { # $1 = pct; $2 = "fallback" inserts the NO-COMPACT line as li
     cat <<EOF
 [off-ramp] this session's context is at ${pct}% of its window -- past the 40% off-ramp (mode: stop). Take the off-ramp now; start nothing new:
 ${nc}1. Finish only the step in hand and commit it.
-2. Save a HANDOFF to the bead you are working on (bd create one if the work has none): bd update <id> --notes "HANDOFF / done: ... / left: ... / facts: ... / next: ..."
-3. Run: offramp handoff <id>
-4. End your turn with one message to the user that starts "Off-ramp: context is at ${pct}%, so I stopped." -- then what is finished, what is left, the bead id, and: "Type /clear, then resume to carry on -- or /offramp continue to let the session compact itself and keep going."
+2. Save a HANDOFF to the bead you are working on (bd create one if the work has none): bd update <id> --notes "HANDOFF / done: ... / left: ... / facts: ... / next: ..." -- the next session is pointed at that bead.
+3. End your turn with one message to the user that starts "Off-ramp: context is at ${pct}%, so I stopped." -- then what is finished, what is left, the bead id, and: "Type /clear, then resume to carry on -- or /offramp continue to let the session compact itself and keep going."
 From 45% every tool call except bd, git and offramp is refused.
 EOF
 }
 
 reminder_text() { # $1 = pct
-    printf '[off-ramp] context at %s%% (off-ramp 40%%): save the HANDOFF, run offramp handoff <id>, and end your turn telling the user why you stopped.' "$1"
+    printf '[off-ramp] context at %s%% (off-ramp 40%%): save the HANDOFF (bd update <id> --notes "HANDOFF ...") and end your turn telling the user why you stopped.' "$1"
 }
 
 full_continue_text() { # $1 = pct (continue mode, AT=40, compact=50)
     cat <<EOF
 [off-ramp] this session's context is at ${1}% of its window -- past the 40% off-ramp (mode: continue). Save your place now, then keep working:
 1. Finish the step in hand and commit it.
-2. Save a HANDOFF to the bead you are working on (bd create one if the work has none): bd update <id> --notes "HANDOFF / done: ... / left: ... / facts: ... / next: ..."
-3. Run: offramp handoff <id>
-4. Carry on with the work. The session compacts itself at about 50% and resumes from that bead; keep the HANDOFF current as you go.
+2. Save a HANDOFF to the bead you are working on (bd create one if the work has none): bd update <id> --notes "HANDOFF / done: ... / left: ... / facts: ... / next: ..." -- the compacted session is pointed at that bead.
+3. Carry on with the work. The session compacts itself at about 50% and resumes from that bead; keep the HANDOFF current as you go.
 EOF
 }
 
@@ -117,13 +115,13 @@ refusal_stop_text() { # $1 = pct; $2 = "fallback" appends the NO-COMPACT line
     [ "${2:-}" = "fallback" ] && nc="
 $NO_COMPACT"
     cat <<EOF
-[off-ramp] context is at ${pct}% -- past the 45% stop line (mode: stop): only bd, git and offramp commands run now. Save the HANDOFF (bd update <id> --notes "HANDOFF ..."; offramp handoff <id>), then end your turn with a message to the user that starts "Off-ramp: context is at ${pct}%, so I stopped." and tells them to type /clear, then resume.${nc}
+[off-ramp] context is at ${pct}% -- past the 45% stop line (mode: stop): only bd, git and offramp commands run now. Save the HANDOFF (bd update <id> --notes "HANDOFF ..."), then end your turn with a message to the user that starts "Off-ramp: context is at ${pct}%, so I stopped." and tells them to type /clear, then resume.${nc}
 EOF
 }
 
 refusal_continue_text() { # $1 = pct
     cat <<EOF
-[off-ramp] context is at ${1}% -- past the 60% backstop and the session has not compacted (mode: continue): only bd, git and offramp commands run now. Save the HANDOFF (bd update <id> --notes "HANDOFF ..."; offramp handoff <id>), then end your turn with a message to the user that starts "Off-ramp: context is at ${1}%, so I stopped." and tells them to type /compact or /clear, then resume.
+[off-ramp] context is at ${1}% -- past the 60% backstop and the session has not compacted (mode: continue): only bd, git and offramp commands run now. Save the HANDOFF (bd update <id> --notes "HANDOFF ..."), then end your turn with a message to the user that starts "Off-ramp: context is at ${1}%, so I stopped." and tells them to type /compact or /clear, then resume.
 EOF
 }
 
@@ -412,4 +410,29 @@ resume_text() { # $1 = bead, $2 = mode
     link="$(readlink "$REPO_ROOT/bin/offramp")"
     [ "$link" = "../scripts/offramp.sh" ]
     [ -x "$REPO_ROOT/scripts/offramp.sh" ]
+}
+
+# Guards: past the off-ramp, the main loop's own `bd update <id> --notes
+# "HANDOFF ..."` records <id> as the pending handoff -- no separate
+# `offramp handoff` step (a real haiku run skipped that step).
+# Fails if: the HANDOFF write leaves no pending bead, or a bd update below
+# the off-ramp (or one without HANDOFF) records one.
+# Run: bats -f 'records the pending handoff' tests/offramp.bats
+@test "22 past the off-ramp a main-loop 'bd update <id> --notes HANDOFF' records the pending handoff; below it, or without HANDOFF, nothing" {
+    usage_row 2 60000 0 100          # 30%: below the off-ramp
+    PAYLOAD="$(pre_payload Bash 'bd update orun-1 --notes "HANDOFF / done: a / left: b"')"
+    offramp --post
+    [ "$(jq -r '.pending.bead // empty' "$MODE_FILE" 2>/dev/null)" = "" ]
+
+    usage_row 2 84000 0 100          # 42%
+    PAYLOAD="$(pre_payload Bash 'bd update orun-1 --notes "progress only"')"
+    offramp --post
+    [ "$(jq -r '.pending.bead // empty' "$MODE_FILE" 2>/dev/null)" = "" ]
+
+    PAYLOAD="$(pre_payload Bash '  bd update orun-1 --notes "HANDOFF / done: a / left: b"')"
+    offramp --post
+    [ "$(jq -r '.pending.bead' "$MODE_FILE")" = "orun-1" ]
+
+    offramp --session-start
+    [ "$output" = "$(resume_text orun-1 stop)" ]
 }
