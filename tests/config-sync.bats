@@ -73,6 +73,34 @@ CONFIG_SYNC() {
     [ "$output" = "false" ]
 }
 
+# claude-orca-ngq.2: the main-session off-ramp is wired like context-meter --
+# one bin/offramp entry per hook event, each guarded by [ -x ] so the wiring
+# stands alone while the sibling slice builds bin/offramp -- plus the compaction
+# env vars that make Claude Code compact at 50% of any model's window (without
+# CLAUDE_CODE_AUTO_COMPACT_WINDOW it never compacts until the window is full).
+# Guards: the template's settings carry both env vars, and exactly one
+# offramp hook entry per event with its flag (--post, --pre, --session-start).
+# Fails if: an env var is renamed or retuned, an offramp entry is dropped,
+# duplicated, or its flag changed.
+# Run: bats -f 'off-ramp wiring' tests/config-sync.bats
+@test "off-ramp wiring: compaction env and one offramp entry per hook event" {
+    settings="$REPO_ROOT/config/claude-settings.json"
+    run jq -r '.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW' "$settings"
+    [ "$output" = "1000000" ]
+    run jq -r '.env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE' "$settings"
+    [ "$output" = "50" ]
+
+    for spec in "PostToolUse --post" "PreToolUse --pre" "SessionStart --session-start"; do
+        set -- $spec
+        event="$1"; flag="$2"
+        run jq -c "[.hooks.$event[].hooks[] | select(.command | contains(\"bin/offramp\"))]" "$settings"
+        [ "$status" -eq 0 ]
+        [ "$(jq 'length' <<<"$output")" = "1" ]
+        run jq -r "[.hooks.$event[].hooks[] | select(.command | contains(\"bin/offramp\"))][0].command" "$settings"
+        [[ "$output" == *" $flag"* ]]
+    done
+}
+
 @test "hook commands resolve to <host>/template/bin/<name> and no command mentions /usr/local/bin, /home/agent or /workspace" {
     make_project "$PROJECT_DIR"
     primary="$(abspath "$PROJECT_DIR")"

@@ -7,6 +7,8 @@
     "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1",
     "CLAUDE_CODE_SILENT_TURN_REMINDER": "false",
     "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION": "false",
+    "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "1000000",
+    "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "50",
     "BEADS_ACTOR": "claude"
   },
   "statusLine": {
@@ -66,7 +68,8 @@
           { "type": "command", "command": "__HOST__/template/bin/tier-prime" },
           { "type": "command", "command": "[ -x \"__HOST__/template/bin/cost-mirror\" ] && (timeout 3 \"__HOST__/template/bin/cost-mirror\" --refresh-pricing >/dev/null 2>&1 &); exit 0" },
           { "type": "command", "command": "[ -x \"__HOST__/template/bin/provision\" ] && exec \"__HOST__/template/bin/provision\" status --failed; exit 0" },
-          { "type": "command", "command": "[ -x \"__HOST__/template/bin/worktree-gc\" ] && exec \"__HOST__/template/bin/worktree-gc\" --quiet; exit 0" }
+          { "type": "command", "command": "[ -x \"__HOST__/template/bin/worktree-gc\" ] && exec \"__HOST__/template/bin/worktree-gc\" --quiet; exit 0" },
+          { "type": "command", "command": "[ -x \"__HOST__/template/bin/offramp\" ] && exec \"__HOST__/template/bin/offramp\" --session-start; exit 0" }
         ]
       }
     ],
@@ -80,7 +83,8 @@
       {
         "matcher": "",
         "hooks": [
-          { "type": "command", "command": "[ -x \"__HOST__/template/bin/context-meter\" ] && exec \"__HOST__/template/bin/context-meter\" --post; exit 0" }
+          { "type": "command", "command": "[ -x \"__HOST__/template/bin/context-meter\" ] && exec \"__HOST__/template/bin/context-meter\" --post; exit 0" },
+          { "type": "command", "command": "[ -x \"__HOST__/template/bin/offramp\" ] && exec \"__HOST__/template/bin/offramp\" --post; exit 0" }
         ]
       }
     ],
@@ -148,7 +152,8 @@
       {
         "matcher": "",
         "hooks": [
-          { "type": "command", "command": "[ -x \"__HOST__/template/bin/context-meter\" ] && exec \"__HOST__/template/bin/context-meter\" --pre; exit 0" }
+          { "type": "command", "command": "[ -x \"__HOST__/template/bin/context-meter\" ] && exec \"__HOST__/template/bin/context-meter\" --pre; exit 0" },
+          { "type": "command", "command": "[ -x \"__HOST__/template/bin/offramp\" ] && exec \"__HOST__/template/bin/offramp\" --pre; exit 0" }
         ]
       }
     ]
