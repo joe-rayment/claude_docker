@@ -56,10 +56,20 @@ offramp() {
         CLAUDE_ORCA_ROOT="$ROOT" "$@" bash "$SCRIPT" "$mode" <<<"$PAYLOAD"
 }
 
-# offramp_cli <CLI args...> -- same environment for the CLI surface.
+# offramp_cli [ENVVAR=val ...] <CLI args...> -- same environment for the
+# CLI surface; env assignments stop at the first non-assignment argument.
 offramp_cli() {
+    local envs=() args=() in_args=0 a
+    for a in "$@"; do
+        if [ "$in_args" -eq 0 ] && case "$a" in [A-Za-z_]*=*) true ;; *) false ;; esac; then
+            envs+=("$a")
+        else
+            in_args=1
+            args+=("$a")
+        fi
+    done
     run env -i PATH="$PATH" HOME="$BATS_TEST_TMPDIR/h" TMPDIR="$BATS_TEST_TMPDIR" \
-        CLAUDE_ORCA_ROOT="$ROOT" bash "$SCRIPT" "$@"
+        CLAUDE_ORCA_ROOT="$ROOT" ${envs[@]+"${envs[@]}"} bash "$SCRIPT" ${args[@]+"${args[@]}"}
 }
 
 post_ctx() {
@@ -332,19 +342,19 @@ resume_text() { # $1 = bead, $2 = mode
 }
 
 @test "16 CLI: offramp continue writes the mode file and prints the continue SWITCH text" {
-    offramp_cli continue CLAUDE_CODE_AUTO_COMPACT_WINDOW=1000000 CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=50
+    offramp_cli CLAUDE_CODE_AUTO_COMPACT_WINDOW=1000000 CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=50 continue
     [ "$status" -eq 0 ]
     [ "$(jq -r '.mode' "$MODE_FILE")" = "continue" ]
     [ "$output" = "$(switch_continue_text)" ]
 }
 
 @test "17 CLI: offramp status shows the mode, the compaction line and a pending handoff" {
-    offramp_cli continue CLAUDE_CODE_AUTO_COMPACT_WINDOW=1000000 CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=50
+    offramp_cli CLAUDE_CODE_AUTO_COMPACT_WINDOW=1000000 CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=50 continue
     offramp_cli handoff abc-1
     [ "$status" -eq 0 ]
     [ "$(jq -r '.pending.bead' "$MODE_FILE")" = "abc-1" ]
 
-    offramp_cli status CLAUDE_CODE_AUTO_COMPACT_WINDOW=1000000 CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=50
+    offramp_cli CLAUDE_CODE_AUTO_COMPACT_WINDOW=1000000 CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=50 status
     [ "$status" -eq 0 ]
     [ "$(sed -n '1p' <<<"$output")" = "off-ramp: mode continue -- at 40% context the session saves a HANDOFF to its bead and keeps going; tool calls are refused from 60% if it has not compacted." ]
     [ "$(sed -n '2p' <<<"$output")" = "compaction: at 50% of the window." ]
