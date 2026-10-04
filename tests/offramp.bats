@@ -436,3 +436,47 @@ resume_text() { # $1 = bead, $2 = mode
     offramp --session-start
     [ "$output" = "$(resume_text orun-1 stop)" ]
 }
+
+stop_payload() { # $1 = stop_hook_active (true|false)
+    jq -cn --arg s "$TRANS" --argjson a "$1" '{hook_event_name:"Stop", stop_hook_active:$a, transcript_path:$s}'
+}
+
+# Guards: in stop mode, a main session that passed the off-ramp but saved no
+# HANDOFF to a bead is sent back once to save it before its turn ends.
+# Fails if: --stop lets that turn end silently, blocks twice (loops), blocks
+# after a HANDOFF was saved, or blocks in continue mode or below the off-ramp.
+# Run: bats -f 'stop hook' tests/offramp.bats
+@test "23 stop hook: past the off-ramp with no HANDOFF it blocks once; silent after a HANDOFF, on the second attempt, below the off-ramp, and in continue mode" {
+    usage_row 2 60000 0 100          # 30%: no off-ramp yet
+    PAYLOAD="$(stop_payload false)"
+    offramp --stop
+    [ "$status" -eq 0 ] && [ -z "$output" ]
+
+    usage_row 2 84000 0 100          # 42%: the off-ramp fires
+    PAYLOAD="$(main_payload)"
+    offramp --post
+    PAYLOAD="$(stop_payload false)"
+    offramp --stop
+    [ "$(jq -r '.decision' <<<"$output")" = "block" ]
+    [[ "$(jq -r '.reason' <<<"$output")" == "[off-ramp] before you stop: this session is past the 40% off-ramp and no HANDOFF was saved to a bead."* ]]
+
+    PAYLOAD="$(stop_payload true)"
+    offramp --stop
+    [ -z "$output" ]
+
+    PAYLOAD="$(pre_payload Bash 'bd update orun-1 --notes "HANDOFF / done: a / left: b"')"
+    offramp --post
+    PAYLOAD="$(stop_payload false)"
+    offramp --stop
+    [ -z "$output" ]
+}
+
+@test "24 stop hook: continue mode past the off-ramp never blocks" {
+    set_mode continue
+    usage_row 2 84000 0 100
+    PAYLOAD="$(main_payload)"
+    offramp --post CLAUDE_CODE_AUTO_COMPACT_WINDOW=1000000 CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=50
+    PAYLOAD="$(stop_payload false)"
+    offramp --stop CLAUDE_CODE_AUTO_COMPACT_WINDOW=1000000 CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=50
+    [ "$status" -eq 0 ] && [ -z "$output" ]
+}

@@ -15,6 +15,9 @@
 #           (CLAUDE_ORCA_OFFRAMP_STOP_AT, default 45, in stop mode;
 #           CLAUDE_ORCA_OFFRAMP_BACKSTOP_AT, default 60, in continue mode)
 #           except Bash commands whose first word is bd, git or offramp.
+#   --stop  (Stop) in stop mode, blocks the main loop's first attempt to
+#           end its turn past the off-ramp when no HANDOFF was saved, once
+#           (stop_hook_active lets the second attempt through).
 #
 # bin/offramp is the user-facing CLI: status, stop, continue, handoff
 # <bead>. The mode lives in "$(run_dir)/offramp.json".
@@ -54,7 +57,7 @@ SCRIPT_DIR="$(_s="$(_resolve_script_path)"; case "$_s" in (*/*) cd "${_s%/*}/" ;
 
 MODE="${1:-}"
 case "$MODE" in
-    --post|--pre|--session-start) ;;
+    --post|--pre|--session-start|--stop) ;;
     ''|status|stop|continue|handoff) ;;
     *)
         printf "usage: offramp [status] | offramp stop | offramp continue | offramp handoff <bead-id>\n" >&2
@@ -285,7 +288,7 @@ hook_context() {
     PCT=$(( TOKENS * 100 / WINDOW ))
 }
 
-# record_handoff -- past the off-ramp, a main-loop `bd update <id> ...`
+# record_handoff <marker> -- past the off-ramp, a main-loop `bd update <id> ...`
 # whose text carries HANDOFF records <id> as the pending handoff, so the
 # next session start points at it without a separate step (a real haiku
 # run on 2026-10-04 saved the HANDOFF but skipped `offramp handoff`).
@@ -300,6 +303,7 @@ record_handoff() {
     # shellcheck disable=SC2016
     update_mode_file --arg b "${BASH_REMATCH[1]}" --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
         '.pending = {bead:$b, at:$t}' || :
+    mkdir -p "${1%/*}" 2>/dev/null && : > "$1.handoff" 2>/dev/null
 }
 
 do_post() {
@@ -310,10 +314,10 @@ do_post() {
     marker_dir="${TMPDIR:-/tmp}/claude-orca-offramp"
     marker="$marker_dir/${TRANSCRIPT_PATH//\//_}"
     if [ "$PCT" -lt "$AT" ]; then
-        rm -f "$marker" 2>/dev/null
+        rm -f "$marker" "$marker.handoff" 2>/dev/null
         exit 0
     fi
-    record_handoff
+    record_handoff "$marker"
     if [ ! -e "$marker" ]; then
         mkdir -p "$marker_dir" 2>/dev/null && : > "$marker" 2>/dev/null
         emit_post "$(full_for_e "$PCT")"
@@ -360,6 +364,32 @@ do_session_start() {
     update_mode_file 'del(.pending)' || exit 0
     printf '%s\n' "$(resume_text "$bead" "$m")"
     exit 0
+}
+
+# --stop: the off-ramp fired in this session (its marker exists) but no
+# HANDOFF was saved (no <marker>.handoff) -- a real haiku run on 2026-10-04
+# stopped and said why but put the HANDOFF in the chat only, so after /clear
+# the remaining scope was lost. Blocks once; stop mode only.
+do_stop() {
+    [ "$AT" -eq 0 ] && exit 0
+    IN="$(cat 2>/dev/null)" || exit 0
+    [ -n "$IN" ] || exit 0
+    [ -z "$(printf '%s' "$IN" | jq -r '.agent_id // empty' 2>/dev/null)" ] || exit 0
+    [ "$(printf '%s' "$IN" | jq -r '.stop_hook_active // false' 2>/dev/null)" = "true" ] && exit 0
+    TRANSCRIPT_PATH="$(printf '%s' "$IN" | jq -r '.transcript_path // empty' 2>/dev/null)" || exit 0
+    [ -n "$TRANSCRIPT_PATH" ] || exit 0
+    resolve_e
+    [ "$E" = "stop" ] || exit 0
+    local marker
+    marker="${TMPDIR:-/tmp}/claude-orca-offramp/${TRANSCRIPT_PATH//\//_}"
+    [ -e "$marker" ] || exit 0
+    [ -e "$marker.handoff" ] && exit 0
+    jq -n --arg r "$(stop_block_text)" '{decision:"block", reason:$r}' 2>/dev/null || exit 0
+    exit 0
+}
+
+stop_block_text() {
+    printf '[off-ramp] before you stop: this session is past the %s%% off-ramp and no HANDOFF was saved to a bead. If work remains, save it now -- bd update <id> --notes "HANDOFF / done: ... / left: ... / facts: ... / next: ..." -- then end your turn with one line: "HANDOFF saved to <id>." If nothing is left, just end your turn.' "$AT"
 }
 
 usage() {
@@ -428,6 +458,7 @@ case "$MODE" in
     --post) do_post ;;
     --pre) do_pre ;;
     --session-start) do_session_start ;;
+    --stop) do_stop ;;
     ''|status) cli_status ;;
     stop|continue) cli_switch "$MODE" ;;
     handoff) shift; cli_handoff "$@" ;;

@@ -108,7 +108,8 @@
       {
         "matcher": "",
         "hooks": [
-          { "type": "command", "command": "[ -x \"__HOST__/template/bin/export-logs\" ] && exec \"__HOST__/template/bin/export-logs\"; exit 0" }
+          { "type": "command", "command": "[ -x \"__HOST__/template/bin/export-logs\" ] && exec \"__HOST__/template/bin/export-logs\"; exit 0" },
+          { "type": "command", "command": "[ -x \"__HOST__/template/bin/offramp\" ] && exec \"__HOST__/template/bin/offramp\" --stop; exit 0" }
         ]
       }
     ],

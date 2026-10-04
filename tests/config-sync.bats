@@ -79,7 +79,7 @@ CONFIG_SYNC() {
 # env vars that make Claude Code compact at 50% of any model's window (without
 # CLAUDE_CODE_AUTO_COMPACT_WINDOW it never compacts until the window is full).
 # Guards: the template's settings carry both env vars, and exactly one
-# offramp hook entry per event with its flag (--post, --pre, --session-start).
+# offramp hook entry per event with its flag (--post, --pre, --session-start, --stop).
 # Fails if: an env var is renamed or retuned, an offramp entry is dropped,
 # duplicated, or its flag changed.
 # Run: bats -f 'off-ramp wiring' tests/config-sync.bats
@@ -90,7 +90,7 @@ CONFIG_SYNC() {
     run jq -r '.env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE' "$settings"
     [ "$output" = "50" ]
 
-    for spec in "PostToolUse --post" "PreToolUse --pre" "SessionStart --session-start"; do
+    for spec in "PostToolUse --post" "PreToolUse --pre" "SessionStart --session-start" "Stop --stop"; do
         set -- $spec
         event="$1"; flag="$2"
         run jq -c "[.hooks.$event[].hooks[] | select(.command | contains(\"bin/offramp\"))]" "$settings"
