@@ -396,13 +396,13 @@ cli_switch() { # $1 = stop|continue
 cli_handoff() { # $1 = bead id
     [ $# -eq 1 ] || { usage; exit 2; }
     printf '%s' "$1" | grep -qE '^[A-Za-z0-9][A-Za-z0-9._-]*$' || { usage; exit 2; }
-    local ts m
+    local ts
     ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    m="$(resolve_mode)"
-    # jq filter: $m/$b/$t are jq variables, not shell ones
+    # jq filter: $b/$t are jq variables, not shell ones. The mode is left
+    # as it is -- a handoff never pins an env-derived mode into the file.
     # shellcheck disable=SC2016
-    update_mode_file --arg m "$m" --arg b "$1" --arg t "$ts" \
-        '.mode = $m | .pending = {bead:$b, at:$t}' \
+    update_mode_file --arg b "$1" --arg t "$ts" \
+        '.pending = {bead:$b, at:$t}' \
         || { printf 'off-ramp: could not write the mode file\n' >&2; exit 1; }
     printf 'off-ramp: handoff recorded -- the next session (after /clear or a compaction) is pointed at bead %s.\n' "$1"
     exit 0
