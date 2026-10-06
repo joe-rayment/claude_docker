@@ -81,3 +81,28 @@ ctr_line() {
     line="$(ctr_line "run ")"
     [[ "$line" == *"-e ORCA_VERSION=1.4.203"* ]]
 }
+# Guards: a plain ./claude-dev after the Orca app updated itself builds the
+#   image for the new version instead of `docker run`-pulling a tag that
+#   exists nowhere (real Mac, 2026-10-06: "pull access denied for claude-orca").
+# Fails if: cmd_open_v3 stops building a missing image before it creates the container.
+# Run: bats -f 'app updated' tests/launcher-orca-version-run.bats
+@test "open after the app updated builds the new image before docker run" {
+    export CLAUDE_ORCA_APP="$(make_fake_orca_app "$BATS_TEST_TMPDIR/Applications/Orca203.app" 1.4.203)"
+    mkdir -p "$PROJECT_DIR"
+    primary="$(abspath "$PROJECT_DIR")"
+    run make_project_v3 "$primary"
+    [ "$status" -eq 0 ]
+
+    # The app updates itself; the daemon still holds only the 1.4.203 image.
+    make_fake_orca_app "$CLAUDE_ORCA_APP" 1.4.204 >/dev/null
+    : > "$CONTAINER_STUB_LOG"
+    run bash -c "cd '$primary' && CLAUDE_ORCA_TEST_IMAGE_ID=dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd STUB_UNAME_S=Darwin STUB_UNAME_M=arm64 ./claude-dev"
+    [ "$status" -eq 0 ]
+
+    buildline="$(grep -n "^build " "$CONTAINER_STUB_LOG" | head -1)"
+    [[ "$buildline" == *"--tag claude-orca:latest-orca1.4.204"* ]]
+    runline="$(grep -n "^run " "$CONTAINER_STUB_LOG" | head -1)"
+    [[ "$runline" == *"claude-orca:latest-orca1.4.204"* ]]
+    # built first, run second
+    [ "${buildline%%:*}" -lt "${runline%%:*}" ]
+}

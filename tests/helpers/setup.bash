@@ -369,6 +369,21 @@ fi
 case "$1 ${2:-}" in
     "image inspect"|"image ls"|"image list")
         [ -f "$state/image" ] || exit 1
+        # The daemon holds ONE image, the last pulled or built: inspecting
+        # any other ref fails the way a real daemon's "No such image" does.
+        # (`image ls` takes no ref, so only `inspect` is checked.)
+        if [ "$2" = "inspect" ]; then
+            ref=""; prev=""
+            for a in "${@:3}"; do
+                case "$prev" in --format|-f) prev=""; continue ;; esac
+                case "$a" in -*) ;; *) [ -n "$ref" ] || ref="$a" ;; esac
+                prev="$a"
+            done
+            if [ -n "$ref" ] && [ "$ref" != "$(cat "$state/image")" ]; then
+                echo "Error: No such image: $ref" >&2
+                exit 1
+            fi
+        fi
         # `docker image inspect REF --format '{{.Id}}'`: the local image
         # id, which is what says whether a pull actually moved this
         # folder. CLAUDE_ORCA_TEST_IMAGE_ID picks it; the pull below is

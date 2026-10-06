@@ -152,8 +152,10 @@ BASE_IMAGE="docker.io/library/ubuntu:24.04"
 # for free.
 @test "a failed build with a local image already on this machine uses it instead of installing" {
     export CLAUDE_ORCA_TEST_BUILD_FAIL=1
-    # The daemon already has an image under this folder's ref.
-    printf '%s\n' "claude-orca:latest" > "$CONTAINER_STUB_STATE/image"
+    # The daemon already has an image under this folder's ref (no app on
+    # this host, so the tag carries the Dockerfile's ORCA_VERSION).
+    ver="$(sed -n 's/^ARG ORCA_VERSION=\([^ ]*\).*$/\1/p' "$REPO_ROOT/Dockerfile" | head -1)"
+    printf '%s\n' "claude-orca:latest-orca$ver" > "$CONTAINER_STUB_STATE/image"
 
     mkdir -p "$PROJECT_DIR"
     primary="$(abspath "$PROJECT_DIR")"

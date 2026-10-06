@@ -2708,6 +2708,20 @@ cmd_open_v3() {
     name="$(container_name "$dir")"
     port="$(choose_port "$dir")"
 
+    # The image ref follows the Mac's Orca.app (image_tag), and the app
+    # updates itself: a plain open after an app update (1.4.219 -> .220,
+    # a real Mac, 2026-10-06) wanted claude-orca:latest-orca1.4.220, which
+    # only --update would have built -- so the old container was removed as
+    # a stranger's and `docker run` went off to pull the new tag from Docker
+    # Hub ("pull access denied for claude-orca"). A built folder whose image
+    # is missing builds it here, before anything is torn down; the build is
+    # a cache hit for every layer below the Orca one.
+    if [ "$CTR_RUNTIME" != "local" ] && [ "$(image_source "$dir")" != "runtime" ] \
+        && ! ctr image inspect "$(image_ref)" >/dev/null 2>&1; then
+        echo "  image $(image_ref) is not on this machine (the Orca app moved?) -- building it"
+        acquire_image "$dir" "$(image_ref)" || return 1
+    fi
+
     # Adopt a container only when it is this folder's (container_matches
     # says which of image, mounts and port is not). A stranger's is stopped
     # and removed -- never its state volume, which is Orca's user-data dir
