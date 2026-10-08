@@ -78,6 +78,21 @@ tier_role_field() {
 # "orca:opencode:openrouter/qwen/qwen3-coder" -- the agent segment is shown
 # only when it is not the default (claude), so a plain Anthropic binding
 # reads as "subagent:sonnet".
+# tier_claude_effort <effort> [settings] -- one effort word on Claude's own
+# scale. /tier takes the union of every agent's words (none minimal low
+# medium high xhigh max) so a phrase never has to know which agent it lands
+# on; Claude has no "minimal", so it reads as the nearest step, "low". The
+# settings file's effortLevel stops at xhigh ("max" is per-session in
+# Claude Code), so `settings` caps it there. Empty in, empty out.
+tier_claude_effort() {
+    case "$1" in
+        none|"") return 0 ;;
+        minimal) printf 'low' ;;
+        max)     if [ "${2:-}" = "settings" ]; then printf 'xhigh'; else printf 'max'; fi ;;
+        *)       printf '%s' "$1" ;;
+    esac
+}
+
 tier_role_label() {
     local b="${1:-subagent}" a="${2:-claude}" m="${3:-}" v="${4:-}"
     [ -n "$m" ] || m="<unbound>"

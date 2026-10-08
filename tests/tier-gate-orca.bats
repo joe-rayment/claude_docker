@@ -46,6 +46,25 @@ gate() { run "$GATE" <<<"$1"; }
     [ "$status" -eq 0 ]
 }
 
+@test "tier-gate: a Claude role's effort rides the spawn as the Agent call's effort" {
+    # Guards: /tier ... haiku@low reaches an in-process scout as effort:low,
+    #   minimal reads as Claude's nearest step (low), and a call that
+    #   already names an effort keeps its own.
+    # Fails if: tier-gate stops injecting effort, or overrides an explicit one.
+    # Run: bats -f "effort rides the spawn" tests/tier-gate-orca.bats
+    TIER_DERIVE="$DERIVE" tier_set opus sonnet@minimal haiku@low
+    [ "$status" -eq 0 ]
+    gate '{"tool_name":"Agent","tool_input":{"subagent_type":"scout","prompt":"p"}}'
+    run jq -e '.hookSpecificOutput.updatedInput | .model == "haiku" and .effort == "low"' <<<"$output"
+    [ "$status" -eq 0 ]
+    gate '{"tool_name":"Agent","tool_input":{"subagent_type":"executor","prompt":"p"}}'
+    run jq -e '.hookSpecificOutput.updatedInput.effort == "low"' <<<"$output"
+    [ "$status" -eq 0 ]
+    gate '{"tool_name":"Agent","tool_input":{"subagent_type":"scout","prompt":"p","effort":"high"}}'
+    run jq -e '.hookSpecificOutput.updatedInput.effort == "high"' <<<"$output"
+    [ "$status" -eq 0 ]
+}
+
 @test "tier-gate: an orca+claude worker whose model cannot be ranked falls back to the derived rung" {
     TIER_DERIVE="$DERIVE" tier_set fable
     [ "$status" -eq 0 ]

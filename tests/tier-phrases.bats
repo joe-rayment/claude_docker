@@ -171,16 +171,25 @@ prime_short() { run "$PRIME" --short; }
     [ "$before" = "$after" ]
 }
 
-# ── (9) an effort on a Claude role is ignored, with a note ─────────────────
+# ── (9) an effort binds on every role, Claude ones included ────────────────
 
-@test "an effort attached to a Claude worker is ignored, with a note, and the model still binds" {
-    tier_set fable sonnet@high haiku
+@test "an effort on a Claude role binds like any other, and the top's lands in effortLevel" {
+    # Guards: @effort is one syntax for every role -- a Claude worker/recon
+    #   keeps its variant (tier-gate and orca-dispatch carry it), and the
+    #   top's effort becomes the session's effortLevel (max capped at xhigh).
+    # Fails if: a Claude role's effort is dropped again, or the top's is.
+    # Run: bats -f 'effort on a Claude role' tests/tier-phrases.bats
+    tier_set opus@max sonnet@high haiku@low
     [ "$status" -eq 0 ]
-    [[ "$output" == *"applies to opencode roles only (OpenRouter or OpenAI)"* ]]
+    [[ "$output" != *"ignored"* ]]
+    run jq -e '.roles.worker.variant == "high" and .roles.recon.variant == "low"' "$TIER_STATE_FILE"
+    [ "$status" -eq 0 ]
+    run jq -e '.effortLevel == "xhigh"' "$TIER_SETTINGS_LOCAL"
+    [ "$status" -eq 0 ]
 
-    run jq -e '.roles.worker == {backend:"subagent", agent:"claude", model:"sonnet", pinned:true}' "$TIER_STATE_FILE"
-    [ "$status" -eq 0 ]
-    run jq -e '.roles.worker | has("variant") | not' "$TIER_STATE_FILE"
+    # a plain top clears it, as a role with no @ clears its variant
+    tier_set opus
+    run jq -e 'has("effortLevel") | not' "$TIER_SETTINGS_LOCAL"
     [ "$status" -eq 0 ]
 }
 

@@ -234,19 +234,6 @@ tier_set() { run "$TSET" "$@"; }
     [[ "$output" != *"openai:gpt-5.6-luna"* ]]
 }
 
-# ── (10) the ignored-effort note names both opencode providers ──────────────
-
-@test "the ignored-effort note on a Claude role says OpenRouter or OpenAI" {
-    # Guards: the effort-ignored note now reads "applies to opencode roles
-    #   only (OpenRouter or OpenAI)" -- effort never errors on a Claude role.
-    # Fails if: the note still said OpenRouter only, or the effort errored.
-    # Run: bats -f 'OpenRouter or OpenAI' tests/tier-openai.bats
-    tier_set fable sonnet@high haiku
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"applies to opencode roles only (OpenRouter or OpenAI)"* ]]
-    [[ "$output" == *"OpenAI"* ]]
-}
-
 # ── (11) no catalogue at all: still binds, unchecked ────────────────────────
 
 @test "with no OpenAI catalogue at all, a family spec still binds, unchecked" {

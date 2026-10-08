@@ -252,14 +252,23 @@ esac
 ANNOUNCE=false
 _tier_gate_announce_once "$SLOT" && ANNOUNCE=true
 
-printf '%s' "$IN" | jq -c --arg m "$ALIAS" --arg id "$TARGET_ID" --arg slot "$SLOT" --arg note "${ORCA_NOTE:-}" --argjson announce "$ANNOUNCE" '
+# The role's reasoning effort (roles.<role>.variant -- the same @high every
+# backend takes) rides as the Agent call's own `effort`, unless the call
+# already names one.
+EFFORT=""
+if [ -n "$STATE_FILE" ] && [ -f "$STATE_FILE" ]; then
+    EFFORT=$(tier_claude_effort "$(tier_role_field "$STATE_FILE" "$SLOT" variant)")
+fi
+
+printf '%s' "$IN" | jq -c --arg m "$ALIAS" --arg id "$TARGET_ID" --arg slot "$SLOT" --arg note "${ORCA_NOTE:-}" --argjson announce "$ANNOUNCE" --arg eff "$EFFORT" '
 {
     hookSpecificOutput: {
         hookEventName: "PreToolUse",
-        updatedInput: (.tool_input + {model: $m})
+        updatedInput: (.tool_input + {model: $m}
+            + (if $eff != "" and ((.tool_input.effort // "") == "") then {effort: $eff} else {} end))
     }
 } + (if $announce then {
-    systemMessage: ("tier-gate:" + $note + " " + $slot + " spawn had no model — injected " + $slot + " tier \($m) (\($id)). An explicit model on the Agent call always wins.")
+    systemMessage: ("tier-gate:" + $note + " " + $slot + " spawn had no model — injected " + $slot + " tier \($m) (\($id))" + (if $eff != "" then " at effort \($eff)" else "" end) + ". An explicit model on the Agent call always wins.")
 } else {} end)
 ' 2>/dev/null || exit 0
 exit 0

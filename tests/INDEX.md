@@ -189,6 +189,7 @@ catches no bugs.
 | `orca-data.bats` | 4 | fast | scripts/config-sync.sh and bin/orca-hooks-merge preserve Orca's own managed hooks/statusline across syncs, and seed-orca-state.sh seeds orca-data.json defaults for delegated workers once | behavior | — |
 | `orca-dispatch-headless.bats` | 6 | fast | scripts/orca-dispatch.sh's headless opencode worker path (spec file, orca-worker-run command) and orca-wait's handling of headless dispatch records on completion | behavior | — |
 | `orca-dispatch-launch.bats` | 3 | fast | scripts/orca-dispatch.sh's worktree naming, launch-failure diagnostics (terminal tail plus fallback spec), and the stagger delay between two close dispatches | behavior | — |
+| `orca-dispatch-effort.bats` | 1 | fast | scripts/orca-dispatch.sh passing a role's reasoning effort to a Claude worker as worker-start --effort, on Claude's scale (minimal reads as low) | behavior | — |
 | `orca-dispatch.bats` | 4 | slow | scripts/orca-dispatch.sh against a real Orca runtime: creating Runs/Tasks/Dispatches for bash/opencode/claude workers, and the Agent-tool fallback when the runtime is unreachable | behavior | — |
 | `orca-hooks.bats` | 4 | fast | bin/orca-hooks-merge imports Orca's own 12 managed Claude hook entries and chains its statusline ahead of the project's own, idempotently | behavior | — |
 | `orca-relay-format.bats` | 9 | fast | orca-wait's detect_handoff parser recognizes the real HANDOFF-block shapes models actually write (bold markers, headings, multi-line lists) and rejects lookalike prose | behavior | — |

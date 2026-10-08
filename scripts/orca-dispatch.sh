@@ -249,6 +249,16 @@ TERMINAL=""; DISPATCH_ID=""; STATE=""; COMMAND=""; WORKTREE_PATH=""
 REQUESTED_AGENT="$AGENT"
 MODEL_ARGS=()
 [ -n "$MODEL" ] && MODEL_ARGS=(--model "$MODEL")
+# The role's reasoning effort reaches a Claude/Codex/Cursor worker through
+# worker-start --effort (which needs --model); opencode carries it in its
+# launch config instead.
+EFFORT_ARGS=()
+if [ -n "$MODEL" ] && [ -n "$VARIANT" ]; then
+    case "$AGENT" in
+        claude) EFFORT_ARGS=(--effort "$(tier_claude_effort "$VARIANT")") ;;
+        codex|cursor) EFFORT_ARGS=(--effort "$VARIANT") ;;
+    esac
+fi
 
 # `--worktree new-child` lets the runtime pick the name, which produces
 # wt/<random> panes nobody can tell apart in a fan-out. Name it after the
@@ -377,7 +387,7 @@ case "$AGENT" in
         out="$(orca_call orchestration worker-start --task "$TASK_ID" \
             --worktree "$WORKTREE" ${NAME_ARGS[@]+"${NAME_ARGS[@]}"} \
             --agent "$AGENT" \
-            ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} --run "$RUN_ID" \
+            ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} ${EFFORT_ARGS[@]+"${EFFORT_ARGS[@]}"} --run "$RUN_ID" \
             --timeout-ms "$TIMEOUT_MS" ${FROM_ARGS[@]+"${FROM_ARGS[@]}"} --json)" || true
         DISPATCH_ID="$(orca_field "$out" '.result.dispatchId')"
         STATE="$(orca_field "$out" '.result.state')"

@@ -271,6 +271,20 @@ parse_effort() {
     printf '%s\n%s\n' "$name" "$effort"
 }
 
+# effort_note <role> <agent> <effort> -- prints a note (and the caller drops
+# the effort) only for an agent that has no reasoning-effort knob at all.
+# Every role spells effort the same way (@high); each launch path carries
+# it to its own agent: opencode through OPENCODE_CONFIG, an orca Claude/
+# Codex/Cursor worker through worker-start --effort, an in-process spawn
+# through tier-gate's Agent `effort`, the top through settings effortLevel.
+effort_note() {
+    [ -n "$3" ] || return 0
+    case "$2" in
+        opencode|claude|codex|cursor|"") return 0 ;;
+    esac
+    printf "tier: the %s agent takes no reasoning effort -- '%s' ignored for %s\n" "$2" "$3" "$1"
+}
+
 # write_state <top> <worker> <recon> <pinned:true|false> <overdrive:true|false>
 #             [<auto-derived:true|false>]
 # Writes the file whole -- v1 keys plus the v2 .roles block at its defaults
@@ -390,7 +404,7 @@ write_role() {
     fi
 }
 
-# merge_model <id> -- .model = <id> into settings.local.json, everything
+# merge_model <id> [<effort>] -- .model = <id> (and .effortLevel) into settings.local.json, everything
 # else in the file untouched (created fresh as {} if absent).
 merge_model() {
     mkdir -p "$(dirname "$LOCAL_SETTINGS")" 2>/dev/null
@@ -400,7 +414,10 @@ merge_model() {
         base="$(cat "$LOCAL_SETTINGS")"
     fi
     tmp=$(mktemp "$LOCAL_SETTINGS.XXXXXX") || return 1
-    if printf '%s' "$base" | jq --arg m "$1" '.model = $m' > "$tmp" 2>/dev/null && jq -e . "$tmp" >/dev/null 2>&1; then
+    # The top's effort is the session's own effortLevel, on Claude's scale
+    # (tier_claude_effort); no effort clears it, as no @ clears a role's.
+    local eff; eff="$(tier_claude_effort "${2:-}" settings)"
+    if printf '%s' "$base" | jq --arg m "$1" --arg e "$eff" '.model = $m | if $e == "" then del(.effortLevel) else .effortLevel = $e end' > "$tmp" 2>/dev/null && jq -e . "$tmp" >/dev/null 2>&1; then
         mv "$tmp" "$LOCAL_SETTINGS"
     else
         rm -f "$tmp"
@@ -552,7 +569,7 @@ each role (worker · recon · checker) also carries a backend: orca (a supervise
 a 1-arg /tier <top> resets all three to the defaults: worker orca+claude when the Orca runtime is reachable, else subagent; recon subagent haiku; checker subagent at the derived checker rung (the top capped at opus), so a fable top is graded from opus. An off-ladder top leaves the checker on inherit. With an OpenRouter key in this folder the default worker is the GLM rung on opencode, and every OpenRouter request goes through the in-VM guard, which forces config/provider-policy.json's provider allowlist -- a Chinese model is fine, a China-hosted one is not: requests are served in the US, Canada or Europe only; /tier worker claude:sonnet puts the claude rung back.
 an openrouter: bind still saves with no credential in this folder -- it names /tier auth openrouter as the next step, which opens a focused Orca tab that gets a key, validates it and starts the guard; with no Orca runtime it prints the same command to run by hand.
 an openai: binding is opencode on the openai provider, signed in with your ChatGPT subscription; a family alias (openai/~gpt-luna-latest) is resolved when the worker starts to the newest model of that family the subscription serves. Requests go straight to OpenAI, so no guard and no provider allowlist is involved (OpenAI serves them itself); an unsigned folder still saves the binding and names /tier auth openai.
-a reasoning effort (luna@high) is stored as roles.<role>.variant and reaches opencode through a per-launch config file (OPENCODE_CONFIG) on both the orca-dispatch and delegate paths; it has no effect on a Claude role.
+a reasoning effort (luna@high, haiku@low, opus@xhigh) is spelled the same on every role and reaches each agent its own way: opencode through a per-launch config file (OPENCODE_CONFIG), an orca Claude worker through worker-start --effort, an in-process spawn through the Agent call's effort, the top through settings effortLevel (max caps at xhigh there; minimal reads as low on Claude).
 a binding applies to NEW spawns immediately (tier-gate reads tier.json at spawn time); /model <top> moves THIS session's own model now.
 EOF
 }
@@ -1107,11 +1124,8 @@ case "${1:-}" in
         role_effort="$(printf '%s\n' "$role_out" | sed -n 2p)"
         role_line="$(resolve_worker_recon_phrase "$role" "$role_name" role)" || exit 1
         IFS=$'\t' read -r B A M <<<"$role_line"
-        role_note=""
-        if [ -n "$role_effort" ] && [ "$A" != "opencode" ]; then
-            role_note="tier: effort '$role_effort' applies to opencode roles only (OpenRouter or OpenAI) -- ignored for $role"
-            role_effort=""
-        fi
+        role_note="$(effort_note "$role" "$A" "$role_effort")"
+        [ -n "$role_note" ] && role_effort=""
         write_role "$role" "$B" "$A" "$M" true "$role_effort" || exit 1
         echo "tier role bound  $role = $(tier_role_label "$B" "$A" "$M" "$role_effort")"
         [ -n "$role_note" ] && echo "$role_note"
@@ -1261,7 +1275,9 @@ fi
 # --- 1-arg (auto-derive) or 2/3-arg (explicit pin) --------------------------
 
 if [ $# -eq 1 ]; then
-    resolved="$(alias_id "$1")"
+    top_out="$(parse_effort "$1")" || exit 1
+    top_effort="$(printf '%s\n' "$top_out" | sed -n 2p)"
+    resolved="$(alias_id "$(printf '%s\n' "$top_out" | sed -n 1p)")"
     valid_id "$resolved" || { echo "tier-set: unknown subcommand or model id: '$1'" >&2; exit 1; }
     [ -x "$DERIVE" ] || { echo "tier-set: tier-derive not found or not executable ($DERIVE) -- cannot derive the trio; nothing bound" >&2; exit 1; }
     R=$resolved
@@ -1273,13 +1289,13 @@ if [ $# -eq 1 ]; then
         echo "tier: top '$R' is off-ladder — worker/recon set to the same model (not derivable)" >&2
     fi
     write_state "$R" "$W" "$C" false false true || exit 1
-    merge_model "$R" || exit 1
+    merge_model "$R" "$top_effort" || exit 1
     if [ "$TIER_EFFECTIVE_WORKER" != "$W" ]; then
         echo "tier bound  top=$R  →  worker=$TIER_EFFECTIVE_WORKER (opencode)  recon=$C  (this folder has an OpenRouter key, so the worker default is the GLM rung; /tier help explains)"
     else
         echo "tier bound  top=$R  →  worker=$W  recon=$C  (worker/recon derived from the top)"
     fi
-    echo "→ applies to NEW spawns (tier-gate reads tier.json at spawn time); /model $R moves THIS session now."
+    echo "→ applies to NEW spawns (tier-gate reads tier.json at spawn time); $(if [ -n "$top_effort" ]; then echo "/model $R and /effort $top_effort move"; else echo "/model $R moves"; fi) THIS session now."
     exit 0
 fi
 
@@ -1290,19 +1306,15 @@ top_name="$(printf '%s\n' "$top_out" | sed -n 1p)"
 top_effort="$(printf '%s\n' "$top_out" | sed -n 2p)"
 R="$(alias_id "$top_name")"
 valid_id "$R" || { echo "tier-set: unknown or unsafe top model id: '$1' -- nothing bound" >&2; exit 1; }
-top_note=""
-[ -n "$top_effort" ] && top_note="tier: effort '$top_effort' applies to opencode roles only (OpenRouter or OpenAI) -- ignored for top"
+top_note="$(effort_note top claude "$top_effort")"
 
 worker_out="$(parse_effort "$2")" || exit 1
 worker_name="$(printf '%s\n' "$worker_out" | sed -n 1p)"
 worker_effort="$(printf '%s\n' "$worker_out" | sed -n 2p)"
 worker_line="$(resolve_worker_recon_phrase worker "$worker_name" positional)" || exit 1
 IFS=$'\t' read -r WB WA WM <<<"$worker_line"
-worker_note=""
-if [ -n "$worker_effort" ] && [ "$WA" != "opencode" ]; then
-    worker_note="tier: effort '$worker_effort' applies to opencode roles only (OpenRouter or OpenAI) -- ignored for worker"
-    worker_effort=""
-fi
+worker_note="$(effort_note worker "$WA" "$worker_effort")"
+[ -n "$worker_note" ] && worker_effort=""
 
 if [ $# -ge 3 ]; then
     [ $# -gt 3 ] && echo "tier: extra args ignored (dropped: ${*:4})" >&2
@@ -1311,19 +1323,16 @@ if [ $# -ge 3 ]; then
     recon_effort="$(printf '%s\n' "$recon_out" | sed -n 2p)"
     recon_line="$(resolve_worker_recon_phrase recon "$recon_name" positional)" || exit 1
     IFS=$'\t' read -r CB CA CM <<<"$recon_line"
-    recon_note=""
-    if [ -n "$recon_effort" ] && [ "$CA" != "opencode" ]; then
-        recon_note="tier: effort '$recon_effort' applies to opencode roles only (OpenRouter or OpenAI) -- ignored for recon"
-        recon_effort=""
-    fi
+    recon_note="$(effort_note recon "$CA" "$recon_effort")"
+    [ -n "$recon_note" ] && recon_effort=""
 else
     # 2-arg form: a 2-level config -- recon shares the worker binding whole.
     CB="$WB"; CA="$WA"; CM="$WM"; recon_effort="$worker_effort"; recon_note=""
 fi
 
 write_state_v3 "$R" "$WB" "$WA" "$WM" "$worker_effort" "$CB" "$CA" "$CM" "$recon_effort" true false || exit 1
-merge_model "$R" || exit 1
-echo "tier bound (explicit, pinned)  top=$R  worker=$(tier_role_label "$WB" "$WA" "$WM" "$worker_effort")  recon=$(tier_role_label "$CB" "$CA" "$CM" "$recon_effort")  — a plain /tier <top> clears the pin"
+merge_model "$R" "$top_effort" || exit 1
+echo "tier bound (explicit, pinned)  top=$R${top_effort:+@$top_effort}  worker=$(tier_role_label "$WB" "$WA" "$WM" "$worker_effort")  recon=$(tier_role_label "$CB" "$CA" "$CM" "$recon_effort")  — a plain /tier <top> clears the pin"
 [ -n "$top_note" ] && echo "$top_note"
 [ -n "$worker_note" ] && echo "$worker_note"
 [ -n "$recon_note" ] && echo "$recon_note"
@@ -1337,5 +1346,5 @@ if ! tier_openai_ready; then
            esac ;;
     esac
 fi
-echo "→ applies to NEW spawns (tier-gate reads tier.json at spawn time); /model $R moves THIS session now."
+echo "→ applies to NEW spawns (tier-gate reads tier.json at spawn time); $(if [ -n "$top_effort" ]; then echo "/model $R and /effort $top_effort move"; else echo "/model $R moves"; fi) THIS session now."
 exit 0
