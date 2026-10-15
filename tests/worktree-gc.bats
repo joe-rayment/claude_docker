@@ -4,7 +4,7 @@
 # one sweep for merged worktrees, merged branches, stranded work and
 # finished delegate job dirs. scripts/container/provision.d/65-worktree-sweep
 # delegates to it (its own FROZEN suite,
-# tests/container-provision-worktree-sweep.bats, must stay green unchanged).
+# tests/container-provision-worktree-sweep.bats, must stay green).
 #
 # What the sweep may and may not do:
 #   * clean worktree, branch merged into main  -> worktree removed, branch
@@ -18,8 +18,9 @@
 #   * delegate job dir: dead pid + worktree gone -> home/ and config/
 #     swept; receipt, log, branch, env, pid kept. Live pid -> untouched.
 #
-# Real `git init -b main`, real `git worktree add`, a stub orca-ide via
-# $ORCA_CLI -- the same pattern the frozen suite uses.
+# Real `git init -b main`, real `git worktree add`. The sweep is plain git:
+# a canary orca-ide on $PATH and $ORCA_CLI records any call and the last
+# case asserts it was never invoked (claude-orca-9bh.4).
 
 REPO_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)"
 GC="$REPO_ROOT/scripts/worktree-gc.sh"
@@ -52,37 +53,26 @@ make_unmerged_branch() {
     git -C "$proj" branch "$branch" "$sha"
 }
 
-# A stub orca-ide: `status --json` answers reachable per $ORCA_STUB_REACHABLE
-# (default false); `worktree rm --worktree path:<p> --json` records its argv
-# to $ORCA_STUB_LOG and, like the real thing, actually removes the path.
-write_orca_stub() {
-    local path="$1"
-    mkdir -p "$(dirname "$path")"
-    cat > "$path" <<'STUB'
+# A canary orca-ide/orca: records its argv to $ORCA_STUB_LOG, answers
+# "reachable" to anything, and removes the path it is told to `worktree rm`
+# -- so if the sweep still asked Orca for anything, the log would show it.
+write_orca_canary() {
+    local dir="$1" name
+    mkdir -p "$dir"
+    for name in orca-ide orca; do
+        cat > "$dir/$name" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$ORCA_STUB_LOG"
-case "${1:-}" in
-    status)
-        if [ "${ORCA_STUB_REACHABLE:-false}" = "true" ]; then
-            printf '{"ok":true,"result":{"runtime":{"reachable":true}}}\n'
-        else
-            printf '{"ok":true,"result":{"runtime":{"reachable":false}}}\n'
-        fi
-        ;;
-    worktree)
-        if [ "${2:-}" = "rm" ]; then
-            for a in "$@"; do
-                case "$a" in
-                    path:*) rm -rf "${a#path:}" ;;
-                esac
-            done
-            printf '{"ok":true,"result":{}}\n'
-        fi
-        ;;
-esac
+for a in "$@"; do
+    case "$a" in
+        path:*) rm -rf "${a#path:}" ;;
+    esac
+done
+printf '{"ok":true,"result":{"runtime":{"reachable":true}}}\n'
 exit 0
 STUB
-    chmod +x "$path"
+        chmod +x "$dir/$name"
+    done
 }
 
 # A pid above pid_max can never name a process -- dead, deterministically.
@@ -122,9 +112,8 @@ teardown() {
     local proj="$TMP/project" wt="$TMP/wt-clean"
     make_project "$proj"
     add_worktree "$proj" "$wt" wt-clean
-    write_orca_stub "$TMP/bin/orca-ide"
 
-    ORCA_CLI="$TMP/bin/orca-ide" run_gc "$proj"
+    run_gc "$proj"
     [ "$status" -eq 0 ]
 
     [[ "$output" == *"removed $wt"* ]]
@@ -142,9 +131,8 @@ teardown() {
     add_worktree "$proj" "$wt" wt-stray
     git -C "$wt" -c user.email=test@example.com -c user.name=test \
         commit --quiet --allow-empty -m wip
-    write_orca_stub "$TMP/bin/orca-ide"
 
-    ORCA_CLI="$TMP/bin/orca-ide" run_gc "$proj"
+    run_gc "$proj"
     [ "$status" -eq 1 ]
 
     [[ "$output" == *"STRANDED branch wt-stray: 1 commit(s) not in main"* ]]
@@ -160,9 +148,8 @@ teardown() {
     make_project "$proj"
     add_worktree "$proj" "$wt" wt-dirty
     echo changed > "$wt/dirty.txt"
-    write_orca_stub "$TMP/bin/orca-ide"
 
-    ORCA_CLI="$TMP/bin/orca-ide" run_gc "$proj"
+    run_gc "$proj"
     [ "$status" -eq 1 ]
 
     [[ "$output" == *"FAIL: kept $wt (uncommitted or untracked changes)"* ]]
@@ -181,9 +168,8 @@ teardown() {
     git -C "$proj" branch worktree-agent-z HEAD
     git -C "$proj" branch old-integration HEAD
     make_unmerged_branch "$proj" stray
-    write_orca_stub "$TMP/bin/orca-ide"
 
-    ORCA_CLI="$TMP/bin/orca-ide" run_gc "$proj"
+    run_gc "$proj"
     [ "$status" -eq 1 ]
 
     [[ "$output" == *"deleted branch delegate/x (merged)"* ]]
@@ -205,9 +191,8 @@ teardown() {
     make_project "$proj"
     git -C "$proj" checkout --quiet -b side
     git -C "$proj" branch merged-earlier HEAD
-    write_orca_stub "$TMP/bin/orca-ide"
 
-    ORCA_CLI="$TMP/bin/orca-ide" run_gc "$proj"
+    run_gc "$proj"
     [ "$status" -eq 1 ]
 
     [[ "$output" == *"STRANDED HEAD is on side, not main"* ]]
@@ -237,9 +222,8 @@ teardown() {
     LIVE_PID=$!
     mkdir -p "$live_job/home"
     printf '%s\n' "$LIVE_PID" > "$live_job/pid"
-    write_orca_stub "$TMP/bin/orca-ide"
 
-    ORCA_CLI="$TMP/bin/orca-ide" run_gc "$proj"
+    run_gc "$proj"
     [ "$status" -eq 0 ]
 
     [[ "$output" == *"swept job job-done (home, config)"* ]]
@@ -266,9 +250,8 @@ teardown() {
     git -C "$proj" branch delegate/old HEAD
     mkdir -p "$done_job/home"
     printf '%s\n' "$(dead_pid)" > "$done_job/pid"
-    write_orca_stub "$TMP/bin/orca-ide"
 
-    ORCA_CLI="$TMP/bin/orca-ide" run_gc "$proj" --report
+    run_gc "$proj" --report
     [ "$status" -eq 0 ]
 
     [[ "$output" == *"would removed $wt"* ]]
@@ -287,27 +270,27 @@ teardown() {
     [ -x "$GC" ]
     local proj="$TMP/project"
     make_project "$proj"
-    write_orca_stub "$TMP/bin/orca-ide"
 
-    ORCA_CLI="$TMP/bin/orca-ide" run_gc "$proj" --quiet
+    run_gc "$proj" --quiet
     [ "$status" -eq 0 ]
     [ -z "$output" ]
 }
 
-@test "gc uses orca-ide worktree rm when Orca is reachable" {
+@test "gc removes a clean worktree with plain git and never calls the Orca CLI, even when one answers reachable" {
     [ -x "$GC" ]
-    local proj="$TMP/project" wt="$TMP/wt-orca" cli="$TMP/bin/orca-ide"
+    local proj="$TMP/project" wt="$TMP/wt-orca"
     make_project "$proj"
     add_worktree "$proj" "$wt" wt-orca
-    write_orca_stub "$cli"
+    write_orca_canary "$TMP/bin"
 
-    ORCA_CLI="$cli" ORCA_STUB_REACHABLE=true run_gc "$proj"
+    PATH="$TMP/bin:$PATH" ORCA_CLI="$TMP/bin/orca-ide" run_gc "$proj"
     [ "$status" -eq 0 ]
 
-    grep -qF "status --json" "$ORCA_STUB_LOG"
-    grep -qF "worktree rm --worktree path:$wt --json" "$ORCA_STUB_LOG"
+    [ ! -s "$ORCA_STUB_LOG" ]
     [[ "$output" == *"removed $wt"* ]]
+    [[ "$output" == *"deleted branch wt-orca (merged)"* ]]
 
     [ ! -d "$wt" ]
     ! git -C "$proj" worktree list --porcelain | grep -qF "worktree $wt"
+    [ -z "$(git -C "$proj" branch --list wt-orca)" ]
 }

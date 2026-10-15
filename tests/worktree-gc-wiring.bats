@@ -20,15 +20,14 @@
 #   6. an unmerged branch behind a kept dirty worktree is reported
 #      STRANDED with the reason the worktree was kept (addendum B2) --
 #      unmerged work in a live or dirty worktree can no longer hide.
-#   7. an occupant that is only Orca's idle worktree terminal -- a shell
-#      whose parent's cmdline contains orca-ide and which has no children
-#      -- does not make a worktree busy when Orca is reachable, and still
-#      does when it is not (addendum G).
+#   7. a shell that merely idles in a worktree -- even one whose parent's
+#      cmdline says orca-ide -- makes the worktree busy: the sweep is plain
+#      git, there is no Orca terminal to close, so every occupant keeps it
+#      (claude-orca-9bh.4).
 #
-# Real `git init -b main`, real `git worktree add`, a stub orca-ide via
-# $ORCA_CLI and a stub dev-log on PATH -- the same pattern the frozen
-# suites (tests/worktree-gc.bats, tests/container-provision-worktree-sweep.bats)
-# use.
+# Real `git init -b main`, real `git worktree add` and a stub dev-log on
+# PATH -- the same pattern the frozen suites (tests/worktree-gc.bats,
+# tests/container-provision-worktree-sweep.bats) use.
 
 REPO_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)"
 GC="$REPO_ROOT/scripts/worktree-gc.sh"
@@ -63,39 +62,6 @@ make_unmerged_branch() {
     git -C "$proj" branch "$branch" "$sha"
 }
 
-# A stub orca-ide: `status --json` answers reachable per $ORCA_STUB_REACHABLE
-# (default false); `worktree rm --worktree path:<p> --json` records its argv
-# to $ORCA_STUB_LOG and, like the real thing, actually removes the path.
-write_orca_stub() {
-    local path="$1"
-    mkdir -p "$(dirname "$path")"
-    cat > "$path" <<'STUB'
-#!/usr/bin/env bash
-printf '%s\n' "$*" >> "$ORCA_STUB_LOG"
-case "${1:-}" in
-    status)
-        if [ "${ORCA_STUB_REACHABLE:-false}" = "true" ]; then
-            printf '{"ok":true,"result":{"runtime":{"reachable":true}}}\n'
-        else
-            printf '{"ok":true,"result":{"runtime":{"reachable":false}}}\n'
-        fi
-        ;;
-    worktree)
-        if [ "${2:-}" = "rm" ]; then
-            for a in "$@"; do
-                case "$a" in
-                    path:*) rm -rf "${a#path:}" ;;
-                esac
-            done
-            printf '{"ok":true,"result":{}}\n'
-        fi
-        ;;
-esac
-exit 0
-STUB
-    chmod +x "$path"
-}
-
 # A dev-log stub: records every argv line to $DEVLOG_STUB_LOG.
 write_devlog_stub() {
     local path="$1"
@@ -112,10 +78,9 @@ run_gc() {  # run_gc <project> [extra args...]
     run bash "$GC" --project "$proj" "$@"
 }
 
-# An Orca idle-terminal stand-in behind $1: a shell whose own argv0 names
-# orca-ide (so the child's /proc/<ppid>/cmdline contains it) waiting on
-# one childless child -- the sleep -- whose cwd is the worktree. Records
-# the shell pid on $IDLE_PIDS for teardown.
+# What Orca's idle terminal used to look like behind $1: a shell whose own
+# argv0 names orca-ide waiting on one childless child -- the sleep -- whose
+# cwd is the worktree. Records the shell pid on $IDLE_PIDS for teardown.
 start_idle_terminal() {  # start_idle_terminal <worktree>
     ( cd "$1" && exec -a orca-ide-parent bash -c 'sleep 300 & wait' ) \
         </dev/null >/dev/null 2>&1 &
@@ -149,8 +114,6 @@ kill_idle_terminals() {
 setup() {
     TMP="$(short_tmpdir)"
     export TMP
-    export ORCA_STUB_LOG="$TMP/orca-calls.log"
-    : > "$ORCA_STUB_LOG"
     IDLE_PIDS=""
 }
 
@@ -216,13 +179,12 @@ teardown() {
     local proj="$TMP/project" wt="$TMP/wt-x" out rc
     make_project "$proj"
     add_worktree "$proj" "$wt" wt-x
-    write_orca_stub "$TMP/bin/orca-ide"
 
     # The real PostToolUse hook runs with PROJECT_DIR pointing at the
     # project, so emulate that here instead of letting an ambient
     # PROJECT_DIR from the calling shell pick some other repo entirely.
     out="$(cd "$proj" && printf '{"tool_input":{"command":"git merge wt-x"},"cwd":"%s"}' "$proj" \
-        | PROJECT_DIR="$proj" ORCA_CLI="$TMP/bin/orca-ide" bash "$GC" --after-merge 2>&1)"
+        | PROJECT_DIR="$proj" bash "$GC" --after-merge 2>&1)"
     rc=$?
     [ "$rc" -eq 0 ]
 
@@ -272,39 +234,28 @@ teardown() {
     git -C "$wt" -c user.email=test@example.com -c user.name=test \
         commit --quiet --allow-empty -m wip
     echo untracked > "$wt/scratch.txt"
-    write_orca_stub "$TMP/bin/orca-ide"
 
-    ORCA_CLI="$TMP/bin/orca-ide" run_gc "$proj"
+    run_gc "$proj"
     [ "$status" -eq 1 ]
 
     [[ "$output" == *"FAIL: kept $wt (uncommitted or untracked changes)"* ]]
     [[ "$output" == *"STRANDED branch wt-stray: 1 commit(s) not in main (worktree $wt kept: uncommitted changes)"* ]]
 }
 
-@test "worktree-gc treats an idle shell whose parent is orca-ide as not busy when Orca is reachable, and as busy when it is not" {
+@test "worktree-gc keeps a merged worktree as busy when an idle shell whose parent is orca-ide sits in it" {
     [ -x "$GC" ]
     local proj="$TMP/project" wt="$TMP/wt-idle"
     make_project "$proj"
     add_worktree "$proj" "$wt" wt-idle
-    write_orca_stub "$TMP/bin/orca-ide"
 
     start_idle_terminal "$wt" || skip "could not seat the idle-terminal occupant in $wt"
 
-    # Orca reachable: the occupant is Orca's own idle terminal, the rm
-    # closes it, and the merged worktree goes.
-    ORCA_CLI="$TMP/bin/orca-ide" ORCA_STUB_REACHABLE=true run_gc "$proj"
+    # Plain git cannot close a terminal, and nothing is exempt any more:
+    # the merged worktree is kept as busy, with its branch.
+    run_gc "$proj"
     [ "$status" -eq 0 ]
-    [[ "$output" == *"removed $wt (closed Orca's idle terminal)"* ]]
-    [ ! -d "$wt" ]
-
-    # The same occupant with Orca unreachable: plain git cannot close a
-    # terminal, so every process still means busy.
-    local wt2="$TMP/wt-idle2"
-    add_worktree "$proj" "$wt2" wt-idle2
-    start_idle_terminal "$wt2" || skip "could not seat the idle-terminal occupant in $wt2"
-
-    ORCA_CLI="$TMP/bin/orca-ide" run_gc "$proj"
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"busy $wt2"* ]]
-    [ -d "$wt2" ]
+    [[ "$output" == *"busy $wt"* ]]
+    [[ "$output" != *"removed $wt"* ]]
+    [ -d "$wt" ]
+    [ -n "$(git -C "$proj" branch --list wt-idle)" ]
 }

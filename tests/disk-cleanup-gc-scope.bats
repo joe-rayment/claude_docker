@@ -36,8 +36,8 @@ add_worktree() {
     git -C "$1" worktree add --quiet -b "$3" "$2" HEAD >/dev/null 2>&1
 }
 
-# A stub or-ide answering unreachable: worktree-gc must sweep with plain
-# git and log orca=unreachable, whatever it is asked.
+# A stub orca-ide: worktree-gc no longer consults Orca at all (claude-orca-9bh.4),
+# so this only proves a stray ORCA_CLI changes nothing about the sweep.
 write_orca_stub() {
     mkdir -p "$(dirname "$1")"
     cat > "$1" <<'STUB'
@@ -51,7 +51,7 @@ STUB
 }
 
 # The full-line shape of a run-log block header (claude-orca-jqh).
-HEADER_RE='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z mode=[a-z-]+ orca=(reachable|unreachable) exit=[0-9]+$'
+HEADER_RE='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z mode=[a-z-]+ exit=[0-9]+$'
 
 setup() {
     TMP="$(short_tmpdir)"
@@ -95,7 +95,7 @@ run_cleanup() {  # run_cleanup <mode args...>
     local log="$WS/.claude-dev/run/worktree-gc.log"
     [ -f "$log" ]
     [ "$(grep -cE "$HEADER_RE" "$log")" -eq 1 ]
-    grep -qE " mode=quiet orca=unreachable exit=0$" "$log"
+    grep -qE " mode=quiet exit=0$" "$log"
 
     # the ambient PROJECT_DIR repo was never touched
     [ ! -e "$OTHER/.claude-dev/run/worktree-gc.log" ]
@@ -117,7 +117,7 @@ run_cleanup() {  # run_cleanup <mode args...>
     local log="$WS/.claude-dev/run/worktree-gc.log"
     [ -f "$log" ]
     [ "$(grep -cE "$HEADER_RE" "$log")" -eq 1 ]
-    grep -qE " mode=report orca=unreachable exit=0$" "$log"
+    grep -qE " mode=report exit=0$" "$log"
 
     # the ambient PROJECT_DIR repo was never touched
     [ ! -e "$OTHER/.claude-dev/run/worktree-gc.log" ]
@@ -139,7 +139,7 @@ run_cleanup() {  # run_cleanup <mode args...>
     local log="$WS/.claude-dev/run/worktree-gc.log"
     [ -f "$log" ]
     [ "$(grep -cE "$HEADER_RE" "$log")" -eq 1 ]
-    grep -qE " mode=report orca=unreachable exit=0$" "$log"
+    grep -qE " mode=report exit=0$" "$log"
 
     # the ambient PROJECT_DIR repo was never touched
     [ ! -e "$OTHER/.claude-dev/run/worktree-gc.log" ]
