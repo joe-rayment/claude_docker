@@ -875,6 +875,7 @@ PRUNE
 clear_run_results() {
     local run="$1/.claude-dev/run"
     rm -f "$run/orca-web-url.txt" \
+          "$run/sshd.ready" \
           "$run/port" \
           "$run/orca-serve.log" \
           "$run/setup.log" 2>/dev/null || true
@@ -2376,7 +2377,7 @@ container_create() {
     # Never open a stale pairing URL from a previous container. (An
     # update, which is where a container is deliberately replaced, clears
     # the rest of the previous one's results too -- clear_run_results.)
-    rm -f "$dir/.claude-dev/run/orca-web-url.txt"
+    rm -f "$dir/.claude-dev/run/orca-web-url.txt" "$dir/.claude-dev/run/sshd.ready"
 
     # The toolchain cache, made before the run so docker mounts real
     # directories rather than creating root-owned ones of its own -- and
@@ -2390,6 +2391,10 @@ container_create() {
     # The two bind mounts stay first, then the state volume and the four
     # scratch ones -- these lines and SCRATCH_VOLUMES (see state_volume)
     # say the same thing, in the same order.
+    #
+    # The published port is sshd's (CLAUDE_ORCA_SSHD_PORT, the port the
+    # Mac's ssh config names). Orca still runs inside until it is removed,
+    # one port up and NOT published: the Mac no longer talks to it.
     set -- run -d --name "$name" \
         --volume "$dir:$guest" \
         --volume "$dir/.claude-dev/home:/home/agent" \
@@ -2404,7 +2409,8 @@ container_create() {
         -e "CLAUDE_ORCA_HOST_PROJECT_DIR=$dir" \
         -e "CLAUDE_ORCA_ROOT=$guest" \
         -e "BEADS_DIR=$guest/.beads" \
-        -e "ORCA_PORT=$port" \
+        -e "CLAUDE_ORCA_SSHD_PORT=$port" \
+        -e "ORCA_PORT=$((port + 1))" \
         -e "HOST_UID=$(id -u)" \
         -e "GH_TOKEN=$token" \
         -e "CLAUDE_ORCA_THEME=$theme" \
@@ -2527,14 +2533,15 @@ docker_host_path() {
 # holding someone else's mounts: the project appeared in the sidebar and
 # was empty, no shell, no agents (a real Mac, 2026-09-13).
 #
-# So reuse is conditional on the four things that decide WHICH runtime the
-# app is about to be handed: the image, the project mount, the home mount
-# and the published port. Returns 0 when all four are this folder's, and
+# So reuse is conditional on the five things that decide WHICH runtime the
+# app is about to be handed: the image, the project mount, the home mount,
+# the published port and the sshd port in its env. Returns 0 when all five
+# are this folder's, and
 # otherwise prints one line naming the FIRST mismatch and returns 1.
 # It never looks at the state volume -- that is Orca's own user-data dir,
 # it survives a recreate on purpose, and it is keyed by container name.
 container_matches() {
-    local name="$1" dir="$2" port="$3" guest want have want_id have_id have_port mounts m found="" facts
+    local name="$1" dir="$2" port="$3" guest want have want_id have_id have_port have_ssh mounts m found="" facts
     # CTR_RUNTIME=local runs the entrypoint as a host process: no image, no
     # mounts and no port map exist, and ctr_local's `inspect` answers the
     # state word to every template whatever it asks for. There is nothing
@@ -2560,19 +2567,31 @@ container_matches() {
     # recreated instead of started. HostConfig.PortBindings is the record of
     # what the container was created to publish, and the one place the claim
     # survives a stop.
-    facts="$(ctr inspect -f "{{println .Config.Image}}{{println .Image}}{{with index .HostConfig.PortBindings \"$port/tcp\"}}{{(index . 0).HostPort}}{{end}}{{println}}{{range .Mounts}}{{.Source}}:{{println .Destination}}{{end}}" "$name" 2>/dev/null || true)"
+    #
+    # The fourth line is the env check, asked as a yes/no inside the
+    # template (the line says "ssh" or is blank) so no env value -- the
+    # GitHub token is one -- ever comes back through the pipe: a container
+    # made before the ssh panes has no CLAUDE_ORCA_SSHD_PORT=<port> in its
+    # env, runs no sshd on that port, and is recreated (the migration for
+    # old folders).
+    facts="$(ctr inspect -f "{{println .Config.Image}}{{println .Image}}{{with index .HostConfig.PortBindings \"$port/tcp\"}}{{(index . 0).HostPort}}{{end}}{{println}}{{range .Config.Env}}{{if eq . \"CLAUDE_ORCA_SSHD_PORT=$port\"}}ssh{{end}}{{end}}{{println}}{{range .Mounts}}{{.Source}}:{{println .Destination}}{{end}}" "$name" 2>/dev/null || true)"
     { IFS= read -r have; IFS= read -r have_id; IFS= read -r have_port
+      IFS= read -r have_ssh
       mounts="$(cat)"; } <<FACTS
 $facts
 FACTS
     have="${have//[[:space:]]/}"; have_id="${have_id//[[:space:]]/}"
-    have_port="${have_port//[[:space:]]/}"
+    have_port="${have_port//[[:space:]]/}"; have_ssh="${have_ssh//[[:space:]]/}"
     if [ "$have" != "$want" ]; then
         want_id="$(ctr image inspect "$want" --format '{{.Id}}' 2>/dev/null | head -1 | tr -d '[:space:]')"
         if [ -z "$have_id" ] || [ -z "$want_id" ] || [ "$have_id" != "$want_id" ]; then
             echo "  container $name is not this folder's (image: ${have:-unknown} vs $want) -- recreating it" >&2
             return 1
         fi
+    fi
+    if [ "$have_ssh" != "ssh" ]; then
+        echo "  container $name has no sshd on port $port (made before the ssh panes) -- recreating it" >&2
+        return 1
     fi
 
     # The project mount, then the home mount, each as one source:destination
