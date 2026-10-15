@@ -28,7 +28,6 @@ setup() {
     export TIER_STATE_FILE="$BATS_TEST_TMPDIR/tier.json"
     export TIER_SETTINGS_LOCAL="$BATS_TEST_TMPDIR/settings.local.json"
     export TIER_DERIVE="$DERIVE"
-    export TIER_ORCA_PROBE_DISABLE=1
     export TIER_MODELS_FETCH=0
     unset OPENROUTER_API_KEY
     export TIER_OPENROUTER_KEY_FILE="$BATS_TEST_TMPDIR/no-such-openrouter.key"

@@ -406,11 +406,10 @@ seed_state() {  # seed_state <worker> <recon> -- a bound, unpinned, non-overdriv
 # ── tier v2: a backend per role (claude-orca-qa2.12) ────────────────────────
 
 @test "tier.json v2 carries backend, agent and model per role and a v1 file reads as subagent backend" {
-    # claude-orca-xrp: the derived worker's BACKEND is whatever the Orca probe
-    # answers, so a case that asserts the subagent default has to say "no Orca"
-    # out loud -- ambient reachability (the suite now runs inside the folder's
-    # own container, where orca-ide is up) is not part of what this case means.
-    TIER_ORCA_PROBE_DISABLE=1 TIER_DERIVE="$DERIVE" tier_set fable
+    # Nothing probes for an Orca runtime any more (claude-orca-9bh.2): a
+    # positional Claude worker always binds the subagent backend, whatever
+    # the box the suite runs on.
+    TIER_DERIVE="$DERIVE" tier_set fable
     [ "$status" -eq 0 ]
 
     # the v1 keys stay exactly what they were -- the model id per role ...
@@ -438,13 +437,13 @@ seed_state() {  # seed_state <worker> <recon> -- a bound, unpinned, non-overdriv
     [[ "$output" == *"checker=subagent:inherit"* ]]
 }
 
-@test "tier-set binds worker openrouter:<vendor/model> to the orca backend with agent opencode and claude: to agent claude" {
+@test "tier-set binds worker openrouter:<vendor/model> to the headless backend with agent opencode and claude: to agent claude" {
     TIER_DERIVE="$DERIVE" tier_set fable
     [ "$status" -eq 0 ]
 
     TIER_DERIVE="$DERIVE" tier_set worker openrouter:qwen/qwen3-coder
     [ "$status" -eq 0 ]
-    run jq -e '.roles.worker | .backend == "orca" and .agent == "opencode" and .model == "openrouter/qwen/qwen3-coder"' "$STATE_FILE"
+    run jq -e '.roles.worker | .backend == "headless" and .agent == "opencode" and .model == "openrouter/qwen/qwen3-coder"' "$STATE_FILE"
     [ "$status" -eq 0 ]
     # the v1 mirror follows the role's model; the other roles are untouched
     run jq -e '.worker == "openrouter/qwen/qwen3-coder" and .roles.recon.backend == "subagent"' "$STATE_FILE"
@@ -452,7 +451,7 @@ seed_state() {  # seed_state <worker> <recon> -- a bound, unpinned, non-overdriv
 
     TIER_DERIVE="$DERIVE" tier_set worker claude:sonnet
     [ "$status" -eq 0 ]
-    run jq -e '.roles.worker | .backend == "orca" and .agent == "claude" and .model == "sonnet"' "$STATE_FILE"
+    run jq -e '.roles.worker | .backend == "headless" and .agent == "claude" and .model == "sonnet"' "$STATE_FILE"
     [ "$status" -eq 0 ]
 
     # `subagent` puts the worker back in-process on the DERIVED model
@@ -466,11 +465,11 @@ seed_state() {  # seed_state <worker> <recon> -- a bound, unpinned, non-overdriv
     # the same grammar on the recon and checker roles
     TIER_DERIVE="$DERIVE" tier_set recon openrouter:qwen/qwen3-coder
     [ "$status" -eq 0 ]
-    run jq -e '.roles.recon | .backend == "orca" and .agent == "opencode" and .model == "openrouter/qwen/qwen3-coder"' "$STATE_FILE"
+    run jq -e '.roles.recon | .backend == "headless" and .agent == "opencode" and .model == "openrouter/qwen/qwen3-coder"' "$STATE_FILE"
     [ "$status" -eq 0 ]
     TIER_DERIVE="$DERIVE" tier_set checker claude:opus
     [ "$status" -eq 0 ]
-    run jq -e '.roles.checker | .backend == "orca" and .agent == "claude" and .model == "opus"' "$STATE_FILE"
+    run jq -e '.roles.checker | .backend == "headless" and .agent == "claude" and .model == "opus"' "$STATE_FILE"
     [ "$status" -eq 0 ]
 }
 
@@ -479,7 +478,7 @@ seed_state() {  # seed_state <worker> <recon> -- a bound, unpinned, non-overdriv
     TIER_DERIVE="$DERIVE" tier_set worker openrouter:qwen/qwen3-coder
     prime
     [ "$status" -eq 0 ]
-    [[ "$output" == *"worker=orca:opencode:openrouter/qwen/qwen3-coder"* ]]
+    [[ "$output" == *"worker=headless:opencode:openrouter/qwen/qwen3-coder"* ]]
     [[ "$output" == *"recon=subagent:haiku"* ]]
     [[ "$output" == *"checker=subagent:opus"* ]]
     # the orchestrator line is still printed
@@ -537,12 +536,6 @@ seed_state() {  # seed_state <worker> <recon> -- a bound, unpinned, non-overdriv
 # ── the GLM-by-default worker (claude-orca-qa2.20) ──────────────────────────
 
 @test "tier derives an openrouter glm-5.3 opencode worker when an OpenRouter key is present and the claude rung when it is not" {
-    orca_up="$BATS_TEST_TMPDIR/orca-up"
-    cat > "$orca_up" <<'STUB'
-#!/bin/sh
-echo '{"ok":true,"result":{"runtime":{"reachable":true}}}'
-STUB
-    chmod +x "$orca_up"
     keyfile="$BATS_TEST_TMPDIR/openrouter.key"
     printf 'sk-or-v1-testkey\n' > "$keyfile"
 
@@ -552,12 +545,12 @@ STUB
     run jq -e '.worker == "sonnet" and (.roles.worker | .agent == "claude" and .model == "sonnet")' "$STATE_FILE"
     [ "$status" -eq 0 ]
 
-    # a key file -> the worker becomes the GLM rung on opencode, and with a
-    # reachable Orca runtime it lands on the orca backend
-    TIER_OPENROUTER_KEY_FILE="$keyfile" TIER_ORCA_PROBE_CMD="$orca_up" \
+    # a key file -> the worker becomes the GLM rung on opencode, and it
+    # lands on the headless backend (a detached `opencode run`)
+    TIER_OPENROUTER_KEY_FILE="$keyfile" \
         TIER_DERIVE="$DERIVE" tier_set fable
     [ "$status" -eq 0 ]
-    run jq -e '.roles.worker | .backend == "orca" and .agent == "opencode" and .model == "openrouter/~z-ai/glm-latest"' "$STATE_FILE"
+    run jq -e '.roles.worker | .backend == "headless" and .agent == "opencode" and .model == "openrouter/~z-ai/glm-latest"' "$STATE_FILE"
     [ "$status" -eq 0 ]
     # the v1 mirror follows, the top is untouched, and only the worker moved
     run jq -e '.worker == "openrouter/~z-ai/glm-latest" and .top == "fable"' "$STATE_FILE"
@@ -570,15 +563,13 @@ STUB
     # tier-prime shows it
     prime
     [ "$status" -eq 0 ]
-    [[ "$output" == *"worker=orca:opencode:openrouter/~z-ai/glm-latest"* ]]
+    [[ "$output" == *"worker=headless:opencode:openrouter/~z-ai/glm-latest"* ]]
 
-    # the env var alone is enough; with no Orca the vendor still holds and
-    # only the backend falls back -- "no Orca" is pinned by the probe switch
-    # (claude-orca-xrp), never left to the box the suite happens to run on
-    OPENROUTER_API_KEY=sk-or-v1-fromenv TIER_ORCA_PROBE_DISABLE=1 \
+    # the env var alone is enough; the opencode worker is headless the same way
+    OPENROUTER_API_KEY=sk-or-v1-fromenv \
         TIER_DERIVE="$DERIVE" tier_set opus
     [ "$status" -eq 0 ]
-    run jq -e '.top == "opus" and (.roles.worker | .backend == "subagent" and .agent == "opencode" and .model == "openrouter/~z-ai/glm-latest")' "$STATE_FILE"
+    run jq -e '.top == "opus" and (.roles.worker | .backend == "headless" and .agent == "opencode" and .model == "openrouter/~z-ai/glm-latest")' "$STATE_FILE"
     [ "$status" -eq 0 ]
 
     # an explicit /tier worker claude:<x> still overrides the default
@@ -602,7 +593,7 @@ STUB
 }
 
 @test "tier-gate injects the checker rung into verifier spawns" {
-    TIER_ORCA_PROBE_DISABLE=1 TIER_DERIVE="$DERIVE" tier_set fable
+    TIER_DERIVE="$DERIVE" tier_set fable
     [ "$status" -eq 0 ]
 
     # the graders run the checker rung -- opus under a fable top, so the check
@@ -630,7 +621,7 @@ STUB
     [ -z "$output" ]
 
     # the RUNG, never a hardcoded opus: a sonnet top grades from sonnet
-    TIER_ORCA_PROBE_DISABLE=1 TIER_DERIVE="$DERIVE" tier_set sonnet
+    TIER_DERIVE="$DERIVE" tier_set sonnet
     [ "$status" -eq 0 ]
     TIER_GATE_DERIVE="$DERIVE" gate '{"tool_name":"Agent","tool_input":{"subagent_type":"verifier","prompt":"p"}}'
     [ "$status" -eq 0 ]
@@ -652,7 +643,7 @@ STUB
     [ -z "$output" ]
 
     # and an explicit `/tier checker inherit` still means inherit
-    TIER_ORCA_PROBE_DISABLE=1 TIER_DERIVE="$DERIVE" tier_set fable
+    TIER_DERIVE="$DERIVE" tier_set fable
     TIER_DERIVE="$DERIVE" tier_set checker inherit
     [ "$status" -eq 0 ]
     run jq -e '.roles.checker | .model == "inherit" and .pinned == true' "$STATE_FILE"
@@ -731,9 +722,7 @@ STUB
 # model, which is what "inherit" always meant for them.
 
 @test "tier derives the checker to opus when the top is fable" {
-    # "no Orca" is pinned by the probe switch (claude-orca-xrp), never left to
-    # the box the suite happens to run on.
-    TIER_ORCA_PROBE_DISABLE=1 TIER_DERIVE="$DERIVE" tier_set fable
+    TIER_DERIVE="$DERIVE" tier_set fable
     [ "$status" -eq 0 ]
 
     run jq -e '.roles.checker | .backend == "subagent" and .agent == "claude" and .model == "opus"' "$STATE_FILE"
@@ -760,12 +749,12 @@ STUB
 }
 
 @test "tier derives the checker to the top model when the top is opus or sonnet" {
-    TIER_ORCA_PROBE_DISABLE=1 TIER_DERIVE="$DERIVE" tier_set opus
+    TIER_DERIVE="$DERIVE" tier_set opus
     [ "$status" -eq 0 ]
     run jq -e '.top == "opus" and .roles.checker.model == "opus"' "$STATE_FILE"
     [ "$status" -eq 0 ]
 
-    TIER_ORCA_PROBE_DISABLE=1 TIER_DERIVE="$DERIVE" tier_set sonnet
+    TIER_DERIVE="$DERIVE" tier_set sonnet
     [ "$status" -eq 0 ]
     run jq -e '.top == "sonnet" and .roles.checker.model == "sonnet"' "$STATE_FILE"
     [ "$status" -eq 0 ]
@@ -789,7 +778,7 @@ STUB
 }
 
 @test "tier derives the worker to sonnet when the top is fable" {
-    TIER_ORCA_PROBE_DISABLE=1 TIER_DERIVE="$DERIVE" tier_set fable
+    TIER_DERIVE="$DERIVE" tier_set fable
     [ "$status" -eq 0 ]
     run jq -e '.worker == "sonnet" and (.roles.worker | .agent == "claude" and .model == "sonnet")' "$STATE_FILE"
     [ "$status" -eq 0 ]
@@ -799,14 +788,14 @@ STUB
 }
 
 @test "tier recon openrouter binds the flash-class default model" {
-    TIER_ORCA_PROBE_DISABLE=1 TIER_DERIVE="$DERIVE" tier_set fable
+    TIER_DERIVE="$DERIVE" tier_set fable
     [ "$status" -eq 0 ]
 
     # the bare `openrouter` spec takes the role's OpenRouter default: for
     # recon that is the flash-class model, not the full-size worker GLM.
     TIER_DERIVE="$DERIVE" tier_set recon openrouter
     [ "$status" -eq 0 ]
-    run jq -e '.roles.recon | .backend == "orca" and .agent == "opencode" and .model == "openrouter/~z-ai/glm-flash-latest" and .pinned == true' "$STATE_FILE"
+    run jq -e '.roles.recon | .backend == "headless" and .agent == "opencode" and .model == "openrouter/~z-ai/glm-flash-latest" and .pinned == true' "$STATE_FILE"
     [ "$status" -eq 0 ]
     # the v1 mirror follows, and the other roles are untouched
     run jq -e '.recon == "openrouter/~z-ai/glm-flash-latest" and .roles.worker.model == "sonnet"' "$STATE_FILE"
@@ -872,7 +861,7 @@ STUB
     tier_set worker claude:sonnet
     [ "$status" -eq 0 ]
     [ "${#lines[@]}" -eq 2 ]
-    [[ "${lines[0]}" == "tier role bound  worker = orca:sonnet" ]]
+    [[ "${lines[0]}" == "tier role bound  worker = headless:sonnet" ]]
     [[ "${lines[1]}" == "→ applies to NEW spawns"* ]]
     tier_set opus sonnet
     [ "$status" -eq 0 ]

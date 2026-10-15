@@ -11,7 +11,7 @@
 # still saves the binding and names /tier auth openai.
 #
 # Fast and hermetic: no network, no real opencode -- TIER_MODELS_FETCH=0,
-# TIER_ORCA_PROBE_DISABLE=1; the OpenAI catalogue and auth store are
+# the OpenAI catalogue and auth store are
 # fixtures and the OpenRouter catalogue is absent.
 
 REPO_ROOT="${BATS_TEST_DIRNAME:-.}"
@@ -24,7 +24,6 @@ setup() {
     export TIER_STATE_FILE="$BATS_TEST_TMPDIR/tier.json"
     export TIER_SETTINGS_LOCAL="$BATS_TEST_TMPDIR/settings.local.json"
     export TIER_DERIVE="$DERIVE"
-    export TIER_ORCA_PROBE_DISABLE=1
     export TIER_MODELS_FETCH=0
     unset OPENROUTER_API_KEY
     export TIER_OPENROUTER_KEY_FILE="$BATS_TEST_TMPDIR/no-such-openrouter.key"
@@ -58,7 +57,7 @@ tier_set() { run "$TSET" "$@"; }
 
 # ── (1) family specs bind the subscription's newest release, effort rides ───
 
-@test "openai: family specs bind orca:opencode:openai/~<family>-latest per role, with the effort" {
+@test "openai: family specs bind headless:opencode:openai/~<family>-latest per role, with the effort" {
     # Guards: openai:terra / openai:luna resolve through the catalogue's
     #   family column, so a new release needs no re-bind; an @high effort on
     #   recon is stored as the role's variant like on any opencode binding.
@@ -69,11 +68,11 @@ tier_set() { run "$TSET" "$@"; }
     [ "$status" -eq 0 ]
     bound_output="$output"
 
-    run jq -e '.roles.worker == {backend:"orca", agent:"opencode", model:"openai/~gpt-terra-latest", pinned:true}' "$TIER_STATE_FILE"
+    run jq -e '.roles.worker == {backend:"headless", agent:"opencode", model:"openai/~gpt-terra-latest", pinned:true}' "$TIER_STATE_FILE"
     [ "$status" -eq 0 ]
-    run jq -e '.roles.recon == {backend:"orca", agent:"opencode", model:"openai/~gpt-luna-latest", pinned:true, variant:"high"}' "$TIER_STATE_FILE"
+    run jq -e '.roles.recon == {backend:"headless", agent:"opencode", model:"openai/~gpt-luna-latest", pinned:true, variant:"high"}' "$TIER_STATE_FILE"
     [ "$status" -eq 0 ]
-    [[ "$bound_output" == *"orca:opencode:openai/~gpt-luna-latest@high"* ]]
+    [[ "$bound_output" == *"headless:opencode:openai/~gpt-luna-latest@high"* ]]
 }
 
 # ── (2) the distinction from OpenRouter holds ───────────────────────────────
@@ -107,14 +106,14 @@ tier_set() { run "$TSET" "$@"; }
     # Run: bats -f 'pins one model' tests/tier-openai.bats
     tier_set worker openai:gpt-5.6-luna
     [ "$status" -eq 0 ]
-    run jq -e '.roles.worker == {backend:"orca", agent:"opencode", model:"openai/gpt-5.6-luna", pinned:true}' "$TIER_STATE_FILE"
+    run jq -e '.roles.worker == {backend:"headless", agent:"opencode", model:"openai/gpt-5.6-luna", pinned:true}' "$TIER_STATE_FILE"
     [ "$status" -eq 0 ]
 
     tier_set "opus, openai:GPT 5.6 Luna, openai:luna (high)"
     [ "$status" -eq 0 ]
     run jq -e '.roles.worker.model == "openai/gpt-5.6-luna"' "$TIER_STATE_FILE"
     [ "$status" -eq 0 ]
-    run jq -e '.roles.recon == {backend:"orca", agent:"opencode", model:"openai/~gpt-luna-latest", pinned:true, variant:"high"}' "$TIER_STATE_FILE"
+    run jq -e '.roles.recon == {backend:"headless", agent:"opencode", model:"openai/~gpt-luna-latest", pinned:true, variant:"high"}' "$TIER_STATE_FILE"
     [ "$status" -eq 0 ]
 }
 
@@ -144,7 +143,7 @@ tier_set() { run "$TSET" "$@"; }
 @test "a bare openai binds the role's default subscription model: recon luna, worker terra" {
     # Guards: `openai` with no colon is the role default form -- recon
     #   recons on the newest GPT Luna, the worker executes on the newest
-    #   GPT Terra -- both orca + opencode.
+    #   GPT Terra -- both headless + opencode.
     # Fails if: both roles took the same default, or the bare word bound a
     #   Claude model or the OpenRouter GLM.
     # Run: bats -f "role's default subscription" tests/tier-openai.bats
@@ -200,15 +199,15 @@ tier_set() { run "$TSET" "$@"; }
 
 # ── (8) the checker rung takes the same specs ───────────────────────────────
 
-@test "the checker takes openai: specs: family alias on orca:opencode, pinned" {
+@test "the checker takes openai: specs: family alias on headless:opencode, pinned" {
     # Guards: the checker role resolves openai: family specs the same way
     #   worker/recon do and pins the binding.
     # Fails if: the checker fell through to the Claude default or lost its
-    #   opencode agent or orca backend.
+    #   opencode agent or headless backend.
     # Run: bats -f 'checker takes openai' tests/tier-openai.bats
     tier_set checker openai:sol
     [ "$status" -eq 0 ]
-    run jq -e '.roles.checker == {backend:"orca", agent:"opencode", model:"openai/~gpt-sol-latest", pinned:true}' "$TIER_STATE_FILE"
+    run jq -e '.roles.checker == {backend:"headless", agent:"opencode", model:"openai/~gpt-sol-latest", pinned:true}' "$TIER_STATE_FILE"
     [ "$status" -eq 0 ]
 }
 
@@ -276,34 +275,33 @@ STUB
     : > "$BATS_TEST_TMPDIR/orca-argv"
 }
 
-@test "auth openai creates a focused titled Orca terminal running the openai helper" {
-    # Guards: /tier auth openai opens the same kind of focused sign-in tab
-    #   `auth openrouter` does, titled "OpenAI sign-in", running this
-    #   folder's scripts/openai-auth.sh.
-    # Fails if: the tab ran the OpenRouter helper, carried another title,
-    #   or was not focused.
-    # Run: bats -f 'focused titled Orca terminal' tests/tier-openai.bats
+@test "auth openai prints the two-line sign-in command for a split and makes no Orca call" {
+    # Guards: /tier auth openai opens nothing -- it prints the line telling
+    #   the user to open a split (cmd+d) and the command that runs this
+    #   folder's scripts/openai-auth.sh there, and exits 0.
+    # Fails if: the command ran the OpenRouter helper, the first line was
+    #   missing, or the Orca CLI was called (a terminal create).
+    # Run: bats -f 'two-line sign-in command for a split' tests/tier-openai.bats
     stub_orca ok
     run "$TSET" auth openai
     [ "$status" -eq 0 ]
-    [[ "$output" == *"OpenAI sign-in"* ]]
-    grep -qx 'terminal' "$BATS_TEST_TMPDIR/orca-argv"
-    grep -qx 'create' "$BATS_TEST_TMPDIR/orca-argv"
-    grep -qx -- '--focus' "$BATS_TEST_TMPDIR/orca-argv"
-    grep -qx 'OpenAI sign-in' "$BATS_TEST_TMPDIR/orca-argv"
-    grep -q 'openai-auth.sh' "$BATS_TEST_TMPDIR/orca-argv"
+    [ "${#lines[@]}" -eq 2 ]
+    [ "${lines[0]}" = "Sign-in runs in a terminal of its own: open a split (cmd+d) and run:" ]
+    [[ "${lines[1]}" == "cd "*" && "*"openai-auth.sh" ]]
+    [ ! -s "$BATS_TEST_TMPDIR/orca-argv" ]
 }
 
-@test "auth openai with an unreachable Orca prints the manual command and exits 0" {
-    # Guards: an unreachable Orca runtime is not an error -- the two-line
-    #   manual fallback names the helper path and the command still exits 0.
-    # Fails if: the fallback printed the OpenRouter helper's path or exited
-    #   non-zero.
-    # Run: bats -f 'unreachable Orca prints the manual command' tests/tier-openai.bats
+@test "auth openai still prints the command and exits 0 when the Orca CLI is down" {
+    # Guards: sign-in no longer depends on any Orca runtime -- an Orca CLI
+    #   that would fail is never even called, and the command still prints.
+    # Fails if: the code reached for the Orca CLI again (its argv log gets
+    #   a line) or exited non-zero because the CLI was unreachable.
+    # Run: bats -f 'Orca CLI is down' tests/tier-openai.bats
     stub_orca down
     run "$TSET" auth openai
     [ "$status" -eq 0 ]
     [[ "$output" == *"openai-auth.sh"* ]]
+    [ ! -s "$BATS_TEST_TMPDIR/orca-argv" ]
 }
 
 @test "auth bogus is a usage error naming both providers" {

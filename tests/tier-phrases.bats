@@ -8,7 +8,7 @@
 # word). See scripts/tier-set.sh's own header and scripts/lib/tier-roles.sh
 # for the shared @variant plumbing this bead builds on (commit a46070f).
 #
-# No network, no real Orca: TIER_ORCA_PROBE_DISABLE=1 and TIER_MODELS_FETCH=0
+# No network, no real Orca: TIER_MODELS_FETCH=0
 # throughout -- the catalogue and routes fixtures below are the only sources
 # of truth a resolution can come from.
 
@@ -23,7 +23,6 @@ setup() {
     export TIER_STATE_FILE="$BATS_TEST_TMPDIR/tier.json"
     export TIER_SETTINGS_LOCAL="$BATS_TEST_TMPDIR/settings.local.json"
     export TIER_DERIVE="$DERIVE"
-    export TIER_ORCA_PROBE_DISABLE=1
     export TIER_MODELS_FETCH=0
     unset OPENROUTER_API_KEY
     export TIER_OPENROUTER_KEY_FILE="$BATS_TEST_TMPDIR/no-such-openrouter.key"
@@ -67,9 +66,9 @@ prime_short() { run "$PRIME" --short; }
 
     run jq -e '.top == "fable" and .pinned == true' "$TIER_STATE_FILE"
     [ "$status" -eq 0 ]
-    run jq -e '.roles.worker == {backend:"orca", agent:"opencode", model:"openrouter/z-ai/glm-5.3-flash", pinned:true}' "$TIER_STATE_FILE"
+    run jq -e '.roles.worker == {backend:"headless", agent:"opencode", model:"openrouter/z-ai/glm-5.3-flash", pinned:true}' "$TIER_STATE_FILE"
     [ "$status" -eq 0 ]
-    run jq -e '.roles.recon == {backend:"orca", agent:"opencode", model:"openrouter/openai/gpt-5.6-luna", pinned:true, variant:"high"}' "$TIER_STATE_FILE"
+    run jq -e '.roles.recon == {backend:"headless", agent:"opencode", model:"openrouter/openai/gpt-5.6-luna", pinned:true, variant:"high"}' "$TIER_STATE_FILE"
     [ "$status" -eq 0 ]
 }
 
@@ -81,9 +80,9 @@ prime_short() { run "$PRIME" --short; }
 
     run jq -e '.top == "fable" and .pinned == true' "$TIER_STATE_FILE"
     [ "$status" -eq 0 ]
-    run jq -e '.roles.worker == {backend:"orca", agent:"opencode", model:"openrouter/z-ai/glm-5.3-flash", pinned:true}' "$TIER_STATE_FILE"
+    run jq -e '.roles.worker == {backend:"headless", agent:"opencode", model:"openrouter/z-ai/glm-5.3-flash", pinned:true}' "$TIER_STATE_FILE"
     [ "$status" -eq 0 ]
-    run jq -e '.roles.recon == {backend:"orca", agent:"opencode", model:"openrouter/openai/gpt-5.6-luna", pinned:true, variant:"high"}' "$TIER_STATE_FILE"
+    run jq -e '.roles.recon == {backend:"headless", agent:"opencode", model:"openrouter/openai/gpt-5.6-luna", pinned:true, variant:"high"}' "$TIER_STATE_FILE"
     [ "$status" -eq 0 ]
 }
 
@@ -95,9 +94,9 @@ prime_short() { run "$PRIME" --short; }
 
     run jq -e '.top == "fable"' "$TIER_STATE_FILE"
     [ "$status" -eq 0 ]
-    run jq -e '.roles.worker == {backend:"orca", agent:"opencode", model:"openrouter/z-ai/glm-5.3-flash", pinned:true}' "$TIER_STATE_FILE"
+    run jq -e '.roles.worker == {backend:"headless", agent:"opencode", model:"openrouter/z-ai/glm-5.3-flash", pinned:true}' "$TIER_STATE_FILE"
     [ "$status" -eq 0 ]
-    run jq -e '.roles.recon == {backend:"orca", agent:"opencode", model:"openrouter/openai/gpt-5.6-luna", pinned:true, variant:"high"}' "$TIER_STATE_FILE"
+    run jq -e '.roles.recon == {backend:"headless", agent:"opencode", model:"openrouter/openai/gpt-5.6-luna", pinned:true, variant:"high"}' "$TIER_STATE_FILE"
     [ "$status" -eq 0 ]
 }
 
@@ -109,7 +108,7 @@ prime_short() { run "$PRIME" --short; }
 
     run jq -e '.roles.worker == {backend:"subagent", agent:"claude", model:"sonnet", pinned:true}' "$TIER_STATE_FILE"
     [ "$status" -eq 0 ]
-    run jq -e '.roles.recon == {backend:"orca", agent:"opencode", model:"openrouter/openai/gpt-5.6-luna", pinned:true}' "$TIER_STATE_FILE"
+    run jq -e '.roles.recon == {backend:"headless", agent:"opencode", model:"openrouter/openai/gpt-5.6-luna", pinned:true}' "$TIER_STATE_FILE"
     [ "$status" -eq 0 ]
     run jq -e '.roles.recon | has("variant") | not' "$TIER_STATE_FILE"
     [ "$status" -eq 0 ]
@@ -151,7 +150,7 @@ prime_short() { run "$PRIME" --short; }
 
     tier_set recon luna high
     [ "$status" -eq 0 ]
-    run jq -e '.roles.recon == {backend:"orca", agent:"opencode", model:"openrouter/openai/gpt-5.6-luna", pinned:true, variant:"high"}' "$TIER_STATE_FILE"
+    run jq -e '.roles.recon == {backend:"headless", agent:"opencode", model:"openrouter/openai/gpt-5.6-luna", pinned:true, variant:"high"}' "$TIER_STATE_FILE"
     [ "$status" -eq 0 ]
     run jq -e '.roles.worker.model == "sonnet"' "$TIER_STATE_FILE"
     [ "$status" -eq 0 ]
@@ -215,7 +214,7 @@ prime_short() { run "$PRIME" --short; }
 
     tier_set fable glm-flash openai/gpt-5.6-luna@high
     [ "$status" -eq 0 ]
-    run jq -e '.roles.recon == {backend:"orca", agent:"opencode", model:"openrouter/openai/gpt-5.6-luna", pinned:true, variant:"high"}' "$TIER_STATE_FILE"
+    run jq -e '.roles.recon == {backend:"headless", agent:"opencode", model:"openrouter/openai/gpt-5.6-luna", pinned:true, variant:"high"}' "$TIER_STATE_FILE"
     [ "$status" -eq 0 ]
 }
 
