@@ -11,7 +11,7 @@
 #     "worker": "sonnet",                      <- v1 mirror of roles.worker.model
 #     "recon":  "haiku",                       <- v1 mirror of roles.recon.model
 #     "roles": {
-#       "worker":  {"backend":"orca","agent":"opencode","model":"openrouter/qwen/qwen3-coder"},
+#       "worker":  {"backend":"headless","agent":"opencode","model":"openrouter/qwen/qwen3-coder"},
 #       "recon":   {"backend":"subagent","agent":"claude","model":"haiku"},
 #       "checker": {"backend":"subagent","agent":"claude","model":"opus"} },
 #     "pinned": false, "overdrive": false, "updated": "…Z" }
@@ -22,9 +22,17 @@
 # also carry "pinned": true, meaning "this role was bound explicitly; do not
 # re-derive its model from the ladder" (tier-reconcile honours it).
 #
-#   backends: orca      -- a supervised Orca worker terminal (orca-dispatch)
+#   backends: headless  -- a detached process `dispatch <bead>` starts:
+#                          `claude -p` or `opencode run`, per the agent
 #             subagent  -- the Claude Code Agent tool, in-process
 #   agents:   claude | opencode | codex | gemini
+#
+# MIGRATION ON READ (claude-orca-9bh.2): a tier.json written before Orca was
+# dropped may carry backend "orca". tier_role maps it where it is read --
+# orca + claude -> subagent; orca + any other agent -> headless; any other
+# unknown backend -> subagent -- and tier-reconcile's rewrite filter applies
+# the same mapping, so the next reconcile stores the new word. Writers never
+# write "orca" again.
 
 # tier_role <state-file> <worker|recon|checker>
 # Prints "<backend>\t<agent>\t<model>\t<pinned>\t<variant>" -- always exits 0; an
@@ -46,8 +54,12 @@ tier_role() {
           elif $r == "recon" then (.recon // "")
           else "inherit" end ) as $v1
         | ((.roles[$r]) // {})
-        | [ (.backend // "subagent"),
-            (.agent // "claude"),
+        | (.agent // "claude") as $ag
+        | (.backend // "subagent") as $bk
+        | [ (if $bk == "headless" then "headless"
+             elif $bk == "orca" and $ag != "claude" then "headless"
+             else "subagent" end),
+            $ag,
             (.model // $v1),
             (if (.pinned // false) == true then "true" else "false" end),
             (.variant // "") ]
@@ -75,7 +87,7 @@ tier_role_field() {
 }
 
 # tier_role_label <backend> <agent> <model>
-# "orca:opencode:openrouter/qwen/qwen3-coder" -- the agent segment is shown
+# "headless:opencode:openrouter/qwen/qwen3-coder" -- the agent segment is shown
 # only when it is not the default (claude), so a plain Anthropic binding
 # reads as "subagent:sonnet".
 # tier_claude_effort <effort> [settings] -- one effort word on Claude's own
@@ -169,41 +181,6 @@ tier_openrouter_key_present() {
     local f
     f="$(tier_openrouter_key_file)"
     [ -n "$f" ] && [ -s "$f" ]
-}
-
-# tier_orca_reachable -- is an Orca runtime up? `orca-ide status --json`
-# (falling back to `orca`), 2s cap, parsed as .runtime.reachable. Nothing is
-# cached: the answer is only ever used at bind time. No CLI on PATH, no
-# `timeout`-able run, or any error at all => not reachable (=> the subagent
-# backend, which always works).
-#   TIER_ORCA_PROBE_DISABLE=1  skip the probe entirely (always unreachable)
-#   TIER_ORCA_PROBE_CMD=<cmd>  probe command override (tests)
-tier_orca_reachable() {
-    local cmd out
-    [ "${TIER_ORCA_PROBE_DISABLE:-}" = "1" ] && return 1
-    command -v jq >/dev/null 2>&1 || return 1
-    cmd="${TIER_ORCA_PROBE_CMD:-}"
-    if [ -z "$cmd" ]; then
-        if command -v orca-ide >/dev/null 2>&1; then
-            cmd="orca-ide"
-        elif command -v orca >/dev/null 2>&1; then
-            cmd="orca"
-        else
-            return 1
-        fi
-    fi
-    if command -v timeout >/dev/null 2>&1; then
-        out=$(timeout 2 $cmd status --json 2>/dev/null) || return 1
-    else
-        out=$($cmd status --json 2>/dev/null) || return 1
-    fi
-    [ -n "$out" ] || return 1
-    # Orca 1.4.197 wraps every CLI answer in {"ok":…,"result":{…}}, so the
-    # status payload lives at .result.runtime; the flat shape is accepted
-    # too, for an older CLI (or a TIER_ORCA_PROBE_CMD stub) that emits it.
-    printf '%s' "$out" |
-        jq -e '((.result.runtime.reachable // .runtime.reachable) == true)' \
-        >/dev/null 2>&1
 }
 
 # tier_openrouter_guard_token_file -- <root>/.claude-dev/run/

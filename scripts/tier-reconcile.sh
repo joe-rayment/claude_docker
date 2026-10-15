@@ -132,7 +132,7 @@ if [ -f "$STATE_FILE" ]; then
 fi
 
 # The whole v2 update as one filter (claude-orca-qa2.12). Per role: the
-# BACKEND and AGENT are preserved (they are a deliberate binding, not a
+# BACKEND and AGENT are preserved (an old backend "orca" is migrated to subagent/headless, as tier_role reads it; they are a deliberate binding, not a
 # derivation), and the MODEL is re-derived only for an unpinned claude-agent
 # role -- an openrouter/codex/gemini worker, or one bound explicitly with
 # `/tier worker claude:opus`, keeps its model. A v1 file (no .roles) is
@@ -141,8 +141,12 @@ fi
 RFILTER='
   def role($r; $want; $fallback):
     ((.roles[$r]) // {}) as $e
-    | { backend: ($e.backend // "subagent"),
-        agent:   ($e.agent   // "claude"),
+    | ($e.agent // "claude") as $ag
+    | ($e.backend // "subagent") as $bk
+    | { backend: (if $bk == "headless" then "headless"
+                  elif $bk == "orca" and $ag != "claude" then "headless"
+                  else "subagent" end),
+        agent:   $ag,
         model:   (if ($e.agent // "claude") == "claude" and ($e.pinned // false) == false
                   then $want else ($e.model // $fallback) end),
         pinned:  ($e.pinned // false) };
