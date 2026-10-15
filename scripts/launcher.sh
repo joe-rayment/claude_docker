@@ -881,6 +881,120 @@ clear_run_results() {
           "$run/setup.log" 2>/dev/null || true
 }
 
+# The folder's ssh identity (claude-orca-9bh.7). The Mac side of an ssh
+# pane is `ssh -F <state/ssh/config> claude-dev-<name>`: the keys, the
+# known_hosts and the config all live in the folder's state/ssh (authority,
+# so teardown owns them) and nothing is ever written to ~/.ssh. The name is
+# derive_project_name's [a-z0-9-], which makes the alias a safe Host pattern.
+ssh_state_dir() { printf '%s\n' "$1/.claude-dev/state/ssh"; }
+ssh_host_alias() { printf 'claude-dev-%s\n' "$(derive_project_name "$1")"; }
+
+# Makes the client and host keys once (a private key that is already there
+# is kept, so the host fingerprint the container presents never changes) and
+# rewrites authorized_keys and known_hosts from them on every call -- cheap,
+# and it heals a file somebody deleted. `restrict` turns off agent, X11 and
+# tcp forwarding for this key; pty and port-forwarding give back what a pane
+# and the later unix-socket RemoteForward need (sshd_config still denies tcp
+# forwarding). known_hosts is keyed by the alias, so there is no trust-on-
+# first-use prompt. Done BEFORE the container starts: sshd reads the host
+# key and authorized_keys at boot.
+ssh_ensure_keys() {
+    local dir="$1" sd name alias keygen which key pub type blob rest tmp
+    sd="$(ssh_state_dir "$dir")"
+    name="$(derive_project_name "$dir")"
+    alias="$(ssh_host_alias "$dir")"
+    keygen="${CLAUDE_ORCA_SSH_KEYGEN:-ssh-keygen}"
+    if ! mkdir -p "$sd" || ! chmod 700 "$sd"; then
+        echo "Error: cannot create $sd for the folder's ssh keys" >&2
+        return 1
+    fi
+    for which in client host; do
+        key="$sd/${which}_ed25519"
+        pub="$key.pub"
+        if [ ! -f "$key" ]; then
+            rm -f "$pub"
+            if ! "$keygen" -q -t ed25519 -N '' -C "claude-dev-$name-$which" -f "$key" >/dev/null; then
+                echo "Error: '$keygen' could not make $key" >&2
+                return 1
+            fi
+        elif [ ! -s "$pub" ]; then
+            # The private key is the identity; the .pub is derived from it,
+            # so a lost .pub is rebuilt (same fingerprint), not re-keyed.
+            tmp="$pub.tmp.$$"
+            if ! "$keygen" -y -f "$key" > "$tmp" 2>/dev/null || [ ! -s "$tmp" ]; then
+                rm -f "$tmp"
+                echo "Error: '$keygen' could not rebuild $pub from $key" >&2
+                return 1
+            fi
+            mv -f "$tmp" "$pub"
+        fi
+        if [ ! -s "$pub" ]; then
+            echo "Error: $pub is missing or empty" >&2
+            return 1
+        fi
+    done
+    tmp="$sd/authorized_keys.tmp.$$"
+    {
+        printf 'restrict,pty,port-forwarding '
+        head -1 "$sd/client_ed25519.pub"
+    } > "$tmp" && chmod 644 "$tmp" && mv -f "$tmp" "$sd/authorized_keys" || {
+        rm -f "$tmp"
+        echo "Error: cannot write $sd/authorized_keys" >&2
+        return 1
+    }
+    read -r type blob rest < "$sd/host_ed25519.pub" || true
+    tmp="$sd/known_hosts.tmp.$$"
+    printf '%s %s %s\n' "$alias" "$type" "$blob" > "$tmp" && chmod 644 "$tmp" && mv -f "$tmp" "$sd/known_hosts" || {
+        rm -f "$tmp"
+        echo "Error: cannot write $sd/known_hosts" >&2
+        return 1
+    }
+}
+
+# state/ssh/config, regenerated on every open: the one place the port, the
+# key paths and the multiplexing live, so a pane is `ssh -F config <alias>`
+# and nothing else. Paths are quoted because the folder may have spaces in
+# it. The ControlPath is under the Mac user's home, not the folder: a unix
+# socket path must stay under ~100 bytes and %C keeps it short and unique.
+ssh_write_config() {
+    local dir="$1" port="$2" sd alias cm tmp
+    sd="$(ssh_state_dir "$dir")"
+    alias="$(ssh_host_alias "$dir")"
+    cm="$HOME/.local/state/claude-dev"
+    if ! mkdir -p "$sd" "$cm" || ! chmod 700 "$cm"; then
+        echo "Error: cannot create $cm for the ssh control sockets" >&2
+        return 1
+    fi
+    case "$dir" in *'"'*)
+        echo "Error: a folder path containing a double quote cannot go in an ssh config: $dir" >&2
+        return 1 ;;
+    esac
+    tmp="$sd/config.tmp.$$"
+    {
+        printf 'Host %s\n' "$alias"
+        printf '  HostName 127.0.0.1\n'
+        printf '  Port %s\n' "$port"
+        printf '  User agent\n'
+        printf '  IdentityFile "%s/client_ed25519"\n' "$sd"
+        printf '  IdentitiesOnly yes\n'
+        printf '  UserKnownHostsFile "%s/known_hosts"\n' "$sd"
+        printf '  HostKeyAlias %s\n' "$alias"
+        printf '  StrictHostKeyChecking yes\n'
+        printf '  ControlMaster auto\n'
+        printf '  ControlPath ~/.local/state/claude-dev/cm-%%C\n'
+        printf '  ControlPersist 30m\n'
+        printf '  ServerAliveInterval 30\n'
+        printf '  ForwardAgent no\n'
+        printf '  ForwardX11 no\n'
+        printf '  LogLevel ERROR\n'
+        printf '  # B4: RemoteForward goes here\n'
+    } > "$tmp" && chmod 644 "$tmp" && mv -f "$tmp" "$sd/config" || {
+        rm -f "$tmp"
+        echo "Error: cannot write $sd/config" >&2
+        return 1
+    }
+}
+
 orca_json() { printf '%s\n' "$1/.claude-dev/claude-orca.json"; }
 
 # qa2.7: the OpenRouter key the delegate routes need inside the VM. It
@@ -1248,6 +1362,68 @@ wait_for_web_url() {
         waited=$((waited + 1))
     done
     return 1
+}
+
+# The ssh twin of wait_for_web_url: waits for run/sshd.ready, which the
+# container's sshd-lib writes (`port=N`, `host_key_sha256=SHA256:...`) once
+# sshd is listening. Same return codes -- 0 ready, 1 timeout, 2 the container
+# died while waiting -- and the same timeout (weburl_timeout), plus 3 when
+# the host key sshd presents is not the one in state/ssh (a stale
+# container: the Mac would refuse the connection, so say so here, naming
+# both fingerprints). Nothing on stdout; the messages go to stderr.
+wait_for_sshd_ready() {
+    local dir="$1" name="${2:-}" file setup_log timeout waited=0 runtime="" last="" line="" state="" seen_running="" unlisted=0
+    local want got
+    file="$dir/.claude-dev/run/sshd.ready"
+    setup_log="$dir/.claude-dev/run/setup.log"
+    timeout="$(weburl_timeout "$dir")"
+    if folder_installs_toolchain "$dir"; then runtime=1; fi
+    while [ "$waited" -lt "$timeout" ]; do
+        if [ -s "$file" ]; then
+            want="$(ssh_host_key_fingerprint "$dir")"
+            got="$(sed -n 's/^host_key_sha256=//p' "$file" | head -1)"
+            if [ -n "$want" ] && [ "$got" = "$want" ]; then
+                return 0
+            fi
+            {
+                echo "Error: sshd in the container presents host key '${got:-<none>}', but this folder's key is '${want:-<unreadable>}'."
+                echo "  The container was made with another host key; ./claude-dev --update recreates it."
+            } >&2
+            return 3
+        fi
+        if [ -n "$name" ]; then
+            state="$(container_state "$name")"
+            case "$state" in
+                running) seen_running=1; unlisted=0 ;;
+                "")
+                    if [ -n "$seen_running" ]; then return 2; fi
+                    unlisted=$((unlisted + 1))
+                    if [ "$unlisted" -ge 20 ]; then return 2; fi
+                    ;;
+                *)       return 2 ;;
+            esac
+        fi
+        if [ "$waited" = "0" ]; then
+            echo "Waiting for sshd to come up inside the container..." >&2
+        fi
+        if [ -n "$runtime" ] && [ "$((waited % 15))" = "0" ] && [ -s "$setup_log" ]; then
+            line="$(tail -1 "$setup_log" 2>/dev/null)"
+            if [ -n "$line" ] && [ "$line" != "$last" ]; then
+                echo "  installing toolchain: $line" >&2
+                last="$line"
+            fi
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+    return 1
+}
+
+# SHA256:... of the folder's host key, in the form sshd-lib writes into
+# run/sshd.ready (field 2 of `ssh-keygen -lf`); empty when unreadable.
+ssh_host_key_fingerprint() {
+    "${CLAUDE_ORCA_SSH_KEYGEN:-ssh-keygen}" -lf "$(ssh_state_dir "$1")/host_ed25519.pub" 2>/dev/null \
+        | awk 'NR == 1 { print $2 }' || true
 }
 
 # The pairing URL Orca minted for this container -- what a desktop Orca on
@@ -2780,6 +2956,11 @@ cmd_open_v3() {
     fi
     persist_port "$dir" "$port"
 
+    # The folder's ssh keys and config exist before the container is created
+    # or started: sshd reads the host key and authorized_keys at boot.
+    ssh_ensure_keys "$dir" || return 1
+    ssh_write_config "$dir" "$port" || return 1
+
     # A kept container gets the cap applied live (apply_cpu_cap): the
     # create path below already passes --cpus, so this is only for the
     # container the launcher is about to reuse. An empty $state here means
@@ -2797,6 +2978,9 @@ cmd_open_v3() {
             ;;
         *)
             echo "==> Starting $name (was $state)"
+            # sshd.ready belongs to the run that wrote it; the restarted
+            # container writes its own, and waiting must not see the old one.
+            rm -f "$dir/.claude-dev/run/sshd.ready"
             if ! ctr start "$name" >/dev/null; then
                 echo "Error: 'container start $name' failed" >&2
                 return 1
