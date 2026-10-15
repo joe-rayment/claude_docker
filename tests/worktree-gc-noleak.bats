@@ -28,34 +28,16 @@ make_repo() {
         commit --quiet --allow-empty -m init >/dev/null 2>&1
 }
 
-# A stub orca-ide that answers unreachable, so a sweep run in a fixture
-# can never reach the real runtime.
-write_orca_stub() {
-    local path="$1"
-    mkdir -p "$(dirname "$path")"
-    cat > "$path" <<'STUB'
-#!/usr/bin/env bash
-case "${1:-}" in
-    status) printf '{"ok":true,"result":{"runtime":{"reachable":false}}}\n' ;;
-esac
-exit 0
-STUB
-    chmod +x "$path"
-}
-
 @test "session-end-audit: a payload lacking cwd runs no sweep" {
     local proj_a="$BATS_TEST_TMPDIR/cwd-repo" proj_b="$BATS_TEST_TMPDIR/ambient-repo"
     make_repo "$proj_a"
     make_repo "$proj_b"
-    write_orca_stub "$BATS_TEST_TMPDIR/bin/orca-ide"
 
     # No payload cwd, run from one fixture repo with the ambient
     # PROJECT_DIR pointed at another: the $PWD fallback may serve the
     # dirty-tree note, but neither fixture may gain a sweep log.
     run env HOME="$BATS_TEST_TMPDIR" \
         PROJECT_DIR="$proj_b" \
-        PATH="$BATS_TEST_TMPDIR/bin:$PATH" \
-        ORCA_CLI="$BATS_TEST_TMPDIR/bin/orca-ide" \
         bash -c 'cd "$1" && printf "not json" | bash "$2" </dev/null' \
         _ "$proj_a" "$AUDIT"
     [ "$status" -eq 0 ]
@@ -66,15 +48,12 @@ STUB
 @test "worktree-gc: every log block names its caller" {
     local proj="$BATS_TEST_TMPDIR/caller-repo"
     make_repo "$proj"
-    write_orca_stub "$BATS_TEST_TMPDIR/bin/orca-ide"
 
     # Run the sweep from a bash -c wrapper whose argv carries the marker
     # (as $0, so it lands in /proc/<pid>/cmdline); the block must trace
     # the chain back to it.
     run env HOME="$BATS_TEST_TMPDIR" \
         PROJECT_DIR="$proj" \
-        PATH="$BATS_TEST_TMPDIR/bin:$PATH" \
-        ORCA_CLI="$BATS_TEST_TMPDIR/bin/orca-ide" \
         bash -c 'bash "$1" --quiet --project "$2" </dev/null' \
         WGC_CALLER_MARKER "$GC" "$proj"
     [ "$status" -eq 0 ]
@@ -83,7 +62,7 @@ STUB
     [ -f "$log" ]
     # header first, caller= second
     sed -n '1p' "$log" | grep -qE \
-        '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z mode=quiet orca=unreachable exit=0$'
+        '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z mode=quiet exit=0$'
     sed -n '2p' "$log" | grep -q '^caller='
     sed -n '2p' "$log" | grep -q 'WGC_CALLER_MARKER'
 }

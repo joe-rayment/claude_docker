@@ -10,15 +10,15 @@
 #   * directory gone           -> `git worktree prune`, logged "pruned".
 #   * a process has it as cwd  -> kept, logged "busy" (not a failure).
 #   * clean (no uncommitted or untracked changes):
-#       - Orca reachable   -> `orca-ide worktree rm --worktree path:<p> --json`
-#       - Orca unreachable -> `git worktree remove <p>`
+#       - `git worktree remove <p>` -- plain git, Orca is never consulted
+#         (claude-orca-9bh.4)
 #     then `git worktree prune`, logged "removed".
 #   * otherwise (dirty)        -> kept, logged "kept ... uncommitted", and
 #     the step exits non-zero so `provision status` surfaces it.
 #
 # The step is exercised directly (it is a leaf under provision.d, not the
 # whole entrypoint), against a real git repo with real `git worktree add`
-# and a stub orca-ide on PATH -- the pattern tests/provision.bats and
+# and a stub orca-ide that records any call -- the pattern tests/provision.bats and
 # tests/container-entrypoint.bats use for the rest of provisioning.
 
 REPO_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)"
@@ -43,35 +43,14 @@ add_worktree() {
     git -C "$proj" worktree add --quiet -b "$branch" "$wt" HEAD >/dev/null 2>&1
 }
 
-# A stub orca-ide: `status --json` answers reachable per $ORCA_STUB_REACHABLE
-# (default false); `worktree rm --worktree path:<p> --json` records its argv
-# to $ORCA_STUB_LOG and, like the real thing, actually removes the path so
-# the step's own `git worktree prune` afterward has something real to do.
+# A stub orca-ide that only records its argv to $ORCA_STUB_LOG: since
+# claude-orca-9bh.4 the sweep never calls Orca, so the log must stay empty.
 write_orca_stub() {
     local path="$1"
     mkdir -p "$(dirname "$path")"
     cat > "$path" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$ORCA_STUB_LOG"
-case "${1:-}" in
-    status)
-        if [ "${ORCA_STUB_REACHABLE:-false}" = "true" ]; then
-            printf '{"ok":true,"result":{"runtime":{"reachable":true}}}\n'
-        else
-            printf '{"ok":true,"result":{"runtime":{"reachable":false}}}\n'
-        fi
-        ;;
-    worktree)
-        if [ "${2:-}" = "rm" ]; then
-            for a in "$@"; do
-                case "$a" in
-                    path:*) rm -rf "${a#path:}" ;;
-                esac
-            done
-            printf '{"ok":true,"result":{}}\n'
-        fi
-        ;;
-esac
 exit 0
 STUB
     chmod +x "$path"
@@ -118,36 +97,18 @@ teardown() {
 
 # --- the contract ----------------------------------------------------------
 
-@test "sweep removes a clean worktree through orca-ide worktree rm when Orca is reachable" {
+@test "sweep removes a clean worktree with git worktree remove and never calls Orca" {
     [ -x "$STEP" ]
-    local proj="$TMP/project" wt="$TMP/wt-clean-reachable" cli="$TMP/bin/orca-ide"
+    local proj="$TMP/project" wt="$TMP/wt-clean" cli="$TMP/bin/orca-ide"
     make_project "$proj"
     add_worktree "$proj" "$wt"
     write_orca_stub "$cli"
 
-    ORCA_STUB_REACHABLE=true run_step "$proj" "$cli"
+    run_step "$proj" "$cli"
     [ "$status" -eq 0 ]
 
-    grep -qF "status --json" "$ORCA_STUB_LOG"
-    grep -qF "worktree rm --worktree path:$wt --json" "$ORCA_STUB_LOG"
-    [[ "$output" == *"removed $wt"* ]]
-
-    [ ! -d "$wt" ]
-    ! git -C "$proj" worktree list --porcelain | grep -qF "worktree $wt"
-}
-
-@test "sweep removes a clean worktree with git worktree remove when Orca is unreachable" {
-    [ -x "$STEP" ]
-    local proj="$TMP/project" wt="$TMP/wt-clean-unreachable" cli="$TMP/bin/orca-ide"
-    make_project "$proj"
-    add_worktree "$proj" "$wt"
-    write_orca_stub "$cli"
-
-    ORCA_STUB_REACHABLE=false run_step "$proj" "$cli"
-    [ "$status" -eq 0 ]
-
-    grep -qF "status --json" "$ORCA_STUB_LOG"
-    ! grep -q "worktree rm" "$ORCA_STUB_LOG"
+    # the Orca stub was offered and never called
+    [ ! -s "$ORCA_STUB_LOG" ]
     [[ "$output" == *"removed $wt"* ]]
 
     [ ! -d "$wt" ]
