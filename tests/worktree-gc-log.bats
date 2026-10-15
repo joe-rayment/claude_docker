@@ -5,7 +5,7 @@
 # Every sweep run appends one block to <project>/.claude-dev/run/
 # worktree-gc.log so a hook run that left a worktree behind explains
 # itself: a header line
-#   "<ISO-8601 UTC> mode=<mode> orca=<reachable|unreachable> exit=<n>"
+#   "<ISO-8601 UTC> mode=<mode> exit=<n>"
 # followed by every line the run emitted -- including the ones --quiet
 # suppresses on stdout, and for a busy worktree the pid, ppid and cmdline
 # of the first process that made it busy. An --after-merge run also logs
@@ -37,39 +37,8 @@ add_worktree() {
     git -C "$proj" worktree add --quiet -b "$branch" "$wt" HEAD >/dev/null 2>&1
 }
 
-# A stub orca-ide: `status --json` answers reachable per $ORCA_STUB_REACHABLE
-# (default false); `worktree rm --worktree path:<p> --json` removes the path.
-write_orca_stub() {
-    local path="$1"
-    mkdir -p "$(dirname "$path")"
-    cat > "$path" <<'STUB'
-#!/usr/bin/env bash
-case "${1:-}" in
-    status)
-        if [ "${ORCA_STUB_REACHABLE:-false}" = "true" ]; then
-            printf '{"ok":true,"result":{"runtime":{"reachable":true}}}\n'
-        else
-            printf '{"ok":true,"result":{"runtime":{"reachable":false}}}\n'
-        fi
-        ;;
-    worktree)
-        if [ "${2:-}" = "rm" ]; then
-            for a in "$@"; do
-                case "$a" in
-                    path:*) rm -rf "${a#path:}" ;;
-                esac
-            done
-            printf '{"ok":true,"result":{}}\n'
-        fi
-        ;;
-esac
-exit 0
-STUB
-    chmod +x "$path"
-}
-
-# The full-line shape of a block header: <ISO-8601 UTC> mode=<m> orca=<o> exit=<n>.
-HEADER_RE='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z mode=[a-z-]+ orca=(reachable|unreachable) exit=[0-9]+$'
+# The full-line shape of a block header: <ISO-8601 UTC> mode=<m> exit=<n>.
+HEADER_RE='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z mode=[a-z-]+ exit=[0-9]+$'
 
 setup() {
     TMP="$(short_tmpdir)"
@@ -88,27 +57,27 @@ teardown() {
 
 # --- the contract ----------------------------------------------------------
 
-@test "every run appends a header line with mode, orca reachability and exit code to run/worktree-gc.log" {
+@test "every run appends a header line with mode and exit code (and no orca= field) to run/worktree-gc.log" {
     [ -x "$GC" ]
     local proj="$TMP/project" wt="$TMP/wt-merged" log="$TMP/project/.claude-dev/run/worktree-gc.log"
     make_project "$proj"
     add_worktree "$proj" "$wt" wt-merged
-    write_orca_stub "$TMP/bin/orca-ide"
 
-    # run 1, plain: removes the merged worktree (Orca unreachable), exit 0
-    ORCA_CLI="$TMP/bin/orca-ide" run bash "$GC" --project "$proj"
+    # run 1, plain: removes the merged worktree, exit 0
+    run bash "$GC" --project "$proj"
     [ "$status" -eq 0 ]
     [ -f "$log" ]
-    grep -qE "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z mode=cli orca=unreachable exit=0$" "$log"
+    grep -qE "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z mode=cli exit=0$" "$log"
     grep -qF "removed $wt" "$log"
 
     # run 2, --quiet: nothing left to sweep, still a header line
-    ORCA_CLI="$TMP/bin/orca-ide" run bash "$GC" --project "$proj" --quiet
+    run bash "$GC" --project "$proj" --quiet
     [ "$status" -eq 0 ]
     [ -z "$output" ]
 
-    # exactly two blocks, cli before quiet
+    # exactly two blocks, cli before quiet, and no orca= field anywhere
     [ "$(grep -cE "$HEADER_RE" "$log")" -eq 2 ]
+    ! grep -qF "orca=" "$log"
     [ "$(grep -nE " mode=cli " "$log" | cut -d: -f1)" -lt "$(grep -nE " mode=quiet " "$log" | cut -d: -f1)" ]
 }
 
@@ -117,7 +86,6 @@ teardown() {
     local proj="$TMP/project" wt="$TMP/wt-busy" log="$TMP/project/.claude-dev/run/worktree-gc.log"
     make_project "$proj"
     add_worktree "$proj" "$wt" wt-busy
-    write_orca_stub "$TMP/bin/orca-ide"
 
     ( cd "$wt" && exec sleep 300 ) &
     BUSY_PID=$!
@@ -130,7 +98,7 @@ teardown() {
     done
     [ "$(readlink -f "/proc/$BUSY_PID/cwd" 2>/dev/null)" = "$want" ]
 
-    ORCA_CLI="$TMP/bin/orca-ide" run bash "$GC" --project "$proj"
+    run bash "$GC" --project "$proj"
     [ "$status" -eq 0 ]
 
     # the busy keep is explained on stdout and named in the log with pid,
@@ -146,17 +114,16 @@ teardown() {
     local proj="$TMP/project" wt="$TMP/wt-merged" log="$TMP/project/.claude-dev/run/worktree-gc.log"
     make_project "$proj"
     add_worktree "$proj" "$wt" wt-merged
-    write_orca_stub "$TMP/bin/orca-ide"
 
     local payload
     payload="$(printf '{"tool_input":{"command":"git merge feature-x"},"cwd":"%s"}' "$proj")"
-    ORCA_CLI="$TMP/bin/orca-ide" run bash "$GC" --after-merge --project "$proj" <<< "$payload"
+    run bash "$GC" --after-merge --project "$proj" <<< "$payload"
     [ "$status" -eq 0 ]
 
     # the sweep ran quietly and the log explains it: after-merge mode, the
     # command that triggered it, and the lines --quiet suppressed on stdout
     [ ! -d "$wt" ]
-    grep -qE "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z mode=after-merge orca=unreachable exit=0$" "$log"
+    grep -qE "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z mode=after-merge exit=0$" "$log"
     grep -qF "command: git merge feature-x" "$log"
     grep -qF "removed $wt" "$log"
 }
@@ -169,7 +136,7 @@ teardown() {
     awk 'BEGIN{for(i=0;i<2560;i++) printf "fill%04d %093d\n", i, i}' > "$log"
     [ "$(wc -c < "$log")" -ge 250000 ]
 
-    ORCA_CLI="$TMP/bin/orca-ide" run bash "$GC" --project "$proj"
+    run bash "$GC" --project "$proj"
     [ "$status" -eq 0 ]
 
     local size
@@ -177,6 +144,6 @@ teardown() {
     [ "$size" -lt 204800 ]
 
     # the newest header survived the truncation; the oldest half did not
-    grep -qE "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z mode=cli orca=unreachable exit=0$" "$log"
+    grep -qE "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z mode=cli exit=0$" "$log"
     ! grep -q '^fill0000 ' "$log"
 }

@@ -13,8 +13,9 @@
 #   2. Removes every worktree other than the main one, exactly the
 #      semantics of the boot-time sweep it absorbed (busy process /
 #      uncommitted changes -> kept; directory gone -> pruned; clean ->
-#      removed through Orca's CLI when it is reachable, plain git
-#      otherwise). Removing a worktree frees its branch for step 3, so
+#      removed with plain `git worktree remove`; no Orca is consulted --
+#      worker worktrees are ordinary worktree-list entries, wherever
+#      they live). Removing a worktree frees its branch for step 3, so
 #      the branch of a merged piece of work goes in the same sweep.
 #      A clean worktree whose branch, or detached HEAD, carries commits
 #      main does not contain is kept instead and reported STRANDED with
@@ -32,7 +33,7 @@
 #      env stay; a live job is untouched.
 #   5. Appends one block per run to <project>/.claude-dev/run/
 #      worktree-gc.log -- a header line "<ISO-8601 UTC> mode=<mode>
-#      orca=<reachable|unreachable> exit=<n>", then a caller= line naming
+#      exit=<n>", then a caller= line naming
 #      who invoked the sweep (parent, grandparent, great-grandparent
 #      cmdline, 100 chars each, " <- " joined -- claude-orca-jh7), then
 #      every line the run emitted (the ones --quiet suppresses on stdout
@@ -213,13 +214,10 @@ gc_log_add() {
 
 # gc_log_write <exit-code> -- append the block: the header line, then (for
 # an --after-merge run) the command that triggered it, then every line the
-# run emitted. orca= names Orca only as far as this run learned it: only a
-# run that probed and was answered reachable says reachable -- a run whose
-# probe failed and one that never probed (nothing to remove, --report)
-# both say unreachable, i.e. "no Orca help was available to this run".
+# run emitted.
 gc_log_write() {
     [ -n "$LOG_FILE" ] || return 0
-    local gc_mode="cli" gc_orca="unreachable" gl_line gc_trig
+    local gc_mode="cli" gl_line gc_trig
     if [ "$AFTER_MERGE" = "1" ]; then
         gc_mode="after-merge"
     elif [ "$REPORT" = "1" ]; then
@@ -229,10 +227,9 @@ gc_log_write() {
     elif [ "$QUIET" = "1" ]; then
         gc_mode="quiet"
     fi
-    [ "$reachable" = "1" ] && gc_orca="reachable"
     {
-        printf '%s mode=%s orca=%s exit=%s\n' \
-            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$gc_mode" "$gc_orca" "$1"
+        printf '%s mode=%s exit=%s\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$gc_mode" "$1"
         printf 'caller=%s\n' "$GC_CALLER"
         if [ -n "$GC_TRIGGER" ]; then
             gc_trig="$(printf '%s' "$GC_TRIGGER" | tr '\n' ' ')"
@@ -262,87 +259,6 @@ gc_log_truncate() {
     else
         rm -f "$gc_tmp"
     fi
-    return 0
-}
-
-# The CLI is resolved exactly the way 65-worktree-sweep resolved it,
-# because a folder that registered with Orca under one path must ask the
-# same CLI about it.
-AGENT_HOME="${HOME:-/home/agent}"
-ORCA_BIN="${ORCA_BIN:-/opt/orca/orca-ide}"
-USER_DATA_DIR="${ORCA_USER_DATA_DIR:-$AGENT_HOME/.config/orca}"
-
-resolve_cli() {
-    if [ -n "${ORCA_CLI:-}" ]; then
-        printf '%s\n' "$ORCA_CLI"
-        return 0
-    fi
-    for candidate in \
-        "$(dirname "$ORCA_BIN")/resources/bin/orca-ide" \
-        "$AGENT_HOME/.local/bin/orca-ide" \
-        "$AGENT_HOME/.local/bin/orca"
-    do
-        [ -x "$candidate" ] && { printf '%s\n' "$candidate"; return 0; }
-    done
-    for name in orca orca-ide; do
-        found="$(command -v "$name" 2>/dev/null)"
-        [ -n "$found" ] && { printf '%s\n' "$found"; return 0; }
-    done
-    return 1
-}
-
-cli="$(resolve_cli || true)"
-
-orca_call() {  # orca_call <args...> -- CLI call, bounded, with the runtime's user-data dir
-    if command -v timeout >/dev/null 2>&1; then
-        env ORCA_USER_DATA_PATH="$USER_DATA_DIR" timeout 15 "$cli" "$@"
-    else
-        env ORCA_USER_DATA_PATH="$USER_DATA_DIR" "$cli" "$@"
-    fi
-}
-
-# Reachable is asked once per run, lazily: only when a clean worktree is
-# about to be removed, and never in --report (nothing is removed there) --
-# so a run with nothing to remove makes no round trip at all.
-orca_reachable() {
-    [ -n "$cli" ] || return 1
-    local out
-    out="$(orca_call status --json 2>/dev/null)" || return 1
-    if command -v jq >/dev/null 2>&1; then
-        [ "$(printf '%s' "$out" | jq -r '.result.runtime.reachable // false' 2>/dev/null)" = "true" ]
-        return
-    fi
-    case "$out" in
-        *'"reachable":true'*|*'"reachable": true'*) return 0 ;;
-    esac
-    return 1
-}
-reachable=""
-
-# Is <pid> an idle Orca worktree terminal rather than live work?
-# Measured 2026-09-18 on the real folder: every Orca worktree carries a
-# default terminal -- a shell whose parent is the orca-ide daemon process
-# and which has no children -- and that shell holds the worktree as its
-# cwd forever, so the /proc cwd scan called a finished, merged worktree
-# "busy" forever. Such a shell is not work: `orca worktree rm` closes it.
-# Anything else (a user's editor, a running build, a shell with children,
-# a shell whose parent is not orca-ide) is live work.
-is_idle_orca_terminal() {    # is_idle_orca_terminal <pid>
-    local pid="$1" ppid pc st
-    ppid="$(awk '/^PPid:/{print $2}' "/proc/$pid/status" 2>/dev/null)"
-    case "$ppid" in ''|*[!0-9]*) return 1 ;; esac
-    [ -r "/proc/$ppid/cmdline" ] || return 1
-    pc="$(tr '\0' ' ' < "/proc/$ppid/cmdline" 2>/dev/null)"
-    case "$pc" in
-        *orca-ide*) ;;
-        *) return 1 ;;
-    esac
-    # No child processes: anything waiting on it (a build, a test run,
-    # a shell with children) is real work.
-    for st in /proc/[0-9]*/status; do
-        [ -r "$st" ] || continue
-        [ "$(awk '/^PPid:/{print $2}' "$st" 2>/dev/null)" = "$pid" ] && return 1
-    done
     return 0
 }
 
@@ -444,15 +360,11 @@ while [ "$i" -lt "$n_wt" ]; do
 
     # A live process in there is not stale, whatever git thinks of its
     # contents -- scan /proc rather than trust anything the worktree itself
-    # reports. Collect every occupant first: an idle Orca terminal does not
-    # count, and neither does the orca-ide process it hangs from when that
-    # process also sits in the worktree (Orca's own, closed by the rm).
+    # reports. Every process whose cwd is inside the worktree makes it busy:
+    # the first one found is the one the log names.
     real_path="$(cd "$path" && pwd -P)"
     busy=0
     busy_pid=""
-    busy_first=""
-    idle_terminal=0
-    occupants=" "
     for cwdlink in /proc/[0-9]*/cwd; do
         [ -e "$cwdlink" ] || continue
         target="$(readlink -f "$cwdlink" 2>/dev/null)" || continue
@@ -460,53 +372,11 @@ while [ "$i" -lt "$n_wt" ]; do
             "$real_path"|"$real_path"/*) ;;
             *) continue ;;
         esac
-        proc_pid="${cwdlink#/proc/}"
-        proc_pid="${proc_pid%/cwd}"
-        occupants="$occupants$proc_pid "
+        busy=1
+        busy_pid="${cwdlink#/proc/}"
+        busy_pid="${busy_pid%/cwd}"
+        break
     done
-    if [ "$occupants" != " " ]; then
-        for occ_pid in $occupants; do
-            busy_first="$occ_pid"
-            break
-        done
-        # The idle-terminal question only matters when Orca can actually
-        # close one; when it is not reachable, plain `git worktree remove`
-        # cannot, so every process still means busy. Asked once per run,
-        # and only when a worktree has an occupant to judge.
-        if [ -z "$reachable" ]; then
-            if orca_reachable; then reachable=1; else reachable=0; fi
-        fi
-        if [ "$reachable" = "1" ]; then
-            idle_pids=" "
-            for occ_pid in $occupants; do
-                if is_idle_orca_terminal "$occ_pid"; then
-                    idle_pids="$idle_pids$occ_pid "
-                fi
-            done
-            if [ "$idle_pids" != " " ]; then
-                idle_terminal=1
-                forgivable="$idle_pids"
-                for e in $idle_pids; do
-                    eppid="$(awk '/^PPid:/{print $2}' "/proc/$e/status" 2>/dev/null)"
-                    case "$occupants" in
-                        *" $eppid "*) forgivable="$forgivable$eppid " ;;
-                    esac
-                done
-                for occ_pid in $occupants; do
-                    case "$forgivable" in
-                        *" $occ_pid "*) ;;
-                        *) busy=1; busy_pid="$occ_pid"; break ;;
-                    esac
-                done
-            else
-                busy=1
-                busy_pid="$busy_first"
-            fi
-        else
-            busy=1
-            busy_pid="$busy_first"
-        fi
-    fi
     if [ "$busy" = "1" ]; then
         emit "busy $path (a running process has it as its cwd)"
         # The log must explain WHY the worktree was kept: the pid, ppid and
@@ -572,48 +442,20 @@ while [ "$i" -lt "$n_wt" ]; do
         continue
     fi
 
-    # Clean. Prefer Orca, because it drops the branch too when it can prove
-    # the worktree merged -- but a reachable Orca that answers ok:false, or
-    # that answers ok:true and leaves the directory in place, is a refusal,
-    # not a removal, and must not be reported as one.
+    # Clean: plain git. `git worktree remove` refuses a dirty tree by itself;
+    # the --force retry below runs only after the status check above has
+    # already proved this one clean, so it throws nothing real away (it
+    # clears what a first attempt leaves behind, e.g. ignored build output).
     removed=0
     reason=""
-    if [ -z "$reachable" ]; then
-        if orca_reachable; then reachable=1; else reachable=0; fi
+    git -C "$PROJECT" worktree remove "$path" >/dev/null 2>&1
+    if [ -d "$path" ]; then
+        git -C "$PROJECT" worktree remove --force "$path" >/dev/null 2>&1
     fi
-    if [ "$reachable" = "1" ]; then
-        rm_out="$(orca_call worktree rm --worktree "path:$path" --json 2>/dev/null)"
-        rm_ok=0
-        if command -v jq >/dev/null 2>&1; then
-            [ "$(printf '%s' "$rm_out" | jq -r '.ok // false' 2>/dev/null)" = "true" ] && rm_ok=1
-        else
-            case "$rm_out" in
-                *'"ok":true'*|*'"ok": true'*) rm_ok=1 ;;
-            esac
-        fi
-        if [ "$rm_ok" = "1" ] && [ ! -d "$path" ]; then
-            removed=1
-        elif [ "$rm_ok" != "1" ]; then
-            reason="orca-ide refused the rm"
-        else
-            reason="orca-ide reported ok but the directory is still there"
-        fi
-    fi
-
-    if [ "$removed" != "1" ]; then
-        # Unreachable, or Orca's rm did not actually take: fall back to
-        # plain git. The tree is already confirmed clean on this path, so
-        # --force (needed only if the first attempt leaves something behind)
-        # throws nothing real away.
-        git -C "$PROJECT" worktree remove "$path" >/dev/null 2>&1
-        if [ -d "$path" ]; then
-            git -C "$PROJECT" worktree remove --force "$path" >/dev/null 2>&1
-        fi
-        if [ ! -d "$path" ]; then
-            removed=1
-        elif [ -z "$reason" ]; then
-            reason="git worktree remove left the directory in place"
-        fi
+    if [ ! -d "$path" ]; then
+        removed=1
+    else
+        reason="git worktree remove left the directory in place"
     fi
 
     git -C "$PROJECT" worktree prune >/dev/null 2>&1
@@ -621,11 +463,7 @@ while [ "$i" -lt "$n_wt" ]; do
     if [ "$removed" = "1" ]; then
         removed_wt=$((removed_wt + 1))
         remember_freed "$branch"
-        if [ "$idle_terminal" = "1" ]; then
-            emit "removed $path (closed Orca's idle terminal)"
-        else
-            emit "removed $path"
-        fi
+        emit "removed $path"
     else
         emit "FAIL: could not remove $path ($reason)"
         stranded=1
