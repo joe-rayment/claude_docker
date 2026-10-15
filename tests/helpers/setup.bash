@@ -27,6 +27,9 @@ setup_file() {
     # Captured before any test's setup() prepends the stub bin dir, so a
     # helper that needs the REAL node/npm can ask for it explicitly.
     export ORIGINAL_PATH="$PATH"
+    # Likewise the real HOME: setup() points HOME at a fixture, but this
+    # box's OpenSSH lives in the real one (see the ssh-keygen stub).
+    export ORIGINAL_HOME="$HOME"
 
     # $BATS_FILE_TMPDIR: private to this file. Never $BATS_TMPDIR (shared
     # by every agent on the machine) and never $BATS_RUN_TMPDIR (shared by
@@ -54,7 +57,11 @@ setup_file() {
     # v3 (claude-orca-qa2.2): the image pin the launcher reads out of the
     # folder's own template clone, and the Dockerfile its build fallback
     # points `container build -f` at.
-    [ -f "$REPO_ROOT/IMAGE_TAG" ] && cp "$REPO_ROOT/IMAGE_TAG" "$TEMPLATE_SRC/IMAGE_TAG"
+    # The real IMAGE_TAG moves whenever the image gains something the
+    # launcher needs (ssh1: openssh-server), and the launcher cases here
+    # hard-code the ref `claude-orca:latest`. The fixture template pins
+    # `latest` so that bump is not edited into every case.
+    printf 'latest\n' > "$TEMPLATE_SRC/IMAGE_TAG"
     [ -f "$REPO_ROOT/Dockerfile" ] && cp "$REPO_ROOT/Dockerfile" "$TEMPLATE_SRC/Dockerfile"
 
     git -C "$TEMPLATE_SRC" add -A >/dev/null 2>&1
@@ -361,6 +368,11 @@ if [ -n "${DOCKER_STUB_PRESET_CONTAINER:-}" ] && [ ! -f "$state/preset-applied" 
             "$(stub_mount_source "$p_src")" "$(basename "$p_src")"
         printf 'mount=%s/.claude-dev/home:/home/agent\n' "$(stub_mount_source "$p_src")"
         printf 'port=%s:%s\n' "$p_port" "$p_port"
+        # Made by this generation of the template (it has sshd on the port)
+        # unless DOCKER_STUB_PRESET_NO_SSHD says it predates the ssh panes.
+        if [ -z "${DOCKER_STUB_PRESET_NO_SSHD:-}" ]; then
+            printf 'env=CLAUDE_ORCA_SSHD_PORT=%s\n' "$p_port"
+        fi
     } > "$state/containers/$p_name.meta"
 fi
 
@@ -527,6 +539,16 @@ case "$cmd" in
                 esac
                 meta_get image; meta_get imageid
                 printf '%s\n' "$have_port"
+                # The fourth line: `ssh` when the container's env holds the
+                # one NAME=value the template's `eq . "..."` asks about, else
+                # blank -- a yes/no, so no env value ever comes back (real
+                # docker does the same through {{range .Config.Env}}).
+                want_env="${fmt#*eq . \"}"; want_env="${want_env%%\"*}"
+                if meta_get env | grep -qxF "$want_env"; then
+                    printf 'ssh\n'
+                else
+                    printf '\n'
+                fi
                 meta_get mount ;;
             *Config.Image*)
                 meta_get image ;;
@@ -548,13 +570,18 @@ case "$cmd" in
             echo "docker: Error response from daemon: pull access denied" >&2
             exit 1
         fi
-        name=""; port=""; proj=""; hostproj=""; prev=""
+        name=""; port=""; orca_port=""; proj=""; hostproj=""; prev=""
         for a in "$@"; do
             case "$prev" in
                 --name) name="$a" ;;
+                -p|--publish)
+                    # The folder's port is the PUBLISHED one: ORCA_PORT is
+                    # port+1 now (sshd has the folder port), so it no longer
+                    # says which port run/port and the web URL should carry.
+                    port="${a%:*}"; port="${port##*:}" ;;
                 -e|--env)
                     case "$a" in
-                        ORCA_PORT=*)   port="${a#ORCA_PORT=}" ;;
+                        ORCA_PORT=*)   orca_port="${a#ORCA_PORT=}" ;;
                         PROJECT_DIR=*) proj="${a#PROJECT_DIR=}" ;;
                         CLAUDE_ORCA_HOST_PROJECT_DIR=*)
                             hostproj="${a#CLAUDE_ORCA_HOST_PROJECT_DIR=}" ;;
@@ -562,6 +589,7 @@ case "$cmd" in
             esac
             prev="$a"
         done
+        [ -n "$port" ] || port="$orca_port"
         # PROJECT_DIR is the path INSIDE the container (/workspace/<name>),
         # which does not exist out here. What the entrypoint writes to it
         # lands in the bind mount, and the bind mount is the host folder --
@@ -638,6 +666,10 @@ case "$cmd" in
                         pub="${a##*:}"
                         hostpub="${a%:*}"; hostpub="${hostpub##*:}"
                         printf 'port=%s:%s\n' "$hostpub" "$pub" ;;
+                    -e|--env)
+                        # Config.Env, which container_matches asks about
+                        # (does it carry CLAUDE_ORCA_SSHD_PORT=<port>?).
+                        printf 'env=%s\n' "$a" ;;
                 esac
                 prev="$a"
             done
@@ -652,6 +684,16 @@ case "$cmd" in
             printf 'http://127.0.0.1:%s/web-index.html#pairing=stub\n' "$port" \
                 > "$proj/.claude-dev/run/orca-web-url.txt"
             printf '%s\n' "$port" > "$proj/.claude-dev/run/port"
+        fi
+        # And sshd-lib: run/sshd.ready once sshd listens, with the host key
+        # fingerprint it was given (state/ssh/host_ed25519, which the
+        # launcher made before this run). CLAUDE_ORCA_TEST_NO_SSHD: never.
+        if [ -n "$proj" ] && [ -z "${CLAUDE_ORCA_TEST_NO_SSHD:-}" ] \
+            && [ -f "$proj/.claude-dev/state/ssh/host_ed25519.pub" ]; then
+            mkdir -p "$proj/.claude-dev/run"
+            fp="$("${CLAUDE_ORCA_SSH_KEYGEN:-ssh-keygen}" -lf "$proj/.claude-dev/state/ssh/host_ed25519.pub" | awk 'NR == 1 { print $2 }')"
+            printf 'port=%s\nhost_key_sha256=%s\n' "$port" "$fp" \
+                > "$proj/.claude-dev/run/sshd.ready"
         fi
         echo "$name"
         exit 0 ;;
