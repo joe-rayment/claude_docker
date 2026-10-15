@@ -1,0 +1,108 @@
+#!/usr/bin/env bash
+# pane-entry -- what an ssh pane runs instead of a login shell.
+#
+# sshd's ForceCommand points here, so every connection a Ghostty pane opens
+# (interactive, or `ssh host <command>`) passes through this one script before
+# it reaches the agent's shell.  It does four small things:
+#
+#   1. rebuilds the container environment.  sshd hands a session almost
+#      nothing, so the entrypoint's snapshot of PID 1's environment
+#      (${CLAUDE_ORCA_RUNTIME_DIR:-/run/cdev}/env, export K='v' lines) is
+#      sourced.  LANG / LC_* the client sent survive it: they are saved
+#      first and put back after, so a Mac in another locale keeps its own.
+#   2. lands the pane in the right directory.  The client sends CDEV_CWD, a
+#      path RELATIVE to the project.  It is honoured only when it resolves
+#      (symlinks followed) to the project dir or somewhere under it; a
+#      missing dir, an absolute path, a ../ escape or a symlink that points
+#      outside all fall back to PROJECT_DIR (and to $HOME when even that is
+#      unusable).
+#   3. fixes TERM.  A terminfo name the container does not know (Ghostty's
+#      own xterm-ghostty, say) becomes xterm-256color so ncurses programs
+#      still work.
+#   4. marks the shell as a pane (CDEV_PANE=1, which switches on the OSC 7 and
+#      title hooks in config/.zshrc) and execs it: `-l` for an interactive
+#      pane, `-lc "$SSH_ORIGINAL_COMMAND"` when the client gave a command.
+#
+# Nothing is written to stdout before the exec: the bytes on the wire belong
+# to the shell, and a stray line here would land in the user's terminal.
+#
+# Env seams:
+#   CLAUDE_ORCA_RUNTIME_DIR   where `env` lives (default /run/cdev)
+#   CLAUDE_ORCA_PANE_SHELL    the program to exec (default: the z-shell binary);
+#                             the tests point it at a stub
+# Exit: only if the shell cannot be exec'd -- 127 (not found) after a message
+# on stderr.
+
+set -u
+
+# 1. keep what the client sent for locale, then take the container env.
+_pe_names=()
+_pe_values=()
+for _pe_n in $(compgen -e); do
+  case $_pe_n in
+    LANG|LC_*)
+      _pe_names[${#_pe_names[@]}]=$_pe_n
+      _pe_values[${#_pe_values[@]}]=${!_pe_n}
+      ;;
+  esac
+done
+
+_pe_env="${CLAUDE_ORCA_RUNTIME_DIR:-/run/cdev}/env"
+if [ -r "$_pe_env" ]; then
+  # shellcheck disable=SC1090
+  . "$_pe_env" >/dev/null 2>&1
+fi
+
+_pe_i=0
+while [ "$_pe_i" -lt "${#_pe_names[@]}" ]; do
+  export "${_pe_names[$_pe_i]}=${_pe_values[$_pe_i]}"
+  _pe_i=$((_pe_i + 1))
+done
+
+# 2. directory.  Fall through PROJECT_DIR to $HOME.
+_pe_dest=""
+_pe_root=""
+if [ -n "${PROJECT_DIR:-}" ] && _pe_root=$(realpath -e -- "$PROJECT_DIR" 2>/dev/null) \
+   && [ -d "$_pe_root" ]; then
+  _pe_dest=${PROJECT_DIR%/}
+  [ -n "$_pe_dest" ] || _pe_dest=/
+  _pe_rel=${CDEV_CWD:-}
+  case $_pe_rel in
+    ""|/*) ;;                       # nothing asked for, or absolute: root
+    *)
+      _pe_try="${PROJECT_DIR%/}/$_pe_rel"
+      if _pe_real=$(realpath -e -- "$_pe_try" 2>/dev/null) && [ -d "$_pe_real" ]; then
+        case $_pe_real in
+          "$_pe_root"|"$_pe_root"/*) _pe_dest=$_pe_try ;;
+        esac
+      fi
+      ;;
+  esac
+fi
+if [ -z "$_pe_dest" ] || ! cd -- "$_pe_dest" 2>/dev/null; then
+  cd -- "${PROJECT_DIR:-.}" 2>/dev/null || cd -- "${HOME:-/}" 2>/dev/null || cd /
+fi
+
+# 3. TERM the container can resolve.
+if [ -n "${TERM:-}" ] && command -v infocmp >/dev/null 2>&1 \
+   && ! infocmp "$TERM" >/dev/null 2>&1; then
+  TERM=xterm-256color
+fi
+[ -z "${TERM:-}" ] || export TERM
+
+# 4. mark the pane and hand over.
+export CDEV_PANE=1
+
+_pe_shell=${CLAUDE_ORCA_PANE_SHELL:-}
+if [ -z "$_pe_shell" ]; then
+  if [ -x /usr/bin/zsh ]; then _pe_shell=/usr/bin/zsh; else _pe_shell=$(command -v zsh || true); fi
+fi
+if [ -z "$_pe_shell" ]; then
+  echo "pane-entry: no shell to run" >&2
+  exit 127
+fi
+
+if [ -n "${SSH_ORIGINAL_COMMAND:-}" ]; then
+  exec "$_pe_shell" -lc "$SSH_ORIGINAL_COMMAND"
+fi
+exec "$_pe_shell" -l

@@ -163,5 +163,69 @@ if [ -n "$CLAUDE_PROJECT_NAME" ]; then
     export RPROMPT="%F{blue}[${CLAUDE_PROJECT_NAME}]%f"
 fi
 
+# Ghostty ssh panes (scripts/container/pane-entry sets CDEV_PANE=1) -- tell the
+# terminal where the shell is, so a new tab opens in the same folder, and keep
+# the tab title honest. Both hooks go on precmd, so they run at every prompt
+# and after the one-shot identity title above, which they replace.
+#   OSC 7: the Mac-side path (CLAUDE_ORCA_HOST_PROJECT_DIR + the part of $PWD
+#          under $PROJECT_DIR), every byte outside [A-Za-z0-9/._~-] %XX-encoded.
+#          Skipped when the Mac path is unknown.
+#   title: "<project> ▸ <sub/dir>", just "<project>" at the root.
+if [[ -n "$CDEV_PANE" ]]; then
+    # _cdev_pct <string>: the %XX-encoded string, left in $REPLY.
+    _cdev_pct() {
+        emulate -L zsh
+        unsetopt multibyte
+        local s=$1 c i
+        REPLY=
+        if [[ $s != *[^A-Za-z0-9/._~-]* ]]; then
+            REPLY=$s
+            return
+        fi
+        for (( i = 1; i <= ${#s}; i++ )); do
+            c=${s[i]}
+            if [[ $c == [A-Za-z0-9/._~-] ]]; then
+                REPLY+=$c
+            else
+                REPLY+=$(printf '%%%02X' $(( #c )))
+            fi
+        done
+    }
+
+    # _cdev_pane_rel: $PWD below $PROJECT_DIR as "/sub/dir" (empty at the root
+    # or outside the project), left in $REPLY.
+    _cdev_pane_rel() {
+        local root=${PROJECT_DIR%/}
+        REPLY=
+        if [[ -n $root && $PWD == "$root"/* ]]; then
+            REPLY=${PWD#"$root"}
+        fi
+    }
+
+    _cdev_pane_osc7() {
+        [[ -n $CLAUDE_ORCA_HOST_PROJECT_DIR ]] || return 0
+        _cdev_pane_rel
+        _cdev_pct "${CLAUDE_ORCA_HOST_PROJECT_DIR%/}$REPLY"
+        print -rn -- $'\e]7;file://localhost'"$REPLY"$'\a'
+    }
+
+    _cdev_pane_title() {
+        local name=${CLAUDE_ORCA_PROJECT_NAME:-${PROJECT_DIR:t}} rel
+        _cdev_pane_rel
+        rel=${REPLY#/}
+        name=${name//[[:cntrl:]]/}
+        rel=${rel//[[:cntrl:]]/}
+        if [[ -n $rel ]]; then
+            print -rn -- $'\e]2;'"$name ▸ $rel"$'\a'
+        else
+            print -rn -- $'\e]2;'"$name"$'\a'
+        fi
+    }
+
+    autoload -Uz add-zsh-hook
+    add-zsh-hook precmd _cdev_pane_osc7
+    add-zsh-hook precmd _cdev_pane_title
+fi
+
 # User customizations — this file survives config version updates
 [[ -f ~/.zshrc.local ]] && source ~/.zshrc.local
