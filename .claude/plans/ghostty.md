@@ -105,6 +105,27 @@ Splitting needs no keybinds of ours, because Ghostty's defaults already are
 cmd+d (right), cmd+shift+d (down), the right-click menu, cmd+opt+arrows, and
 cmd+shift+enter (zoom).
 
+#### Ghostty settings: codified once, applied rarely, checked every time
+
+The settings are code in this repo and installing them is one idempotent
+command, so a new machine is one run and every other day is a no-op.
+
+| | |
+|---|---|
+| **Source of truth** | `config/ghostty/claude-dev.ghostty` in the template. Its first line is `# claude-dev ghostty v<N>`, and the number goes up whenever the file or the router changes. |
+| **What lands on the Mac** | Three things: the include file, the router (`~/.local/share/claude-dev/ghostty-pane`), and **one line** appended to your existing Ghostty config: `config-file = ?claude-dev.ghostty`, in whichever of `config.ghostty`/`config` (XDG or Application Support) Ghostty actually loads, created if none exists. Nothing else in your config is edited, ever. Ghostty processes includes at the end of the file that names them, so our three keys win over the same keys earlier in your file. Everything else stays yours. |
+| **When it runs** | (1) `bootstrap.sh` on a new machine, right after `brew install --cask ghostty` when Ghostty is missing. (2) Every `./claude-dev` and every slow-path `claude-dev pane` compares the installed `v<N>` with the template's, which costs about 1 ms. When the template is newer it reinstalls and prints one line, "Ghostty settings updated to v<N> — new panes use them". (3) By hand: `./claude-dev ghostty` (force), `--uninstall` (removes all three; your config is byte-identical to before), `--check`. |
+| **`--check`, also two rows in `--doctor` and `verify`** | Uses Ghostty's own CLI (`Ghostty.app/Contents/MacOS/ghostty`). `+validate-config` checks that the files parse. `+show-config` checks the *effective* values: `command` is the router, `shell-integration` matches `$SHELL`, and `window-inherit-working-directory = false`. `+list-keybinds` checks that cmd+d → `new_split:right` and cmd+shift+d → `new_split:down` are still bound, which catches a `keybind = clear` or a rebinding in your own config. `+version` checks ≥ 1.3. Each failure names the conflicting setting. |
+| **A conflict you made on purpose** | If your config already sets its own `command`, install does not override it silently: it stops and says so, because that `command` is the routing. `"route": false` in a folder's `claude-orca.json` opts that one folder out of routing. |
+| **Taking effect** | `command` applies to new panes. Running panes keep what they started with, and Ghostty reloads on cmd+shift+, or on restart. Install says this in its one line. |
+
+What Ghostty itself must provide, and what it need not:
+
+- **Split panes:** Ghostty's default keybinds plus our `command`. `--check` guards both.
+- **Pasting images into Claude:** no Ghostty setting at all. That path is ssh plus the clipboard bridge.
+- **Showing images in the terminal:** Claude Code draws images inline with the kitty graphics protocol, and Ghostty supports it. Over ssh the Mac cannot read a container file path, so the image has to travel inside the escape sequence (`t=d`, base64, chunked). Claude Code 2.1.300 has that path as well as the file path (`t=f`), and its capability probe uses `t=d`. B1's real run checks that an image actually renders over ssh, with the pty answering the probes the way Ghostty does.
+- **Copy out of Claude:** OSC 52. Ghostty's default `clipboard-write = allow` permits it, and `--check` warns if your config denies it.
+
 ### Container side
 
 | Piece | What |
