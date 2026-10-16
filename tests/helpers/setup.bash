@@ -1401,6 +1401,32 @@ write_setup_stubs() {
     write_stub_installer "$1/installer"
     write_stub_softwareupdate "$1/softwareupdate"
     write_stub_xcode_select "$1/xcode-select"
+    write_stub_ssh_keygen "$1/ssh-keygen"
+}
+
+# ssh-keygen, for the launcher (ssh_ensure_keys) and the docker stub's `run`
+# (which makes the container's host key). This box has no system OpenSSH, so
+# the tests use the unprivileged extraction under the REAL home's
+# .cache/claude-orca-test/openssh (HOME is a fixture by the time a case runs,
+# hence ORIGINAL_HOME, with the passwd entry as the fallback for a file that
+# has its own setup_file). A Mac has /usr/bin/ssh-keygen, which is used when
+# the extraction is absent; with neither the wrapper fails loudly.
+write_stub_ssh_keygen() {
+    cat > "$1" <<'STUB'
+#!/usr/bin/env bash
+home="${ORIGINAL_HOME:-$(getent passwd "$(id -u)" 2>/dev/null | cut -d: -f6)}"
+root="$home/.cache/claude-orca-test/openssh"
+if [ -x "$root/usr/bin/ssh-keygen" ]; then
+    export LD_LIBRARY_PATH="$root/usr/lib/aarch64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    exec "$root/usr/bin/ssh-keygen" "$@"
+fi
+if [ -x /usr/bin/ssh-keygen ]; then
+    exec /usr/bin/ssh-keygen "$@"
+fi
+echo "ssh-keygen stub: no OpenSSH at $root/usr/bin/ssh-keygen and no /usr/bin/ssh-keygen" >&2
+exit 127
+STUB
+    chmod +x "$1"
 }
 
 setup() {
