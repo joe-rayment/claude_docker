@@ -80,12 +80,12 @@ flags=""
 # the same tier.json this whole script reads, so it can never drift from
 # what tier-gate will actually inject.
 if [ "${1:-}" = "--short" ]; then
-    # A role on the orca backend is shown backend-qualified, because *where*
+    # A role on the headless backend is shown backend-qualified, because *where*
     # it runs changes how the orchestrator dispatches it; a plain subagent
     # role keeps the bare model id this line has always carried.
     w_disp="${worker:-<unbound>}"; r_disp="${recon:-<unbound>}"
-    [ "${bk_worker:-subagent}" = "orca" ] && [ -n "${lb_worker:-}" ] && w_disp="$lb_worker"
-    [ "${bk_recon:-subagent}" = "orca" ] && [ -n "${lb_recon:-}" ] && r_disp="$lb_recon"
+    [ "${bk_worker:-subagent}" = "headless" ] && [ -n "${lb_worker:-}" ] && w_disp="$lb_worker"
+    [ "${bk_recon:-subagent}" = "headless" ] && [ -n "${lb_recon:-}" ] && r_disp="$lb_recon"
     line="[tier] worker=$w_disp recon=$r_disp"
     if [ -n "$flags" ]; then
         line="$line (${flags# })"

@@ -99,7 +99,7 @@ http.server.HTTPServer(('127.0.0.1', $port),
 @test "an openrouter bind with no credential still binds and says how to authenticate" {
     run "$TSET" worker openrouter:z-ai/glm-5.3-flash
     [ "$status" -eq 0 ]
-    [[ "$output" == *"orca:opencode:openrouter/z-ai/glm-5.3-flash"* ]]
+    [[ "$output" == *"headless:opencode:openrouter/z-ai/glm-5.3-flash"* ]]
     [[ "$output" == *"/tier auth openrouter"* ]]
     run jq -e '.roles.worker | .agent == "opencode" and .model == "openrouter/z-ai/glm-5.3-flash"' \
         "$RUN_DIR/tier.json"
@@ -158,22 +158,33 @@ http.server.HTTPServer(('127.0.0.1', $port),
 
 # -- S3: the tab -----------------------------------------------------------
 
-@test "auth openrouter creates a focused titled Orca terminal running the helper" {
+@test "auth openrouter prints the two-line sign-in command for a split and makes no Orca call" {
+    # Guards: /tier auth openrouter opens nothing -- it prints the line
+    #   telling the user to open a split (cmd+d) and the command that runs
+    #   this folder's scripts/openrouter-auth.sh there, and exits 0.
+    # Fails if: the command ran another helper, the first line was missing,
+    #   or the Orca CLI was called (a terminal create).
+    # Run: bats -f 'two-line sign-in command for a split' tests/tier-openrouter-auth.bats
     stub_orca ok
     run "$TSET" auth openrouter
     [ "$status" -eq 0 ]
-    grep -qx 'terminal' "$BATS_TEST_TMPDIR/orca-argv"
-    grep -qx 'create' "$BATS_TEST_TMPDIR/orca-argv"
-    grep -qx -- '--focus' "$BATS_TEST_TMPDIR/orca-argv"
-    grep -qx 'OpenRouter sign-in' "$BATS_TEST_TMPDIR/orca-argv"
-    grep -q 'openrouter-auth.sh' "$BATS_TEST_TMPDIR/orca-argv"
+    [ "${#lines[@]}" -eq 2 ]
+    [ "${lines[0]}" = "Sign-in runs in a terminal of its own: open a split (cmd+d) and run:" ]
+    [[ "${lines[1]}" == "cd "*" && "*"openrouter-auth.sh" ]]
+    [ ! -s "$BATS_TEST_TMPDIR/orca-argv" ]
 }
 
-@test "auth openrouter with an unreachable Orca prints the manual command and exits 0" {
+@test "auth openrouter still prints the command and exits 0 when the Orca CLI is down" {
+    # Guards: sign-in no longer depends on any Orca runtime -- an Orca CLI
+    #   that would fail is never even called, and the command still prints.
+    # Fails if: the code reached for the Orca CLI again (its argv log gets
+    #   a line) or exited non-zero because the CLI was unreachable.
+    # Run: bats -f 'Orca CLI is down' tests/tier-openrouter-auth.bats
     stub_orca down
     run "$TSET" auth openrouter
     [ "$status" -eq 0 ]
     [[ "$output" == *"openrouter-auth.sh"* ]]
+    [ ! -s "$BATS_TEST_TMPDIR/orca-argv" ]
 }
 
 # -- S4: dispatch carries the credential -----------------------------------

@@ -11,7 +11,7 @@
 # The fixture is a scratch project (a .claude-dev/claude-orca.json marker so
 # paths.sh resolves it) with its own .claude-dev/run: the guard token, a
 # sentinel openrouter-guard.env that must come out byte-identical, and a
-# tier.json binding recon to orca:opencode:gpt-5.6-luna@high. Ambient
+# tier.json binding recon to headless:opencode:gpt-5.6-luna@high. Ambient
 # PROJECT_DIR, CLAUDE_ORCA_ROOT and BEADS_DIR are unset first, and the
 # script under test is pinned by path -- never trusted to PATH.
 #
@@ -42,7 +42,7 @@ setup() {
   "top": "fable",
   "roles": {
     "recon": {
-      "backend": "orca",
+      "backend": "headless",
       "agent": "opencode",
       "model": "openrouter/openai/gpt-5.6-luna",
       "pinned": true,
@@ -170,7 +170,7 @@ STUB
     [ ! -e "$STUB_LOG" ]
 
     cat >"$RUN/tier.json" <<'JSON'
-{ "roles": { "recon": { "backend": "orca", "agent": "opencode",
+{ "roles": { "recon": { "backend": "headless", "agent": "opencode",
   "model": "openrouter/openai/gpt-5.6-luna", "pinned": true, "variant": "high" } } }
 JSON
     rm -f "$RUN/openrouter-guard.token"

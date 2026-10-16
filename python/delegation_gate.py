@@ -403,7 +403,7 @@ def emit_warn(streak):
     emit_note(
         f"[delegation-gate] {streak} consecutive inline tool calls in the main "
         "loop — batch remaining recon into a scout, or hand edits to an "
-        "executor slice (`orca-dispatch <bead>`, else the Agent tool). Streak "
+        "executor slice (`dispatch <bead>`, else the Agent tool). Streak "
         "resets when you use the Agent tool."
     )
 
@@ -509,7 +509,7 @@ def main():
         save_state(state_path, state)
         emit_note(
             "[delegation-gate] Implementation edits are the executor's "
-            "seat — dispatch the slice (`orca-dispatch <bead>`, else the "
+            "seat — dispatch the slice (`dispatch <bead>`, else the "
             "Agent tool) with its spec. The orchestrator reviews the diff "
             "instead of writing it."
         )
@@ -532,8 +532,8 @@ def main():
         save_state(state_path, state)
         emit_note(
             f"[delegation-gate] {streak} inline calls — hand this off: recon "
-            'to `recon "<question>"` (orca) or a scout, edits and builds to '
-            "an executor (`orca-dispatch <bead>`, else the Agent tool). "
+            'to `recon "<question>"` (headless) or a scout, edits and builds to '
+            "an executor (`dispatch <bead>`, else the Agent tool). "
             "Resets on Agent use; bd, git, gh, bats, lane, tier- and recon "
             "calls don't count."
         )

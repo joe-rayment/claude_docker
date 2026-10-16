@@ -20,18 +20,21 @@
 #   tier-set <role> <spec>             # rebind ONE role's backend+agent+model
 #
 # v2 (claude-orca-qa2.12): <role> is worker|recon|checker and <spec> is one of
-#   openrouter:<vendor/model>   -> backend orca,     agent opencode
-#   openai | openai:<family|id> -> backend orca,     agent opencode, model openai/...
-#   claude:[<alias|id>]         -> backend orca,     agent claude
-#   codex:<id> | gemini:<id>    -> backend orca,     agent codex|gemini
-#   orca | subagent             -> that backend,     agent claude, derived model
+#   openrouter:<vendor/model>   -> backend headless, agent opencode
+#   openai | openai:<family|id> -> backend headless, agent opencode, model openai/...
+#   claude:[<alias|id>]         -> backend headless, agent claude (a `claude -p` worker)
+#   codex:<id> | gemini:<id>    -> backend headless, agent codex|gemini
+#   headless | subagent         -> that backend,     agent claude, derived model
+#   orca                        -> deprecated alias of subagent (prints one line saying so)
 #   <alias|id> | inherit        -> backend subagent, agent claude
 # A spec that names a model pins THAT role (tier-reconcile stops re-deriving
 # its model); the derived forms leave it tracking the ladder. On a plain
 # `tier-set <top>` all three roles are rebound to the defaults: worker =
-# orca+claude when the Orca runtime answers `status --json` (2s probe), else
-# subagent; recon = subagent; checker = subagent+inherit. See
-# scripts/lib/tier-roles.sh for the on-disk shape and the v1 read rule.
+# subagent+claude (headless+opencode with an OpenRouter key in the folder);
+# recon = subagent; checker = subagent at the derived rung. Nothing probes
+# for a runtime: `headless` is only ever bound by naming it (claude-orca-9bh.2).
+# See scripts/lib/tier-roles.sh for the on-disk shape, the v1 read rule and
+# the old-backend-"orca" migration.
 #
 # Ladder and derivation: scripts/tier-derive.sh (ported unchanged from the
 # old template) is the single source of truth; this script never repeats it.
@@ -274,8 +277,8 @@ parse_effort() {
 # effort_note <role> <agent> <effort> -- prints a note (and the caller drops
 # the effort) only for an agent that has no reasoning-effort knob at all.
 # Every role spells effort the same way (@high); each launch path carries
-# it to its own agent: opencode through OPENCODE_CONFIG, an orca Claude/
-# Codex/Cursor worker through worker-start --effort, an in-process spawn
+# it to its own agent: opencode through OPENCODE_CONFIG, a headless Claude/
+# Codex/Cursor worker through its own launch flag, an in-process spawn
 # through tier-gate's Agent `effort`, the top through settings effortLevel.
 effort_note() {
     [ -n "$3" ] || return 0
@@ -288,13 +291,13 @@ effort_note() {
 # write_state <top> <worker> <recon> <pinned:true|false> <overdrive:true|false>
 #             [<auto-derived:true|false>]
 # Writes the file whole -- v1 keys plus the v2 .roles block at its defaults
-# (worker on the orca backend when the runtime answers, else subagent), so a
-# plain `/tier <top>` resets every role, exactly as it resets pin/overdrive.
+# (worker on the subagent backend), so a plain `/tier <top>` resets every
+# role, exactly as it resets pin/overdrive.
 #
 # claude-orca-qa2.20: on the AUTO-DERIVED path only ($6 = true, i.e. a plain
 # `/tier <top>`), a folder that has an OpenRouter key gets the GLM worker
 # instead of the claude rung -- the key decides the VENDOR (opencode running
-# openrouter/~z-ai/glm-latest), the Orca probe decides only the BACKEND. An
+# openrouter/~z-ai/glm-latest, which makes the backend headless). An
 # explicit 2/3-arg pin and `overdrive` are explicit requests for a claude
 # model and are left alone. TIER_EFFECTIVE_WORKER carries the model actually
 # bound back to the caller, for the message it prints.
@@ -304,7 +307,6 @@ write_state() {
     mkdir -p "$(dirname "$STATE_FILE")" 2>/dev/null
     local tmp wb wa wm ck
     wb=subagent
-    tier_orca_reachable && wb=orca
     wa=claude; wm="$2"
     # The checker rung is derived like every other one (tier-derive --checker:
     # the top capped at opus), so a fable orchestrator is graded from a seat
@@ -313,7 +315,7 @@ write_state() {
     ck=$("$DERIVE" --checker "$1" 2>/dev/null) || ck=""
     [ -n "$ck" ] || ck=inherit
     if [ "${6:-false}" = "true" ] && tier_openrouter_key_present; then
-        wa=opencode; wm="$TIER_OPENROUTER_DEFAULT_MODEL"
+        wa=opencode; wb=headless; wm="$TIER_OPENROUTER_DEFAULT_MODEL"
     fi
     TIER_EFFECTIVE_WORKER="$wm"
     tmp=$(mktemp "$STATE_FILE.XXXXXX") || return 1
@@ -547,7 +549,7 @@ NAMES
 EFFORT -- OpenRouter and OpenAI models (a Claude role ignores it)
   none  minimal  low  medium  high  xhigh  max      written as  luna@high  or  Luna (high)  or  luna high
 ALSO
-  /tier worker claude:sonnet   an Orca-backed Claude worker      /tier worker subagent   back in-process, derived model
+  /tier worker claude:sonnet   a headless Claude worker          /tier worker subagent   back in-process, derived model
   /tier recon openrouter       the cheap OpenRouter default      /tier overdrive         lifts the worker cap so the executor runs the TOP model
   /tier auth openrouter        sign in to OpenRouter              /tier help              the long explanation
   /tier auth openai            sign in with your ChatGPT subscription    /tier models openai  what your subscription serves
@@ -565,11 +567,11 @@ show_help() {
 /tier overdrive lifts the worker cap so the executor runs the TOP model (recon stays cheap) and keeps it lifted as /model moves the top; it is expensive, says so on every session-start tier line, and a 1-arg /tier <top> clears it.
 1-arg /tier <top> auto-derives worker/recon: worker = one rung down capped at sonnet-class, recon = one below the worker (fable>opus>sonnet>haiku, floored). 2/3-arg /tier <top> <worker> [<recon>] pins those bindings explicitly.
 the checker (verifier) rung is derived too: the top capped at opus, so a fable top is graded from opus; oracle still inherits the orchestrator's model. /model is the primary in-session lever for the derived default.
-each role (worker · recon · checker) also carries a backend: orca (a supervised Orca worker terminal, dispatched with orca-dispatch) or subagent (the in-process Agent tool). /tier worker glm-flash binds OpenRouter's newest GLM Flash (openrouter/~z-ai/glm-flash-latest) run by opencode on the orca backend, /tier worker claude:sonnet an orca-backed Claude worker, /tier worker subagent puts it back in-process on the derived model; recon and checker take the same specs. /tier recon openrouter (bare spec, no model named) binds the role's own OpenRouter default, for recon the flash-class rung $TIER_OPENROUTER_RECON_MODEL.
-a 1-arg /tier <top> resets all three to the defaults: worker orca+claude when the Orca runtime is reachable, else subagent; recon subagent haiku; checker subagent at the derived checker rung (the top capped at opus), so a fable top is graded from opus. An off-ladder top leaves the checker on inherit. With an OpenRouter key in this folder the default worker is the GLM rung on opencode, and every OpenRouter request goes through the in-VM guard, which forces config/provider-policy.json's provider allowlist -- a Chinese model is fine, a China-hosted one is not: requests are served in the US, Canada or Europe only; /tier worker claude:sonnet puts the claude rung back.
-an openrouter: bind still saves with no credential in this folder -- it names /tier auth openrouter as the next step, which opens a focused Orca tab that gets a key, validates it and starts the guard; with no Orca runtime it prints the same command to run by hand.
+each role (worker · recon · checker) also carries a backend: headless (a detached process started by dispatch <bead>: claude -p or opencode run) or subagent (the in-process Agent tool). /tier worker glm-flash binds OpenRouter's newest GLM Flash (openrouter/~z-ai/glm-flash-latest) run by opencode on the headless backend, /tier worker claude:sonnet a headless Claude worker, /tier worker subagent puts it back in-process on the derived model; recon and checker take the same specs. /tier recon openrouter (bare spec, no model named) binds the role's own OpenRouter default, for recon the flash-class rung $TIER_OPENROUTER_RECON_MODEL.
+a 1-arg /tier <top> resets all three to the defaults: worker subagent on the derived Claude rung; recon subagent haiku; checker subagent at the derived checker rung (the top capped at opus), so a fable top is graded from opus. An off-ladder top leaves the checker on inherit. With an OpenRouter key in this folder the default worker is the GLM rung on opencode, and every OpenRouter request goes through the in-VM guard, which forces config/provider-policy.json's provider allowlist -- a Chinese model is fine, a China-hosted one is not: requests are served in the US, Canada or Europe only; /tier worker claude:sonnet puts the claude rung back.
+an openrouter: bind still saves with no credential in this folder -- it names /tier auth openrouter as the next step, which prints the command to run in a terminal of its own (a split: cmd+d) that gets a key, validates it and starts the guard.
 an openai: binding is opencode on the openai provider, signed in with your ChatGPT subscription; a family alias (openai/~gpt-luna-latest) is resolved when the worker starts to the newest model of that family the subscription serves. Requests go straight to OpenAI, so no guard and no provider allowlist is involved (OpenAI serves them itself); an unsigned folder still saves the binding and names /tier auth openai.
-a reasoning effort (luna@high, haiku@low, opus@xhigh) is spelled the same on every role and reaches each agent its own way: opencode through a per-launch config file (OPENCODE_CONFIG), an orca Claude worker through worker-start --effort, an in-process spawn through the Agent call's effort, the top through settings effortLevel (max caps at xhigh there; minimal reads as low on Claude).
+a reasoning effort (luna@high, haiku@low, opus@xhigh) is spelled the same on every role and reaches each agent its own way: opencode through a per-launch config file (OPENCODE_CONFIG), a headless Claude worker through its own launch flag, an in-process spawn through the Agent call's effort, the top through settings effortLevel (max caps at xhigh there; minimal reads as low on Claude).
 a binding applies to NEW spawns immediately (tier-gate reads tier.json at spawn time); /model <top> moves THIS session's own model now.
 EOF
 }
@@ -657,12 +659,13 @@ fi
 
 # --- auth: tier-set auth <provider> -----------------------------------------
 #
-# Opens a focused Orca tab running the provider's sign-in helper --
-# scripts/openrouter-auth.sh or scripts/openai-auth.sh -- so sign-in
-# happens without leaving the session (plan .claude/plans/openrouter-auth.md
-# "Auth happens in a tab"; the OpenAI twin is claude-orca-c3p.4). An
-# unreachable Orca runtime is not an error -- there is a manual fallback --
-# so this always exits 0 once the provider name itself checks out.
+# Prints the command that runs the provider's sign-in helper --
+# scripts/openrouter-auth.sh or scripts/openai-auth.sh -- for a terminal of
+# its own (plan .claude/plans/ghostty.md "Workers and /tier, without Orca";
+# the OpenAI twin is claude-orca-c3p.4). Sign-in is interactive (a key
+# prompt, a browser sign-in), so it cannot run inside this tool call: the
+# user opens a split and runs the line. Nothing is opened, nothing probed;
+# exits 0 once the provider name itself checks out.
 if [ "${1:-}" = "auth" ]; then
     provider="${2:-}"
     case "$provider" in
@@ -672,25 +675,16 @@ if [ "${1:-}" = "auth" ]; then
             exit 1
             ;;
     esac
-    # shellcheck source=lib/orca-orch.sh
-    . "$SCRIPT_DIR/lib/orca-orch.sh"
     if [ "$provider" = "openrouter" ]; then
         HELPER="$SCRIPT_DIR/openrouter-auth.sh"
-        TITLE="OpenRouter sign-in"
     else
         HELPER="$SCRIPT_DIR/openai-auth.sh"
-        TITLE="OpenAI sign-in"
     fi
-    root="$(orch_root 2>/dev/null)" || root="$PWD"
-    if out="$(orca_call terminal create --worktree "path:$root" \
-                --title "$TITLE" --command "$HELPER" \
-                --focus --json)"; then
-        echo "tier-set: opened an Orca tab \"$TITLE\" — complete sign-in there."
-        exit 0
-    fi
-    err="$(orca_error "$out" 2>/dev/null)"; [ -n "$err" ] || err="Orca runtime unreachable"
-    echo "tier-set: could not open an Orca tab ($err) -- run this by hand in any terminal instead:" >&2
-    echo "  $HELPER"
+    root="${CLAUDE_ORCA_ROOT:-}"
+    [ -n "$root" ] && [ -d "$root" ] || root="$(claude_orca_root 2>/dev/null)" || root=""
+    [ -n "$root" ] || root="$PWD"
+    echo "Sign-in runs in a terminal of its own: open a split (cmd+d) and run:"
+    printf 'cd %q && %q\n' "$root" "$HELPER"
     exit 0
 fi
 
@@ -940,7 +934,7 @@ openai_spec_model() {
 # it just cannot run until the ChatGPT sign-in happened. Once per command.
 print_openai_auth_note() {
     echo "→ not signed in to OpenAI yet -- this binding is saved but cannot run until this folder is signed in with your ChatGPT subscription."
-    echo "→ run  /tier auth openai  to open a sign-in tab now."
+    echo "→ run  /tier auth openai  for the sign-in command."
 }
 
 # resolve_worker_recon_phrase <worker|recon> <name> <positional|role>
@@ -953,54 +947,52 @@ print_openai_auth_note() {
 # Resolution order (claude-orca-2j2, bead SPEC point 4):
 #   a. a Claude alias/id -- backend follows <ctx> (see below)
 #   b. an existing explicit spec: openrouter[:.../], openai[:.../], claude:,
-#      codex:/gemini:, orca, subagent, inherit -- unchanged from the
-#      single-role grammar (openai/openai: bind the ChatGPT subscription,
-#      claude-orca-c3p.3)
-#   c. a route NAME in $ROUTES_FILE -- its .model, backend orca/opencode
+#      codex:/gemini:, headless, subagent, inherit, and the deprecated
+#      `orca` (= subagent) -- unchanged from the single-role grammar
+#      (openai/openai: bind the ChatGPT subscription, claude-orca-c3p.3)
+#   c. a route NAME in $ROUTES_FILE -- its .model, backend headless/opencode
 #   d. a phrase containing '/' -- an explicit OpenRouter id (a leading
 #      "openrouter/" is optional and normalised in)
 #   e. otherwise, an OpenRouter catalogue lookup
 #
-# <ctx>: "positional" reproduces write_state's own rule for a Claude WORKER
-# (orca when tier_orca_reachable, else subagent; recon stays subagent, as it
-# always has); "role" is the per-role form's rule -- always subagent+claude,
-# regardless of role or Orca reachability (unchanged from the pre-existing
-# single-role grammar).
+# <ctx> ("positional" | "role") used to decide a Claude alias's backend
+# through the Orca probe. Nothing probes any more: a bare Claude alias is
+# always subagent+claude, in both forms (claude-orca-9bh.2). Only an explicit
+# `claude:<model>` or `headless` binds a headless Claude worker.
 resolve_worker_recon_phrase() {
     local role="$1" name="$2" ctx="$3" b a m rest bare
     case "$name" in
         fable|Fable|FABLE|opus|Opus|OPUS|sonnet|Sonnet|SONNET|haiku|Haiku|HAIKU|claude-*)
             m="$(alias_id "$name")"
             a=claude
-            if [ "$ctx" = "positional" ] && [ "$role" = "worker" ]; then
-                b=subagent; tier_orca_reachable && b=orca
-            else
-                b=subagent
-            fi
+            b=subagent
             ;;
         openai)
-            b=orca; a=opencode; m="$(tier_openai_role_default "$role")" ;;
+            b=headless; a=opencode; m="$(tier_openai_role_default "$role")" ;;
         openai:*)
             rest="${name#openai:}"
             m="$(openai_spec_model "$rest")" || return 1
-            b=orca; a=opencode ;;
+            b=headless; a=opencode ;;
         openrouter)
-            b=orca; a=opencode; m="$(tier_openrouter_role_default "$role")" ;;
+            b=headless; a=opencode; m="$(tier_openrouter_role_default "$role")" ;;
         openrouter:*)
             rest="${name#openrouter:}"
             [ -n "$rest" ] || { echo "tier-set: 'openrouter:' needs a <vendor/model>, e.g. openrouter:qwen/qwen3-coder -- nothing bound" >&2; return 1; }
-            b=orca; a=opencode; m="openrouter/$rest" ;;
+            b=headless; a=opencode; m="openrouter/$rest" ;;
         claude:*)
             rest="${name#claude:}"
-            b=orca; a=claude
+            b=headless; a=claude
             if [ -n "$rest" ]; then m="$(alias_id "$rest")"
             else m="$(derived_role_model "$role")" || return 1; fi ;;
         codex:*|gemini:*)
             a="${name%%:*}"; rest="${name#*:}"
             [ -n "$rest" ] || { echo "tier-set: '$a:' needs a model id -- nothing bound" >&2; return 1; }
-            b=orca; m="$rest" ;;
+            b=headless; m="$rest" ;;
         orca)
-            b=orca; a=claude; m="$(derived_role_model "$role")" || return 1 ;;
+            echo '`orca` is gone: bound subagent' >&2
+            b=subagent; a=claude; m="$(derived_role_model "$role")" || return 1 ;;
+        headless)
+            b=headless; a=claude; m="$(derived_role_model "$role")" || return 1 ;;
         subagent)
             b=subagent; a=claude; m="$(derived_role_model "$role")" || return 1 ;;
         inherit)
@@ -1011,17 +1003,17 @@ resolve_worker_recon_phrase() {
                 bare="$(jq -r --arg n "$name" '.routes[$n].model // empty' "$ROUTES_FILE" 2>/dev/null)"
             fi
             if [ -n "$bare" ]; then
-                b=orca; a=opencode; m="$bare"
+                b=headless; a=opencode; m="$bare"
             else
                 case "$name" in
                     */*)
                         rest="$name"
                         case "$rest" in openrouter/*) rest="${rest#openrouter/}" ;; esac
-                        b=orca; a=opencode; m="openrouter/$rest"
+                        b=headless; a=opencode; m="openrouter/$rest"
                         ;;
                     *)
                         bare="$(catalogue_lookup "$name")" || return 1
-                        b=orca; a=opencode; m="openrouter/$bare"
+                        b=headless; a=opencode; m="openrouter/$bare"
                         ;;
                 esac
             fi
@@ -1029,6 +1021,17 @@ resolve_worker_recon_phrase() {
     esac
     valid_model_ref "$m" || { echo "tier-set: unknown or unsafe model reference for '$role': '$name' -- nothing bound" >&2; return 1; }
     printf '%s\t%s\t%s\n' "$b" "$a" "$m"
+}
+
+# headless_route_line <role> -- the "applies to NEW spawns" line for a role
+# bound to the headless backend: recon goes through the recon command, any
+# other role through dispatch; the Agent tool stays the fallback for both.
+headless_route_line() {
+    if [ "$1" = "recon" ]; then
+        echo "→ applies to NEW spawns: recon lookups go through  recon \"<question>\"  (headless; the Agent tool stays the fallback)."
+    else
+        echo "→ applies to NEW spawns: $1 slices go through  dispatch <bead>  (headless; the Agent tool stays the fallback)."
+    fi
 }
 
 case "${1:-}" in
@@ -1045,33 +1048,36 @@ case "${1:-}" in
             openai)
                 # The bare subscription spec: this role's OpenAI default
                 # (worker terra, recon luna -- the checker takes the worker
-                # model), orca + opencode like every opencode binding.
-                B=orca; A=opencode; M="$(tier_openai_role_default "$role")"
+                # model), headless + opencode like every opencode binding.
+                B=headless; A=opencode; M="$(tier_openai_role_default "$role")"
                 PIN=true ;;
             openai:*)
                 rest="${spec#openai:}"
                 M="$(openai_spec_model "$rest")" || exit 1
-                B=orca; A=opencode; PIN=true ;;
+                B=headless; A=opencode; PIN=true ;;
             openrouter)
                 # No model named: the role's own OpenRouter default -- the
                 # flash rung for recon, the full-size GLM otherwise.
-                B=orca; A=opencode; M="$(tier_openrouter_role_default "$role")"
+                B=headless; A=opencode; M="$(tier_openrouter_role_default "$role")"
                 PIN=true; IS_OPENROUTER=true ;;
             openrouter:*)
                 rest="${spec#openrouter:}"
                 [ -n "$rest" ] || { echo "tier-set: 'openrouter:' needs a <vendor/model>, e.g. openrouter:qwen/qwen3-coder -- nothing bound" >&2; exit 1; }
-                B=orca; A=opencode; M="openrouter/$rest"; PIN=true; IS_OPENROUTER=true ;;
+                B=headless; A=opencode; M="openrouter/$rest"; PIN=true; IS_OPENROUTER=true ;;
             claude:*)
                 rest="${spec#claude:}"
-                B=orca; A=claude
+                B=headless; A=claude
                 if [ -n "$rest" ]; then M="$(alias_id "$rest")"; PIN=true
                 else M="$(derived_role_model "$role")" || exit 1; fi ;;
             codex:*|gemini:*)
                 A="${spec%%:*}"; rest="${spec#*:}"
                 [ -n "$rest" ] || { echo "tier-set: '$A:' needs a model id -- nothing bound" >&2; exit 1; }
-                B=orca; M="$rest"; PIN=true ;;
+                B=headless; M="$rest"; PIN=true ;;
             orca)
-                B=orca; A=claude; M="$(derived_role_model "$role")" || exit 1 ;;
+                echo '`orca` is gone: bound subagent' >&2
+                B=subagent; A=claude; M="$(derived_role_model "$role")" || exit 1 ;;
+            headless)
+                B=headless; A=claude; M="$(derived_role_model "$role")" || exit 1 ;;
             subagent)
                 B=subagent; A=claude; M="$(derived_role_model "$role")" || exit 1 ;;
             inherit)
@@ -1092,10 +1098,10 @@ case "${1:-}" in
         esac
         if [ "$IS_OPENROUTER" = "true" ] && ! tier_openrouter_ready; then
             echo "→ not authenticated yet -- this binding is saved but cannot run until OpenRouter is set up in this folder."
-            echo "→ run  /tier auth openrouter  to open a sign-in tab now."
+            echo "→ run  /tier auth openrouter  for the sign-in command."
         fi
-        if [ "$B" = "orca" ]; then
-            echo "→ applies to NEW spawns: $role slices go through  orca-dispatch  (the Agent tool stays the fallback)."
+        if [ "$B" = "headless" ]; then
+            headless_route_line "$role"
         else
             echo "→ applies to NEW spawns: $role runs in the Agent tool, tier-gate injects $M at spawn time."
         fi
@@ -1139,11 +1145,11 @@ case "${1:-}" in
             *)
                 if [ "$A" = "opencode" ] && ! tier_openrouter_ready; then
                     echo "→ not authenticated yet -- this binding is saved but cannot run until OpenRouter is set up in this folder."
-                    echo "→ run  /tier auth openrouter  to open a sign-in tab now."
+                    echo "→ run  /tier auth openrouter  for the sign-in command."
                 fi ;;
         esac
-        if [ "$B" = "orca" ]; then
-            echo "→ applies to NEW spawns: $role slices go through  orca-dispatch  (the Agent tool stays the fallback)."
+        if [ "$B" = "headless" ]; then
+            headless_route_line "$role"
         else
             echo "→ applies to NEW spawns: $role runs in the Agent tool, tier-gate injects $M at spawn time."
         fi

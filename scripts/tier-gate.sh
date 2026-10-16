@@ -8,10 +8,10 @@
 # unnamed spawns), the RECON model for scout spawns, whenever the Agent call
 # omits `model` -- an explicit model always wins (also the idempotency
 # guard: the injected call re-enters here and passes through, since it now
-# carries a model). An orca-backed role with a NON-Claude agent
+# carries a model). A headless-backed role with a NON-Claude agent
 # (opencode/codex/gemini) has no model the Agent tool would accept: the
 # model-less spawn is DENIED, the reason naming the command the tier wants
-# (`recon "<question>"` / `orca-dispatch <bead>`); the deny is never
+# (`recon "<question>"` / `dispatch <bead>`); the deny is never
 # throttled. The GRADERS -- verifier and bead-auditor -- take the
 # CHECKER rung (roles.checker.model, else `tier-derive --checker <top>`: the
 # top capped at opus), so an in-process check runs from a seat that is
@@ -166,8 +166,8 @@ elif [ -n "$STATE_FILE" ] && [ -f "$STATE_FILE" ]; then
     # A v1 tier.json reads as backend "subagent" (lib/tier-roles.sh), so the
     # injection path below is byte-for-byte what it always was.
     BACKEND=$(tier_role_field "$STATE_FILE" "$SLOT" backend)
-    if [ "$BACKEND" = "orca" ]; then
-        # Orca-backed role: a claude-agent role injects its own model (or
+    if [ "$BACKEND" = "headless" ]; then
+        # Headless-backed role: a claude-agent role injects its own model (or
         # the derived rung, if that model cannot be ranked), so the fallback
         # spawn never silently lands on the orchestrator's tier. A
         # non-Claude agent has no model the Agent tool would accept: the
@@ -179,7 +179,7 @@ elif [ -n "$STATE_FILE" ] && [ -f "$STATE_FILE" ]; then
         RV=$(tier_role_field "$STATE_FILE" "$SLOT" variant)
         RM_LABEL="$RM"
         [ -n "$RV" ] && RM_LABEL="${RM}@${RV}"
-        ORCA_NOTE=" ${SLOT} backend is orca (${RA} ${RM_LABEL}) — prefer orca-dispatch for this slice."
+        HEADLESS_NOTE=" ${SLOT} backend is headless (${RA} ${RM_LABEL}) — prefer \`dispatch <bead>\` for this slice."
         if [ "$RA" = "claude" ]; then
             TARGET_ID="$RM"
             # An off-ladder/unrankable model (or the bare "inherit") is not
@@ -201,8 +201,8 @@ elif [ -n "$STATE_FILE" ] && [ -f "$STATE_FILE" ]; then
             # its reason rides on every call; only the injection notice
             # below is once-per-session.
             case "$SLOT" in
-                recon) REASON=$(printf 'tier-gate: recon backend is orca (%s %s) -- run `recon "<question>"` in Bash (several in one message, run_in_background, to fan out) instead of an in-process scout; an explicit model on the Agent call (model: haiku) is the deliberate in-process fallback when the recon backend is down.' "$RA" "$RM_LABEL") ;;
-                *)     REASON=$(printf 'tier-gate: worker backend is orca (%s %s) -- dispatch the slice with `orca-dispatch <bead>` instead of an in-process executor; an explicit model on the Agent call is the deliberate in-process fallback when Orca is unreachable (orca-dispatch exits 3 and prints the spec).' "$RA" "$RM_LABEL") ;;
+                recon) REASON=$(printf 'tier-gate: recon backend is headless (%s %s) -- run `recon "<question>"` in Bash (several in one message, run_in_background, to fan out) instead of an in-process scout; an explicit model on the Agent call (model: haiku) is the deliberate in-process fallback when the recon backend is down.' "$RA" "$RM_LABEL") ;;
+                *)     REASON=$(printf 'tier-gate: worker backend is headless (%s %s) -- dispatch the slice with `dispatch <bead>` instead of an in-process executor; an explicit model on the Agent call is the deliberate in-process fallback when the headless backend cannot run.' "$RA" "$RM_LABEL") ;;
             esac
             jq -cn --arg r "$REASON" '{
                 hookSpecificOutput: {
@@ -260,7 +260,7 @@ if [ -n "$STATE_FILE" ] && [ -f "$STATE_FILE" ]; then
     EFFORT=$(tier_claude_effort "$(tier_role_field "$STATE_FILE" "$SLOT" variant)")
 fi
 
-printf '%s' "$IN" | jq -c --arg m "$ALIAS" --arg id "$TARGET_ID" --arg slot "$SLOT" --arg note "${ORCA_NOTE:-}" --argjson announce "$ANNOUNCE" --arg eff "$EFFORT" '
+printf '%s' "$IN" | jq -c --arg m "$ALIAS" --arg id "$TARGET_ID" --arg slot "$SLOT" --arg note "${HEADLESS_NOTE:-}" --argjson announce "$ANNOUNCE" --arg eff "$EFFORT" '
 {
     hookSpecificOutput: {
         hookEventName: "PreToolUse",
