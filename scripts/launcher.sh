@@ -1507,6 +1507,68 @@ pane_exec() {
     exec "${CLAUDE_ORCA_SSH:-ssh}" -F "$cfg" -tt "$alias"
 }
 
+# Three doctor/verify rows about the ssh path to the folder's container, in
+# the order a failure is easiest to read:
+#   sshd         run/sshd.ready names a port, and that port answers an
+#                SSH-2.0 banner (read over bash's /dev/tcp, no client);
+#   ssh master   the folder's ControlMaster connection (-O check). A pane
+#                starts one on demand, so down is n/a, never a finding, and
+#                it is asked BEFORE key auth because the key-auth probe
+#                below starts a master of its own;
+#   ssh key auth `ssh -F config -o BatchMode=yes <alias> true` exits 0 --
+#                the folder's key is accepted. Skipped (n/a) when sshd is
+#                not answering, since it could only repeat that finding.
+# Returns 2 when a row is a finding (missing or FAIL), else 0.
+doctor_ssh_rows() {
+    local dir="$1" ready cfg alias sshd_port="" banner="" rc=0 sshd_ok="" krc=0
+    ready="$dir/.claude-dev/run/sshd.ready"
+    cfg="$(ssh_state_dir "$dir")/config"
+    alias="$(ssh_host_alias "$dir")"
+    if [ ! -s "$ready" ]; then
+        doctor_row missing "sshd" "not ready -- no $ready; ./claude-dev starts it"
+        rc=2
+    else
+        sshd_port="$(sed -n 's/^port=//p' "$ready" | head -1)"
+        case "$sshd_port" in
+            '' | *[!0-9]*) sshd_port="" ;;
+        esac
+        if [ -n "$sshd_port" ]; then
+            banner="$( (
+                exec 3<>"/dev/tcp/127.0.0.1/$sshd_port" || exit 1
+                IFS= read -r -t 3 -u 3 line || true
+                printf '%s' "${line:-}"
+            ) 2>/dev/null | tr -d '\r' || true)"
+        fi
+        case "$banner" in
+            SSH-2.0-*)
+                doctor_row ok "sshd" "port $sshd_port answers $banner"
+                sshd_ok=1
+                ;;
+            *)
+                doctor_row FAIL "sshd" "${sshd_port:+port $sshd_port }gave no SSH banner -- ./claude-dev logs, $dir/.claude-dev/run/sshd.log"
+                rc=2
+                ;;
+        esac
+    fi
+    if "${CLAUDE_ORCA_SSH:-ssh}" -F "$cfg" -O check "$alias" >/dev/null 2>&1; then
+        doctor_row ok "ssh master" "up -- panes reuse one connection"
+    else
+        doctor_row n/a "ssh master" "not running -- the next pane starts it"
+    fi
+    if [ -z "$sshd_ok" ]; then
+        doctor_row n/a "ssh key auth" "skipped -- sshd is not answering"
+    else
+        "${CLAUDE_ORCA_SSH:-ssh}" -F "$cfg" -o BatchMode=yes -o ConnectTimeout=10 "$alias" true >/dev/null 2>&1 || krc=$?
+        if [ "$krc" -eq 0 ]; then
+            doctor_row ok "ssh key auth" "$alias accepts this folder's key"
+        else
+            doctor_row FAIL "ssh key auth" "ssh -F $cfg $alias true exited $krc -- the container may predate this folder's key; ./claude-dev --update"
+            rc=2
+        fi
+    fi
+    return "$rc"
+}
+
 # The pairing URL Orca minted for this container -- what a desktop Orca on
 # the Mac needs to attach to the runtime inside it -- by either of the two
 # paths a folder can have it.
