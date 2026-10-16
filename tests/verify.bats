@@ -64,7 +64,7 @@ contains() {
     contains "$output" "container"
     contains "$output" "image"
     contains "$output" "port"
-    contains "$output" "web url"
+    contains "$output" "sshd"
     # ... and what only the container can answer, passed through.
     contains "$output" "mount point"
     contains "$output" "rulebook"

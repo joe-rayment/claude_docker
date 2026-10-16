@@ -146,5 +146,5 @@ teardown() {
     [[ "$output" == *"runtime"* ]]
     [[ "$output" == *"local"* ]]
     [[ "$output" == *"claude-orca-p (running)"* ]]
-    [[ "$output" == *"web url"* ]]
+    [[ "$output" == *"sshd"* ]]
 }

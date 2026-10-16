@@ -169,7 +169,7 @@ path_without_docker() {
     [[ "$line" == *"-e CLAUDE_ORCA_TERMINAL_THEME=Snazzy"* ]]
 }
 
-@test "open runs the container with the project at /workspace/<name> and the home at /home/agent, the port published on 127.0.0.1, PROJECT_DIR/ORCA_PORT/HOST_UID/GH_TOKEN/BEADS_DIR in the environment, waits for run/orca-web-url.txt and opens it" {
+@test "open runs the container with the project at /workspace/<name> and the home at /home/agent, the port published on 127.0.0.1, PROJECT_DIR/ORCA_PORT/HOST_UID/GH_TOKEN/BEADS_DIR in the environment, waits for run/sshd.ready and opens no URL" {
     mkdir -p "$PROJECT_DIR"
     primary="$(abspath "$PROJECT_DIR")"
     run make_project_v3 "$primary"
@@ -208,16 +208,16 @@ path_without_docker() {
     [[ "$line" == *"-e GH_TOKEN=$STUB_TOKEN"* ]]
     [[ "$line" == *"claude-orca:"* ]]
 
-    # The entrypoint's side of the contract, faked by the stub: the URL
-    # file appears and the launcher waits for it, then opens it.
-    url="$(cat "$primary/.claude-dev/run/orca-web-url.txt")"
-    [ "$url" = "http://127.0.0.1:$port/web-index.html#pairing=stub" ]
-    [ "$(tail -1 "$OPEN_STUB_LOG")" = "$url" ]
+    # The entrypoint's side of the contract, faked by the stub: run/sshd.ready
+    # appears and the launcher waits for it. Nothing opens a URL any more:
+    # the pane is an ssh session, so the open stub is never called.
+    [ -s "$primary/.claude-dev/run/sshd.ready" ]
+    [ ! -s "$OPEN_STUB_LOG" ]
 
-    # And the three-line hand-off: the URL, how to reopen, how to get a
-    # terminal inside the container.
-    [[ "$output" == *"$url"* ]]
-    [[ "$output" == *"./claude-dev shell"* ]]
+    # And the hand-off: sshd came up, and (no terminal under bats) how to
+    # get the pane.
+    [[ "$output" == *"sshd is up"* ]]
+    [[ "$output" == *"ready: run ./claude-dev pane in a terminal"* ]]
 }
 
 @test "the container gets CLAUDE_ORCA_SETUP pointing at the folder's own template clone when it carries scripts/container/setup.sh, and none at all when it does not" {
@@ -248,21 +248,21 @@ path_without_docker() {
     [[ "$line" != *"CLAUDE_ORCA_SETUP"* ]]
 }
 
-@test "open on an existing container starts it when stopped and only opens the URL when running; stop, shell and logs call docker with the project name" {
+@test "open on an existing container starts it when stopped and only waits for sshd when running; stop, shell and logs call docker with the project name" {
     mkdir -p "$PROJECT_DIR"
     primary="$(abspath "$PROJECT_DIR")"
     make_project_v3 "$primary" >/dev/null
     name="claude-orca-$(basename "$primary")"
-    url="$(cat "$primary/.claude-dev/run/orca-web-url.txt")"
 
-    # Already running: no second container, no start, just the URL.
+    # Already running: no second container, no start, just sshd answering.
     : > "$CONTAINER_STUB_LOG"
     : > "$OPEN_STUB_LOG"
     run bash -c "cd '$primary' && ./claude-dev open"
     [ "$status" -eq 0 ]
     ! grep -q "^run " "$CONTAINER_STUB_LOG"
     ! grep -q "^start " "$CONTAINER_STUB_LOG"
-    [ "$(tail -1 "$OPEN_STUB_LOG")" = "$url" ]
+    [[ "$output" == *"sshd is up"* ]]
+    [ ! -s "$OPEN_STUB_LOG" ]
 
     # Stopped: started, never recreated.
     printf 'stopped\n' > "$CONTAINER_STUB_STATE/containers/$name"
@@ -272,7 +272,8 @@ path_without_docker() {
     [ "$status" -eq 0 ]
     grep -qx "start $name" "$CONTAINER_STUB_LOG"
     ! grep -q "^run " "$CONTAINER_STUB_LOG"
-    [ "$(tail -1 "$OPEN_STUB_LOG")" = "$url" ]
+    [[ "$output" == *"sshd is up"* ]]
+    [ ! -s "$OPEN_STUB_LOG" ]
 
     : > "$CONTAINER_STUB_LOG"
     run bash -c "cd '$primary' && ./claude-dev stop"
@@ -293,7 +294,7 @@ path_without_docker() {
     grep -qx "logs -f $name" "$CONTAINER_STUB_LOG"
 }
 
-@test "doctor reports the docker CLI, daemon, image, container state, port and web url and exits 2 on a finding; teardown stops and removes the container and the install" {
+@test "doctor reports the docker CLI, daemon, image, container state, port and sshd and exits 2 on a finding; teardown stops and removes the container and the install" {
     mkdir -p "$PROJECT_DIR"
     primary="$(abspath "$PROJECT_DIR")"
     make_project_v3 "$primary" >/dev/null
@@ -310,7 +311,7 @@ path_without_docker() {
     [[ "$output" == *"running"* ]]
     [[ "$output" == *"port"* ]]
     [[ "$output" == *"$port"* ]]
-    [[ "$output" == *"web url"* ]]
+    [[ "$output" == *"sshd"* ]]
 
     # One finding -- the image is gone -- and the doctor exits 2.
     rm -f "$CONTAINER_STUB_STATE/image"
