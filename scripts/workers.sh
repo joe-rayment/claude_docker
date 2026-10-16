@@ -13,8 +13,8 @@
 #                                 elapsed, last event. --json: one JSON line
 #                                 per job instead of the table.
 #   workers wait [--until <s>]    print the unread lines of the orchestration
-#                                 inbox (the cursor is the one orca-wait
-#                                 uses); with --until, block up to <s>
+#                                 inbox (the cursor lives in inbox.cursor);
+#                                 with --until, block up to <s>
 #                                 seconds for a new line (exit 4 on
 #                                 silence). Also watches for stalls: a
 #                                 running job whose log.jsonl has not grown
@@ -56,8 +56,8 @@ _resolve_script_path() {
 SCRIPT_DIR="$(_s="$(_resolve_script_path)"; case "$_s" in (*/*) cd "${_s%/*}/" ;; esac && pwd)"
 # shellcheck source=lib/paths.sh
 . "$SCRIPT_DIR/lib/paths.sh"
-# shellcheck source=lib/orca-orch.sh
-. "$SCRIPT_DIR/lib/orca-orch.sh"
+# shellcheck source=lib/workers.sh
+. "$SCRIPT_DIR/lib/workers.sh"
 
 note() { printf 'workers: %s\n' "$*" >&2; }
 die()  { printf 'workers: %s\n' "$*" >&2; exit "${2:-2}"; }
@@ -227,8 +227,8 @@ EOF
 # emit_unread -- print every complete inbox line past the cursor and move
 # the cursor past the last one. Returns 0 when something was printed.
 # A trailing partial line (a mid-append writer) is left for the next read.
-# (Ported from orca-wait.sh, same inbox.jsonl and inbox.cursor, so the two
-# commands never double-deliver.)
+# (The inbox is inbox.jsonl, the cursor is inbox.cursor, so two readers
+# never double-deliver.)
 emit_unread() {
     [ -f "$INBOX" ] || return 1
     local cursor=0 size end

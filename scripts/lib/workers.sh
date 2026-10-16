@@ -251,3 +251,94 @@ workers_job_set() {
         fi
     ) 9>"$jd/job.lock"
 }
+
+# --- opencode's launch env ------------------------------------------------
+#
+# A headless opencode worker needs the guard token (OPENROUTER_API_KEY) and
+# its per-launch config (OPENCODE_CONFIG) without either being on a command
+# line, where `ps` would show them. workers_opencode_command composes a
+# private env file under the run dir (mode 600) and prints a shell
+# fragment that sources it before exec'ing opencode; worker-run sources the
+# file itself and ignores the printed string.
+#
+# OPENROUTER_BASE_URL is exported for codex's benefit; opencode itself does
+# NOT read it -- config/opencode/opencode.json hardcodes provider.openrouter
+# .options.baseURL to http://127.0.0.1:4141/api/v1, so changing
+# CLAUDE_ORCA_GUARD_PORT alone does not move where opencode talks to.
+
+# workers_opencode_command <model> <run_dir> [<variant>] -- writes
+# <run_dir>/openrouter-guard.env and prints the sourcing command on stdout.
+# Pure given its arguments plus CLAUDE_ORCA_GUARD_PORT.
+#
+# A role's reasoning-effort variant (tier.json roles.<role>.variant,
+# claude-orca-1w8) has no CLI flag on the opencode TUI -- verified in this
+# container on opencode 1.18.25 (2026-09-16): only a config file naming
+# provider.openrouter.models.<vendor/model>.options.reasoning.effort turns
+# reasoning tokens on. A per-launch config is ALWAYS written now under
+# <run_dir>/opencode-launch/, with OPENCODE_CONFIG added to the same env
+# file the guard token rides in, even with no variant and no token
+# (claude-orca-gh9): opencode's own "ask" default on external_directory and
+# doom_loop stalls a dispatched worker forever since nobody is at the
+# keyboard to answer the TUI's permission prompt, so the config also carries
+# a blanket-allow permission block unless
+# CLAUDE_ORCA_OPENCODE_PERMISSIONS=ask opts back into opencode's
+# interactive defaults (the config is still written either way).
+#
+# The config itself is composed by the ONE writer shared with recon
+# (scripts/lib/opencode-launch.sh, claude-orca-c3p.2), which sits next to
+# this file and is sourced the way the other libs resolve siblings. An
+# openai/ model takes the openai provider branch: no guard token is read,
+# and the env file carries ONLY the OPENCODE_CONFIG line -- opencode's own
+# ChatGPT login supplies the credential, so the token lines would be dead
+# weight (and the OPENROUTER_API_KEY a lie about who serves the request).
+# The env file keeps the openrouter-guard.env name either way: headless
+# worker-run reads it by that name.
+if ! command -v opencode_launch_config >/dev/null 2>&1; then
+    # shellcheck source=opencode-launch.sh
+    . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/opencode-launch.sh"
+fi
+
+workers_opencode_command() {
+    local model="$1" run_dir="$2" variant="${3:-}"
+    local token_file token="" port env_file slug cfg_dir cfg
+    local base_url="" perm
+
+    port="${CLAUDE_ORCA_GUARD_PORT:-4141}"
+    env_file="$run_dir/openrouter-guard.env"
+
+    perm="allow"
+    [ "${CLAUDE_ORCA_OPENCODE_PERMISSIONS:-allow}" = "ask" ] && perm="ask"
+
+    slug="$(printf '%s' "$model" | tr '/:' '-')"
+    [ -n "$variant" ] && slug="${slug}-${variant}"
+    cfg_dir="$run_dir/opencode-launch"
+    mkdir -p "$cfg_dir"
+    cfg="$cfg_dir/$slug.json"
+
+    case "$model" in
+        openai/*)
+            opencode_launch_config "$model" "$variant" "$perm" "$cfg"
+            printf "OPENCODE_CONFIG='%s'\n" "$cfg" > "$env_file"
+            ;;
+        *)
+            # OpenRouter (and anything else): today's env file, unchanged.
+            token_file="$run_dir/openrouter-guard.token"
+            if [ -s "$token_file" ]; then
+                token="$(cat "$token_file" 2>/dev/null)"
+            fi
+            [ -n "$token" ] && base_url="http://127.0.0.1:${port}/api/v1"
+            opencode_launch_config "$model" "$variant" "$perm" "$cfg" "$base_url"
+            {
+                if [ -n "$token" ]; then
+                    printf "OPENROUTER_API_KEY='%s'\n" "$token"
+                    printf "OPENROUTER_BASE_URL='http://127.0.0.1:%s/api/v1'\n" "$port"
+                fi
+                printf "OPENCODE_CONFIG='%s'\n" "$cfg"
+            } > "$env_file"
+            ;;
+    esac
+    chmod 600 "$env_file"
+
+    printf "set -a; . '%s'; set +a; opencode --model %s" "$env_file" "$model"
+}
+

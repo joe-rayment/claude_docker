@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #
 # dispatch-epic.sh -- run a whole epic in waves, with no Orca in the loop
-# (claude-orca-9bh.3; plan .claude/plans/ghostty.md). What orca-run --epic
-# did, on scripts/dispatch.sh and the job.json files worker-run keeps.
+# (claude-orca-9bh.3; plan .claude/plans/ghostty.md). The epic runner,
+# built on scripts/dispatch.sh and the job.json files worker-run keeps.
 # `dispatch --epic <epic> ...` execs this.
 #
 #   dispatch-epic --epic <epic-id> [--agent claude|opencode] [--model <id>]
@@ -15,7 +15,7 @@
 # also names waits ("serialising"). In flight never exceeds workers_max
 # (worker-run's slot flock still enforces it). All slices share ONE epic
 # worktree, $CLAUDE_ORCA_WORKTREES_DIR|~/worktrees/<epic> on work/<epic>
-# (the orca-run model); EPIC READY names that branch.
+# (one branch for the whole epic); EPIC READY names that branch.
 #
 # Waiting is a poll of each in-flight job's job.json state every
 # CLAUDE_ORCA_EPIC_POLL_S (5) seconds; no progress for CLAUDE_ORCA_EPIC_IDLE_S
