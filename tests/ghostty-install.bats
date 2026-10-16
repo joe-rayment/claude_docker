@@ -275,13 +275,24 @@ STUB
     export CLAUDE_ORCA_GHOSTTY_BIN="$GS/ghostty"
 }
 
-# What a Ghostty that really applied the installed include would print.
+# What a Ghostty that really applied the installed include prints. The three
+# files under fixtures/ghostty-1.3.1/ are verbatim output of a real Ghostty
+# 1.3.1 (Linux GTK build, the one Ghostty we can run here): `+version`, the
+# non-keybind lines of `+show-config`, and the stock `+list-keybinds`. Only
+# three things are rewritten: `command` (the template's own line, so editing
+# the router does not break the case), the include's path, and the two
+# macOS split keys, which Ghostty printed last after we added them.
 gstub_ok() {
-    local cmd
+    local fx="$BATS_TEST_DIRNAME/fixtures/ghostty-1.3.1" cmd
     cmd="$(sed -n 's/^command = //p' "$BATS_TEST_DIRNAME/../config/ghostty/claude-dev.ghostty")"
-    printf 'command = %s\nshell-integration = zsh\nwindow-inherit-working-directory = false\n' "$cmd" > "$GS/show.out"
-    printf 'keybind = super+d=new_split:right\nkeybind = super+shift+d=new_split:down\nkeybind = super+shift+enter=toggle_split_zoom\n' > "$GS/keys.out"
-    printf 'Ghostty 1.3.1\n\nVersion\n  - version: 1.3.1\n' > "$GS/version.out"
+    awk -v cmd="$cmd" -v xdg="$HOME/.config" '
+        /^command = /      { print "command = " cmd; next }
+        /^config-file = /  { sub(/@XDG@/, xdg) }
+        { print }' "$fx/show-config-non-keybind.txt" > "$GS/show.out"
+    { cat "$fx/list-keybinds-linux-defaults.txt"
+      printf 'keybind = super+d=new_split:right\nkeybind = super+shift+d=new_split:down\n'
+    } > "$GS/keys.out"
+    cp "$fx/version.txt" "$GS/version.out"
     rm -f "$GS/validate.out" "$GS/validate.rc"
 }
 
@@ -327,6 +338,21 @@ gstub_ok() {
     glib ghostty_check
     [ "$status" -eq 2 ]
     [[ "$output" == *"[FAIL   ] ghostty splits"*"cmd+d is not new_split:right"* ]]
+    [[ "$output" == *"[ok     ] ghostty settings"* ]]
+}
+
+@test "check: a stock Ghostty keybind list (no cmd+d, only the real ctrl+shift+o/e splits) is a FAIL on both split keys" {
+    gsetup
+    gstub; gstub_ok
+    glib ghostty_install
+    # The list a Ghostty prints when our super+d binds did not apply: byte-for-byte
+    # what the real 1.3.1 printed, the real neighbours (goto_split, toggle_split_zoom,
+    # ctrl+shift+o/e new_split) included.
+    cp "$BATS_TEST_DIRNAME/fixtures/ghostty-1.3.1/list-keybinds-linux-defaults.txt" "$GS/keys.out"
+    grep -q '^keybind = ctrl+shift+o=new_split:right$' "$GS/keys.out"
+    glib ghostty_check
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"[FAIL   ] ghostty splits"*"cmd+d is not new_split:right"*"cmd+shift+d is not new_split:down"* ]]
     [[ "$output" == *"[ok     ] ghostty settings"* ]]
 }
 
