@@ -1455,6 +1455,12 @@ ssh_push_terminfo() {
     return 0
 }
 
+# True when stdin and stdout are both terminals (CLAUDE_ORCA_PANE_FORCE_TTY=1
+# says they are, for tests).
+pane_has_terminal() {
+    [ -n "${CLAUDE_ORCA_PANE_FORCE_TTY:-}" ] || { [ -t 0 ] && [ -t 1 ]; }
+}
+
 # Turns THIS terminal into a sandbox pane: `exec ssh -F config -tt alias`.
 # $2 is the directory the pane should start in (default $PWD), sent as
 # CDEV_CWD relative to the project (empty at the root or outside it --
@@ -1468,7 +1474,7 @@ ssh_push_terminfo() {
 # test seam that treats both as terminals.
 pane_exec() {
     local dir="$1" cwd="${2:-$PWD}" mode="${3:-slow}" rel="" real cfg alias log setenv="" pair
-    if [ -z "${CLAUDE_ORCA_PANE_FORCE_TTY:-}" ] && { [ ! -t 0 ] || [ ! -t 1 ]; }; then
+    if ! pane_has_terminal; then
         echo "ready: run ./claude-dev pane in a terminal"
         return 0
     fi
@@ -2966,7 +2972,7 @@ resync_config() {
 }
 
 cmd_open_v3() {
-    local dir="${1:-$PROJECT_SELF}" name port was state url rc=0 t0 t1
+    local dir="${1:-$PROJECT_SELF}" name port was state rc=0 t0 t1
     [ -d "$dir" ] || { echo "Error: directory does not exist: $dir" >&2; return 1; }
     dir="$(cd "$dir" && pwd -P)"
     if [ ! -f "$(orca_json "$dir")" ]; then
@@ -3063,21 +3069,26 @@ cmd_open_v3() {
             ;;
     esac
 
+    # What open waits for is sshd, not Orca's web URL: the Mac no longer
+    # talks to the Orca inside the container (it stays until C1 deletes it).
+    # wait_for_sshd_ready returns 3 after printing its own host-key message.
     t0="$(date +%s)"
-    url="$(wait_for_web_url "$dir" "$name")" || rc=$?
+    wait_for_sshd_ready "$dir" "$name" || rc=$?
     t1="$(date +%s)"
-    if [ "$rc" -ne 0 ]; then
+    if [ "$rc" -eq 3 ]; then
+        return 1
+    elif [ "$rc" -ne 0 ]; then
         {
             if [ "$rc" -eq 2 ]; then
-                echo "Error: the container $name exited during startup before Orca published a web URL."
+                echo "Error: the container $name exited during startup before sshd was ready."
             else
-                echo "Error: Orca did not publish a web URL within $(weburl_timeout "$dir")s."
+                echo "Error: sshd did not come up within $(weburl_timeout "$dir")s."
             fi
             echo "  Look at what it printed:  ./claude-dev logs"
             if [ "$(image_source "$dir")" = "runtime" ]; then
                 echo "  Toolchain install log:    $dir/.claude-dev/run/setup.log"
             fi
-            echo "  Serve log:                $dir/.claude-dev/run/orca-serve.log"
+            echo "  sshd log:                 $dir/.claude-dev/run/sshd.log"
             if [ "$rc" -eq 2 ]; then
                 echo "  The VM is not running; ./claude-dev starts it again, and ./claude-dev logs shows why it stopped."
             else
@@ -3091,34 +3102,29 @@ cmd_open_v3() {
                 echo "Last lines of the toolchain install:"
                 tail -15 "$dir/.claude-dev/run/setup.log" | sed 's/^/  /'
             fi
-            # Orca's own output is the other half of the diagnosis, and a
-            # container that died is in no state to show it (claude-orca-cey):
-            # the pairing fragment and code query value are credentials, so
-            # the tail is printed only after they are replaced.
-            if [ -s "$dir/.claude-dev/run/orca-serve.log" ]; then
+            # sshd's own output is the other half of the diagnosis, and a
+            # container that died is in no state to show it (claude-orca-cey).
+            # It carries no credentials, so it is shown as written.
+            if [ -s "$dir/.claude-dev/run/sshd.log" ]; then
                 echo ""
-                echo "Last lines of Orca's serve log:"
-                tail -20 "$dir/.claude-dev/run/orca-serve.log" \
-                    | sed -E -e 's/#pairing=[^[:space:]]*/#pairing=<redacted>/g' \
-                             -e 's/([?&])code=[^&[:space:]]*/\1code=<redacted>/g' \
-                             -e 's/^/  /'
+                echo "Last lines of sshd's log:"
+                tail -20 "$dir/.claude-dev/run/sshd.log" | sed 's/^/  /'
             fi
         } >&2
         return 1
     fi
 
     # The one number a person actually wants after typing ./claude-dev.
-    echo "Orca is up ($((t1 - t0))s)"
+    echo "sshd is up ($((t1 - t0))s)"
     resync_config "$dir" "$name"
-    # A desktop folder hands the runtime to the Mac's own Orca.app; a web
-    # folder (and a desktop one whose hand-off could not start) opens the
-    # browser, which is the same runtime through a different client.
-    if [ "$(ui_of "$dir")" = "desktop" ] && orca_hand_off "$dir"; then
-        print_desktop_block_v3 "$dir"
-    else
-        open_url "$url"
-        print_run_it_block_v3 "$dir" "$url"
+    ssh_push_terminfo "$dir"
+    if [ "${TERM_PROGRAM:-}" != "ghostty" ] && pane_has_terminal; then
+        echo "  tip: ./claude-dev ghostty sets up Ghostty, the terminal these panes are made for"
     fi
+    # The terminal that typed ./claude-dev becomes the pane (or, without a
+    # terminal, is told how to get one). `pane` hands its directory in
+    # PANE_CWD; an `open` pane starts where it was typed.
+    pane_exec "$dir" "${PANE_CWD:-$PWD}" slow
 }
 
 cmd_register_v3() {
