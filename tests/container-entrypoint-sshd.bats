@@ -22,6 +22,18 @@ need_openssh() {
     [ -x "$SSHD" ] && [ -x "$SSH" ] && [ -x "$SSH_KEYGEN" ] || skip "extracted OpenSSH absent"
 }
 
+# The shared teardown stops the entrypoint's process group; this one also
+# kills any sshd still holding this case's runtime dir, so a failed case
+# never leaves a listener behind (the wrapper execs the real sshd, whose
+# command line carries "$RT/sshd_config").
+teardown() {
+    stop_entrypoint
+    [ -n "${RT:-}" ] && pkill -f -- "$RT/sshd_config" 2>/dev/null
+    [ -n "${RT:-}" ] && rm -rf "$RT"
+    [ -n "${TMP:-}" ] && rm -rf "$TMP"
+    return 0
+}
+
 # The environment of a native, Orca-free boot: the fixture project as HOME's
 # parent, sshd's runtime dir at the short $RT, a free port, and every step
 # that is not under test (privilege drop, setup, beads, provisioning) off.
@@ -239,5 +251,40 @@ write_sshd_wrap() {  # write_sshd_wrap <path>
         pgrep -f -- "$RT/sshd_config" >/dev/null || break
         sleep 0.2
     done
-    ! pgrep -f -- "$RT/sshd_config" >/dev/null
+    run ! pgrep -f -- "$RT/sshd_config"
+}
+
+# Guards:   docker stop: a TERM to the entrypoint alone takes the supervisor and the real sshd down, removes sshd.ready and exits 143 in under 5 s
+# Fails if: the TERM trap is lost or slow (>= 5 s, the grace docker gives), the status is not 143, an sshd_config process survives, or sshd.ready is left behind
+# Run:      bats -f 'TERM exits 143' tests/container-entrypoint-sshd.bats
+@test "TERM exits 143 in under 5 s with no sshd left and no sshd.ready" {
+    need_openssh
+    local proj="$TMP/project" run_dir
+    make_project "$proj"
+    run_dir="$proj/.claude-dev/run"
+    export_ep_env "$proj"
+    stage_real_keys "$proj"
+    write_sshd_wrap "$TMP/bin/sshd"
+    export CLAUDE_ORCA_SSHD_BIN="$TMP/bin/sshd"
+
+    boot_ep
+    wait_for_file "$run_dir/sshd.ready" 30
+    wait_for_line "$TMP/entrypoint.out" 'waiting on the sshd supervisor' 10
+    pgrep -f -- "$RT/sshd_config" >/dev/null
+
+    # the entrypoint ONLY, as docker stop sends it -- not its process group
+    local t0 elapsed i
+    t0="$(date +%s.%N)"
+    kill -TERM "$(cat "$TMP/ep.pid")"
+    for i in $(seq 1 100); do
+        [ -s "$TMP/ep.rc" ] && break
+        sleep 0.1
+    done
+    elapsed="$(awk -v a="$t0" -v b="$(date +%s.%N)" 'BEGIN { printf "%.2f", b - a }')"
+    echo "# TERM to exit: ${elapsed}s" >&3
+    [ -s "$TMP/ep.rc" ]
+    [ "$(cat "$TMP/ep.rc")" = "143" ]
+    awk -v e="$elapsed" 'BEGIN { exit !(e < 5) }'
+    run ! pgrep -f -- "$RT/sshd_config"
+    [ ! -e "$run_dir/sshd.ready" ]
 }
