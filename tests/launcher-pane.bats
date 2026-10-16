@@ -217,3 +217,153 @@ ssh_call() {
     printf '%s\n' "$setenv" | grep -qx 'setenv TERM_PROGRAM_VERSION=1.2.3'
     printf '%s\n' "$setenv" | grep -qx 'setenv COLORTERM=truecolor'
 }
+
+@test "open without a terminal says how to get a pane and never claims Orca is up" {
+    mkdir -p "$PROJECT_DIR"
+    run make_project_v3 "$PROJECT_DIR"
+    [ "$status" -eq 0 ]
+    printf '%s\n' "$output" | grep -qx 'ready: run ./claude-dev pane in a terminal'
+    printf '%s\n' "$output" | grep -q 'sshd is up'
+    ! printf '%s\n' "$output" | grep -qi 'orca is up'
+
+    # A second open, still no terminal: the same line, and no web URL talk.
+    unset CLAUDE_ORCA_PANE_FORCE_TTY
+    run bash -c "cd '$PROJECT_DIR' && ./claude-dev open"
+    [ "$status" -eq 0 ]
+    printf '%s\n' "$output" | grep -qx 'ready: run ./claude-dev pane in a terminal'
+    ! printf '%s\n' "$output" | grep -qi 'orca is up'
+    ! printf '%s\n' "$output" | grep -qi 'web url'
+}
+
+@test "open in a terminal ends in the pane: one ssh -tt call to the folder's alias" {
+    open_folder "$PROJECT_DIR"
+    write_stub_ssh
+    export CLAUDE_ORCA_PANE_FORCE_TTY=1 TERM=xterm-256color
+    unset TERM_PROGRAM TERM_PROGRAM_VERSION COLORTERM
+    run bash -c "cd '$primary' && ./claude-dev open"
+    [ "$status" -eq 0 ]
+    printf '%s\n' "$output" | grep -q 'sshd is up'
+    ! printf '%s\n' "$output" | grep -q 'ready: run'
+    # Typed at the project root: no CDEV_CWD to send, so just -F config -tt alias.
+    [ "$(grep -c '^--- ssh$' "$SSH_STUB_LOG")" = "1" ]
+    [ "$(ssh_call 1)" = "$(printf '%s\n' -F "$sd/config" -tt "$alias")" ]
+    grep -Eq ' slow $' "$primary/.claude-dev/run/pane.log"
+}
+
+@test "open: a container whose sshd never comes up is a failure block that names run/sshd.log" {
+    open_folder "$PROJECT_DIR"
+    write_stub_ssh
+    export CLAUDE_ORCA_PANE_FORCE_TTY=1
+    rm -f "$primary/.claude-dev/run/sshd.ready"
+    printf 'sshd: fixture line one\nsshd: fixture line two\n' > "$primary/.claude-dev/run/sshd.log"
+    export CLAUDE_ORCA_TEST_NO_SSHD=1 CLAUDE_ORCA_WEBURL_TIMEOUT=2
+    run bash -c "cd '$primary' && ./claude-dev open"
+    [ "$status" -eq 1 ]
+    printf '%s\n' "$output" | grep -q 'sshd did not come up within 2s'
+    printf '%s\n' "$output" | grep -q "$primary/.claude-dev/run/sshd.log"
+    printf '%s\n' "$output" | grep -q 'sshd: fixture line two'
+    ! printf '%s\n' "$output" | grep -qi 'web url'
+    # No pane was started.
+    [ ! -s "$SSH_STUB_LOG" ]
+}
+
+# SHELL becomes a script that records its argv (one per line) to
+# $SHELL_STUB_LOG, so a fallback to the Mac shell can be read back.
+write_stub_shell() {
+    export SHELL_STUB_LOG="$BATS_TEST_TMPDIR/shell.log"
+    : > "$SHELL_STUB_LOG"
+    export SHELL="$BATS_TEST_TMPDIR/shell-stub"
+    cat > "$SHELL" <<'STUB'
+#!/usr/bin/env bash
+printf 'argv:%s\n' "$@" >> "$SHELL_STUB_LOG"
+printf 'ran\n' >> "$SHELL_STUB_LOG"
+STUB
+    chmod +x "$SHELL"
+}
+
+@test "pane fast path: the master answers, so it is one exec ssh and not a single docker call" {
+    open_folder "$PROJECT_DIR"
+    write_stub_ssh
+    export CLAUDE_ORCA_PANE_FORCE_TTY=1 SSH_STUB_CHECK_RC=0
+    unset TERM_PROGRAM TERM_PROGRAM_VERSION COLORTERM
+    : > "$CONTAINER_STUB_LOG"
+    rm -f "$primary/.claude-dev/run/pane.log"
+    run bash -c "cd '$primary' && ./claude-dev pane"
+    [ "$status" -eq 0 ]
+    [ ! -s "$CONTAINER_STUB_LOG" ]
+    # Call 1 asks the master; call 2 is the pane itself.
+    [ "$(ssh_call 1)" = "$(printf '%s\n' -F "$sd/config" -O check "$alias")" ]
+    [ "$(ssh_call 2)" = "$(printf '%s\n' -F "$sd/config" -tt "$alias")" ]
+    [ "$(grep -c '^--- ssh$' "$SSH_STUB_LOG")" = "2" ]
+    grep -Eq '^[0-9T:Z-]+ fast $' "$primary/.claude-dev/run/pane.log"
+}
+
+@test "pane from a subdirectory sends it as CDEV_CWD, relative to the project" {
+    open_folder "$PROJECT_DIR"
+    write_stub_ssh
+    mkdir -p "$primary/pkg/deep"
+    export CLAUDE_ORCA_PANE_FORCE_TTY=1 SSH_STUB_CHECK_RC=0
+    unset TERM_PROGRAM TERM_PROGRAM_VERSION COLORTERM
+    run bash -c "cd '$primary/pkg/deep' && '$primary/.claude-dev/bin/claude-dev' pane"
+    [ "$status" -eq 0 ]
+    [ "$(ssh_call 2 | grep '^SetEnv=')" = 'SetEnv=CDEV_CWD=pkg/deep' ]
+    grep -Eq ' fast pkg/deep$' "$primary/.claude-dev/run/pane.log"
+}
+
+@test "pane slow path: no master yet, so it runs open (docker is called) and then the pane" {
+    open_folder "$PROJECT_DIR"
+    write_stub_ssh
+    mkdir -p "$primary/pkg"
+    export CLAUDE_ORCA_PANE_FORCE_TTY=1 TERM=xterm-256color
+    unset TERM_PROGRAM TERM_PROGRAM_VERSION COLORTERM
+    : > "$CONTAINER_STUB_LOG"
+    rm -f "$primary/.claude-dev/run/pane.log"
+    run bash -c "cd '$primary/pkg' && '$primary/.claude-dev/bin/claude-dev' pane"
+    [ "$status" -eq 0 ]
+    [ -s "$CONTAINER_STUB_LOG" ]
+    # SSH_STUB_CHECK_RC defaults to 1: call 1 is the failed check, the last is the pane.
+    [ "$(ssh_call 1)" = "$(printf '%s\n' -F "$sd/config" -O check "$alias")" ]
+    n="$(grep -c '^--- ssh$' "$SSH_STUB_LOG")"
+    ssh_call "$n" | grep -qx -- '-tt'
+    [ "$(ssh_call "$n" | grep '^SetEnv=')" = 'SetEnv=CDEV_CWD=pkg' ]
+    grep -Eq ' slow pkg$' "$primary/.claude-dev/run/pane.log"
+}
+
+@test "pane outside any claude-dev folder becomes a Mac login shell under a NOT sandboxed banner" {
+    open_folder "$PROJECT_DIR"
+    write_stub_ssh
+    write_stub_shell
+    mkdir -p "$BATS_TEST_TMPDIR/nowhere"
+    export CLAUDE_ORCA_PANE_FORCE_TTY=1
+    run bash -c "cd '$BATS_TEST_TMPDIR/nowhere' && '$primary/.claude-dev/bin/claude-dev' pane"
+    [ "$status" -eq 0 ]
+    printf '%s\n' "$output" | grep -q 'is not inside a claude-dev folder'
+    printf '%s\n' "$output" | grep -q '== Mac shell -- NOT sandboxed =='
+    [ "$(cat "$SHELL_STUB_LOG")" = "$(printf 'argv:-l\nran')" ]
+    # No ssh, no docker: there was no folder to ask.
+    [ ! -s "$SSH_STUB_LOG" ]
+}
+
+@test "pane whose sandbox will not come up prints why, then drops to the labelled Mac shell" {
+    open_folder "$PROJECT_DIR"
+    write_stub_ssh
+    write_stub_shell
+    export CLAUDE_ORCA_PANE_FORCE_TTY=1
+    rm -f "$primary/.claude-dev/run/sshd.ready"
+    export CLAUDE_ORCA_TEST_NO_SSHD=1 CLAUDE_ORCA_WEBURL_TIMEOUT=2
+    run bash -c "cd '$primary' && ./claude-dev pane"
+    [ "$status" -eq 0 ]
+    printf '%s\n' "$output" | grep -q 'sshd did not come up within 2s'
+    printf '%s\n' "$output" | grep -q 'claude-dev pane: the sandbox for'
+    printf '%s\n' "$output" | grep -q '== Mac shell -- NOT sandboxed =='
+    [ "$(cat "$SHELL_STUB_LOG")" = "$(printf 'argv:-l\nran')" ]
+    # Only the master check was ever asked; no pane (-tt) was started.
+    ! grep -qx -- '-tt' "$SSH_STUB_LOG"
+}
+
+@test "claude-dev --help lists the pane command" {
+    open_folder "$PROJECT_DIR"
+    run bash -c "cd '$primary' && ./claude-dev --help"
+    [ "$status" -eq 0 ]
+    printf '%s\n' "$output" | grep -q 'claude-dev pane \[dir\]'
+}

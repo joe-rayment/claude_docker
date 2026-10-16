@@ -3127,6 +3127,50 @@ cmd_open_v3() {
     pane_exec "$dir" "${PANE_CWD:-$PWD}" slow
 }
 
+# `claude-dev pane [dir]`: make THIS terminal a sandbox pane for the folder
+# that contains dir (default $PWD) -- what Ghostty's new tabs and splits run.
+# Fast path: the folder's ssh master connection answers `-O check`, so the
+# pane is one `exec ssh` and not a single docker call (ctr_init is NOT run:
+# the ssh_* helpers and derive_project_name never touch docker). Otherwise it
+# is `open` (start the container, wait for sshd, push terminfo) ending in the
+# same pane_exec. Whatever goes wrong -- no folder above dir, not registered,
+# the sandbox would not come up -- the reason goes to stderr and the terminal
+# becomes a Mac login shell under a banner that says it is NOT sandboxed, so
+# a new tab is never a dead one. Exit codes: whatever the shell exits with
+# (it is exec'd); 0 when there is no terminal and the pane was only announced.
+cmd_pane_v3() {
+    local start d="" cand cfg alias reason="" rc
+    start="$(cd "${1:-$PWD}" 2>/dev/null && pwd -P)" || start=""
+    if [ -z "$start" ]; then
+        reason="the directory ${1:-$PWD} does not exist"
+    else
+        cand="$start"
+        while :; do
+            if [ -f "$(orca_json "$cand")" ]; then d="$cand"; break; fi
+            [ "$cand" = "/" ] && break
+            cand="$(dirname "$cand")"
+        done
+        [ -n "$d" ] || reason="$start is not inside a claude-dev folder"
+    fi
+    if [ -z "$reason" ]; then
+        cfg="$(ssh_state_dir "$d")/config"
+        alias="$(ssh_host_alias "$d")"
+        if "${CLAUDE_ORCA_SSH:-ssh}" -F "$cfg" -O check "$alias" >/dev/null 2>&1; then
+            pane_exec "$d" "$start" fast
+            return $?
+        fi
+        rc=0
+        PANE_CWD="$start" cmd_open_v3 "$d" || rc=$?
+        [ "$rc" -eq 0 ] && return 0
+        reason="the sandbox for $d would not come up (see above)"
+    fi
+    {
+        echo "claude-dev pane: $reason"
+        echo "== Mac shell -- NOT sandboxed =="
+    } >&2
+    exec "${SHELL:-/bin/zsh}" -l
+}
+
 cmd_register_v3() {
     local dir="${1:-$PROJECT_SELF}" name port ui
     [ -d "$dir" ] || { echo "Error: directory does not exist: $dir" >&2; return 1; }
@@ -3782,6 +3826,8 @@ Usage:
                                 the container as needed)
   claude-dev [register] [dir]   Register a project (default: this folder)
   claude-dev open               Same as no arguments
+  claude-dev pane [dir]         A sandbox pane in this terminal (fast when one
+                                is already up)
   claude-dev stop               Stop this folder's container
   claude-dev shell              A login shell inside the container
   claude-dev verify             Check this folder is set up the way the
@@ -3804,6 +3850,7 @@ HELP
 case "${1:-}" in
     register)      shift; cmd_register_v3 "${1:-$PROJECT_SELF}" || exit $?; exit 0 ;;
     open)          shift; cmd_open_v3 "${1:-$PROJECT_SELF}" || exit $?; exit 0 ;;
+    pane)          shift; cmd_pane_v3 "${1:-}"; exit $? ;;
     stop)          shift; cmd_stop_v3 "${1:-$PROJECT_SELF}" || exit $?; exit 0 ;;
     shell)         shift; cmd_shell_v3 "${1:-$PROJECT_SELF}" || exit $?; exit 0 ;;
     verify)        shift; cmd_verify_v3 "${1:-$PROJECT_SELF}" || exit $?; exit 0 ;;
