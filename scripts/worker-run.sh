@@ -154,6 +154,7 @@ slot_acquire() {
         done
         if [ "$queued" = 0 ]; then
             queued=1
+            workers_job_set "$JOBDIR" pid "$$"   # so list/stop can find a queued runner
             workers_job_set "$JOBDIR" state '"queued"'
         fi
         sleep "${CLAUDE_ORCA_SLOT_POLL_S:-1}"
