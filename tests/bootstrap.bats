@@ -271,18 +271,22 @@ shadow_path_without() {
     [ "$status" -eq 0 ]
 }
 
-# "Run one command, start working" ends with a browser open on Orca, so
-# the last thing the install prints is the URL and the two commands that
-# get the user back to it.
-@test "registration ends with the URL, the reopen command and the shell command" {
+# "Run one command, start working" ends in a sandbox pane: registration
+# waits for the container's sshd and hands the terminal to ssh. Without a
+# terminal (as here) it says how to get the pane instead, and it never
+# opens a browser or an app any more.
+# Guards:   registration ends with sshd up and the pane command, no browser.
+# Fails if: open goes back to waiting on a web URL or launching Orca, or
+#           the no-terminal path stops naming ./claude-dev pane.
+# Run:      bats -f 'registration ends with sshd' tests/bootstrap.bats
+@test "registration ends with sshd up and the pane command, and opens no browser" {
     run make_project_v3 "$PROJECT_DIR"
     [ "$status" -eq 0 ]
 
-    url="$(cat "$PROJECT_DIR/.claude-dev/run/orca-web-url.txt")"
-    [[ "$output" == *"$url"* ]]
-    [[ "$output" == *"./claude-dev"* ]]
-    [[ "$output" == *"./claude-dev shell"* ]]
-    [ "$(tail -1 "$OPEN_STUB_LOG")" = "$url" ]
+    [ -f "$PROJECT_DIR/.claude-dev/run/sshd.ready" ]
+    [[ "$output" == *"sshd is up"* ]]
+    [[ "$output" == *"ready: run ./claude-dev pane in a terminal"* ]]
+    [ ! -s "$OPEN_STUB_LOG" ]
 }
 
 # The .gitignore seeding moved into the container (startup v4,
