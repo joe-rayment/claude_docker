@@ -201,7 +201,9 @@ path_without_docker() {
     # found" meant on 2026-09-07. The folder's tracker is named outright.
     [[ "$line" == *"-e BEADS_DIR=$guest/.beads"* ]]
     [[ "$line" == *"-e CLAUDE_ORCA_ROOT=$guest"* ]]
-    [[ "$line" == *"-e ORCA_PORT=$port"* ]]
+    # The published port is sshd's now; Orca itself listens on the next one.
+    [[ "$line" == *"-e CLAUDE_ORCA_SSHD_PORT=$port"* ]]
+    [[ "$line" == *"-e ORCA_PORT=$((port + 1))"* ]]
     [[ "$line" == *"-e HOST_UID=$(id -u)"* ]]
     [[ "$line" == *"-e GH_TOKEN=$STUB_TOKEN"* ]]
     [[ "$line" == *"claude-orca:"* ]]

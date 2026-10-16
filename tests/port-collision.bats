@@ -57,7 +57,8 @@ other_container() {
     [ "$(cat "$primary/.claude-dev/run/port")" = "$moved" ]
     line="$(ctr_line "run ")"
     [[ "$line" == *"127.0.0.1:$moved:$moved"* ]]
-    [[ "$line" == *"-e ORCA_PORT=$moved"* ]]
+    [[ "$line" == *"-e CLAUDE_ORCA_SSHD_PORT=$moved"* ]]
+    [[ "$line" == *"-e ORCA_PORT=$((moved + 1))"* ]]
     [[ "$(cat "$primary/.claude-dev/run/orca-web-url.txt")" == *":$moved/"* ]]
 
     # The other folder's container was never touched.
