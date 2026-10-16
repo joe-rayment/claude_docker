@@ -200,3 +200,44 @@ write_sshd_wrap() {  # write_sshd_wrap <path>
     grep -qx "port=$CLAUDE_ORCA_SSHD_PORT" "$run_dir/sshd.ready"
     pgrep -f -- "$RT/sshd_config" >/dev/null
 }
+
+# Guards:   PID 1 waits on the sshd supervisor: the pid it names is a live child of the entrypoint, the entrypoint stays up while it lives, and when the supervisor ends PID 1 ends with its status and takes sshd along
+# Fails if: the entrypoint exits (or sits on something else) while the supervisor lives, the logged pid is not its child, the exit status is not the supervisor's, or an sshd outlives it
+# Run:      bats -f 'PID 1 waits' tests/container-entrypoint-sshd.bats
+@test "PID 1 waits on the sshd supervisor: a live child of the entrypoint, and PID 1 leaves with its status when it ends" {
+    need_openssh
+    local proj="$TMP/project" run_dir
+    make_project "$proj"
+    run_dir="$proj/.claude-dev/run"
+    export_ep_env "$proj"
+    stage_real_keys "$proj"
+    write_sshd_wrap "$TMP/bin/sshd"
+    export CLAUDE_ORCA_SSHD_BIN="$TMP/bin/sshd"
+
+    boot_ep
+    wait_for_file "$run_dir/sshd.ready" 30
+    wait_for_line "$TMP/entrypoint.out" 'waiting on the sshd supervisor' 10
+
+    local ep sup
+    ep="$(cat "$TMP/ep.pid")"
+    sup="$(sed -n 's/.*waiting on the sshd supervisor (pid \([0-9][0-9]*\)).*/\1/p' "$TMP/entrypoint.out" | head -1)"
+    [ -n "$sup" ]
+    kill -0 "$sup"
+    [ "$(ps -o ppid= -p "$sup" | tr -d ' ')" = "$ep" ]
+    pgrep -f -- "$RT/sshd_config" >/dev/null
+    sleep 1
+    kill -0 "$ep"
+    [ ! -e "$TMP/ep.rc" ]
+
+    # the supervisor ends (TERM, the one signal it answers): PID 1 follows with its status
+    kill -TERM "$sup"
+    wait_for_file "$TMP/ep.rc" 10
+    [ "$(cat "$TMP/ep.rc")" = "0" ]
+    grep -qF 'the sshd supervisor exited with status 0' "$TMP/entrypoint.out"
+    local i
+    for i in $(seq 1 30); do
+        pgrep -f -- "$RT/sshd_config" >/dev/null || break
+        sleep 0.2
+    done
+    ! pgrep -f -- "$RT/sshd_config" >/dev/null
+}
