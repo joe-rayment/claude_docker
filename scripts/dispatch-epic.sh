@@ -50,8 +50,8 @@ _resolve_script_path() {
 SCRIPT_DIR="$(_s="$(_resolve_script_path)"; case "$_s" in (*/*) cd "${_s%/*}/" ;; esac && pwd)"
 # shellcheck source=lib/paths.sh
 . "$SCRIPT_DIR/lib/paths.sh"
-# shellcheck source=lib/orca-orch.sh
-. "$SCRIPT_DIR/lib/orca-orch.sh"
+# shellcheck source=lib/workers.sh
+. "$SCRIPT_DIR/lib/workers.sh"
 
 note() { printf '%s\n' "$*" >&2; }
 die()  { printf 'dispatch-epic: %s\n' "$*" >&2; exit "${2:-1}"; }

@@ -10,6 +10,8 @@
 #   dispatch <bead-id> [--worker|--checker] [--agent claude|opencode]
 #            [--model <id>] [--variant <v>] [--effort <e>]
 #            [--worktree new|main|path:<dir>] [--prompt-file <file>]
+#   dispatch --epic <epic-id> [--agent claude|opencode] [--model <id>]
+#            a whole epic in waves (execs scripts/dispatch-epic.sh)
 #
 # What it does, in order: read the bead (`bd show`) -> compose the headless
 # spec (orch_spec ... headless, or --prompt-file verbatim) -> fill what the
@@ -52,6 +54,11 @@ SCRIPT_DIR="$(_s="$(_resolve_script_path)"; case "$_s" in (*/*) cd "${_s%/*}/" ;
 note() { printf '%s\n' "$*" >&2; }
 die()  { printf 'dispatch: %s\n' "$*" >&2; exit "${2:-2}"; }
 
+# `--epic` is a different job (many beads, in waves): hand over whole.
+for _a in "$@"; do
+    case "$_a" in --epic) exec "$SCRIPT_DIR/dispatch-epic.sh" "$@" ;; esac
+done
+
 BEAD=""; ROLE="worker"; AGENT=""; MODEL=""; VARIANT=""; EFFORT=""
 WORKTREE="new"; PROMPT_FILE=""
 
@@ -65,7 +72,7 @@ while [ "$#" -gt 0 ]; do
         --effort)      EFFORT="${2:-}"; shift ;;
         --worktree)    WORKTREE="${2:-}"; shift ;;
         --prompt-file) PROMPT_FILE="${2:-}"; shift ;;
-        -h|--help)     sed -n '3,25p' "$(_resolve_script_path)"; exit 0 ;;
+        -h|--help)     sed -n '3,27p' "$(_resolve_script_path)"; exit 0 ;;
         -*)            die "unknown flag: $1" ;;
         *)             [ -z "$BEAD" ] && BEAD="$1" || die "unexpected argument: $1" ;;
     esac
