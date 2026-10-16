@@ -442,4 +442,35 @@ fi
 # re-runs from the pulled template.
 "$HOST/template/scripts/link-bin.sh" "$HOST"
 
+# Ghostty, macOS only (claude-orca-9bh.8): the terminal the per-pane routing
+# (`claude-dev ghostty`) lives in. Never fatal -- the container does not need
+# it, so a missing terminal is a hint, not a failed bootstrap. Homebrew
+# installs the cask when it is there; without Homebrew it is the download
+# page. CLAUDE_ORCA_GHOSTTY_APP names the one .app to look for (the test
+# seam, same shape as CLAUDE_ORCA_APP above), even when it points nowhere.
+if [ "$UNAME_S" = "Darwin" ]; then
+    GHOSTTY_APP=""
+    if [ -n "${CLAUDE_ORCA_GHOSTTY_APP:-}" ]; then
+        if [ -d "$CLAUDE_ORCA_GHOSTTY_APP" ]; then GHOSTTY_APP="$CLAUDE_ORCA_GHOSTTY_APP"; fi
+    else
+        for candidate in "/Applications/Ghostty.app" "$HOME/Applications/Ghostty.app"; do
+            if [ -d "$candidate" ]; then
+                GHOSTTY_APP="$candidate"
+                break
+            fi
+        done
+    fi
+    if [ -z "$GHOSTTY_APP" ]; then
+        if have brew; then
+            step "Installing Ghostty (brew install --cask ghostty)"
+            brew install --cask ghostty </dev/null || true
+        else
+            echo "Ghostty is not installed (optional). Download it from:"
+            echo "    https://ghostty.org/download"
+        fi
+    fi
+    step "Setting up Ghostty (claude-dev ghostty)"
+    "$HOST/bin/claude-dev" ghostty || true
+fi
+
 exec "$HOST/bin/claude-dev" register "$PROJECT"

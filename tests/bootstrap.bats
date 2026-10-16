@@ -205,6 +205,10 @@ shadow_path_without() {
 }
 
 @test "the docker daemon is checked and brew is never called" {
+    # Ghostty is already installed on this fixture Mac, so the one optional
+    # brew call in bootstrap (the Ghostty cask) has nothing to do.
+    mkdir -p "$BATS_TEST_TMPDIR/Ghostty.app"
+    export CLAUDE_ORCA_GHOSTTY_APP="$BATS_TEST_TMPDIR/Ghostty.app"
     run make_project_v3 "$PROJECT_DIR"
     [ "$status" -eq 0 ]
 
@@ -212,8 +216,9 @@ shadow_path_without() {
     # verb to call and nothing to answer on stdin, which matters here
     # because stdin is the rest of the piped script.
     grep -q "^info" "$CONTAINER_STUB_LOG"
-    ! grep -q "^brew " "$STUB_LOG"
-    ! grep -q "hdiutil" "$STUB_LOG"
+    # `if`, not `!`: a bare `! cmd` never fails a bats case.
+    if grep -q "^brew " "$STUB_LOG"; then return 1; fi
+    if grep -q "hdiutil" "$STUB_LOG"; then return 1; fi
 }
 
 @test "registration creates .claude-dev/{home,run,state} and claude-orca.json defaults" {
@@ -558,4 +563,74 @@ old_layout_fixture() {
     [ "$status" -eq 0 ]
     [[ "$output" != *"orca.dev/download"* ]]
     [ "$(jq -r '.ui' "$PROJECT_DIR/.claude-dev/claude-orca.json")" = "web" ]
+}
+
+# Ghostty (claude-orca-9bh.8): macOS only, never fatal. On a Mac without the
+# app, Homebrew gets the cask and `claude-dev ghostty` runs; with the app
+# there is no install but the setup still runs; without brew the download
+# page is named; on Linux neither happens. The fixture HOME is where the
+# setup lands, so every case also pins that path.
+@test "bootstrap on a Mac without Ghostty installs the cask and runs claude-dev ghostty" {
+    mac_env
+    export CLAUDE_ORCA_GHOSTTY_APP="$BATS_TEST_TMPDIR/no-such-Ghostty.app"
+    [[ "$HOME" == "$BATS_TEST_TMPDIR"/* ]]
+
+    run make_project_v3 "$PROJECT_DIR"
+    [ "$status" -eq 0 ]
+    grep -q "^brew install --cask ghostty" "$STUB_LOG"
+    [ -s "$HOME/.local/state/claude-dev/ghostty-install" ]
+    [ -x "$HOME/.local/share/claude-dev/ghostty-pane" ]
+}
+
+@test "bootstrap on a Mac with Ghostty installed skips the cask but still runs claude-dev ghostty" {
+    mac_env
+    mkdir -p "$BATS_TEST_TMPDIR/Ghostty.app"
+    export CLAUDE_ORCA_GHOSTTY_APP="$BATS_TEST_TMPDIR/Ghostty.app"
+    [[ "$HOME" == "$BATS_TEST_TMPDIR"/* ]]
+
+    run make_project_v3 "$PROJECT_DIR"
+    [ "$status" -eq 0 ]
+    if grep -q "ghostty" "$STUB_LOG"; then return 1; fi
+    [ -s "$HOME/.local/state/claude-dev/ghostty-install" ]
+}
+
+@test "bootstrap on a Mac without Ghostty and without brew names the download page" {
+    mac_env
+    export CLAUDE_ORCA_GHOSTTY_APP="$BATS_TEST_TMPDIR/no-such-Ghostty.app"
+    shadow_path_without brew
+    if command -v brew >/dev/null 2>&1; then return 1; fi
+
+    run make_project_v3 "$PROJECT_DIR"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"https://ghostty.org/download"* ]]
+    [ -s "$HOME/.local/state/claude-dev/ghostty-install" ]
+}
+
+@test "bootstrap on Linux leaves Ghostty alone" {
+    export STUB_UNAME_S=Linux
+    export STUB_UNAME_M=aarch64
+    [[ "$HOME" == "$BATS_TEST_TMPDIR"/* ]]
+
+    run make_project_v3 "$PROJECT_DIR"
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"Ghostty"* ]]
+    if grep -q "ghostty" "$STUB_LOG"; then return 1; fi
+    [ ! -e "$HOME/.local/state/claude-dev/ghostty-install" ]
+    [ ! -e "$HOME/.local/share/claude-dev/ghostty-pane" ]
+}
+
+@test "a claude-dev ghostty that refuses does not fail the bootstrap" {
+    mac_env
+    mkdir -p "$BATS_TEST_TMPDIR/Ghostty.app" "$HOME/.config/ghostty"
+    export CLAUDE_ORCA_GHOSTTY_APP="$BATS_TEST_TMPDIR/Ghostty.app"
+    [[ "$HOME" == "$BATS_TEST_TMPDIR"/* ]]
+    # A config that sets `command =` itself: the install refuses (return 1).
+    printf 'command = /opt/homebrew/bin/fish\n' > "$HOME/.config/ghostty/config.ghostty"
+
+    run make_project_v3 "$PROJECT_DIR"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"command = /opt/homebrew/bin/fish"* ]]
+    [ ! -e "$HOME/.local/state/claude-dev/ghostty-install" ]
+    # And registration, the last step, still ran.
+    [ -s "$PROJECT_DIR/.claude-dev/claude-orca.json" ]
 }
