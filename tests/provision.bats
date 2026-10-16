@@ -130,9 +130,7 @@ teardown() {
 # --- the contract ---------------------------------------------------------
 
 # Everything the real steps need that is NOT the folder: a setup script that
-# answers --check, an Orca CLI that answers `repo add`, a template config for
-# the sync, and a web-url file, because a step that registers the project
-# with a server skips itself when no server has published one.
+# answers --check and a template config for the sync.
 prepare_real_steps_fixture() {  # prepare_real_steps_fixture <project>
     local proj="$1" tcfg="$1/.claude-dev/template/config"
     make_project "$proj"
@@ -148,17 +146,6 @@ prepare_real_steps_fixture() {  # prepare_real_steps_fixture <project>
 exit 0
 STUB
     chmod +x "$TMP/setup.sh"
-
-    cat > "$TMP/bin/orca" <<STUB
-#!/usr/bin/env bash
-printf '%s\n' "\$*" >> "$TMP/cli.log"
-exit 0
-STUB
-    chmod +x "$TMP/bin/orca"
-    : > "$TMP/cli.log"
-
-    printf 'http://127.0.0.1:1/web-index.html#pairing=x\n' \
-        > "$proj/.claude-dev/run/orca-web-url.txt"
 }
 
 # One provisioning pass over the REAL provision.d, with nothing of this box
@@ -166,7 +153,7 @@ STUB
 # would point the tracker step somewhere that is not the fixture.
 run_real_provision() {  # run_real_provision <project>
     env -u BEADS_DIR HOME="$TMP/home" PROJECT_DIR="$1" \
-        ORCA_CLI="$TMP/bin/orca" CLAUDE_ORCA_SETUP="$TMP/setup.sh" \
+        CLAUDE_ORCA_SETUP="$TMP/setup.sh" \
         CLAUDE_ORCA_PROJECT_NAME=fixture \
         bash "$PROVISION_RUN"
 }
