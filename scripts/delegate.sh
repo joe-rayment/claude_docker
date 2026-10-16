@@ -257,25 +257,6 @@ if secret and secret in data:
 PYEOF
 }
 
-# extract_usage_obj <log-file> -- best-effort scan of the NDJSON event
-# stream every runner emits in its JSON mode: skips any non-JSON line,
-# keeps the last object that carries a usage/cost field. Field names are
-# matched defensively (several plausible spellings) since no runner
-# guarantees that shape stable across versions.
-extract_usage_obj() {
-    local log="$1" obj
-    obj=$(jq -R -s '
-        split("\n")
-        | map(select(length > 0))
-        | map(try fromjson catch empty)
-        | map(select(. != null and ((has("usage") or has("cost"))
-              or ((.part // {}) | (has("tokens") or has("cost"))))))
-        | last // {}
-    ' "$log" 2>/dev/null) || obj='{}'
-    [ -z "$obj" ] && obj='{}'
-    printf '%s' "$obj"
-}
-
 # generate_runner_config <job_dir> <provider> <model_id> <route> <variant> --
 # only opencode reads a config file; codex and gemini take the model on
 # argv. <variant> (a role's reasoning-effort, claude-orca-1w8) adds
@@ -502,32 +483,44 @@ cmd_run() {
 
     local log="$job_dir/runner.log"
     case "$runner" in
-        opencode)
-            env -i "${env_args[@]}" \
-                opencode run -m "$model" --dir "$job_dir/worktree" --auto --format json "$final_prompt" \
-                > "$log" 2>&1 &
-            ;;
-        codex)
-            env -i "${env_args[@]}" \
-                codex exec --model "$model_id" --cd "$job_dir/worktree" --json --full-auto "$final_prompt" \
-                > "$log" 2>&1 &
-            ;;
-        gemini)
-            # gemini has no working-directory flag: it reads and writes
-            # wherever it is started, so the job worktree must be its cwd.
-            ( cd "$job_dir/worktree" && env -i "${env_args[@]}" \
-                gemini -m "$model_id" --yolo -p "$final_prompt" ) \
-                > "$log" 2>&1 &
-            ;;
-        *)
-            die "run: unsupported runner '$runner' for route '$route'"
-            ;;
+        opencode|codex|gemini) ;;
+        *) die "run: unsupported runner '$runner' for route '$route'" ;;
     esac
-    local runner_pid=$!
-    echo "$runner_pid" > "$job_dir/pid"
 
+    # One runner for dispatch and routes (claude-orca-9bh.5): worker-run.sh
+    # launches the agent (codex and gemini too, each with the command line
+    # this file used to hold), scans its usage, writes the inbox line and the
+    # WORKER_DONE bead note. This job dir carries the spec.md and job.json it
+    # reads: the allow-list above rides in job.json as non-secret values
+    # (env_set) and variable NAMES (env_pass), so the key itself stays in this
+    # process's environment and never lands on argv or in a file.
+    printf '%s' "$final_prompt" > "$job_dir/spec.md"
+    local env_set_json env_pass_json='[]'
+    env_set_json="$(jq -n -c --arg xdg "$job_dir/config" --arg url "$OPENROUTER_BASE_URL" --arg prov "$provider" \
+        '{XDG_CONFIG_HOME: $xdg}
+         + (if $prov == "openrouter" then {OPENROUTER_BASE_URL: $url, OPENAI_BASE_URL: $url} else {} end)')"
+    if [ -n "$key_var" ] && [ -n "$key_value" ]; then
+        env_pass_json="$(jq -n -c --arg k "$key_var" '[$k]')"
+        export "$key_var"
+    fi
+    jq -n \
+        --arg job "$job_id" --arg bead "$bead" --arg agent "$runner" --arg model "$model" \
+        --arg variant "$variant" --arg dir "$job_dir/worktree" --arg branch "$branch" \
+        --arg hooks "$FROZEN_HOOK_DIR" --arg home "$job_dir/home" --arg created "$started_at" \
+        --argjson env_set "$env_set_json" --argjson env_pass "$env_pass_json" \
+        '{job: $job, bead: (if $bead == "" then null else $bead end), role: "executor",
+          agent: $agent, model: $model, variant: $variant, effort: "",
+          dir: $dir, branch: $branch, frozen_hooks: $hooks,
+          env_isolate: true, home: $home, env_set: $env_set, env_pass: $env_pass,
+          slot: false, merged_log: true, receipt_name: "worker-receipt.json",
+          state: "started", created: $created}' > "$job_dir/job.json"
+
+    # cmd_ps reads this: the run is synchronous, so its pid is ours.
+    echo "$$" > "$job_dir/pid"
+
+    # Foreground, not detached: its exit code is the agent's, and so is ours.
     local exit_code=0
-    wait "$runner_pid" || exit_code=$?
+    CLAUDE_ORCA_ROOT="$REPO_DIR" "$SCRIPT_DIR/worker-run.sh" "$job_dir" || exit_code=$?
 
     local finished_at end_epoch wall_seconds
     finished_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -536,11 +529,15 @@ cmd_run() {
 
     redact_secret "$log" "$key_value"
 
-    local usage_obj tokens_in tokens_out usd
-    usage_obj="$(extract_usage_obj "$log")"
-    tokens_in="$(jq -r '(.usage.inputTokens // .usage.input_tokens // .usage.promptTokens // .tokens.input // .part.tokens.input) // "null"' <<<"$usage_obj")"
-    tokens_out="$(jq -r '(.usage.outputTokens // .usage.output_tokens // .usage.completionTokens // .tokens.output // .part.tokens.output) // "null"' <<<"$usage_obj")"
-    usd="$(jq -r '(.usage.cost // .cost // .part.cost) // "null"' <<<"$usage_obj")"
+    # worker-run's own receipt (worker-receipt.json) holds the usage it scanned
+    # out of runner.log; the numbers are only believed when it found a usage
+    # block, otherwise they stay null as they always have.
+    local wr_receipt="$job_dir/worker-receipt.json" tokens_in=null tokens_out=null usd=null
+    if [ -f "$wr_receipt" ] && [ "$(jq -r '.usage_found // false' "$wr_receipt" 2>/dev/null)" = true ]; then
+        tokens_in="$(jq -c '.tokens_in // null' "$wr_receipt")"
+        tokens_out="$(jq -c '.tokens_out // null' "$wr_receipt")"
+        usd="$(jq -c '.usd // null' "$wr_receipt")"
+    fi
 
     jq -n \
         --arg job "$job_id" \
