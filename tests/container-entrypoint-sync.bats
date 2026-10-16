@@ -318,3 +318,86 @@ WRAP
     wait_ln="$(grep -n 'waiting on the sshd supervisor' "$TMP/entrypoint.out" | head -1 | cut -d: -f1)"
     [ -n "$start_ln" ] && [ -n "$wait_ln" ] && [ "$start_ln" -lt "$wait_ln" ]
 }
+
+# --- managed settings (claude-orca-8a0.3) -------------------------------
+#
+# Claude Code reads /etc/claude-code/managed-settings.json as
+# administrator policy; autoContinueAtUsageLimit there is what lets a
+# dispatched worker sit out a usage-limit window and carry on instead of
+# dying mid-slice. Only root can write that path, so the entrypoint does it
+# BEFORE the privilege drop -- and skips silently when it is not root,
+# which is how this unprivileged run reaches it through the override.
+
+# Boots the entrypoint to its steady state with the managed-settings path
+# pointed at $3; $output holds what it printed and $ep_status its exit
+# status (143: stopped by TERM while waiting on the sshd supervisor).
+run_entrypoint_managed() {
+    run_entrypoint_once HOME="$1" PROJECT_DIR="$2" \
+        CLAUDE_ORCA_MANAGED_SETTINGS="$3" CLAUDE_ORCA_SKIP_SETUP=1 \
+        CLAUDE_ORCA_SKIP_BEADS=1 CLAUDE_ORCA_ENTRYPOINT_NO_PRIVDROP=1
+}
+
+@test "entrypoint writes managed settings with autoContinueAtUsageLimit when absent" {
+    # Guards:   managed-settings.json is created (644) with autoContinueAtUsageLimit, merged when it lacks the key, never overwritten when it has it or is not JSON, and untouched without an override and without root.
+    # Fails if: the entrypoint overwrites an operator's autoContinueAtUsageLimit=false, clobbers a non-JSON file, or writes /etc without root.
+    # Run:      bats -f "managed settings" tests/container-entrypoint-sync.bats
+    [ -x "$ENTRYPOINT" ]
+    command -v jq >/dev/null 2>&1
+
+    local proj home managed
+    proj="$TMP/project"
+    make_project "$proj"
+    home="$proj/.claude-dev/home"
+    managed="$TMP/managed/managed-settings.json"
+
+    # Absent: written, with the key, readable by everyone (it is policy).
+    run_entrypoint_managed "$home" "$proj" "$managed"
+    [ "$ep_status" = 143 ]
+    [[ "$output" == *"waiting on the sshd supervisor"* ]]
+    [ -f "$managed" ]
+    run jq -e '.autoContinueAtUsageLimit == true' "$managed"
+    [ "$status" -eq 0 ]
+    [ "$(stat -c '%a' "$managed")" = "644" ]
+
+    # Present without the key: merged in, every other key kept.
+    jq -n '{permissions: {allow: ["Bash"]}, apiKeyHelper: "/usr/local/bin/k"}' > "$managed"
+    run_entrypoint_managed "$home" "$proj" "$managed"
+    run jq -r '[.autoContinueAtUsageLimit, .permissions.allow[0], .apiKeyHelper]
+        | map(tostring) | join(",")' "$managed"
+    [ "$output" = "true,Bash,/usr/local/bin/k" ]
+
+    # Present WITH the key: never overwritten -- the file is policy, and an
+    # operator who turned it off meant it.
+    jq -n '{autoContinueAtUsageLimit: false, permissions: {allow: ["Read"]}}' > "$managed"
+    run_entrypoint_managed "$home" "$proj" "$managed"
+    run jq -r '[.autoContinueAtUsageLimit, .permissions.allow[0]]
+        | map(tostring) | join(",")' "$managed"
+    [ "$output" = "false,Read" ]
+
+    # Not JSON at all: left exactly as found, never replaced.
+    printf 'not json at all\n' > "$managed"
+    run_entrypoint_managed "$home" "$proj" "$managed"
+    run cat "$managed"
+    [ "$output" = "not json at all" ]
+
+    # No override and no root: silent skip, and /etc keeps whatever it
+    # had. The image bakes a managed-settings.json, so "the file must
+    # not exist" is the wrong assertion on this box -- the right one is
+    # "the run changed nothing": byte-identical when the file pre-exists,
+    # still absent when it did not.
+    if [ "$(id -u)" != "0" ]; then
+        if [ -f /etc/claude-code/managed-settings.json ]; then
+            cp /etc/claude-code/managed-settings.json "$TMP/etc-managed.before"
+        fi
+        run_entrypoint_once HOME="$home" PROJECT_DIR="$proj" \
+            CLAUDE_ORCA_SKIP_SETUP=1 CLAUDE_ORCA_SKIP_BEADS=1 \
+            CLAUDE_ORCA_ENTRYPOINT_NO_PRIVDROP=1
+        [ "$ep_status" = 143 ]
+        [[ "$output" == *"waiting on the sshd supervisor"* ]]
+        if [ -f /etc/claude-code/managed-settings.json ]; then
+            cmp -s "$TMP/etc-managed.before" /etc/claude-code/managed-settings.json
+        else
+            [ ! -e /etc/claude-code/managed-settings.json ]
+        fi
+    fi
+}
