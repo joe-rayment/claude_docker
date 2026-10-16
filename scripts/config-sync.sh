@@ -42,12 +42,12 @@
 # it is the one sanctioned override channel and always wins on the next
 # sync too, since it survives the checksum-gated settings.json rewrite.
 #
-# V4 (claude-orca-qt9.4): with HOME redirected into the folder, the
-# sandboxed .claude/settings.json is ALSO the file Orca's installer writes
-# its managed hooks and statusline into. The settings.json rewrite below
-# therefore re-attaches every Orca-managed hook entry found in the previous
-# file, plus an existing Orca statusLine chain (refreshing only our half of
-# it from the template) -- see the "Orca-managed entries" section.
+# settings.json is exactly the rendered template (plus settings.local.json):
+# nothing else is carried across the rewrite. A settings.json that still
+# carries Orca's managed hook entries or statusLine chain (commands under
+# /.orca/agent-hooks/, left by an Orca that ran before the Ghostty move,
+# claude-orca-9bh.13) is re-rendered even when the template hash is
+# unchanged, which is the migration that strips them from existing folders.
 #
 # Exit 0 whether or not a sync actually ran (a checksum match is not an
 # error -- callers don't need to distinguish); exit 2 on bad input.
@@ -98,8 +98,8 @@ host="$(cd "$host" && pwd -P)"
 # provision.d step on a folder's start, and the host side's resync over
 # `docker exec` right after the URL is published (plus a /config-resync
 # typed in a terminal). The settings.json rewrite below is a
-# read-modify-write over a file Orca's own installer also touches, so an
-# interleaved pair can drop one side's managed hook entries entirely.
+# render-then-merge over one file, so an interleaved pair can leave a
+# half-written one.
 #
 # flock is util-linux's and is not on a stock Mac, where this script also
 # runs -- so it is taken when it is there and skipped when it is not,
@@ -118,14 +118,11 @@ TEMPLATE_CONFIG="$host/template/config"
 CONFIG_DIR="$project/.claude-dev/home/.claude"
 LOCAL_SETTINGS="$CONFIG_DIR/settings.local.json"
 
-# V4 (claude-orca-qt9.4): HOME is redirected into the folder, so Orca's own
-# installer writes its managed hook entries -- and its statusline -- into
-# the very settings.json this script regenerates. Identity of a managed
-# entry is the rule orca-hooks-merge.sh uses: the hook command mentions
-# .orca/agent-hooks/ (Orca's createManagedCommandMatcher keys on that
-# script path, not on an exact command string).
-ORCA_NEEDLE="/.orca/agent-hooks/"
-ORCA_BASE_FILE="$CONFIG_DIR/.orca-statusline-base"
+# An Orca that ran here before the Ghostty move wrote its managed hook
+# entries (and a statusLine chain) into this settings.json; they all point
+# at a script under this path. Finding it on disk means the folder still
+# needs the clean re-render below even if the template hash has not moved.
+LEGACY_HOOK_MARK="/.orca/agent-hooks/"
 
 # --- checksum gate -----------------------------------------------------
 
@@ -168,20 +165,23 @@ OLD_HASH=""
 [ -f "$HASH_FILE" ] && OLD_HASH="$(cat "$HASH_FILE" 2>/dev/null)"
 
 if [ "$NEW_HASH" = "$OLD_HASH" ]; then
-    exit 0
+    # Unchanged template: normally nothing to do. But a settings.json that
+    # still carries Orca's hook entries is stale whatever the hash says.
+    if [ -f "$CONFIG_DIR/settings.json" ] \
+        && grep -qF -- "$LEGACY_HOOK_MARK" "$CONFIG_DIR/settings.json" 2>/dev/null; then
+        :
+    else
+        exit 0
+    fi
 fi
 
 # --- populate ------------------------------------------------------------
 
-# Whatever is on disk RIGHT NOW, before the template overwrites it -- the
-# only place Orca's entries exist. Read once, into memory, so nothing has
-# to be written outside the two paths this script already owns.
-PREV_SETTINGS=""
-if [ -f "$CONFIG_DIR/settings.json" ] && jq -e . "$CONFIG_DIR/settings.json" >/dev/null 2>&1; then
-    PREV_SETTINGS="$(cat "$CONFIG_DIR/settings.json")"
-fi
-
 mkdir -p "$CONFIG_DIR"
+
+# The statusLine chain file an earlier version kept beside settings.json
+# (our half of the Orca-composed command); nothing reads it now.
+rm -f "$CONFIG_DIR"/.orca-statusline-*
 
 # settings.json: hook commands carry a __HOST__ placeholder in the repo copy
 # (config/claude-settings.json), rewritten here to this project's actual
@@ -285,71 +285,6 @@ if [ -f "$LOCAL_SETTINGS" ] && jq -e . "$LOCAL_SETTINGS" >/dev/null 2>&1; then
     ' "$CONFIG_DIR/settings.json" "$LOCAL_SETTINGS" 2>/dev/null)"
     if [ -n "$merged" ] && printf '%s' "$merged" | jq -e . >/dev/null 2>&1; then
         printf '%s\n' "$merged" > "$CONFIG_DIR/settings.json"
-    fi
-fi
-
-# --- Orca-managed entries: carried across the rewrite --------------------
-#
-# Everything Orca put in the previous settings.json is re-attached to the
-# freshly rendered one: its managed hook entries (kept per event,
-# de-duplicated, appended AFTER ours so the template keeps its own order)
-# and its statusLine chain. The chain is the composed command
-# orca-hooks-merge.sh writes -- Orca's statusline first, ours second, with
-# our half remembered in .orca-statusline-base -- so only that half is
-# refreshed from the template here, by splicing the new command in where
-# the remembered one sits. Without a usable base file the chain is kept
-# verbatim rather than clobbered: Orca's half is the part we cannot
-# reconstruct. Best-effort throughout; a failure leaves the rendered file
-# exactly as the template wrote it.
-if [ -n "$PREV_SETTINGS" ]; then
-    orca_prev_sl="$(printf '%s' "$PREV_SETTINGS" | jq -r '.statusLine.command // ""')"
-    orca_keep_sl=""
-    case "$orca_prev_sl" in
-        *"$ORCA_NEEDLE"*)
-            orca_keep_sl="$orca_prev_sl"
-            orca_ours_sl="$(jq -r '.statusLine.command // ""' "$CONFIG_DIR/settings.json")"
-            orca_old_base=""
-            [ -f "$ORCA_BASE_FILE" ] && orca_old_base="$(cat "$ORCA_BASE_FILE")"
-            if [ -n "$orca_old_base" ] && [ -n "$orca_ours_sl" ]; then
-                case "$orca_prev_sl" in
-                    *"$orca_old_base"*)
-                        orca_keep_sl="$(printf '%s' "$orca_prev_sl" | jq -Rrs \
-                            --arg old "$orca_old_base" --arg new "$orca_ours_sl" '
-                            . as $c | ($c | rindex($old)) as $i
-                            | $c[0:$i] + $new + $c[($i + ($old | length)):]')"
-                        printf '%s' "$orca_ours_sl" > "$ORCA_BASE_FILE"
-                        ;;
-                esac
-            fi
-            ;;
-    esac
-
-    orca_merged="$(printf '%s' "$PREV_SETTINGS" | jq \
-        --arg n "$ORCA_NEEDLE" \
-        --arg sl "$orca_keep_sl" \
-        --slurpfile cur "$CONFIG_DIR/settings.json" '
-        def is_managed($n):
-            (((.hooks // []) | map(.command // "") | any(contains($n)))
-             or ((.command // "") | contains($n)));
-        ((.hooks // {})
-         | with_entries(.value |= (if type == "array"
-                                   then map(select(is_managed($n)))
-                                   else [] end))
-         | with_entries(select((.value | type) == "array" and (.value | length) > 0))
-        ) as $orca
-        | $cur[0]
-        | (if ($orca | length) > 0
-           then .hooks = (reduce ($orca | keys_unsorted[]) as $e ((.hooks // {});
-                    (.[$e] // []) as $mine
-                    | .[$e] = ($mine + ($orca[$e] | unique
-                        | map(. as $x | select(($mine | any(. == $x)) | not))))))
-           else . end)
-        | (if $sl != ""
-           then .statusLine = ((.statusLine // {}) + {type: "command", command: $sl})
-           else . end)
-    ' 2>/dev/null)" || orca_merged=""
-    if [ -n "$orca_merged" ] && printf '%s' "$orca_merged" | jq -e . >/dev/null 2>&1; then
-        printf '%s\n' "$orca_merged" > "$CONFIG_DIR/settings.json"
     fi
 fi
 

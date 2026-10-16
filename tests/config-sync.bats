@@ -476,3 +476,122 @@ JSON
         "$dest/skills/snowpark-deploy/SKILL.md"
     grep -qx "snowpark-deploy" "$dest/skills/.claude-orca-shipped"
 }
+
+# claude-orca-9bh.13: Orca no longer writes into the folder's settings.json,
+# and config-sync no longer carries its entries across a rewrite. A folder an
+# older Orca already wrote into is cleaned on its next sync.
+
+# Number of commands under /.orca/agent-hooks/ anywhere in settings file $1
+# (hook entries and the statusLine alike).
+orca_command_count() {
+    jq '[.. | .command? // empty | select(type == "string" and contains("/.orca/agent-hooks/"))] | length' "$1"
+}
+
+# Put Orca's managed hook entries and its statusLine chain into the rendered
+# settings file $1, the way Orca's installer did with HOME inside the folder:
+# its entries appended after ours per event, its statusline command first and
+# ours second, plus the chain's remembered base file. The bytes come from
+# tests/fixtures/orca/ (Orca's own).
+plant_orca_entries() {
+    local f="$1" fixture="$BATS_TEST_DIRNAME/fixtures/orca/claude-settings-with-orca.json"
+    jq -s '
+        .[0] as $ours | .[1] as $orca
+        | $ours
+        | .hooks = (reduce ($orca.hooks | keys[]) as $e ((.hooks // {});
+              .[$e] = ((.[$e] // []) + $orca.hooks[$e])))
+        | .statusLine.command = ($orca.statusLine.command + "\n" + $ours.statusLine.command)
+    ' "$f" "$fixture" > "$f.planted"
+    mv "$f.planted" "$f"
+    printf '%s' "$(jq -r '.statusLine.command' "$f" | tail -n 1)" \
+        > "$(dirname "$f")/.orca-statusline-base"
+}
+
+# Guards:   a settings.json holding Orca's hook entries and statusLine chain
+#           comes out as exactly our rendered template after a sync that a
+#           template change forces: no command under /.orca/agent-hooks/, our
+#           statusLine, every hook command we ship still there, the old
+#           chain-base file gone.
+# Fails if: config-sync goes back to re-attaching Orca's entries (or its
+#           statusLine chain) after rendering, or leaves .orca-statusline-base.
+# Run:      bats -f 'Orca-laden settings.json is re-rendered clean on a template change' tests/config-sync.bats
+@test "an Orca-laden settings.json is re-rendered clean on a template change (claude-orca-9bh.13)" {
+    make_project "$PROJECT_DIR"
+    primary="$(abspath "$PROJECT_DIR")"
+    dest="$primary/.claude-dev/home/.claude"
+
+    run CONFIG_SYNC --project "$primary" --host "$ORCA_HOST"
+    [ "$status" -eq 0 ]
+    cp "$dest/settings.json" "$BATS_TEST_TMPDIR/rendered.json"
+    plant_orca_entries "$dest/settings.json"
+    [ "$(orca_command_count "$dest/settings.json")" -gt 12 ]
+    [ -f "$dest/.orca-statusline-base" ]
+
+    echo "# changed" >> "$ORCA_HOST/template/config/claude-user-memory.md"
+    run CONFIG_SYNC --project "$primary" --host "$ORCA_HOST"
+    [ "$status" -eq 0 ]
+
+    [ "$(orca_command_count "$dest/settings.json")" -eq 0 ]
+    [ ! -e "$dest/.orca-statusline-base" ]
+    [ "$(jq -c '.statusLine' "$dest/settings.json")" = "$(jq -c '.statusLine' "$BATS_TEST_TMPDIR/rendered.json")" ]
+    # The folder's file is the rendered template again, byte for byte.
+    diff <(jq -S . "$BATS_TEST_TMPDIR/rendered.json") <(jq -S . "$dest/settings.json")
+    # ... which in particular still has every hook command the template ships.
+    while IFS= read -r cmd; do
+        run jq -e --arg c "$cmd" '[.hooks[][].hooks[].command] | index($c) != null' "$dest/settings.json"
+        [ "$status" -eq 0 ]
+    done < <(jq -r '.hooks[][].hooks[].command' "$BATS_TEST_TMPDIR/rendered.json")
+}
+
+# Guards:   the migration for folders whose template did not change: an
+#           unchanged config hash must not let Orca's planted entries stay.
+# Fails if: the checksum gate exits early on a matching hash without looking
+#           at the settings.json that is on disk.
+# Run:      bats -f 'Orca entries are stripped even when the template hash is unchanged' tests/config-sync.bats
+@test "Orca entries are stripped even when the template hash is unchanged (claude-orca-9bh.13)" {
+    make_project "$PROJECT_DIR"
+    primary="$(abspath "$PROJECT_DIR")"
+    dest="$primary/.claude-dev/home/.claude"
+
+    run CONFIG_SYNC --project "$primary" --host "$ORCA_HOST"
+    [ "$status" -eq 0 ]
+    cp "$dest/settings.json" "$BATS_TEST_TMPDIR/rendered.json"
+    hash1="$(cat "$primary/.claude-dev/run/config-hash")"
+    plant_orca_entries "$dest/settings.json"
+    [ "$(orca_command_count "$dest/settings.json")" -gt 12 ]
+
+    run CONFIG_SYNC --project "$primary" --host "$ORCA_HOST"
+    [ "$status" -eq 0 ]
+    [ "$hash1" = "$(cat "$primary/.claude-dev/run/config-hash")" ]
+    [ "$(orca_command_count "$dest/settings.json")" -eq 0 ]
+    [ ! -e "$dest/.orca-statusline-base" ]
+    diff <(jq -S . "$BATS_TEST_TMPDIR/rendered.json") <(jq -S . "$dest/settings.json")
+
+    # Planting again after the clean-up is cleaned again: not a one-shot.
+    plant_orca_entries "$dest/settings.json"
+    run CONFIG_SYNC --project "$primary" --host "$ORCA_HOST"
+    [ "$status" -eq 0 ]
+    [ "$(orca_command_count "$dest/settings.json")" -eq 0 ]
+}
+
+# Guards:   the stripping above costs a clean folder nothing: its second sync
+#           is still the fast no-op, settings.json is not rewritten.
+# Fails if: the "has Orca entries" check makes every sync re-render (the file's
+#           mtime moves) or removes the early exit for clean folders.
+# Run:      bats -f "a clean folder's second sync still does not rewrite settings.json" tests/config-sync.bats
+@test "a clean folder's second sync still does not rewrite settings.json (claude-orca-9bh.13)" {
+    make_project "$PROJECT_DIR"
+    primary="$(abspath "$PROJECT_DIR")"
+    dest="$primary/.claude-dev/home/.claude"
+
+    run CONFIG_SYNC --project "$primary" --host "$ORCA_HOST"
+    [ "$status" -eq 0 ]
+    [ "$(orca_command_count "$dest/settings.json")" -eq 0 ]
+
+    # A rewrite would stamp the file with now(); push it far into the past
+    # and compare against a marker that is newer than that but older than now.
+    touch -t 200101010000 "$dest/settings.json"
+    touch -t 200201010000 "$BATS_TEST_TMPDIR/marker"
+    run CONFIG_SYNC --project "$primary" --host "$ORCA_HOST"
+    [ "$status" -eq 0 ]
+    [ -z "$(find "$dest/settings.json" -newer "$BATS_TEST_TMPDIR/marker")" ]
+}
