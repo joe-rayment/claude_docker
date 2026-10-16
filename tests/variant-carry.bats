@@ -2,8 +2,8 @@
 #
 # variant-carry.bats -- a role's reasoning-effort variant (tier.json
 # roles.<role>.variant, claude-orca-1w8) must actually reach opencode on
-# both the Orca terminal path (orca-dispatch -> orca_opencode_command ->
-# `opencode` TUI) and the batch path (bin/delegate run -> `opencode run`)
+# both the interactive launch path (workers_opencode_command -> `opencode`
+# TUI) and the batch path (bin/delegate run -> `opencode run`)
 # (claude-orca-1w8 slice B, claude-orca-dav).
 #
 # Verified in this container on opencode 1.18.25 (2026-09-16): the TUI has
@@ -20,8 +20,7 @@ bats_require_minimum_version 1.5.0
 load helpers/setup
 
 SCRIPT="$REPO_ROOT/scripts/delegate.sh"
-ORCA_ORCH="$REPO_ROOT/scripts/lib/orca-orch.sh"
-DISPATCH="$REPO_ROOT/scripts/orca-dispatch.sh"
+WORKERS_LIB="$REPO_ROOT/scripts/lib/workers.sh"
 
 setup() {
     export TMPDIR="$BATS_TEST_TMPDIR"
@@ -67,18 +66,18 @@ job_dirs() {
 }
 
 # opencode_config_from_env <env-file> -- the OPENCODE_CONFIG path an
-# orca_opencode_command env file resolves to, sourced the same way the
+# workers_opencode_command env file resolves to, sourced the same way the
 # printed command sources it.
 opencode_config_from_env() {
     bash -c "set -a; . '$1'; set +a; printf '%s' \"\$OPENCODE_CONFIG\""
 }
 
-# ── 1-4: orca_opencode_command (Orca terminal path) ──────────────────────
+# ── 1-4: workers_opencode_command (interactive launch path) ─────────────
 
-@test "orca_opencode_command: variant only (no token) -- reasoning.effort set, no baseURL" {
+@test "workers_opencode_command: variant only (no token) -- reasoning.effort set, no baseURL" {
     RUN_DIR="$BATS_TEST_TMPDIR/run1"
     mkdir -p "$RUN_DIR"
-    run bash -c ". '$ORCA_ORCH'; orca_opencode_command 'openrouter/openai/gpt-5.6-luna' '$RUN_DIR' high"
+    run bash -c ". '$WORKERS_LIB'; workers_opencode_command 'openrouter/openai/gpt-5.6-luna' '$RUN_DIR' high"
     [ "$status" -eq 0 ]
     [[ "$output" == *"opencode --model openrouter/openai/gpt-5.6-luna"* ]]
     [[ "$output" == *"openrouter-guard.env"* ]]
@@ -94,11 +93,11 @@ opencode_config_from_env() {
     [ "$status" -eq 0 ]
 }
 
-@test "orca_opencode_command: variant + token -- baseURL and apiKey also set, env carries the key" {
+@test "workers_opencode_command: variant + token -- baseURL and apiKey also set, env carries the key" {
     RUN_DIR="$BATS_TEST_TMPDIR/run2"
     mkdir -p "$RUN_DIR"
     printf 'tok-xyz\n' > "$RUN_DIR/openrouter-guard.token"
-    run bash -c ". '$ORCA_ORCH'; orca_opencode_command 'openrouter/openai/gpt-5.6-luna' '$RUN_DIR' high"
+    run bash -c ". '$WORKERS_LIB'; workers_opencode_command 'openrouter/openai/gpt-5.6-luna' '$RUN_DIR' high"
     [ "$status" -eq 0 ]
 
     env_file="$RUN_DIR/openrouter-guard.env"
@@ -115,14 +114,14 @@ opencode_config_from_env() {
     [ "$status" -eq 0 ]
 }
 
-@test "orca_opencode_command: no variant, no token -- sources an env file naming a permission-only config, no models, no baseURL" {
+@test "workers_opencode_command: no variant, no token -- sources an env file naming a permission-only config, no models, no baseURL" {
     # Edited for claude-orca-gh9 (permission block now written on every
     # launch so a dispatched worker never stalls on opencode's interactive
     # "ask" default) -- coordinator-authorised one-case change to this
     # closed bead's (claude-orca-y0y) frozen file; see claude-orca-gh9 notes.
     RUN_DIR="$BATS_TEST_TMPDIR/run3"
     mkdir -p "$RUN_DIR"
-    run bash -c ". '$ORCA_ORCH'; orca_opencode_command 'openrouter/openai/gpt-5.6-luna' '$RUN_DIR'"
+    run bash -c ". '$WORKERS_LIB'; workers_opencode_command 'openrouter/openai/gpt-5.6-luna' '$RUN_DIR'"
     [ "$status" -eq 0 ]
     [[ "$output" == *"opencode --model openrouter/openai/gpt-5.6-luna"* ]]
     [[ "$output" == *"openrouter-guard.env"* ]]
@@ -140,10 +139,10 @@ opencode_config_from_env() {
     [ "$status" -eq 0 ]
 }
 
-@test "orca_opencode_command: the per-launch config file is mode 600" {
+@test "workers_opencode_command: the per-launch config file is mode 600" {
     RUN_DIR="$BATS_TEST_TMPDIR/run4"
     mkdir -p "$RUN_DIR"
-    run bash -c ". '$ORCA_ORCH'; orca_opencode_command 'openrouter/openai/gpt-5.6-luna' '$RUN_DIR' high"
+    run bash -c ". '$WORKERS_LIB'; workers_opencode_command 'openrouter/openai/gpt-5.6-luna' '$RUN_DIR' high"
     [ "$status" -eq 0 ]
     env_file="$RUN_DIR/openrouter-guard.env"
     cfg="$(opencode_config_from_env "$env_file")"
@@ -199,57 +198,6 @@ opencode_config_from_env() {
     run jq -e '.provider.openrouter.models["openai/gpt-5.6-luna"].options | has("reasoning") | not' "$cfg"
     [ "$status" -eq 0 ]
     [ "$(jq -r '.variant' "$job_dir/receipt.json")" = "null" ]
-}
-
-# ── 8: orca-dispatch (Orca terminal path, end to end) ────────────────────
-
-# superseded by claude-orca-ltd (headless dispatch)
-@test "orca-dispatch: a recon role bound to variant high carries it into OPENCODE_CONFIG and the receipt" {
-    # shellcheck source=helpers/orca-stub.bash
-    . "$BATS_TEST_DIRNAME/helpers/orca-stub.bash"
-    orca_stub_init
-
-    export CLAUDE_ORCA_ROOT="$BATS_TEST_TMPDIR/root"
-    ODIR="$CLAUDE_ORCA_ROOT/.claude-dev/run/orchestration"
-    RUN_DIR="$CLAUDE_ORCA_ROOT/.claude-dev/run"
-    mkdir -p "$ODIR/dispatch" "$RUN_DIR"
-
-    export TIER_STATE_FILE="$BATS_TEST_TMPDIR/tier.json"
-    cat > "$TIER_STATE_FILE" <<'EOF'
-{ "top": "fable",
-  "roles": { "recon": { "backend": "orca", "agent": "opencode",
-             "model": "openrouter/openai/gpt-5.6-luna", "variant": "high" } } }
-EOF
-
-    orca_stub_reply orchestration-run-create \
-        '{"ok":true,"result":{"run":{"id":"run1","coordinator_handle":"term_coord"}}}'
-    orca_stub_reply orchestration-task-create \
-        '{"ok":true,"result":{"task":{"id":"t1"}}}'
-    orca_stub_reply terminal-create \
-        '{"ok":true,"result":{"terminal":{"handle":"term_w1"}}}'
-    orca_stub_reply orchestration-dispatch \
-        '{"ok":true,"result":{"dispatch":{"id":"d1","status":"running"}}}'
-
-    run --separate-stderr "$DISPATCH" b1 --recon
-    [ "$status" -eq 0 ]
-
-    creates="$(orca_stub_calls 'terminal create')"
-    [[ "$creates" == *"openrouter-guard.env"* ]]
-
-    env_file="$RUN_DIR/openrouter-guard.env"
-    [ -f "$env_file" ]
-    cfg="$(opencode_config_from_env "$env_file")"
-    [ -f "$cfg" ]
-    run jq -e '.provider.openrouter.models["openai/gpt-5.6-luna"].options.reasoning.effort == "high"' "$cfg"
-    [ "$status" -eq 0 ]
-
-    rec="$ODIR/dispatch/d1.json"
-    [ -f "$rec" ]
-    run jq -e '.variant == "high"' "$rec"
-    [ "$status" -eq 0 ]
-
-    notes="$(orca_stub_calls 'bd update')"
-    [[ "$notes" == *"variant=high"* ]]
 }
 
 # ── 9: shipped config ─────────────────────────────────────────────────────

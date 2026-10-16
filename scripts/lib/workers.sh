@@ -7,17 +7,16 @@
 #
 # Two kinds of helper live here:
 #
-#   * the ones orca-orch.sh used to own and the Orca tools still call
-#     (orch_root, orch_dir, orch_bead_json, orch_note_bead, orch_last_handoff,
-#     orch_spec, orch_mtime) -- moved verbatim; orca-orch.sh sources this file
-#     so every old caller is unchanged;
+#   * the bead/spec helpers (orch_root, orch_dir, orch_bead_json,
+#     orch_note_bead, orch_last_handoff, orch_spec, orch_mtime) -- the names
+#     kept from the Orca era so every caller is unchanged;
 #   * the small shared pieces dispatch / worker-run / workers need:
 #     workers_dir, workers_max, workers_inbox_append, workers_job_set.
 #
 # A job lives at <root>/.claude-dev/run/workers/<job>/ (job.json, spec.md,
 # later pid, log.jsonl, receipt.json). Slot lock files sit in
-# <root>/.claude-dev/run/workers/slots/. The inbox is the one orca-wait
-# already reads: <root>/.claude-dev/run/orchestration/inbox.jsonl.
+# <root>/.claude-dev/run/workers/slots/. The inbox is
+# <root>/.claude-dev/run/orchestration/inbox.jsonl.
 #
 #   CLAUDE_ORCA_MAX_WORKERS   slot cap override (else .maxWorkers, else 3)
 
@@ -63,17 +62,17 @@ orch_note_bead() {
 
 # --- the Task spec -------------------------------------------------------
 #
-# One text, used twice: as the Orca Task spec and, when there is no runtime
-# to dispatch into, as the Agent-tool prompt the orchestrator falls back to.
-# It ends with the WORKER RULES block, which is the whole reason a worker
-# on a foreign model behaves like one of ours.
+# One text, used twice: as the headless worker's spec and, when there is no
+# runtime to dispatch into, as the Agent-tool prompt the orchestrator falls
+# back to. It ends with the WORKER RULES block, which is the whole reason a
+# worker on a foreign model behaves like one of ours.
 
-# orch_last_handoff <notes> -- the last HANDOFF the relay (orca-wait.sh)
+# orch_last_handoff <notes> -- the last HANDOFF the relay
 # appended to a bead's notes as "HANDOFF-AT <ts> dispatch=<id>" followed by
 # the block. Prints the lines after the LAST such line, through the first
 # following line that starts with "relay:" (included), or up to but not
-# including the next line starting with "ORCA " when there is no relay:
-# line, or to the end of the notes otherwise. Exit 1, no output, when
+# including the next line starting with "ORCA " (old relay notes) when there
+# is no relay: line, or to the end of the notes otherwise. Exit 1, no output, when
 # <notes> has no "HANDOFF-AT " line.
 orch_last_handoff() {
     local notes="$1"
@@ -91,16 +90,14 @@ orch_last_handoff() {
     '
 }
 
-# orch_spec <bead-json> <bead-id> [headless]
+# orch_spec <bead-json> <bead-id> [mode]
 #
-# The optional third argument picks the WORKER RULES block. Default (absent or
-# anything else): the Orca rules, byte-identical to what orca-dispatch has
-# always composed (they tell the worker to run `orca-ide orchestration
-# send/ask`). "headless": the Orca-free rules for `dispatch`/`worker-run` --
-# no orca-ide calls; the worker reports in its FINAL message, and asks by
-# ending that message with a line starting `QUESTION:`.
+# The WORKER RULES are the headless ones: no runtime calls; the worker reports
+# in its FINAL message, and asks by ending that message with a line starting
+# `QUESTION:`. The optional third argument is accepted (callers still pass
+# "headless") and ignored -- there is only one set of rules.
 orch_spec() {
-    local bj="$1" id="$2" mode="${3:-}" title desc ac notes handoff
+    local bj="$1" id="$2" title desc ac notes handoff
     title="$(printf '%s' "$bj" | jq -r '.title // ""')"
     desc="$(printf '%s' "$bj" | jq -r '.description // ""')"
     ac="$(printf '%s' "$bj" | jq -r '.acceptance_criteria // ""')"
@@ -118,8 +115,7 @@ orch_spec() {
                 "$handoff"
         fi
     fi
-    if [ "$mode" = "headless" ]; then
-        cat <<'RULES'
+    cat <<'RULES'
 WORKER RULES
 - You are a worker on this one slice. Do not delegate, do not spawn agents
   or sub-agents, do not start further workers.
@@ -142,40 +138,6 @@ WORKER RULES
 - If you are blocked on a decision that is not yours, stop and end your
   final message with one line starting `QUESTION:` followed by the
   question. The orchestrator answers and resumes you in this same session.
-RULES
-        return 0
-    fi
-    cat <<'RULES'
-WORKER RULES
-- You are a worker on this one slice. Do not delegate, do not spawn agents
-  or sub-agents, do not start further Orca workers.
-- You do not close the bead and you never write a VERIFIED line on it: that
-  record belongs to the orchestrator, after an independent checker has run.
-- Verify by running the real thing, never a stand-in. Install whatever that
-  needs. Report the command you ran and the output you saw.
-- When the bead carries an acceptance contract: write the test first, run
-  it, observe it fail, commit the test ALONE with a pathspec-limited
-  `git commit -- <test file>`, and note RED-AT: <sha> on the bead with
-  `bd update <bead> --append-notes`. Then implement, run the contract's
-  CHECK verbatim, commit the implementation, note GREEN-AT: <sha>. The
-  FROZEN files are frozen from the RED commit onward -- never edit one to
-  make an implementation pass.
-- Stay visible: after every commit, and at least every 5 minutes of work,
-  send one heartbeat --
-  `orca-ide orchestration send --type heartbeat --subject alive
-   --task-id <task id> --dispatch-id <dispatch id> --json`
-  A worker that goes quiet for longer than the orchestrator's stall window
-  (a commit, a file change or a heartbeat all count as being alive) is
-  nudged once through its terminal and then replaced.
-- Ask before guessing past a decision that is not yours:
-  `orca-ide orchestration ask --question "<question>" --json` blocks until
-  the orchestrator answers.
-- Report exactly once, when the slice is done or you are blocked (the ids
-  are in the dispatch preamble above; --outcome is succeeded or failed):
-  `orca-ide orchestration send --type worker_done --subject "<bead> done"
-   --body "<what changed, where, how you checked it>"
-   --task-id <task id> --dispatch-id <dispatch id>
-   --outcome succeeded --files-modified <comma,separated,paths> --json`
 RULES
 }
 
@@ -251,3 +213,94 @@ workers_job_set() {
         fi
     ) 9>"$jd/job.lock"
 }
+
+# --- opencode's launch env ------------------------------------------------
+#
+# A headless opencode worker needs the guard token (OPENROUTER_API_KEY) and
+# its per-launch config (OPENCODE_CONFIG) without either being on a command
+# line, where `ps` would show them. workers_opencode_command composes a
+# private env file under the run dir (mode 600) and prints a shell
+# fragment that sources it before exec'ing opencode; worker-run sources the
+# file itself and ignores the printed string.
+#
+# OPENROUTER_BASE_URL is exported for codex's benefit; opencode itself does
+# NOT read it -- config/opencode/opencode.json hardcodes provider.openrouter
+# .options.baseURL to http://127.0.0.1:4141/api/v1, so changing
+# CLAUDE_ORCA_GUARD_PORT alone does not move where opencode talks to.
+
+# workers_opencode_command <model> <run_dir> [<variant>] -- writes
+# <run_dir>/openrouter-guard.env and prints the sourcing command on stdout.
+# Pure given its arguments plus CLAUDE_ORCA_GUARD_PORT.
+#
+# A role's reasoning-effort variant (tier.json roles.<role>.variant,
+# claude-orca-1w8) has no CLI flag on the opencode TUI -- verified in this
+# container on opencode 1.18.25 (2026-09-16): only a config file naming
+# provider.openrouter.models.<vendor/model>.options.reasoning.effort turns
+# reasoning tokens on. A per-launch config is ALWAYS written now under
+# <run_dir>/opencode-launch/, with OPENCODE_CONFIG added to the same env
+# file the guard token rides in, even with no variant and no token
+# (claude-orca-gh9): opencode's own "ask" default on external_directory and
+# doom_loop stalls a dispatched worker forever since nobody is at the
+# keyboard to answer the TUI's permission prompt, so the config also carries
+# a blanket-allow permission block unless
+# CLAUDE_ORCA_OPENCODE_PERMISSIONS=ask opts back into opencode's
+# interactive defaults (the config is still written either way).
+#
+# The config itself is composed by the ONE writer shared with recon
+# (scripts/lib/opencode-launch.sh, claude-orca-c3p.2), which sits next to
+# this file and is sourced the way the other libs resolve siblings. An
+# openai/ model takes the openai provider branch: no guard token is read,
+# and the env file carries ONLY the OPENCODE_CONFIG line -- opencode's own
+# ChatGPT login supplies the credential, so the token lines would be dead
+# weight (and the OPENROUTER_API_KEY a lie about who serves the request).
+# The env file keeps the openrouter-guard.env name either way: headless
+# worker-run reads it by that name.
+if ! command -v opencode_launch_config >/dev/null 2>&1; then
+    # shellcheck source=opencode-launch.sh
+    . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/opencode-launch.sh"
+fi
+
+workers_opencode_command() {
+    local model="$1" run_dir="$2" variant="${3:-}"
+    local token_file token="" port env_file slug cfg_dir cfg
+    local base_url="" perm
+
+    port="${CLAUDE_ORCA_GUARD_PORT:-4141}"
+    env_file="$run_dir/openrouter-guard.env"
+
+    perm="allow"
+    [ "${CLAUDE_ORCA_OPENCODE_PERMISSIONS:-allow}" = "ask" ] && perm="ask"
+
+    slug="$(printf '%s' "$model" | tr '/:' '-')"
+    [ -n "$variant" ] && slug="${slug}-${variant}"
+    cfg_dir="$run_dir/opencode-launch"
+    mkdir -p "$cfg_dir"
+    cfg="$cfg_dir/$slug.json"
+
+    case "$model" in
+        openai/*)
+            opencode_launch_config "$model" "$variant" "$perm" "$cfg"
+            printf "OPENCODE_CONFIG='%s'\n" "$cfg" > "$env_file"
+            ;;
+        *)
+            # OpenRouter (and anything else): today's env file, unchanged.
+            token_file="$run_dir/openrouter-guard.token"
+            if [ -s "$token_file" ]; then
+                token="$(cat "$token_file" 2>/dev/null)"
+            fi
+            [ -n "$token" ] && base_url="http://127.0.0.1:${port}/api/v1"
+            opencode_launch_config "$model" "$variant" "$perm" "$cfg" "$base_url"
+            {
+                if [ -n "$token" ]; then
+                    printf "OPENROUTER_API_KEY='%s'\n" "$token"
+                    printf "OPENROUTER_BASE_URL='http://127.0.0.1:%s/api/v1'\n" "$port"
+                fi
+                printf "OPENCODE_CONFIG='%s'\n" "$cfg"
+            } > "$env_file"
+            ;;
+    esac
+    chmod 600 "$env_file"
+
+    printf "set -a; . '%s'; set +a; opencode --model %s" "$env_file" "$model"
+}
+

@@ -294,3 +294,85 @@ teardown() {
     ! git -C "$proj" worktree list --porcelain | grep -qF "worktree $wt"
     [ -z "$(git -C "$proj" branch --list wt-orca)" ]
 }
+
+# --- a git-locked worktree: reported with its reason, never unlocked --------
+# (claude-orca-9bh.11, C1c) Claude Code locks the worktree of each live
+# Agent-tool agent with `git worktree lock --reason "claude agent ... (pid N)"`;
+# in-process subagents hold no cwd, so the lock is the only liveness signal.
+
+@test "gc reports a git-locked worktree as 'locked: <reason>', keeps it and its branch, and never unlocks it" {
+    # Guards:   a worktree git-locked by a live agent survives the sweep
+    #           intact, the lock's reason is shown, and the lock stays on.
+    # Fails if: the sweep removes/prunes a locked worktree, drops or rewrites
+    #           the reason, or unlocks it (git worktree unlock / remove -f -f).
+    # Run:      bats -f 'git-locked worktree' tests/worktree-gc.bats
+    [ -x "$GC" ]
+    local proj="$TMP/project" wt="$TMP/wt-locked"
+    make_project "$proj"
+    add_worktree "$proj" "$wt" wt-locked
+    git -C "$proj" worktree lock --reason "claude agent agent-x (pid 1)" "$wt"
+
+    run_gc "$proj"
+    [ "$status" -eq 0 ]
+
+    [[ "$output" == *"locked: claude agent agent-x (pid 1)"* ]]
+    [[ "$output" == *"$wt kept"* ]]
+    [[ "$output" != *"removed $wt"* ]]
+
+    [ -d "$wt" ]
+    [ -n "$(git -C "$proj" branch --list wt-locked)" ]
+    git -C "$proj" worktree list --porcelain | grep -qF "worktree $wt"
+    git -C "$proj" worktree list --porcelain | grep -qxF "locked claude agent agent-x (pid 1)"
+}
+
+@test "gc keeps a locked worktree whose directory is gone (a lock is not pruned) and reports it locked" {
+    # Guards:   a lock outranks every other state: even a vanished directory
+    #           is not pruned (and not claimed "pruned") while the lock stands.
+    # Fails if: the directory-gone check runs before the lock check and the
+    #           sweep prunes a locked entry or prints "pruned" for it.
+    # Run:      bats -f 'directory is gone' tests/worktree-gc.bats
+    [ -x "$GC" ]
+    local proj="$TMP/project" wt="$TMP/wt-gone"
+    make_project "$proj"
+    add_worktree "$proj" "$wt" wt-gone
+    git -C "$proj" worktree lock --reason "claude agent agent-y (pid 2)" "$wt"
+    rm -rf "$wt"
+
+    run_gc "$proj"
+    [ "$status" -eq 0 ]
+
+    [[ "$output" == *"locked: claude agent agent-y (pid 2)"* ]]
+    [[ "$output" != *"pruned"* ]]
+    git -C "$proj" worktree list --porcelain | grep -qF "worktree $wt"
+    git -C "$proj" worktree list --porcelain | grep -qxF "locked claude agent agent-y (pid 2)"
+}
+
+@test "gc with one merged, one unmerged and one locked worktree prints the removal, the STRANDED line and the locked line (exit 1)" {
+    # Guards:   the three outcomes side by side: the merged one is removed,
+    #           the unmerged one is STRANDED, the locked one is only reported;
+    #           the exit code is 1 because of the STRANDED line alone.
+    # Fails if: the locked worktree is removed or counted STRANDED by itself,
+    #           or the merged/unmerged outcomes change when a lock is present.
+    # Run:      bats -f 'one merged, one unmerged and one locked' tests/worktree-gc.bats
+    [ -x "$GC" ]
+    local proj="$TMP/project"
+    local wm="$TMP/wt-merged" wu="$TMP/wt-unmerged" wl="$TMP/wt-locked"
+    make_project "$proj"
+    add_worktree "$proj" "$wm" wt-merged
+    add_worktree "$proj" "$wu" wt-unmerged
+    add_worktree "$proj" "$wl" wt-locked
+    git -C "$wu" -c user.email=test@example.com -c user.name=test \
+        commit --quiet --allow-empty -m wip
+    git -C "$proj" worktree lock --reason "claude agent agent-x (pid 1)" "$wl"
+
+    run_gc "$proj"
+    [ "$status" -eq 1 ]
+
+    [[ "$output" == *"removed $wm"* ]]
+    [[ "$output" == *"STRANDED branch wt-unmerged: 1 commit(s) not in main"* ]]
+    [[ "$output" == *"locked: claude agent agent-x (pid 1)"* ]]
+    [[ "$output" != *"STRANDED branch wt-locked"* ]]
+    [ ! -d "$wm" ]
+    [ -d "$wu" ]
+    [ -d "$wl" ]
+}

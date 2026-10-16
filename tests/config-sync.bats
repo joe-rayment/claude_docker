@@ -309,7 +309,7 @@ JSON
 }
 
 # The rulebook (config/claude-user-memory.md) tells the agent to TYPE
-# `lane`, `tier-set`, `orca-dispatch` and friends, and the hook entries in
+# `lane`, `tier-set`, `dispatch` and friends, and the hook entries in
 # config/claude-settings.json run those same files by absolute path out of
 # the template's bin/. Nothing else put that directory on PATH, so every
 # one of those names resolved to nothing inside a real container and the
@@ -341,7 +341,7 @@ JSON
     esac
 
     # …and every CLI the rulebook names by bare word is actually there.
-    for cli in lane tier-set orca-dispatch orca-wait orca-reply delegate; do
+    for cli in lane tier-set dispatch workers delegate; do
         [ -x "$ORCA_HOST/template/bin/$cli" ] || {
             printf 'missing template bin/%s\n' "$cli"; return 1
         }

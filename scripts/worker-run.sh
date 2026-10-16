@@ -20,7 +20,7 @@
 #      CLAUDE_ORCA_SLOT_POLL_S (default 1) seconds.
 #   2. Run (nice -n 10, in job.json dir): claude -p ... stream-json with the
 #      spec on stdin, or opencode run --format json with the spec as the
-#      prompt (guard env sourced from orca_opencode_command's env file, so
+#      prompt (guard env sourced from workers_opencode_command's env file, so
 #      the key is never on argv). stdout appends to log.jsonl, stderr to
 #      runner.log. CLAUDE_ORCA_WORKER_CMD replaces the claude/opencode
 #      binary (the test seam; the arguments are still the agent's own).
@@ -68,8 +68,8 @@ _resolve_script_path() {
 SCRIPT_DIR="$(_s="$(_resolve_script_path)"; case "$_s" in (*/*) cd "${_s%/*}/" ;; esac && pwd)"
 # shellcheck source=lib/paths.sh
 . "$SCRIPT_DIR/lib/paths.sh"
-# shellcheck source=lib/orca-orch.sh
-. "$SCRIPT_DIR/lib/orca-orch.sh"
+# shellcheck source=lib/workers.sh
+. "$SCRIPT_DIR/lib/workers.sh"
 # shellcheck source=lib/frozen-hook.sh
 . "$SCRIPT_DIR/lib/frozen-hook.sh"
 
@@ -242,7 +242,7 @@ case "$AGENT" in
         # config, not from a flag.
         if [ "$ISO" != true ]; then
             mkdir -p "$RUN_DIR"
-            if ! orca_opencode_command "$MODEL" "$RUN_DIR" "$VARIANT" >/dev/null; then
+            if ! workers_opencode_command "$MODEL" "$RUN_DIR" "$VARIANT" >/dev/null; then
                 workers_job_set "$JOBDIR" state '"failed"'; slot_release
                 die "cannot compose the opencode launch env under $RUN_DIR" 1
             fi

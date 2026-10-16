@@ -108,11 +108,15 @@ jobdir_of() { printf '%s' "$1" | jq -r '.job' | { read -r j; printf '%s/.claude-
     [[ "$spec" != *"orca-ide"* ]]
 }
 
-@test "orch_spec without the third argument still carries the Orca heartbeat rules" {
+@test "orch_spec has one set of rules: the optional third argument changes nothing, and no orca-ide call" {
     run bash -c '. "$1"; orch_spec "{\"title\":\"T\",\"description\":\"D\"}" b-1' _ "$LIB"
     [ "$status" -eq 0 ]
-    [[ "$output" == *"orca-ide orchestration send"* ]]
-    [[ "$output" != *"QUESTION:"* ]]
+    plain="$output"
+    run bash -c '. "$1"; orch_spec "{\"title\":\"T\",\"description\":\"D\"}" b-1 headless' _ "$LIB"
+    [ "$status" -eq 0 ]
+    [ "$output" = "$plain" ]
+    [[ "$output" == *"QUESTION:"* ]]
+    [[ "$output" != *"orca-ide"* ]]
 }
 
 @test "--prompt-file replaces the composed spec verbatim" {

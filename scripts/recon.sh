@@ -210,7 +210,7 @@ fi
 [ -n "$DIR" ] || usage_err "recon: no project directory to run in -- pass --dir"
 
 # 5. The run, in the foreground, with the timeout as a background watchdog
-#    (orca-worker-run.sh's pattern; coreutils `timeout` is absent on macOS).
+#    (worker-run.sh's pattern; coreutils `timeout` is absent on macOS).
 #    opencode's stdout+stderr go to the log; the credential and the config
 #    ride in this one process's environment -- the token never touches a
 #    command line, a log or a receipt. An openai/ run carries no

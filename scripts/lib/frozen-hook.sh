@@ -123,7 +123,7 @@ frozen_hook_env() {
 # the bead id for the hook to read. The repo's own hooks dir is recorded in
 # claude-orca-chain for the generated hook to chain to. Prints the hooks
 # dir on stdout. Returns non-zero only when the worktree is not a git work
-# tree or the dir cannot be written; the callers in orca-dispatch/delegate
+# tree or the dir cannot be written; the callers in dispatch/delegate
 # treat that as "nothing to protect".
 install_frozen_hook() {
     [ "$#" -eq 2 ] || return 1

@@ -1,5 +1,5 @@
 # Guards: `workers` (list/wait/reply/tail/stop) reads the job dirs and the inbox honestly, with no Orca anywhere -- and the slot cap really queues extra dispatches
-# Fails if: list miscounts running/queued or hides a dead pid, wait double-delivers or skips an inbox line (or stops sharing orca-wait's cursor), a stall is reported twice, reply resumes a running job, or stop leaves the worker alive
+# Fails if: list miscounts running/queued or hides a dead pid, wait double-delivers or skips an inbox line, a stall is reported twice, reply resumes a running job, or stop leaves the worker alive
 # Run: bats tests/workers-cli.bats
 bats_require_minimum_version 1.5.0
 
@@ -42,9 +42,9 @@ deadpid() { sleep 0 & local p=$!; wait "$p"; printf '%s' "$p"; }
     printf '%s\n' "$output" | sed -n 3p | jq -e '.job == "dead-1" and .dead == true and .pid == null' >/dev/null
 }
 
-@test "wait: bare read prints once, shares orca-wait's cursor, --until blocks then times out" {
+@test "wait: bare read prints once and advances the cursor, --until blocks then times out" {
     printf '{"type":"worker_done","bead":"a"}\n{"type":"worker_done","bead":"b"}\n' >"$OD/inbox.jsonl"
-    run "$BATS_TEST_DIRNAME/../scripts/orca-wait.sh"
+    run "$WORKERS" wait
     [ "$status" -eq 0 ]; [ "$(printf '%s\n' "$output" | wc -l)" -eq 2 ]
     run "$WORKERS" wait
     [ "$status" -eq 0 ]; [ -z "$output" ]

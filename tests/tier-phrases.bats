@@ -174,7 +174,7 @@ prime_short() { run "$PRIME" --short; }
 
 @test "an effort on a Claude role binds like any other, and the top's lands in effortLevel" {
     # Guards: @effort is one syntax for every role -- a Claude worker/recon
-    #   keeps its variant (tier-gate and orca-dispatch carry it), and the
+    #   keeps its variant (tier-gate and dispatch carry it), and the
     #   top's effort becomes the session's effortLevel (max capped at xhigh).
     # Fails if: a Claude role's effort is dropped again, or the top's is.
     # Run: bats -f 'effort on a Claude role' tests/tier-phrases.bats
