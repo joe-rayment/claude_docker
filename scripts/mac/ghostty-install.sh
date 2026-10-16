@@ -231,6 +231,25 @@ _gh_uninstall_core() {
     return 0
 }
 
+# Runs at the top of every `open`. Bash builtins only until the versions
+# differ: no record (the user never ran `claude-dev ghostty`) -> nothing; a
+# record made by an older template -> re-apply it and say so in one line.
+# Always returns 0: a failed refresh must never stop a folder opening.
+ghostty_refresh_if_stale() {
+    local rec_ver
+    _gh_paths
+    [ -f "$_GH_REC" ] || return 0
+    _gh_template_version
+    [ -n "$_GH_TVER" ] || return 0
+    _gh_rec_get version
+    rec_ver="$_GH_VAL"
+    [ "$rec_ver" != "$_GH_TVER" ] || return 0
+    if _gh_install_core 2>/dev/null; then
+        echo "Ghostty settings updated to v$_GH_TVER -- new panes use them"
+    fi
+    return 0
+}
+
 # `claude-dev ghostty`: install (or re-apply) and say so in one line.
 ghostty_install() {
     _gh_install_core || return 1
@@ -246,6 +265,202 @@ ghostty_uninstall() {
         2) echo "Ghostty settings were not installed by claude-dev (no record) -- nothing to remove" ;;
         *) echo "claude-dev ghostty: could not remove the Ghostty settings" >&2; return 1 ;;
     esac
+}
+
+# --- --check: ask Ghostty's own CLI whether the settings really apply -------
+#
+# Two rows, "ghostty settings" and "ghostty splits", each ok|n/a|warn|FAIL,
+# left in _GH_ST1/_GH_TX1 and _GH_ST2/_GH_TX2. Nothing here is a guess about
+# Ghostty's config rules: the answers come from +validate-config,
+# +show-config, +list-keybinds and +version of the installed app itself.
+
+# _gh_sev CUR NEW -> the worse of two statuses (FAIL > warn > ok).
+_gh_sev() {
+    case "$1:$2" in
+        FAIL:*|*:FAIL) echo FAIL ;;
+        warn:*|*:warn) echo warn ;;
+        *)             echo ok ;;
+    esac
+}
+
+# _gh_conf_get KEY < "+show-config output in $_GH_SHOW" -> _GH_VAL (last wins).
+_gh_conf_get() {
+    local l v
+    _GH_VAL=""
+    while IFS= read -r l || [ -n "$l" ]; do
+        case "$l" in
+            "$1 = "*) v="${l#"$1 = "}"; _GH_VAL="$v" ;;
+            "$1="*)   v="${l#"$1="}"; _GH_VAL="$v" ;;
+        esac
+    done <<EOF_SHOW
+$_GH_SHOW
+EOF_SHOW
+    return 0
+}
+
+# The value of the template's `command =` line, the router the include names.
+_gh_expected_command() {
+    local l
+    _GH_CMD=""
+    while IFS= read -r l || [ -n "$l" ]; do
+        case "$l" in
+            "command = "*) _GH_CMD="${l#command = }"; break ;;
+        esac
+    done < "$_GH_TMPL"
+    return 0
+}
+
+# Ghostty's version -> _GH_MAJ _GH_MIN (empty when it printed none).
+_gh_version() {
+    local out l v
+    _GH_MAJ=""
+    _GH_MIN=""
+    out="$("$1" +version 2>/dev/null)" || true
+    while IFS= read -r l || [ -n "$l" ]; do
+        case "$l" in
+            "Ghostty "[0-9]*) v="${l#Ghostty }" ;;
+            *"version: "[0-9]*) v="${l#*version: }" ;;
+            *) continue ;;
+        esac
+        _GH_MAJ="${v%%.*}"
+        v="${v#*.}"
+        _GH_MIN="${v%%[!0-9]*}"
+        break
+    done <<EOF_VER
+$out
+EOF_VER
+    case "$_GH_MAJ$_GH_MIN" in
+        ""|*[!0-9]*) _GH_MAJ=""; _GH_MIN="" ;;
+    esac
+    return 0
+}
+
+# Row 1's findings. Runs inside _gh_check_core and edits ITS locals (s1, t1,
+# inc) -- bash's dynamic scope -- with $_GH_SHOW already holding +show-config.
+_gh_check_settings() {
+    local want got l
+    _gh_expected_command
+    _gh_conf_get command
+    got="${_GH_VAL#shell:}"
+    if [ -z "$got" ]; then
+        s1=FAIL; t1="$t1; command is not set: Ghostty is not reading claude-dev.ghostty"
+    elif [ "$got" != "$_GH_CMD" ]; then
+        s1=FAIL; t1="$t1; command is '$got', not claude-dev's router: another config line wins"
+    fi
+    want=""
+    if [ -f "$inc" ]; then
+        while IFS= read -r l || [ -n "$l" ]; do
+            case "$l" in "shell-integration = "*) want="${l#shell-integration = }" ;; esac
+        done < "$inc"
+    fi
+    [ -n "$want" ] || want="$(_gh_shell_integration)"
+    _gh_conf_get shell-integration
+    got="${_GH_VAL:-detect}"
+    if [ "$got" != "$want" ]; then
+        s1=FAIL; t1="$t1; shell-integration is '$got', claude-dev set '$want'"
+    fi
+    _gh_conf_get window-inherit-working-directory
+    if [ "$_GH_VAL" != false ]; then
+        s1=FAIL; t1="$t1; window-inherit-working-directory is '${_GH_VAL:-true}', claude-dev set false"
+    fi
+    _gh_conf_get clipboard-write
+    if [ "$_GH_VAL" = deny ]; then
+        [ "$s1" = FAIL ] || s1=warn
+        t1="$t1; clipboard-write = deny: Claude Code's copy will not reach the Mac clipboard"
+    fi
+    return 0
+}
+
+# Row 2's findings (same dynamic-scope contract, s2/t2): the two split
+# keybinds exist in the keybinds Ghostty really loaded, and the version.
+_gh_check_splits() {
+    local keys
+    keys="$("$1" +list-keybinds 2>/dev/null)" || true
+    if ! printf '%s\n' "$keys" | grep -q -E '(^|[^[:alnum:]+])(super|cmd)\+d=new_split:right'; then
+        s2=FAIL; t2="$t2; cmd+d is not new_split:right (a keybind overrides claude-dev's split)"
+    fi
+    if ! printf '%s\n' "$keys" | grep -q -E '(^|[^[:alnum:]+])((super|cmd)\+shift|shift\+(super|cmd))\+d=new_split:down'; then
+        s2=FAIL; t2="$t2; cmd+shift+d is not new_split:down (a keybind overrides claude-dev's split)"
+    fi
+    _gh_version "$1"
+    if [ -z "$_GH_MAJ" ]; then
+        [ "$s2" = FAIL ] || s2=warn
+        t2="$t2; could not read Ghostty's version"
+    elif [ "$_GH_MAJ" -lt 1 ] || { [ "$_GH_MAJ" -eq 1 ] && [ "$_GH_MIN" -lt 3 ]; }; then
+        s2=FAIL; t2="$t2; Ghostty $_GH_MAJ.$_GH_MIN is older than 1.3, which claude-dev's settings are written for"
+    fi
+    return 0
+}
+
+# The core: sets the two rows, returns 0 ok/n-a, 1 warn, 2 FAIL.
+_gh_check_core() {
+    local bin cfg dir out s1=ok s2=ok t1="" t2="" sev rc=0 inc rv nl
+    nl=$'\n'
+    _gh_paths
+    bin="${CLAUDE_ORCA_GHOSTTY_BIN:-/Applications/Ghostty.app/Contents/MacOS/ghostty}"
+    if [ ! -x "$bin" ]; then
+        _GH_ST1="n/a"; _GH_TX1="Ghostty is not installed on this Mac"
+        _GH_ST2="n/a"; _GH_TX2="Ghostty is not installed on this Mac"
+        return 0
+    fi
+    if [ ! -f "$_GH_REC" ]; then
+        _GH_ST1="warn"; _GH_TX1="not installed -- ./claude-dev ghostty"
+        _GH_ST2="n/a";  _GH_TX2="no claude-dev settings to check"
+        return 1
+    fi
+    _gh_rec_get config
+    cfg="$_GH_VAL"
+    _gh_rec_get version
+    rv="$_GH_VAL"
+    dir="${cfg%/*}"
+    inc="$dir/claude-dev.ghostty"
+    [ -x "$_GH_ROUTER" ] || { s1=FAIL; t1="$t1; router $_GH_ROUTER missing or not executable"; }
+    [ -f "$inc" ] || { s1=FAIL; t1="$t1; include $inc missing"; }
+    if [ ! -f "$cfg" ] || ! grep -q -E "$_GH_LINE_RE" "$cfg"; then
+        s1=FAIL; t1="$t1; $cfg no longer has the line: $_GH_LINE"
+    fi
+    if ! out="$("$bin" +validate-config 2>&1)"; then
+        s1=FAIL
+        t1="$t1; +validate-config rejects the config (${out%%"$nl"*})"
+    fi
+    _GH_SHOW="$("$bin" +show-config 2>/dev/null)" || true
+    _gh_check_settings
+    _gh_check_splits "$bin"
+    [ "$s1" = ok ] || t1="${t1#; }"
+    [ "$s2" = ok ] || t2="${t2#; }"
+    [ -n "$t1" ] || t1="v$rv installed; Ghostty reports the include applied"
+    [ -n "$t2" ] || t2="cmd+d / cmd+shift+d split in place, Ghostty $_GH_MAJ.$_GH_MIN"
+    _GH_ST1="$s1"; _GH_TX1="$t1"; _GH_ST2="$s2"; _GH_TX2="$t2"
+    sev="$(_gh_sev "$s1" "$s2")"
+    case "$sev" in FAIL) rc=2 ;; warn) rc=1 ;; esac
+    return "$rc"
+}
+
+# One row, through the launcher's doctor_row when sourced there.
+_gh_row() {
+    if type doctor_row >/dev/null 2>&1; then
+        doctor_row "$1" "$2" "$3"
+    else
+        printf '  [%-7s] %-17s %s\n' "$1" "$2" "$3"
+    fi
+}
+
+# `claude-dev ghostty --check`: the two rows; 0 ok or n/a, 1 warn, 2 FAIL.
+ghostty_check() {
+    local rc=0
+    _gh_check_core || rc=$?
+    _gh_row "$_GH_ST1" "ghostty settings" "$_GH_TX1"
+    _gh_row "$_GH_ST2" "ghostty splits" "$_GH_TX2"
+    return "$rc"
+}
+
+# The same two rows for `doctor` / `verify`: returns 2 on a FAIL only (a Mac
+# without Ghostty, or one that never ran `claude-dev ghostty`, is not broken).
+ghostty_doctor_rows() {
+    local rc=0
+    ghostty_check || rc=$?
+    [ "$rc" -eq 2 ] && return 2
+    return 0
 }
 
 # Dispatcher for `claude-dev ghostty [flag]`.
