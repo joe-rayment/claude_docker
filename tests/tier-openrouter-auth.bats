@@ -16,7 +16,6 @@ REPO_ROOT="$(cd "$REPO_ROOT/.." && pwd)"
 
 TSET="$REPO_ROOT/scripts/tier-set.sh"
 AUTH="$REPO_ROOT/scripts/openrouter-auth.sh"
-DISPATCH="$REPO_ROOT/scripts/orca-dispatch.sh"
 ROLES="$REPO_ROOT/scripts/lib/tier-roles.sh"
 
 free_port() {

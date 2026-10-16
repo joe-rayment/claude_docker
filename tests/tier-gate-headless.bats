@@ -6,7 +6,7 @@
 #           denied naming `dispatch <bead>` / `recon "<question>"`, and an
 #           explicit model on the Agent call stays the in-process fallback.
 # Fails if: tier-gate stops reading backend "headless", the deny reasons name
-#           orca-dispatch or Orca, or a claude-agent headless role is denied.
+#           an Orca command or Orca, or a claude-agent headless role is denied.
 # Run:      bats tests/tier-gate-headless.bats
 # NOT a frozen contract file -- tests/tier-hooks.bats is the frozen S4 one.
 
