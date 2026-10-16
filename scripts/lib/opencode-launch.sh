@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #
 # opencode-launch.sh -- the ONE per-launch opencode config writer, shared
-# by orca_opencode_command (scripts/lib/orca-orch.sh, the dispatch path:
-# headless orca-worker-run and the --tui terminal) and recon
-# (scripts/recon.sh) (claude-orca-c3p.2). Sourced, never executed. bash 3.2
+# by workers_opencode_command (scripts/lib/workers.sh, the dispatch path:
+# the headless worker-run) and recon (scripts/recon.sh)
+# (claude-orca-c3p.2). Sourced, never executed. bash 3.2
 # clean, because lint-bash32.sh scans all of scripts/.
 #
 # The writer's job: given the model to launch (already resolved -- a
@@ -17,7 +17,7 @@
 #                    options when a base URL is given (the local guard is
 #                    an OpenRouter-only affair) and reasoning.effort under
 #                    the vendor model when a variant is given -- byte for
-#                    byte what orca_opencode_command and recon wrote before
+#                    byte what workers_opencode_command and recon wrote before
 #                    there was a second provider, which the frozen tests
 #                    (variant-carry, opencode-permissions, recon,
 #                    tier-openrouter-auth) pin.
