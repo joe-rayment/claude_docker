@@ -1,25 +1,25 @@
 #!/usr/bin/env bats
 #
-# v3 S1b acceptance contract (claude-orca-qa2.6) -- how the image gets
-# Orca. Re-pointed when the install logic moved out of the Dockerfile and
-# into scripts/container/setup.sh: the claims are the same, the file that
-# has to satisfy them changed, and the Dockerfile now has to be empty of
-# install steps.
+# Guards:   the image carries no Orca at all, and gets its way in from
+#           openssh-server; every setup.sh phase still lands in the right
+#           place and `setup.sh --check` reads the box rather than a constant
+# Fails if: a phases/orca.sh, an orca phase, an /opt/orca link or an Orca
+#           pin comes back into setup.sh or the Dockerfile; the sshd row
+#           disappears from --check; the Dockerfile grows an install step of
+#           its own; or the opencode phase stops being pinned
+# Run:      bats tests/container-image.bats
 #
-# The first multi-arch build published amd64 and then died on the arm64
-# leg with `./orca.AppImage: Exec format error`: an AppImage's runtime
-# carries the "AI\x02" magic in its ELF e_ident padding, and QEMU's binfmt
-# pattern does not match it, so the self-extractor cannot run under
-# emulation at all. The release .deb has no such problem -- apt is the
-# same path every other step already takes under QEMU.
-#
-# These greps are static by design, and they are no longer the only check:
-# scripts/container/verify-rootfs.sh runs setup.sh for real inside an
-# extracted Ubuntu 24.04 rootfs. Whether the IMAGE works, there is no CI
-# to say any more -- the image is built on the machine that runs it, by
-# `acquire_image` in scripts/launcher.sh, from the folder's own template
-# clone, so scripts/container/smoke.sh is run by hand (see tests/mac-e2e.sh)
-# rather than gated on a workflow.
+# History: this file began as the v3 S1b contract (claude-orca-qa2.6) for how
+# the image gets Orca -- the release .deb, unpacked, linked to /opt/orca.
+# Orca left the image (claude-orca-9bh): the Mac's terminal reaches the
+# container over ssh, so the claims about Orca are now claims of ABSENCE, and
+# the new claim is the sshd that replaced it. The install logic lives in
+# scripts/container/setup.sh and its phases/, and the Dockerfile has to be
+# empty of install steps. scripts/container/verify-rootfs.sh runs setup.sh
+# for real inside an extracted Ubuntu 24.04 rootfs; whether the IMAGE works
+# there is no CI to say -- the image is built on the machine that runs it, by
+# `acquire_image` in scripts/launcher.sh, so scripts/container/smoke.sh is
+# run by hand (see tests/mac-e2e.sh). The greps below are static by design.
 
 # need_nonroot only -- deliberately NOT helpers/setup, whose setup_file
 # builds the bootstrap stub tree this file has no use for.
@@ -30,87 +30,65 @@ DOCKERFILE="$REPO_ROOT/Dockerfile"
 SETUP="$REPO_ROOT/scripts/container/setup.sh"
 SMOKE="$REPO_ROOT/scripts/container/smoke.sh"
 
-# The Orca phase alone: from its function header to the closing brace at
+# The opencode phase alone: from its function header to the closing brace at
 # column 0. Scoping the positive assertions this way keeps them from being
 # satisfied by some unrelated line elsewhere in the file.
-# phase_orca plus orca_relink, which it calls: the three symlinks moved
-# into that helper when the payload moved into the folder's toolchain
-# cache, because a recreated container has the payload but none of the
-# links, and both the fast path and the install path have to make them.
-orca_phase() {
-    sed -n '/^orca_relink()/,/^}/p;/^phase_orca()/,/^}/p' "$SETUP" "${SETUP%/*}"/phases/*.sh
-}
-
-# The opencode phase alone, scoped the same way.
 opencode_phase() {
     sed -n '/^phase_opencode()/,/^}/p' "$SETUP" "${SETUP%/*}"/phases/*.sh
 }
 
-# The arch mapping both the .deb name and every other asset go through.
-arch_helper() {
-    sed -n '/^deb_arch()/,/^}/p' "$SETUP"
-}
-
-# Build steps only -- comments explain the AppImage history and must stay
-# free to say so.
+# Build steps only -- comments explain the history and must stay free to
+# name what is gone.
 setup_steps() {
     cat "$SETUP" "${SETUP%/*}"/phases/*.sh | grep -v '^[[:space:]]*#'
 }
 
-@test "setup.sh installs Orca 1.4.197 from the release .deb for the build architecture, links /opt/orca to /opt/Orca, and never executes the Orca binary at install time" {
+@test "the image carries no Orca: no orca phase or phase file, no Orca pin, no /opt/orca, no Orca binary" {
     [ -f "$SETUP" ]
 
-    # One pin, and it is a version, never 'latest'.
-    run grep -qE '^ORCA_VERSION="\$\{ORCA_VERSION:-1\.4\.197\}"[[:space:]]*$' "$SETUP" "${SETUP%/*}"/phases/*.sh
-    [ "$status" -eq 0 ]
-
-    local phase arch
-    phase="$(orca_phase)"
-    [ -n "$phase" ]
-    arch="$(arch_helper)"
-    [ -n "$arch" ]
-
-    # The asset is the release .deb, named from the pin...
-    printf '%s\n' "$phase" | grep -qE 'orca-ide_\$\{ORCA_VERSION\}_\$\{[A-Za-z_][A-Za-z0-9_]*\}\.deb'
-    # ...and both published architectures map to their real asset:
-    # orca-ide_1.4.197_amd64.deb and orca-ide_1.4.197_arm64.deb.
-    printf '%s\n' "$arch" | grep -qE 'x86_64\|amd64\)[^;]*amd64'
-    printf '%s\n' "$arch" | grep -qE 'arm64\|aarch64\)[^;]*arm64'
-
-    # UNPACKED, not apt-installed. The payload lives in the folder's
-    # toolchain cache now (<project>/.claude-dev/toolchain, mounted at
-    # /opt/Orca), and apt would register a package in a dpkg database that
-    # dies with the container -- so the next start would find an
-    # installed-but-unknown Orca. Extraction has no such memory.
-    printf '%s\n' "$phase" | grep -qE 'dpkg-deb -x'
-    printf '%s\n' "$phase" | grep -qE 'apt-get install[^;]*orca\.deb' && return 1
-
-    # What apt used to do for free -- resolve the .deb's own Depends -- is
-    # now phase_orcadeps hand-listing them in the image, so the .deb is
-    # asked directly whether that list still covers it.
-    printf '%s\n' "$phase" | grep -qE 'dpkg-deb --field .* Depends'
-
-    # The package lands in /opt/Orca, but ORCA_BIN's default and every
-    # doc say /opt/orca; the symlink is what makes both true.
-    printf '%s\n' "$phase" | grep -qE 'ln -s[a-zA-Z]*[[:space:]]+/opt/Orca[[:space:]]+/opt/orca([[:space:]]|;|$)'
-    run grep -qE '(^|[[:space:]])ORCA_BIN=/opt/orca/orca-ide' "$DOCKERFILE"
-    [ "$status" -eq 0 ]
-
-    # The CLI the entrypoint's `orca repo add` reaches, and the stamp
-    # claude-dev --doctor reads.
-    printf '%s\n' "$phase" | grep -q '/usr/local/bin/orca'
-    printf '%s\n' "$phase" | grep -q '/opt/orca/VERSION'
-
-    # No AppImage extraction: that is the step QEMU cannot run.
-    run bash -c "grep -v '^[[:space:]]*#' '$SETUP' | grep -n 'appimage-extract'"
+    # No phase file, and the phase list does not name one.
+    [ ! -e "${SETUP%/*}/phases/orca.sh" ]
+    run grep -E '^(IMAGE_|TOOLCHAIN_)?PHASES=.*(^|[" ])orca([" ]|$)' "$SETUP"
     [ "$status" -ne 0 ]
+    run bash "$SETUP" --list
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"orca"* ]]
 
-    # And nothing invokes the Orca binary or its CLI during the build --
-    # `orca-ide --version` under emulation is slow, proves nothing about
-    # the target machine, and is exactly what a cross build must not need.
-    run bash -c "grep -v '^[[:space:]]*#' '$SETUP' | grep -nE 'orca-ide[[:space:]]+-'"
+    # Asking for it is an unknown phase, not a quiet no-op.
+    run bash "$SETUP" --phase orca
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"unknown phase: orca"* ]]
+
+    # Build steps (not comments) never mention the Orca pin, its install
+    # directory, its binary or its AppImage/.deb. "claude-orca" is this
+    # project, not the app, so it is struck before the match.
+    run bash -c "cat '$SETUP' '${SETUP%/*}'/phases/*.sh | grep -v '^[[:space:]]*#' | sed 's/claude[-_]orca//Ig' | grep -niE 'orca'"
     [ "$status" -ne 0 ]
     [ -z "$output" ]
+
+    # The Dockerfile: no ORCA_* pin or ORCA_BIN, no Orca layer, no /opt/orca.
+    run bash -c "grep -v '^[[:space:]]*#' '$DOCKERFILE' | sed 's/claude[-_]orca//Ig' | grep -niE 'orca'"
+    [ "$status" -ne 0 ]
+    [ -z "$output" ]
+}
+
+@test "the way into the container is openssh-server: installed in the base apt set, host keys deleted from the image, port 2222 exposed" {
+    [ -f "$SETUP" ]
+
+    # In BASE_PACKAGES, which the base phase apt-installs.
+    local pkgs
+    pkgs="$(sed -n '/^BASE_PACKAGES="/,/"$/p' "$SETUP")"
+    [ -n "$pkgs" ]
+    printf '%s\n' "$pkgs" | grep -qE '(^|[[:space:]"])openssh-server([[:space:]"]|$)'
+
+    # Its postinst generates host keys; one baked into the image would be
+    # shared by every container built from it, so the base phase removes
+    # them right after the install. The real key comes from the folder.
+    setup_steps | grep -qE 'rm -f /etc/ssh/ssh_host_\*'
+
+    # The Dockerfile publishes the high port the entrypoint runs sshd on.
+    run grep -qE '^EXPOSE 2222([[:space:]]|$)' "$DOCKERFILE"
+    [ "$status" -eq 0 ]
 }
 
 @test "the Dockerfile installs nothing itself: no apt-get, no curl, only setup.sh calls" {
@@ -147,28 +125,11 @@ setup_steps() {
 
     # --check reads the box, never a script constant: the rows this box
     # satisfies have to come back ok, or it is not reading anything real.
-    # The orca row follows the box too. A dev box has no Orca, so --check
-    # must SAY so and exit non-zero rather than quietly passing; a box
-    # that has grown a real Orca (this one did, for the Orca-native
-    # orchestration work) must report it ok at the pinned version. Pinning
-    # either answer into the test only makes the case lie on the other
-    # kind of box.
-    local pin have=""
-    pin="$(sed -n 's/^ORCA_VERSION="\${ORCA_VERSION:-\([^}]*\)}".*/\1/p' \
-        "$SETUP" "${SETUP%/*}"/phases/*.sh | head -1)"
-    [ -n "$pin" ]
-    # setup.sh honours an ambient ORCA_VERSION, so the case has to want
-    # what the script wants.
-    pin="${ORCA_VERSION:-$pin}"
-    if [ -f /opt/orca/VERSION ]; then
-        have="$(tr -d '[:space:]' < /opt/orca/VERSION)"
-    fi
-
     run bash "$SETUP" --check
     [[ "$output" == *"ok    node"* ]]
     [[ "$output" == *"ok    bats"* ]]
-    # gh, bd and dolt follow the box too: ok where it has them, a FAIL row
-    # naming them where it does not (a bare dev box has none of the three).
+    # gh, bd, dolt and helix follow the box too: ok where it has them, a
+    # FAIL row naming them where it does not (a bare dev box has none).
     local tool
     for tool in gh bd dolt; do
         if command -v "$tool" >/dev/null 2>&1; then
@@ -177,27 +138,30 @@ setup_steps() {
             [[ "$output" == *"FAIL  $tool:"* ]]
         fi
     done
-
-    # The web-theme row follows the box for the same reason: the image gets
-    # its seed at build, but a shared dev box's /opt/Orca is left alone, so
-    # pinning either answer here would make the case lie on the other kind
-    # of box. Everything except that row still has to be clean.
-    local themed=""
-    if [[ "$output" == *"ok    orca web theme"* ]]; then themed=1; fi
-
-    if [ "$have" = "$pin" ] && [ -x /opt/orca/orca-ide ] \
-        && [ -x /opt/orca/resources/bin/orca-ide ]; then
-        [[ "$output" == *"ok    orca ${pin}"* ]]
-        [[ "$output" != *"FAIL  orca:"* ]]
-        if [ -n "$themed" ]; then
-            [[ "$output" != *"FAIL "* ]]
-            [ "$status" -eq 0 ]
-        else
-            [[ "$output" == *"FAIL  orca web theme"* ]]
-        fi
+    if command -v hx >/dev/null 2>&1 || command -v helix >/dev/null 2>&1; then
+        [[ "$output" == *"ok    helix"* ]]
     else
-        [[ "$output" == *"FAIL  orca:"* ]]
+        [[ "$output" == *"FAIL  helix"* ]]
+    fi
+
+    # The sshd row is the way-in check: ok only where openssh-server is
+    # really installed, a FAIL row naming it everywhere else. Pinning either
+    # answer here would make the case lie on the other kind of box.
+    if [ -x /usr/sbin/sshd ]; then
+        [[ "$output" == *"ok    sshd /usr/sbin/sshd"* ]]
+    else
+        [[ "$output" == *"FAIL  sshd:"* ]]
+    fi
+
+    # There is no Orca row of any kind: nothing in the image to read.
+    [[ "$output" != *"ok    orca"* ]]
+    [[ "$output" != *"FAIL  orca"* ]]
+
+    # The exit code is the rows': non-zero exactly when some row failed.
+    if [[ "$output" == *"FAIL "* ]]; then
         [ "$status" -ne 0 ]
+    else
+        [ "$status" -eq 0 ]
     fi
 }
 
@@ -222,13 +186,21 @@ setup_steps() {
     smoke="$(cat "$SMOKE")"
     [[ "$smoke" == *".claude-dev/template"* ]]
     [[ "$smoke" == *"--phase base"* ]]
+
+    # What it proves is the way in: a real ssh login against the sshd the
+    # entrypoint started. It no longer waits on, or looks for, anything of
+    # Orca's (comments may say so; instructions may not).
+    [[ "$smoke" == *"sshd.ready"* ]]
+    [[ "$smoke" == *"smoke-ssh-ok"* ]]
+    run bash -c "grep -v '^[[:space:]]*#' '$SMOKE' | grep -nE 'orca-ide|orca-web-url|WEBURL|orca repo'"
+    [ "$status" -ne 0 ]
+    [ -z "$output" ]
 }
 
 # claude-orca-qa2.11: an OpenRouter worker inside the VM is an `opencode`
-# terminal Orca supervises (.claude/plans/orca-orchestration.md, Container
-# side), so opencode belongs to the image, pinned like every other phase.
-# Unlike orca, this box HAS opencode -- so --check's row is a real reading
-# here, not a static grep.
+# process, so opencode belongs to the image, pinned like every other phase.
+# This box HAS opencode -- so --check's row is a real reading here, not a
+# static grep.
 @test "setup.sh installs a pinned opencode and --check reports it" {
     [ -f "$SETUP" ]
 
@@ -248,7 +220,7 @@ setup_steps() {
     # In PHASES, so in --list and the default all-phases run.
     phase="$(opencode_phase)"
     [ -n "$phase" ]
-    run grep -qE '^PHASES="[^"]*dolt opencode orca[^"]*"$' "$SETUP"
+    run grep -qE '^PHASES="([^"]* )?opencode( [^"]*)?"$' "$SETUP"
     [ "$status" -eq 0 ]
     run bash "$SETUP" --list
     [ "$status" -eq 0 ]

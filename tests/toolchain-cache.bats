@@ -90,10 +90,10 @@ lacks() {
     done
 }
 
-@test "the toolchain set is exactly the six tools that live under the cached paths" {
+@test "the toolchain set is exactly the five tools that live under the cached paths" {
     local toolchain
     toolchain="$(bash "$SETUP" --list toolchain | sort | tr '\n' ' ')"
-    [ "$toolchain" = "bats bd dolt helix opencode orca " ]
+    [ "$toolchain" = "bats bd dolt helix opencode " ]
 }
 
 @test "the Dockerfile bakes the apt half in one layer and each toolchain phase in its own" {
@@ -228,39 +228,6 @@ lacks() {
     local body
     body="$(sed -n '/^phase_template()/,/^}/p' "$SETUP")"
     contains "$body" "stat -c '%u' /opt/claude-orca"
-}
-
-@test "orca's already-present check is answerable from the cache alone" {
-    # /opt/orca and /usr/bin/orca-ide are symlinks OUTSIDE the cache: a
-    # recreated container has neither, even with the payload right there.
-    # Re-linking has to happen before the version check, or every recreate
-    # pays the full reinstall the cache exists to avoid.
-    local body
-    body="$(sed -n '/^phase_orca()/,/^}/p' "$SETUP" "${SETUP%/*}"/phases/*.sh)"
-    contains "$body" "orca_relink"
-
-    local relink_line check_line
-    relink_line="$(printf '%s\n' "$body" | grep -n 'orca_relink' | head -1 | cut -d: -f1)"
-    check_line="$(printf '%s\n' "$body" | grep -n 'stamp /opt/orca/VERSION' | head -1 | cut -d: -f1)"
-    [ -n "$relink_line" ]
-    [ -n "$check_line" ]
-    [ "$relink_line" -lt "$check_line" ]
-}
-
-@test "the orca payload is extracted, not apt-installed, so no dpkg state is required to own it" {
-    local body
-    body="$(sed -n '/^phase_orca()/,/^}/p' "$SETUP" "${SETUP%/*}"/phases/*.sh)"
-    contains "$body" "dpkg-deb -x"
-
-    # apt would register a package in a dpkg database that dies with the
-    # container, leaving the next start with an installed-but-unknown Orca.
-    run grep -qE 'apt-get install .*orca\.deb' <<<"$body"
-    [ "$status" -ne 0 ]
-
-    # And the hand-listed dependency set is checked against the .deb's own
-    # Depends, so the list cannot drift silently.
-    contains "$body" "dpkg-deb --field"
-    contains "$body" "ORCA_PACKAGES"
 }
 
 @test "opencode installs into the cached prefix rather than the image's node_modules" {
