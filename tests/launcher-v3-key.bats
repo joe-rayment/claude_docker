@@ -78,6 +78,7 @@ KEY="sk-or-v1-testkey0123456789abcdefghijklmnop"
     mkdir -p "$PROJECT_DIR"
     primary="$(abspath "$PROJECT_DIR")"
     make_project_v3 "$primary" >/dev/null
+    stub_sshd_up "$primary"
 
     run bash -c "cd '$primary' && ./claude-dev --doctor"
     [ "$status" -eq 0 ]

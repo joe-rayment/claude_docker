@@ -57,6 +57,7 @@ contains() {
     # call, so a plain `./claude-dev verify` afterward asks the real
     # (Linux) uname -- find_orca_app() finds no Mac and the "local repos"
     # row reads n/a, which is as clean a pass as an "ok" would be.
+    stub_sshd_up "$primary"
 
     run bash -c "cd '$primary' && ./claude-dev verify"
     [ "$status" -eq 0 ]
@@ -64,7 +65,7 @@ contains() {
     contains "$output" "container"
     contains "$output" "image"
     contains "$output" "port"
-    contains "$output" "web url"
+    contains "$output" "sshd"
     # ... and what only the container can answer, passed through.
     contains "$output" "mount point"
     contains "$output" "rulebook"
@@ -77,6 +78,7 @@ contains() {
     local primary
     primary="$(abspath "$PROJECT_DIR")"
     make_project_v3 "$primary" >/dev/null
+    stub_sshd_up "$primary"
 
     export CLAUDE_ORCA_TEST_VERIFY_FAIL=1
     run bash -c "cd '$primary' && ./claude-dev verify"
@@ -122,6 +124,7 @@ contains() {
     local primary
     primary="$(abspath "$PROJECT_DIR")"
     make_project_v3 "$primary" >/dev/null
+    stub_sshd_up "$primary"
 
     export CLAUDE_ORCA_TEST_VERIFY_SILENT=1
     run bash -c "cd '$primary' && ./claude-dev verify"
@@ -156,6 +159,7 @@ contains() {
     write_stub_orca "$CLAUDE_ORCA_APP/Contents/Resources/bin/orca"
     export ORCA_STUB_APP_RUNNING=true
     make_project_v3 "$primary" >/dev/null
+    stub_sshd_up "$primary"
 
     # The ordinary case first: the installed Orca holds no local project
     # at all.

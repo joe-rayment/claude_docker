@@ -110,6 +110,7 @@ lacks() {
     run make_project_v3 "$primary"
     [ "$status" -eq 0 ]
     name="claude-orca-$(basename "$primary")"
+    stub_sshd_up "$primary"
 
     run bash -c "cd '$primary' && ./claude-dev --doctor"
     contains "$output" "$name-orca-state"

@@ -154,14 +154,26 @@ run_wait_for_sshd_ready() {
     printf 'port=%s\nhost_key_sha256=SHA256:stale\n' "$port" > "$ready"
     [ -s "$ready" ]
 
+    # No new sshd.ready ever appears (CLAUDE_ORCA_TEST_NO_SSHD), so open
+    # times out waiting -- and only the launcher's rm can explain the stale
+    # file's absence afterwards.
     : > "$CONTAINER_STUB_LOG"
-    CLAUDE_ORCA_TEST_NO_SSHD=1 run bash -c "cd '$primary' && ./claude-dev open 2>&1"
-    [ "$status" -eq 0 ]
+    CLAUDE_ORCA_TEST_NO_SSHD=1 CLAUDE_ORCA_WEBURL_TIMEOUT=2 run bash -c "cd '$primary' && ./claude-dev open 2>&1"
+    [ "$status" -ne 0 ]
     [[ "$output" == *"Starting $name"* ]]
+    [[ "$output" == *"sshd did not come up within 2s"* ]]
     grep -q "^start $name" "$CONTAINER_STUB_LOG"
-    # The stub's `start` writes no sshd.ready, so only the launcher's rm
-    # can explain its absence.
     [ ! -e "$ready" ]
+
+    # With the stub's restarted entrypoint writing its own file, open
+    # succeeds and the file it waited for is the new one, not the stale one.
+    echo exited > "$CONTAINER_STUB_STATE/containers/$name"
+    printf 'port=%s\nhost_key_sha256=SHA256:stale\n' "$port" > "$ready"
+    run bash -c "cd '$primary' && ./claude-dev open 2>&1"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"sshd is up"* ]]
+    [ -s "$ready" ]
+    ! grep -q 'SHA256:stale' "$ready"
 }
 
 @test "wait_for_sshd_ready returns 0 and prints nothing when the ready file carries this folder's host key" {
