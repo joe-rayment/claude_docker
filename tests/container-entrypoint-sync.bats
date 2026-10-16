@@ -250,3 +250,71 @@ WRAP
     before="$(cat "$TMP/hash.before")"
     [ "$(stat -c %y "$hashfile")" = "$before" ]
 }
+
+# --- provision.d (claude-orca-dbu.4) -------------------------------------
+#
+# The project-shaped work -- the toolchain verify, the config sync, the
+# seeds, the tracker, the guard check -- is no longer in front of the thing
+# that reports it. It runs from scripts/container/provision.d/ once the sshd
+# supervisor is started, and what it leaves behind is a status per step.
+# The contract for the steps themselves is tests/provision.bats; this case
+# is the wiring.
+
+@test "entrypoint provisions the folder through provision.d after sshd is supervised" {
+    # Guards:   every provision.d step runs and leaves a status, after run/port is written and with sshd up.
+    # Fails if: provisioning is skipped, runs before sshd/run/port, or a step is added without being reached.
+    # Run:      bats -f "through provision.d" tests/container-entrypoint-sync.bats
+    [ -x "$ENTRYPOINT" ]
+    [ -d "$REPO_ROOT/scripts/container/provision.d" ]
+
+    local proj="$TMP/project" port pdir step name first i
+    make_project "$proj"
+    # Without the pin a box that bakes /opt/claude-orca provisions from the
+    # IMAGE's frozen provision.d, and a step added since that build has no
+    # status here.
+    sync_pin_template_root "$proj"
+    pdir="$proj/.claude-dev/run/provision"
+
+    sync_stage_ssh_keys "$proj"
+    sync_write_sshd_stub "$TMP/bin/sshd-stub" "$proj"
+    port="$(free_port)"
+    sync_env "$proj"
+    export CLAUDE_ORCA_SSHD_BIN="$TMP/bin/sshd-stub" CLAUDE_ORCA_SSHD_PORT="$port"
+    export CLAUDE_ORCA_SKIP_PROVISION=0
+
+    start_entrypoint_bg
+
+    # Every real step ran and said how it went. The last one is what the
+    # wait is on: they run in order, so a status for it means a status for
+    # all of them.
+    name="$(basename "$(ls -1 "$REPO_ROOT/scripts/container/provision.d" | sort | tail -1)")"
+    if ! wait_for_file "$pdir/$name.status" 120; then
+        cat "$TMP/entrypoint.out" >&2 || true
+        ls -la "$pdir" >&2 || true
+        false
+    fi
+    for step in "$REPO_ROOT"/scripts/container/provision.d/*; do
+        [ -f "$pdir/$(basename "$step").status" ] \
+            || { echo "no status for $(basename "$step")" >&3; false; }
+    done
+
+    # run/port was written before the first step started ...
+    first="$pdir/$(ls -1 "$REPO_ROOT/scripts/container/provision.d" | sort | head -1).status"
+    [ -s "$proj/.claude-dev/run/port" ]
+    [ ! "$proj/.claude-dev/run/port" -nt "$first" ]
+    run cat "$proj/.claude-dev/run/port"
+    [ "$output" = "$port" ]
+
+    # ... sshd is up and answering ...
+    wait_for_file "$proj/.claude-dev/run/sshd.ready" 30
+
+    # ... and PID 1 only settles into waiting once provisioning is done.
+    for i in $(seq 1 100); do
+        grep -qF 'waiting on the sshd supervisor' "$TMP/entrypoint.out" && break
+        sleep 0.1
+    done
+    local start_ln wait_ln
+    start_ln="$(grep -n 'sshd supervisor started' "$TMP/entrypoint.out" | head -1 | cut -d: -f1)"
+    wait_ln="$(grep -n 'waiting on the sshd supervisor' "$TMP/entrypoint.out" | head -1 | cut -d: -f1)"
+    [ -n "$start_ln" ] && [ -n "$wait_ln" ] && [ "$start_ln" -lt "$wait_ln" ]
+}
