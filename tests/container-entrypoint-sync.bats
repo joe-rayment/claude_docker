@@ -150,3 +150,41 @@ JSON
     sshd_ln="$(grep -n 'sshd supervisor started' "$TMP/entrypoint.out" | head -1 | cut -d: -f1)"
     [ -n "$sync_ln" ] && [ -n "$sshd_ln" ] && [ "$sync_ln" -lt "$sshd_ln" ]
 }
+
+@test "a failing early config sync does not stop sshd: sshd.ready and run/port still appear" {
+    # Guards:   a broken early config sync is logged, named as retried later, and the boot goes on to start sshd.
+    # Fails if: a failing early sync aborts the entrypoint (set -e leak), so run/port or sshd.ready never appear.
+    # Run:      bats -f "does not stop sshd" tests/container-entrypoint-sync.bats
+    [ -x "$ENTRYPOINT" ]
+
+    local proj="$TMP/project" runp port
+    make_project "$proj"
+    # A template config directory that exists but is missing every file
+    # config-sync.sh actually needs -- a real failure, not a stand-in.
+    mkdir -p "$proj/.claude-dev/template/config"
+
+    sync_stage_ssh_keys "$proj"
+    sync_write_sshd_stub "$TMP/bin/sshd-stub" "$proj"
+    port="$(free_port)"
+    sync_env "$proj"
+    export CLAUDE_ORCA_SSHD_BIN="$TMP/bin/sshd-stub" CLAUDE_ORCA_SSHD_PORT="$port"
+    export CLAUDE_ORCA_SKIP_PROVISION=1
+
+    start_entrypoint_bg
+
+    runp="$proj/.claude-dev/run"
+    if ! wait_for_file "$runp/sshd.ready" 40; then
+        cat "$TMP/entrypoint.out" >&2 || true
+        false
+    fi
+    wait_for_file "$runp/port" 5
+
+    run cat "$runp/port"
+    [ "$status" -eq 0 ]
+    [ "$output" = "$port" ]
+
+    # Not silent: named as the early sync, and named as retried later --
+    # exactly the pattern every other non-fatal step here follows.
+    grep -qF 'early config sync' "$TMP/entrypoint.out"
+    grep -qF 'provision.d/20-config-sync will retry' "$TMP/entrypoint.out"
+}
