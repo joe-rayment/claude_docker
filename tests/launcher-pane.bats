@@ -122,3 +122,98 @@ ssh_call() {
     # Nothing to send at all: no -o option, just the alias.
     [ "$(ssh_call 1)" = "$(printf '%s\n' -F "$sd/config" -tt "$alias")" ]
 }
+
+@test "terminfo: pushed once per Ghostty version, again when the version changes" {
+    open_folder "$PROJECT_DIR"
+    write_stub_ssh
+    write_stub_infocmp
+    export TERM=xterm-ghostty TERM_PROGRAM_VERSION=1.2.3
+    export SSH_STUB_STDIN_LOG="$BATS_TEST_TMPDIR/ssh-stdin.txt"
+
+    run run_launcher_fn "$primary" ssh_push_terminfo
+    [ "$status" -eq 0 ]
+    [ "$(ssh_call 1)" = "$(printf '%s\n' -F "$sd/config" -o BatchMode=yes "$alias" 'tic -x -o ~/.terminfo - ')" ]
+    grep -q '^xterm-ghostty|ghostty terminal,' "$SSH_STUB_STDIN_LOG"
+    [ "$(cat "$primary/.claude-dev/run/terminfo.stamp")" = "1.2.3" ]
+
+    # Same version again: no second ssh.
+    run run_launcher_fn "$primary" ssh_push_terminfo
+    [ "$status" -eq 0 ]
+    [ "$(grep -c '^--- ssh$' "$SSH_STUB_LOG")" = "1" ]
+
+    # A new Ghostty: pushed again, stamp moves on.
+    export TERM_PROGRAM_VERSION=1.3.0
+    run run_launcher_fn "$primary" ssh_push_terminfo
+    [ "$status" -eq 0 ]
+    [ "$(grep -c '^--- ssh$' "$SSH_STUB_LOG")" = "2" ]
+    [ "$(cat "$primary/.claude-dev/run/terminfo.stamp")" = "1.3.0" ]
+}
+
+@test "terminfo: a failed push is one warning, exit 0, and no stamp" {
+    open_folder "$PROJECT_DIR"
+    write_stub_ssh
+    write_stub_infocmp
+    export TERM=xterm-ghostty TERM_PROGRAM_VERSION=1.2.3 SSH_STUB_RC=255
+    run run_launcher_fn "$primary" ssh_push_terminfo
+    [ "$status" -eq 0 ]
+    [ "$(printf '%s\n' "$output" | grep -c 'terminfo:')" = "1" ]
+    [ ! -e "$primary/.claude-dev/run/terminfo.stamp" ]
+}
+
+@test "terminfo: any other TERM touches nothing" {
+    open_folder "$PROJECT_DIR"
+    write_stub_ssh
+    write_stub_infocmp
+    export TERM=xterm-256color TERM_PROGRAM_VERSION=1.2.3
+    run run_launcher_fn "$primary" ssh_push_terminfo
+    [ "$status" -eq 0 ]
+    [ ! -s "$SSH_STUB_LOG" ]
+    [ ! -e "$primary/.claude-dev/run/terminfo.stamp" ]
+}
+
+@test "pane_exec without a terminal prints the ready: line, runs no ssh, writes no pane.log" {
+    open_folder "$PROJECT_DIR"
+    write_stub_ssh
+    unset CLAUDE_ORCA_PANE_FORCE_TTY
+    rm -f "$primary/.claude-dev/run/pane.log"
+    run run_launcher_fn "$primary" pane_exec "$primary"
+    [ "$status" -eq 0 ]
+    [ "$output" = "ready: run ./claude-dev pane in a terminal" ]
+    [ ! -s "$SSH_STUB_LOG" ]
+    [ ! -e "$primary/.claude-dev/run/pane.log" ]
+}
+
+@test "pane_exec logs one line to run/pane.log: the mode and the relative directory" {
+    open_folder "$PROJECT_DIR"
+    write_stub_ssh
+    mkdir -p "$primary/a/b"
+    export CLAUDE_ORCA_PANE_FORCE_TTY=1
+    unset TERM_PROGRAM TERM_PROGRAM_VERSION COLORTERM
+    rm -f "$primary/.claude-dev/run/pane.log"
+    run run_launcher_fn "$primary" pane_exec "$primary/a/b" fast
+    [ "$status" -eq 0 ]
+    [ "$(wc -l < "$primary/.claude-dev/run/pane.log" | tr -d ' ')" = "1" ]
+    grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z fast a/b$' "$primary/.claude-dev/run/pane.log"
+}
+
+@test "the real OpenSSH client parses pane_exec's one SetEnv option, every value intact" {
+    [ -x "$REAL_SSH_ROOT/usr/bin/ssh" ] || skip "extracted OpenSSH not at $REAL_SSH_ROOT"
+    open_folder "$PROJECT_DIR"
+    write_stub_ssh
+    mkdir -p "$primary/sub dir"
+    export CLAUDE_ORCA_PANE_FORCE_TTY=1 TERM_PROGRAM=ghostty TERM_PROGRAM_VERSION=1.2.3 COLORTERM=truecolor
+    run run_launcher_fn "$primary" pane_exec "$primary/sub dir"
+    [ "$status" -eq 0 ]
+    opt="$(ssh_call 1 | grep '^SetEnv=')"
+
+    # Hand the exact option string to the real ssh and read back what it parsed.
+    run env LD_LIBRARY_PATH="$REAL_SSH_ROOT/usr/lib/aarch64-linux-gnu" \
+        "$REAL_SSH_ROOT/usr/bin/ssh" -F "$sd/config" -G -o "$opt" "$alias"
+    [ "$status" -eq 0 ]
+    setenv="$(printf '%s\n' "$output" | grep -i '^setenv ')"
+    [ "$(printf '%s\n' "$setenv" | wc -l | tr -d ' ')" = "4" ]
+    printf '%s\n' "$setenv" | grep -qx 'setenv CDEV_CWD=sub dir'
+    printf '%s\n' "$setenv" | grep -qx 'setenv TERM_PROGRAM=ghostty'
+    printf '%s\n' "$setenv" | grep -qx 'setenv TERM_PROGRAM_VERSION=1.2.3'
+    printf '%s\n' "$setenv" | grep -qx 'setenv COLORTERM=truecolor'
+}
