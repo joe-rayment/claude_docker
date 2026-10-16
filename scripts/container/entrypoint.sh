@@ -113,6 +113,11 @@ _resolve_script_path() {
 }
 SCRIPT_DIR="$(_s="$(_resolve_script_path)"; case "$_s" in (*/*) cd "${_s%/*}/" ;; esac && pwd -P)"
 
+# The container's sshd (claude-orca-9bh.6): config, env snapshot, host link
+# and the restart loop live in sshd-lib.sh, which defines functions and does
+# nothing at source time. A checkout that lacks it just boots without sshd.
+[ -r "$SCRIPT_DIR/sshd-lib.sh" ] && . "$SCRIPT_DIR/sshd-lib.sh"
+
 # The launcher's scratch volumes (claude-orca-1eh): docker volumes mounted
 # under the agent home and named in CLAUDE_ORCA_VOLUME_DIRS (see
 # volume-dirs.sh). Docker creates a fresh volume root-owned, and the agent
@@ -386,6 +391,30 @@ if [ "${CLAUDE_ORCA_ENTRYPOINT_NO_PRIVDROP:-0}" != "1" ] && [ "$(id -u)" = "0" ]
     fi
 fi
 
+# The sshd's runtime dir (claude-orca-9bh.6): /run/cdev, off the bind mount,
+# so the host key copy, the env snapshot and sshd_config never land in the
+# project folder. Made here, while we may still be root; a failure is one log
+# line -- start_sshd later sees an unwritable dir and skips sshd, the boot
+# goes on. The Mac project path is linked to PROJECT_DIR in the same place
+# (cdev_host_link is never fatal), but only when it can work: as root, or
+# when a test points CLAUDE_ORCA_HOST_LINK_ROOT at a fixture.
+SSHD_RUNTIME_DIR="${CLAUDE_ORCA_RUNTIME_DIR:-/run/cdev}"
+SSHD_LOOP_PID=""
+if declare -F cdev_sshd_loop >/dev/null 2>&1; then
+    if [ -d "$SSHD_RUNTIME_DIR/ssh" ] || mkdir -p "$SSHD_RUNTIME_DIR/ssh" 2>/dev/null; then
+        chmod 700 "$SSHD_RUNTIME_DIR/ssh" 2>/dev/null || true
+        if [ "$PRIVDROP" = "1" ]; then
+            chown "$AGENT_UID:$AGENT_GID" "$SSHD_RUNTIME_DIR" "$SSHD_RUNTIME_DIR/ssh" 2>/dev/null || true
+        fi
+    else
+        log "sshd runtime dir $SSHD_RUNTIME_DIR is not creatable; sshd will not start"
+    fi
+    if [ -n "${CLAUDE_ORCA_HOST_PROJECT_DIR:-}" ] \
+        && { [ "$(id -u)" = "0" ] || [ -n "${CLAUDE_ORCA_HOST_LINK_ROOT:-}" ]; }; then
+        cdev_host_link "$CLAUDE_ORCA_HOST_PROJECT_DIR" "$PROJECT_DIR"
+    fi
+fi
+
 # Every child Orca process goes through one of these: the only place that
 # knows whether to drop privileges, and the only place HOME is pinned.
 run_as_agent() {
@@ -654,6 +683,89 @@ else
     log "no OPENROUTER_API_KEY; not starting the OpenRouter guard"
 fi
 
+# --- the container's sshd (claude-orca-9bh.6) ---------------------------
+#
+# Beside Orca, never instead of it, and never fatal: every refusal below is
+# one line in run/sshd.log (or the boot log) and a return 0. It runs after
+# the guard block on purpose -- the env snapshot ssh panes inherit must hold
+# the guard's token, never the real OpenRouter key (the library also drops
+# any value that looks like one). sshd.ready is the Mac side's signal; it
+# exists only while sshd answers, so it is removed first on every boot.
+
+stop_sshd_loop() {
+    local pid="${SSHD_LOOP_PID:-}" i
+    [ -n "$pid" ] || return 0
+    kill -TERM "$pid" 2>/dev/null
+    for i in 1 2 3 4 5 6 7 8 9 10; do
+        kill -0 "$pid" 2>/dev/null || break
+        sleep 0.2
+    done
+    SSHD_LOOP_PID=""
+    return 0
+}
+
+start_sshd() {
+    local sshlog="$RUN_DIR/sshd.log" ssh_state="$PROJECT_DIR/.claude-dev/state/ssh"
+    local rt="$SSHD_RUNTIME_DIR" port="${CLAUDE_ORCA_SSHD_PORT:-2222}" bin allow fpr k
+    rm -f "$RUN_DIR/sshd.ready"
+    : > "$sshlog"
+    [ "$PRIVDROP" = "1" ] && chown "$AGENT_UID:$AGENT_GID" "$sshlog" 2>/dev/null
+    if ! declare -F cdev_sshd_loop >/dev/null 2>&1; then
+        log "sshd-lib.sh is not in $SCRIPT_DIR; not starting sshd"
+        return 0
+    fi
+    if [ ! -s "$ssh_state/host_ed25519" ] || [ ! -s "$ssh_state/host_ed25519.pub" ] \
+        || [ ! -s "$ssh_state/authorized_keys" ]; then
+        echo "no ssh keys in state/ssh yet -- the Mac side creates them on the next ./claude-dev" >> "$sshlog"
+        return 0
+    fi
+    bin="${CLAUDE_ORCA_SSHD_BIN:-$(command -v sshd || echo /usr/sbin/sshd)}"
+    if [ ! -d "$rt/ssh" ] || [ ! -w "$rt/ssh" ]; then
+        log "sshd runtime dir $rt/ssh is not writable; not starting sshd"
+        echo "sshd runtime dir $rt/ssh is not writable; sshd not started" >> "$sshlog"
+        return 0
+    fi
+    if [ ! -x "$bin" ]; then
+        log "no executable sshd at $bin; not starting sshd"
+        echo "no executable sshd at $bin; sshd not started" >> "$sshlog"
+        return 0
+    fi
+    if [ "$PRIVDROP" = "1" ]; then allow="$AGENT_USER"; else allow="$(id -un)"; fi
+    (
+        umask 077
+        cp "$ssh_state/host_ed25519" "$rt/ssh/host_ed25519" \
+            && cp "$ssh_state/host_ed25519.pub" "$rt/ssh/host_ed25519.pub" \
+            && cdev_env_snapshot "$rt/env" \
+            && cdev_sshd_config "$rt" "$PROJECT_DIR" "$port" "$allow" \
+                "$SCRIPT_DIR/pane-entry" > "$rt/sshd_config"
+    ) 2>>"$sshlog" || {
+        log "could not stage the sshd files under $rt; not starting sshd (see $sshlog)"
+        return 0
+    }
+    for k in ssh/host_ed25519 ssh/host_ed25519.pub env sshd_config; do
+        chmod 600 "$rt/$k" 2>/dev/null
+        [ "$PRIVDROP" = "1" ] && chown "$AGENT_UID:$AGENT_GID" "$rt/$k" 2>/dev/null
+    done
+    fpr="$(cdev_host_key_fpr "$rt/ssh/host_ed25519.pub")"
+    if [ -z "$fpr" ]; then
+        log "could not fingerprint the ssh host key; not starting sshd"
+        return 0
+    fi
+    if [ "$PRIVDROP" = "1" ]; then
+        cdev_sshd_loop "$bin" "$rt/sshd_config" "$sshlog" "$RUN_DIR/sshd.ready" "$port" "$fpr" agent_exec &
+    else
+        cdev_sshd_loop "$bin" "$rt/sshd_config" "$sshlog" "$RUN_DIR/sshd.ready" "$port" "$fpr" &
+    fi
+    SSHD_LOOP_PID=$!
+    # An early die must not orphan sshd (the TERM/INT trap below covers the
+    # signal paths; this covers every plain `exit`).
+    trap stop_sshd_loop EXIT
+    log "sshd restart loop started (pid $SSHD_LOOP_PID, port $port, log: $sshlog)"
+    return 0
+}
+
+start_sshd
+
 # --- seed Orca's own state, once (claude-orca-qa2.5) --------------------
 #
 # Before serve starts, so Orca reads it rather than racing it: the
@@ -900,6 +1012,7 @@ start_orca_serve
 stop_serve() {
     kill -TERM "$SERVE_PID" 2>/dev/null
     [ -n "${GUARD_PID:-}" ] && kill -TERM "$GUARD_PID" 2>/dev/null
+    stop_sshd_loop
 }
 trap 'stop_serve; exit 143' TERM INT
 

@@ -78,9 +78,16 @@ TOOLCHAIN_PHASES="bats bd dolt helix opencode orca"
 #
 # util-linux carries setpriv, which the entrypoint uses to drop root;
 # libasound2t64 is 24.04's spelling of libasound2.
+#
+# openssh-server is the other way into the container besides Orca: the
+# entrypoint runs its sshd on a high port so a terminal on the Mac (Ghostty)
+# can open panes here (claude-orca-9bh.6). Its postinst generates host keys;
+# the base phase deletes them again, because a key baked into the image would
+# be one key shared by every container built from it -- the real host key
+# lives in the folder's .claude-dev/state/ssh and is copied in at boot.
 BASE_PACKAGES="ca-certificates curl wget gnupg git jq ripgrep zsh less
 python3 python3-pip locales tini util-linux procps psmisc
-build-essential unzip xz-utils sudo
+build-essential unzip xz-utils sudo openssh-server
 libasound2t64 libgbm1 xauth fonts-liberation"
 
 # Elapsed seconds, not a clock: this log is read to find out which phase
@@ -163,6 +170,8 @@ phase_base() {
         apt_update_or_die
         # shellcheck disable=SC2086
         apt-get install -y --no-install-recommends $BASE_PACKAGES
+        # openssh-server's postinst made host keys; none may stay in the image.
+        rm -f /etc/ssh/ssh_host_*
         locale-gen en_US.UTF-8
         apt_cleanup
     fi
@@ -387,6 +396,12 @@ run_checks() {
         ck_ok "gh $(gh --version 2>/dev/null | head -1)"
     else
         ck_fail "gh: not on PATH"
+    fi
+
+    if [ -x /usr/sbin/sshd ]; then
+        ck_ok "sshd /usr/sbin/sshd"
+    else
+        ck_fail "sshd: /usr/sbin/sshd is missing (openssh-server)"
     fi
 
     v="$(installed_bats 2>/dev/null || true)"
