@@ -300,6 +300,7 @@ path_without_docker() {
     make_project_v3 "$primary" >/dev/null
     name="claude-orca-$(basename "$primary")"
     port="$(cat "$primary/.claude-dev/run/port")"
+    stub_sshd_up "$primary"
 
     run bash -c "cd '$primary' && ./claude-dev --doctor"
     [ "$status" -eq 0 ]
@@ -341,6 +342,7 @@ path_without_docker() {
     mkdir -p "$PROJECT_DIR"
     primary="$(abspath "$PROJECT_DIR")"
     make_project_v3 "$primary" >/dev/null
+    stub_sshd_up "$primary"
 
     run bash -c "cd '$primary' && ./claude-dev --doctor"
     [ "$status" -eq 0 ]
@@ -521,6 +523,7 @@ as_mac() {
 @test "doctor prints the orca app row with its version" {
     as_mac
     make_project_v3 "$PROJECT_DIR" >/dev/null
+    stub_sshd_up "$PROJECT_DIR"
 
     run bash -c "cd '$PROJECT_DIR' && ./claude-dev --doctor"
     [ "$status" -eq 0 ]
@@ -537,6 +540,7 @@ as_mac() {
     export CLAUDE_ORCA_UI=web
     make_project_v3 "$PROJECT_DIR" >/dev/null
     [ "$(jq -r '.ui' "$PROJECT_DIR/.claude-dev/claude-orca.json")" = "web" ]
+    stub_sshd_up "$PROJECT_DIR"
 
     export CLAUDE_ORCA_APP="$BATS_TEST_TMPDIR/no-such-Orca.app"
     run bash -c "cd '$PROJECT_DIR' && ./claude-dev --doctor"
@@ -628,6 +632,7 @@ desktop_fixture() {
     write_stub_orca "$CLAUDE_ORCA_APP/Contents/Resources/bin/orca"
     primary="$(abspath "$PROJECT_DIR")"
     make_project_v3 "$primary" >/dev/null
+    stub_sshd_up "$primary"
 
     # The app is not running (the stub's default) -- the only way left to
     # ask is the store it persists, not a CLI call.
@@ -659,6 +664,7 @@ desktop_fixture() {
     as_mac
     export CLAUDE_ORCA_APP="$(make_fake_orca_app "$BATS_TEST_TMPDIR/Applications/Orca9.app" 9.9.9)"
     make_project_v3 "$PROJECT_DIR" >/dev/null
+    stub_sshd_up "$PROJECT_DIR"
 
     # What this machine actually holds under our repo: an image built at
     # the older version, which is what the tag says.
