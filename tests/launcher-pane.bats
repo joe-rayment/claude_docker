@@ -367,3 +367,161 @@ STUB
     [ "$status" -eq 0 ]
     printf '%s\n' "$output" | grep -q 'claude-dev pane \[dir\]'
 }
+
+# --- doctor / verify ssh rows, and teardown -------------------------------
+
+# The doctor/verify line for one check, e.g. `row_of "$output" "sshd"`:
+#   "  [ok     ] sshd              port 5 answers SSH-2.0-stub"
+row_of() {
+    printf '%s\n' "$1" | grep -E "^  \[[a-zA-Z/ ]+\] $2 +" | head -1
+}
+
+# A TCP port nothing listens on: bind a free one and close it again.
+closed_port() {
+    python3 -I -c '
+import socket
+s = socket.socket()
+s.bind(("127.0.0.1", 0))
+print(s.getsockname()[1])
+s.close()'
+}
+
+# An opened folder whose sshd "answers" (stub_sshd_up: a listener greeting
+# SSH-2.0-stub, run/sshd.ready pointing at it) and whose ssh client is the
+# argv-logging stub, so SSH_STUB_CHECK_RC / SSH_STUB_RC choose the answers.
+# Order matters: write_stub_ssh replaces the accept-all client stub_sshd_up set.
+healthy_folder() {
+    open_folder "$PROJECT_DIR"
+    stub_sshd_up "$primary"
+    write_stub_ssh
+}
+
+# Guards:   the three ssh rows read ok / n/a / ok on a healthy folder with no
+#           master yet, and the doctor still exits 0 (n/a is never a finding).
+# Fails if: a missing master turns into a finding, or the sshd row stops
+#           reading the banner and reports ok on a bare port.
+# Run:      bats -f 'doctor: sshd ok' tests/launcher-pane.bats
+@test "doctor: sshd ok on a listener that greets SSH-2.0, ssh master n/a when no master runs, key auth ok when ssh accepts" {
+    healthy_folder
+    run bash -c "cd '$primary' && ./claude-dev --doctor"
+    [ "$status" -eq 0 ]
+    row_of "$output" "sshd" | grep -q '^  \[ok     \] sshd .*answers SSH-2.0-stub'
+    row_of "$output" "ssh master" | grep -q '^  \[n/a    \] ssh master .*not running'
+    row_of "$output" "ssh key auth" | grep -q '^  \[ok     \] ssh key auth .*accepts this folder'
+    # The master was asked with -O check before the key-auth probe ran.
+    [ "$(ssh_call 1)" = "$(printf '%s\n' -F "$sd/config" -O check "$alias")" ]
+    ssh_call 2 | grep -qx 'BatchMode=yes'
+}
+
+# Guards:   a live ControlMaster shows as an ok row ("panes reuse one connection").
+# Fails if: the row is n/a (or missing) even though `ssh -O check` exits 0.
+# Run:      bats -f 'ssh master reads ok' tests/launcher-pane.bats
+@test "doctor: ssh master reads ok when ssh -O check answers" {
+    healthy_folder
+    export SSH_STUB_CHECK_RC=0
+    run bash -c "cd '$primary' && ./claude-dev --doctor"
+    [ "$status" -eq 0 ]
+    row_of "$output" "ssh master" | grep -q '^  \[ok     \] ssh master .*panes reuse one connection'
+}
+
+# Guards:   a container that rejects this folder's key is a finding: a FAIL row
+#           with the ssh exit code and the --update hint, exit 2.
+# Fails if: a refused key still reads ok, or exits 0, or the exit code is lost.
+# Run:      bats -f 'key is refused' tests/launcher-pane.bats
+@test "doctor: ssh key auth FAILs and the doctor exits 2 when the key is refused" {
+    healthy_folder
+    export SSH_STUB_RC=255
+    run bash -c "cd '$primary' && ./claude-dev --doctor"
+    [ "$status" -eq 2 ]
+    row_of "$output" "sshd" | grep -q '^  \[ok     \] sshd '
+    row_of "$output" "ssh key auth" | grep -q '^  \[FAIL   \] ssh key auth .*exited 255'
+    row_of "$output" "ssh key auth" | grep -q -- '--update'
+}
+
+# Guards:   a port that does not answer an SSH banner is a finding: FAIL "gave no
+#           SSH banner", exit 2, and the key-auth row is skipped (n/a), not run.
+# Fails if: a dead port still reads ok, the exit is 0, or the doctor runs the
+#           key-auth ssh anyway (it could only repeat the finding, slowly).
+# Run:      bats -f 'gave no SSH banner' tests/launcher-pane.bats
+@test "doctor: a port nobody listens on is a FAIL 'gave no SSH banner' (exit 2) and key auth is skipped" {
+    healthy_folder
+    dead="$(closed_port)"
+    sed -i "s/^port=.*/port=$dead/" "$primary/.claude-dev/run/sshd.ready"
+    run bash -c "cd '$primary' && ./claude-dev --doctor"
+    [ "$status" -eq 2 ]
+    row_of "$output" "sshd" | grep -q "^  \[FAIL   \] sshd .*port $dead gave no SSH banner"
+    row_of "$output" "ssh key auth" | grep -q '^  \[n/a    \] ssh key auth .*sshd is not answering'
+    # Only the master check (-O check) ran; BatchMode (the key probe) never did.
+    [ "$(grep -c '^--- ssh$' "$SSH_STUB_LOG")" = "1" ]
+    ! grep -qx 'BatchMode=yes' "$SSH_STUB_LOG"
+}
+
+# Guards:   with no run/sshd.ready at all (sshd never started) the sshd row says
+#           "missing ... not ready" and the doctor exits 2.
+# Fails if: a folder that never published sshd's port reads healthy.
+# Run:      bats -f 'no run/sshd.ready' tests/launcher-pane.bats
+@test "doctor: no run/sshd.ready is a missing sshd row (exit 2)" {
+    healthy_folder
+    rm -f "$primary/.claude-dev/run/sshd.ready"
+    run bash -c "cd '$primary' && ./claude-dev --doctor"
+    [ "$status" -eq 2 ]
+    row_of "$output" "sshd" | grep -q '^  \[missing\] sshd .*not ready'
+    row_of "$output" "ssh key auth" | grep -q '^  \[n/a    \] ssh key auth'
+}
+
+# Guards:   `verify` shows the same three ssh rows as the doctor (it is the Mac
+#           half of the same check) and passes when they are ok.
+# Fails if: verify drops a row, or a healthy folder fails it.
+# Run:      bats -f 'verify shows the same' tests/launcher-pane.bats
+@test "verify shows the same sshd / ssh master / ssh key auth rows as the doctor, exit 0 when ok" {
+    healthy_folder
+    export SSH_STUB_CHECK_RC=0
+    run bash -c "cd '$primary' && ./claude-dev verify"
+    [ "$status" -eq 0 ]
+    row_of "$output" "sshd" | grep -q '^  \[ok     \] sshd .*answers SSH-2.0-stub'
+    row_of "$output" "ssh master" | grep -q '^  \[ok     \] ssh master '
+    row_of "$output" "ssh key auth" | grep -q '^  \[ok     \] ssh key auth '
+    # ... and a refused key is the same FAIL / exit 2 as in the doctor.
+    export SSH_STUB_RC=255
+    run bash -c "cd '$primary' && ./claude-dev verify"
+    [ "$status" -eq 2 ]
+    row_of "$output" "ssh key auth" | grep -q '^  \[FAIL   \] ssh key auth .*exited 255'
+}
+
+# Guards:   neither the doctor nor verify mentions the old `web url` row -- the
+#           Mac no longer talks to Orca, so that row is gone for good.
+# Fails if: a "web url" row (ok or missing) comes back in either command.
+# Run:      bats -f 'web url' tests/launcher-pane.bats
+@test "neither doctor nor verify prints a 'web url' row, healthy or not" {
+    healthy_folder
+    run bash -c "cd '$primary' && ./claude-dev --doctor"
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"web url"* ]]
+    run bash -c "cd '$primary' && ./claude-dev verify"
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"web url"* ]]
+    # No orca-web-url.txt is needed either way, so a failing folder is no different.
+    rm -f "$primary/.claude-dev/run/sshd.ready" "$primary/.claude-dev/run/orca-web-url.txt"
+    run bash -c "cd '$primary' && ./claude-dev --doctor"
+    [ "$status" -eq 2 ]
+    [[ "$output" != *"web url"* ]]
+    run bash -c "cd '$primary' && ./claude-dev verify"
+    [ "$status" -eq 2 ]
+    [[ "$output" != *"web url"* ]]
+}
+
+# Guards:   teardown ends the folder's ssh ControlMaster (`ssh -O exit`) before
+#           it deletes state/ssh, so no master process outlives its folder.
+# Fails if: teardown skips the -O exit call, passes the wrong config/alias, or
+#           calls ssh for a folder that never had ssh state.
+# Run:      bats -f 'teardown' tests/launcher-pane.bats
+@test "teardown logs an ssh -O exit call for the folder's master, then removes state/ssh" {
+    healthy_folder
+    [ -f "$sd/config" ]
+    : > "$SSH_STUB_LOG"
+    run bash -c "cd '$primary' && ./claude-dev --teardown"
+    [ "$status" -eq 0 ]
+    [ "$(grep -c '^--- ssh$' "$SSH_STUB_LOG")" = "1" ]
+    [ "$(ssh_call 1)" = "$(printf '%s\n' -F "$sd/config" -O exit "$alias")" ]
+    [ ! -e "$sd" ]
+}
