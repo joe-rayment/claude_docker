@@ -175,3 +175,28 @@ write_sshd_wrap() {  # write_sshd_wrap <path>
     [ "${lines[0]}" = "$(realpath "$proj")" ]
     [ "${lines[1]}" = "boot-env-marker" ]
 }
+
+# Guards:   a missing sshd binary is a logged, retried refusal (no sshd.ready), and the supervisor starts sshd on its own within a retry or two once the binary shows up
+# Fails if: a missing binary kills the boot, the refusal names the wrong path, or the supervisor never retries so sshd stays down after the binary is installed
+# Run:      bats -f 'no sshd binary' tests/container-entrypoint-sshd.bats
+@test "no sshd binary: sshd.log names the missing path, no sshd.ready, and the supervisor retries until the binary appears" {
+    need_openssh
+    local proj="$TMP/project" run_dir
+    make_project "$proj"
+    run_dir="$proj/.claude-dev/run"
+    export_ep_env "$proj"
+    stage_real_keys "$proj"
+    export CLAUDE_ORCA_SSHD_BIN="$TMP/bin/no-such-sshd"
+
+    boot_ep
+    wait_for_line "$run_dir/sshd.log" 'no executable sshd at' 30
+    grep -qF "no executable sshd at $TMP/bin/no-such-sshd; sshd not started" "$run_dir/sshd.log"
+    [ ! -e "$run_dir/sshd.ready" ]
+    kill -0 "$(cat "$TMP/ep.pid")"
+
+    # the binary is installed: the next retry (every 5 s) brings sshd up
+    write_sshd_wrap "$TMP/bin/no-such-sshd"
+    wait_for_file "$run_dir/sshd.ready" 30
+    grep -qx "port=$CLAUDE_ORCA_SSHD_PORT" "$run_dir/sshd.ready"
+    pgrep -f -- "$RT/sshd_config" >/dev/null
+}
