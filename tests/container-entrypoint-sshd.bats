@@ -136,3 +136,42 @@ write_sshd_wrap() {  # write_sshd_wrap <path>
     kill -0 "$(cat "$TMP/ep.pid")"
     [ ! -e "$TMP/ep.rc" ]
 }
+
+# Guards:   keys that appear AFTER the boot (the Mac side makes them on its next ./claude-dev) bring a real sshd up with no restart: sshd.ready names the port and the host key's fingerprint, its files are mode 600, and a pane lands in the project with the boot env
+# Fails if: the supervisor gives up after the first refusal, sshd.ready carries the wrong port or fingerprint, a staged file is world-readable, or a pane does not see the project dir and the boot environment
+# Run:      bats -f 'keys made later' tests/container-entrypoint-sshd.bats
+@test "keys made later: a real sshd starts, sshd.ready names port and fingerprint, a pane gets the project dir and the boot env" {
+    need_openssh
+    local proj="$TMP/project" run_dir
+    make_project "$proj"
+    run_dir="$proj/.claude-dev/run"
+    export_ep_env "$proj"
+    write_sshd_wrap "$TMP/bin/sshd"
+    export CLAUDE_ORCA_SSHD_BIN="$TMP/bin/sshd" CLAUDE_ORCA_PANE_SHELL=/bin/bash
+    export DUMMY_VAR=boot-env-marker
+
+    boot_ep
+    wait_for_line "$run_dir/sshd.log" 'no ssh keys in state/ssh yet' 30
+    [ ! -e "$run_dir/sshd.ready" ]
+
+    stage_real_keys "$proj"
+    wait_for_file "$run_dir/sshd.ready" 30
+
+    local fpr
+    fpr="$(env LD_LIBRARY_PATH="$OPENSSH_LIB" "$SSH_KEYGEN" -lf "$proj/.claude-dev/state/ssh/host_ed25519.pub" | awk '{print $2}')"
+    grep -qx "port=$CLAUDE_ORCA_SSHD_PORT" "$run_dir/sshd.ready"
+    grep -qx "host_key_sha256=$fpr" "$run_dir/sshd.ready"
+    local f
+    for f in env sshd_config ssh/host_ed25519; do
+        [ "$(stat -c %a "$RT/$f")" = "600" ]
+    done
+
+    echo "[127.0.0.1]:$CLAUDE_ORCA_SSHD_PORT $(awk '{print $1, $2}' "$proj/.claude-dev/state/ssh/host_ed25519.pub")" \
+        > "$TMP/known_hosts"
+    run --separate-stderr env LD_LIBRARY_PATH="$OPENSSH_LIB" "$SSH" -F /dev/null -i "$TMP/client" \
+        -o IdentitiesOnly=yes -o BatchMode=yes -o UserKnownHostsFile="$TMP/known_hosts" \
+        -p "$CLAUDE_ORCA_SSHD_PORT" 127.0.0.1 'pwd; printf %s "$DUMMY_VAR"'
+    [ "$status" -eq 0 ]
+    [ "${lines[0]}" = "$(realpath "$proj")" ]
+    [ "${lines[1]}" = "boot-env-marker" ]
+}
