@@ -4,9 +4,9 @@
 # promises?", asked from inside the container and answered row by row.
 #
 # The template seeds a lot on a folder's first start: the rulebook and the
-# agent definitions into the folder's Claude config, hooks that must keep
-# Orca's own entries, a git identity, the Claude first-run keys, Orca's
-# worktree base and theme, the beads database. Every one of those was
+# agent definitions into the folder's Claude config, the template's hooks,
+# a git identity, the Claude first-run keys, the beads database. Every
+# one of those was
 # written by code that logged a line and moved on, and nothing ever read
 # them back -- so "the basic things I asked to exist in this template seem
 # to be fundamentally missing" was a reasonable thing for the owner to
@@ -144,12 +144,8 @@ elif ! jq -e . "$settings" >/dev/null 2>&1; then
 else
     ours="$(jq -r '[.hooks // {} | to_entries[] | .value[]? | .hooks[]? | .command // ""]
                    | map(select(test("claude-orca-host|/template/bin/"))) | length' "$settings")"
-    orcas="$(jq -r '[.hooks // {} | to_entries[] | .value[]? | .hooks[]? | .command // ""]
-                    | map(select(test("orca/agent-hooks"))) | length' "$settings")"
-    if [ "${ours:-0}" -gt 0 ] && [ "${orcas:-0}" -gt 0 ]; then
-        ok "hooks" "$ours from the template, $orcas from Orca, both kept"
-    elif [ "${ours:-0}" -gt 0 ]; then
-        bad "hooks" "$ours template hooks but none of Orca's own (config-sync overwrote them)"
+    if [ "${ours:-0}" -gt 0 ]; then
+        ok "hooks" "$ours from the template"
     else
         bad "hooks" "no template hooks in $settings"
     fi
@@ -171,32 +167,6 @@ else
     bad "claude first run" "onboarding or trust for $PROJECT_DIR not seeded; a worker will stop at a dialog"
 fi
 
-# --- Orca's own state ---------------------------------------------------
-
-udd="${ORCA_USER_DATA_DIR:-$AGENT_HOME/.config/orca}"
-odata="$(ls "$udd"/profiles/*/orca-data.json 2>/dev/null | head -1)"
-if [ -z "$odata" ]; then
-    bad "orca state" "no orca-data.json under $udd"
-else
-    wt="$(jq -r '.repos[0].worktreeBasePath // empty' "$odata" 2>/dev/null)"
-    theme="$(jq -r '.settings.theme // empty' "$odata" 2>/dev/null)"
-    case "$wt" in
-        "$PROJECT_DIR"/*) ok "orca state" "theme ${theme:-unset}, worktrees in $wt" ;;
-        "")               bad "orca state" "no worktreeBasePath in $odata" ;;
-        *)                bad "orca state" "worktrees at $wt, outside the project" ;;
-    esac
-fi
-
-cli="${ORCA_CLI:-/opt/orca/resources/bin/orca-ide}"
-if [ ! -x "$cli" ]; then
-    skip "orca repo" "no Orca CLI at $cli"
-elif ORCA_USER_DATA_PATH="$udd" timeout 30 "$cli" repo list --json 2>/dev/null \
-        | grep -qF "$PROJECT_DIR"; then
-    ok "orca repo" "the project is registered with the running Orca"
-else
-    bad "orca repo" "$PROJECT_DIR is not in 'orca repo list' (open it in the sidebar once)"
-fi
-
 # --- the outside world --------------------------------------------------
 
 if curl -fsS -o /dev/null --max-time 20 https://api.github.com/ 2>/dev/null; then
@@ -207,13 +177,12 @@ fi
 
 # --- OpenRouter: opencode's own synced config decides, not process env --
 #
-# OPENROUTER_API_KEY/OPENROUTER_BASE_URL are Orca agentDefaultEnv vars
-# (scripts/container/seed-orca-state.sh): visible inside a terminal Orca
-# starts, never inside the fresh `docker exec` this script actually runs
-# under (claude-dev verify). Gating this row on them read n/a in every
-# real run, guard running or not. config-sync copies opencode.json into
-# every folder unconditionally, so its baseURL is the signal this script
-# can actually see (claude-orca-8tx).
+# OPENROUTER_API_KEY/OPENROUTER_BASE_URL are set in the environment of
+# the sessions the entrypoint starts, never inside the fresh `docker exec`
+# this script actually runs under (claude-dev verify). Gating this row on
+# them read n/a in every real run, guard running or not. config-sync
+# copies opencode.json into every folder unconditionally, so its baseURL
+# is the signal this script can actually see (claude-orca-8tx).
 
 opencode_cfg="$AGENT_HOME/.config/opencode/opencode.json"
 guard_url=""
@@ -226,7 +195,7 @@ if [ -z "$guard_url" ]; then
 elif curl -fsS --max-time 5 "${guard_url%/api/v1}/" >/dev/null 2>&1; then
     ok "openrouter guard" "listening on $guard_url; agents hold its token, not the key"
 else
-    bad "openrouter guard" "opencode.json names the guard at $guard_url but nothing answers there -- run 'opencode auth login openrouter' then restart the container (Orca's environment is fixed at exec), or set a key at $AGENT_HOME/.openrouter.key (mode 600) and restart, or run './claude-dev key openrouter' on the Mac (same file)"
+    bad "openrouter guard" "opencode.json names the guard at $guard_url but nothing answers there -- run 'opencode auth login openrouter' then restart the container (the guard token is fixed when the container starts), or set a key at $AGENT_HOME/.openrouter.key (mode 600) and restart, or run './claude-dev key openrouter' on the Mac (same file)"
 fi
 
 exit "$FAILED"
