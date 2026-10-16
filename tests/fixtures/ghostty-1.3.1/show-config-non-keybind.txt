@@ -1,0 +1,9 @@
+font-size = 14
+command = /bin/sh -c 'r="$HOME/.local/share/claude-dev/ghostty-pane"; [ -x "$r" ] && exec "$r"; exec "${SHELL:-/bin/zsh}" -l'
+working-directory = inherit
+window-inherit-working-directory = false
+click-repeat-interval = 500
+config-file = ?@XDG@/ghostty/claude-dev.ghostty
+shell-integration = zsh
+gtk-single-instance = false
+auto-update-channel = stable
