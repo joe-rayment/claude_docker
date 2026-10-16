@@ -4,7 +4,7 @@ description: >
   Cheap, fast codebase recon on the recon tier (a concrete model bound
   per session in this file's frontmatter by /tier; Haiku by default — a
   fraction of the reasoning tier's cost). This is the in-process form;
-  when /tier binds recon to an orca backend, ask with recon "<question>"
+  when /tier binds recon to a headless backend, ask with recon "<question>"
   in Bash instead — tier-gate denies a model-less scout spawn there and
   says so. USE
   PROACTIVELY for fan-out work the main thread shouldn't burn context on:

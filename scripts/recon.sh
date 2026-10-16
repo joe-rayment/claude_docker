@@ -4,7 +4,7 @@
 # recon role bound in tier.json (claude-orca-424.1). A recon question has no
 # bead, so nothing could send it to the tier's recon backend: every scout of
 # the week before this ran on an in-process model while tier.json said
-# orca:opencode:<model>[@<variant>]. This command takes the question on the
+# headless:opencode:<model>[@<variant>]. This command takes the question on the
 # command line (or --prompt-file), runs `opencode run` headless on the bound
 # model with edit/write and git push denied, prints the answer's text parts
 # on stdout, one summary line on stderr, and hands a delegate-shaped receipt
@@ -21,10 +21,10 @@
 #
 # Exit codes:
 #   0 / opencode's own exit code -- the run happened (124 when timed out)
-#   3 -- the recon backend is not orca:opencode, the guard token is
+#   3 -- the recon backend is not headless:opencode, the guard token is
 #        missing, or OpenAI is not signed in for an openai/ model:
 #        spawn a scout (Agent tool, subagent_type "scout") instead; the
-#        same knowing fallback orca-dispatch uses
+#        same knowing fallback dispatch uses
 #   64 -- usage
 #   124 -- the run was killed after the timeout
 #
@@ -117,7 +117,7 @@ fi
 [ -n "$QUESTION" ] || usage_err "recon: no question given"
 
 # 1. The recon role bound in tier.json. Anything that is not
-#    orca:opencode -- a missing file, the subagent backend, a non-opencode
+#    headless:opencode -- a missing file, the subagent backend, a non-opencode
 #    agent -- is the exit-3 knowing fallback: a scout spawn via the Agent
 #    tool is the way this question gets answered on those bindings.
 STATE_FILE="${RECON_STATE_FILE:-$(tier_state_file 2>/dev/null || true)}"
@@ -128,7 +128,7 @@ if [ -n "$STATE_FILE" ] && [ -f "$STATE_FILE" ]; then
     MODEL="$(tier_role_field "$STATE_FILE" recon model)"
     VARIANT="$(tier_role_field "$STATE_FILE" recon variant)"
 fi
-if [ -z "$BACKEND" ] || [ "$BACKEND" != "orca" ] || [ "$AGENT" != "opencode" ]; then
+if [ -z "$BACKEND" ] || [ "$BACKEND" != "headless" ] || [ "$AGENT" != "opencode" ]; then
     shown="${BACKEND:-unbound}"
     label="$AGENT"
     [ -n "$MODEL" ] && label="$label $MODEL"
@@ -174,8 +174,8 @@ case "$MODEL" in
         ;;
 esac
 
-# 3. The launch config: the ONE writer orca_opencode_command
-#    (scripts/lib/opencode-launch.sh) uses, pinned read-only -- edit/write
+# 3. The launch config: opencode_launch_config (scripts/lib/opencode-launch.sh),
+#    the ONE writer the dispatch path uses too, pinned read-only -- edit/write
 #    denied, git push denied -- with the reasoning-effort variant carried
 #    when the role has one. The guard base URL rides in only for an
 #    openrouter/ model; openrouter-guard.env is deliberately NOT written

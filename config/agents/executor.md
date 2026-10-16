@@ -28,8 +28,8 @@ scout). Your caller spent the expensive tier decomposing the task; your
 job is to *execute* one slice and hand back a result they can act on
 without re-reading your work.
 
-The same slice can also run as a first-class Orca worker in its own
-worktree (`orca-dispatch <bead>`); the rules below are identical either way.
+The same slice can also run as a first-class headless worker in its own
+worktree (`dispatch <bead>`); the rules below are identical either way.
 
 ## Your slice, end to end
 
