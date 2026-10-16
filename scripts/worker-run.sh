@@ -33,6 +33,20 @@
 # TERM/INT: kill the agent, job.json state "stopped", release the slot,
 # exit 143 (`workers stop` relies on it).
 #
+# `delegate run` (claude-orca-9bh.5) runs its route through this same script.
+# What it needs rides in job.json fields; absent means dispatch's behaviour:
+#   agent codex | gemini   the route runners' own command lines (no resume)
+#   env_isolate true       the agent gets ONLY PATH, HOME=<home>, TERM=dumb,
+#     home, env_set {K:V}  env_set, env_pass (var NAMES copied from this
+#     env_pass [NAME...]   process's env) and the frozen-hook entries; the
+#                          rest of the env is unset in the agent's subshell
+#                          (never `env -i K=V`, so a key stays off argv)
+#   slot false             no slot cap (a synchronous run holds no slot)
+#   merged_log true        agent stdout+stderr go to runner.log (no log.jsonl)
+#   receipt_name <file>    turn 1's receipt name (default receipt.json)
+#   variant                recorded in the receipt (opencode takes it from
+#                          the job's own config under env_isolate)
+#
 # Exit codes: the agent's own exit code · 2 usage/env error (no job dir or
 # job.json, unknown agent, bad flags) · 143 stopped.
 #
@@ -97,9 +111,26 @@ BEAD="$(jf bead)"; AGENT="$(jf agent)"; MODEL="$(jf model)"
 VARIANT="$(jf variant)"; EFFORT="$(jf effort)"; DIR="$(jf dir)"; HOOKS="$(jf frozen_hooks)"
 case "$AGENT" in
     claude|opencode) ;;
-    *) die "unknown agent '$AGENT' in $JOBDIR/job.json (claude or opencode)" ;;
+    codex|gemini) [ "$HAVE_RESUME" = 0 ] || die "agent '$AGENT' cannot --resume" ;;
+    *) die "unknown agent '$AGENT' in $JOBDIR/job.json (claude, opencode, codex or gemini)" ;;
 esac
 [ -n "$DIR" ] && [ -d "$DIR" ] || die "job dir is not a directory: '$DIR'"
+
+# jb <key> -- a boolean field as true|false, "" when absent (jf maps false to "").
+jb() { jq -r --arg k "$1" 'if has($k) then (.[$k] | tostring) else "" end' "$JOBDIR/job.json" 2>/dev/null; }
+ISO="$(jb env_isolate)"; SLOT_ON="$(jb slot)"; MERGED="$(jb merged_log)"
+HOME_DIR=""; ENV_SET=""; PASS_NAMES=""
+if [ "$ISO" = true ]; then
+    HOME_DIR="$(jf home)"
+    [ -n "$HOME_DIR" ] || die "env_isolate needs a home in $JOBDIR/job.json"
+    ENV_SET="$(jq -r '(.env_set // {}) | to_entries[] | "\(.key)=\(.value)"' "$JOBDIR/job.json" 2>/dev/null)"
+    PASS_NAMES="$(jq -r '(.env_pass // [])[]' "$JOBDIR/job.json" 2>/dev/null | tr '\n' ' ')"
+    for n in $PASS_NAMES; do
+        case "$n" in ''|[0-9]*|*[!A-Za-z0-9_]*) die "env_pass: '$n' is not a variable name" ;; esac
+    done
+fi
+RECEIPT_NAME="$(jf receipt_name)"; [ -n "$RECEIPT_NAME" ] || RECEIPT_NAME=receipt.json
+case "$RECEIPT_NAME" in */*|.*) die "receipt_name must be a plain file name: '$RECEIPT_NAME'" ;; esac
 
 case "$JOBDIR" in
     */.claude-dev/run/workers/*) ROOT="${JOBDIR%/.claude-dev/run/workers/*}" ;;
@@ -110,6 +141,9 @@ RUN_DIR="$ROOT/.claude-dev/run"
 t="$(jf turns)"; case "$t" in ''|*[!0-9]*) t=0 ;; esac
 TURN=$(( t + 1 ))
 LOG="$JOBDIR/log.jsonl"
+# The event stream the receipt is parsed from: log.jsonl, or runner.log when
+# the agent's stdout and stderr are merged (delegate's runs).
+STREAM="$LOG"; [ "$MERGED" = true ] && STREAM="$JOBDIR/runner.log"
 
 # --- stop: TERM/INT kills the agent, marks the job, frees the slot -----------
 
@@ -160,7 +194,7 @@ slot_acquire() {
         sleep "${CLAUDE_ORCA_SLOT_POLL_S:-1}"
     done
 }
-slot_acquire
+if [ "$SLOT_ON" != false ]; then slot_acquire; fi
 
 # --- 2. the run --------------------------------------------------------------
 
@@ -169,7 +203,7 @@ START_EPOCH="$(date +%s)"
 BASE="$(git -C "$DIR" rev-parse HEAD 2>/dev/null)" || BASE=""
 workers_job_set "$JOBDIR" state '"running"'
 workers_job_set "$JOBDIR" pid "$$"
-workers_job_set "$JOBDIR" slot "$SLOT"
+if [ "$SLOT_ON" != false ]; then workers_job_set "$JOBDIR" slot "$SLOT"; fi
 workers_job_set "$JOBDIR" started "\"$STARTED\""
 if [ "$TURN" = 1 ]; then
     workers_job_set "$JOBDIR" base "$(jq -n --arg b "$BASE" '$b')"
@@ -203,13 +237,18 @@ case "$AGENT" in
         # The guard env (OPENROUTER_API_KEY, OPENCODE_CONFIG ...) is written
         # by the shared composer and sourced for the agent only; the key is
         # never on argv. Its stdout (a TUI command string) is not ours.
-        mkdir -p "$RUN_DIR"
-        if ! orca_opencode_command "$MODEL" "$RUN_DIR" "$VARIANT" >/dev/null; then
-            workers_job_set "$JOBDIR" state '"failed"'; slot_release
-            die "cannot compose the opencode launch env under $RUN_DIR" 1
+        # An env_isolate job (delegate's route) brings its own config and key
+        # through env_set/env_pass instead, and takes its variant from that
+        # config, not from a flag.
+        if [ "$ISO" != true ]; then
+            mkdir -p "$RUN_DIR"
+            if ! orca_opencode_command "$MODEL" "$RUN_DIR" "$VARIANT" >/dev/null; then
+                workers_job_set "$JOBDIR" state '"failed"'; slot_release
+                die "cannot compose the opencode launch env under $RUN_DIR" 1
+            fi
+            ENVF="$RUN_DIR/openrouter-guard.env"
+            GUARD_TOKEN="$( set -a; . "$ENVF" >/dev/null 2>&1; printf '%s' "${OPENROUTER_API_KEY:-}" )"
         fi
-        ENVF="$RUN_DIR/openrouter-guard.env"
-        GUARD_TOKEN="$( set -a; . "$ENVF" >/dev/null 2>&1; printf '%s' "${OPENROUTER_API_KEY:-}" )"
         add "$BIN"; add run
         if [ "$HAVE_RESUME" = 1 ]; then add -s; add "$RESUME_SID"; fi
         if [ -n "$MODEL" ]; then add -m; add "$MODEL"; fi
