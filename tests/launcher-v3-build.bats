@@ -58,6 +58,7 @@ BASE_IMAGE="docker.io/library/ubuntu:24.04"
     [[ "$runline" != *"$BASE_IMAGE"* ]]
     [[ "$runline" != *"entrypoint.sh"* ]]
 
+    stub_sshd_up "$primary"
     run bash -c "cd '$primary' && ./claude-dev --doctor"
     [[ "$output" == *"image source"* ]]
     [[ "$output" == *"built"* ]]
