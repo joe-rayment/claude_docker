@@ -217,6 +217,7 @@ STUB
 
     local proj="$TMP/project" home pattern
     make_project "$proj"
+    stage_template_tree "$proj" 40-git-identity 50-seed-project
     home="$proj/.claude-dev/home"
 
     # Twice, because the seed has to be idempotent: a folder is registered
@@ -224,7 +225,8 @@ STUB
     local i
     for i in 1 2; do
         run_entrypoint_once HOME="$home" PROJECT_DIR="$proj" \
-            CLAUDE_ORCA_SKIP_PROVISION=0 CLAUDE_ORCA_SKIP_SETUP=1 \
+            CLAUDE_ORCA_SKIP_PROVISION=0 CLAUDE_ORCA_PROVISION_TIMEOUT=30 \
+            CLAUDE_ORCA_SKIP_SETUP=1 \
             CLAUDE_ORCA_SKIP_BEADS=1 CLAUDE_ORCA_ENTRYPOINT_NO_PRIVDROP=1 \
             CLAUDE_ORCA_GIT_NAME="Ada Lovelace" \
             CLAUDE_ORCA_GIT_EMAIL="ada@example.com"
@@ -255,7 +257,8 @@ STUB
 
     # Never over an existing one: whatever the agent set up in there wins.
     run_entrypoint_once HOME="$home" PROJECT_DIR="$proj" \
-        CLAUDE_ORCA_SKIP_PROVISION=0 CLAUDE_ORCA_SKIP_SETUP=1 \
+        CLAUDE_ORCA_SKIP_PROVISION=0 CLAUDE_ORCA_PROVISION_TIMEOUT=30 \
+            CLAUDE_ORCA_SKIP_SETUP=1 \
         CLAUDE_ORCA_SKIP_BEADS=1 CLAUDE_ORCA_ENTRYPOINT_NO_PRIVDROP=1 \
         CLAUDE_ORCA_GIT_NAME="Someone Else" \
         CLAUDE_ORCA_GIT_EMAIL="else@example.com"
@@ -266,12 +269,14 @@ STUB
     # Nothing to copy: no env, no file (and no empty [user] stanza).
     local proj2="$TMP/project2" home2
     make_project "$proj2"
+    stage_template_tree "$proj2" 40-git-identity 50-seed-project
     home2="$proj2/.claude-dev/home"
     # unset: a claude-orca container exports the identity into every
     # shell, and this leg is about the folder that ships none.
     unset CLAUDE_ORCA_GIT_NAME CLAUDE_ORCA_GIT_EMAIL
     run_entrypoint_once HOME="$home2" PROJECT_DIR="$proj2" \
-        CLAUDE_ORCA_SKIP_PROVISION=0 CLAUDE_ORCA_SKIP_SETUP=1 \
+        CLAUDE_ORCA_SKIP_PROVISION=0 CLAUDE_ORCA_PROVISION_TIMEOUT=30 \
+            CLAUDE_ORCA_SKIP_SETUP=1 \
         CLAUDE_ORCA_SKIP_BEADS=1 CLAUDE_ORCA_ENTRYPOINT_NO_PRIVDROP=1
     [ ! -f "$home2/.gitconfig" ]
     [ -d "$proj2/attachments" ]
@@ -295,12 +300,14 @@ STUB
 
     local proj="$TMP/project" home cj sj
     make_project "$proj"
+    stage_template_tree "$proj" 30-claude-first-run
     home="$proj/.claude-dev/home"
     cj="$home/.claude.json"
     sj="$home/.claude/settings.json"
 
     run_entrypoint_once HOME="$home" PROJECT_DIR="$proj" \
-        CLAUDE_ORCA_SKIP_PROVISION=0 CLAUDE_ORCA_SKIP_SETUP=1 \
+        CLAUDE_ORCA_SKIP_PROVISION=0 CLAUDE_ORCA_PROVISION_TIMEOUT=30 \
+            CLAUDE_ORCA_SKIP_SETUP=1 \
         CLAUDE_ORCA_SKIP_BEADS=1 CLAUDE_ORCA_ENTRYPOINT_NO_PRIVDROP=1
     [ "$ep_status" = "143" ]
     [[ "$output" == *"waiting on the sshd supervisor"* ]]
@@ -327,7 +334,8 @@ STUB
     jq -n '{skipDangerousModePermissionPrompt: false, model: "opus"}' > "$sj"
 
     run_entrypoint_once HOME="$home" PROJECT_DIR="$proj" \
-        CLAUDE_ORCA_SKIP_PROVISION=0 CLAUDE_ORCA_SKIP_SETUP=1 \
+        CLAUDE_ORCA_SKIP_PROVISION=0 CLAUDE_ORCA_PROVISION_TIMEOUT=30 \
+            CLAUDE_ORCA_SKIP_SETUP=1 \
         CLAUDE_ORCA_SKIP_BEADS=1 CLAUDE_ORCA_ENTRYPOINT_NO_PRIVDROP=1
     run jq -r --arg p "$proj" '[.hasCompletedOnboarding,
         .projects[$p].hasTrustDialogAccepted,
@@ -341,7 +349,8 @@ STUB
     # never replaced, because that file is the agent's login.
     printf 'not json at all\n' > "$cj"
     run_entrypoint_once HOME="$home" PROJECT_DIR="$proj" \
-        CLAUDE_ORCA_SKIP_PROVISION=0 CLAUDE_ORCA_SKIP_SETUP=1 \
+        CLAUDE_ORCA_SKIP_PROVISION=0 CLAUDE_ORCA_PROVISION_TIMEOUT=30 \
+            CLAUDE_ORCA_SKIP_SETUP=1 \
         CLAUDE_ORCA_SKIP_BEADS=1 CLAUDE_ORCA_ENTRYPOINT_NO_PRIVDROP=1
     run cat "$cj"
     [ "$output" = "not json at all" ]
@@ -358,6 +367,7 @@ STUB
 
     local proj="$TMP/project" snaps
     make_project "$proj"
+    stage_template_tree "$proj" 50-seed-project
     snaps="$proj/.claude-dev-snapshots"
     mkdir -p "$snaps/20200101-000000" "$snaps/20240101-000000"
     echo '{"id":"old"}' > "$snaps/20200101-000000/issues.jsonl"
@@ -366,7 +376,8 @@ STUB
     [ ! -e "$proj/.beads" ]
 
     run_entrypoint_once HOME="$proj/.claude-dev/home" PROJECT_DIR="$proj" \
-        CLAUDE_ORCA_SKIP_PROVISION=0 CLAUDE_ORCA_SKIP_SETUP=1 \
+        CLAUDE_ORCA_SKIP_PROVISION=0 CLAUDE_ORCA_PROVISION_TIMEOUT=30 \
+            CLAUDE_ORCA_SKIP_SETUP=1 \
         CLAUDE_ORCA_SKIP_BEADS=1 CLAUDE_ORCA_ENTRYPOINT_NO_PRIVDROP=1
     [ "$ep_status" = "143" ]
     [[ "$output" == *"waiting on the sshd supervisor"* ]]
@@ -382,7 +393,8 @@ STUB
     # must never overwrite live data.
     echo '{"id":"live"}' > "$proj/.beads/issues.jsonl"
     run_entrypoint_once HOME="$proj/.claude-dev/home" PROJECT_DIR="$proj" \
-        CLAUDE_ORCA_SKIP_PROVISION=0 CLAUDE_ORCA_SKIP_SETUP=1 \
+        CLAUDE_ORCA_SKIP_PROVISION=0 CLAUDE_ORCA_PROVISION_TIMEOUT=30 \
+            CLAUDE_ORCA_SKIP_SETUP=1 \
         CLAUDE_ORCA_SKIP_BEADS=1 CLAUDE_ORCA_ENTRYPOINT_NO_PRIVDROP=1
     run cat "$proj/.beads/issues.jsonl"
     [ "$output" = '{"id":"live"}' ]
@@ -390,9 +402,101 @@ STUB
     # No snapshots at all is a silent no-op, not a failure.
     local proj2="$TMP/project2"
     make_project "$proj2"
+    stage_template_tree "$proj2" 50-seed-project
     run_entrypoint_once HOME="$proj2/.claude-dev/home" PROJECT_DIR="$proj2" \
-        CLAUDE_ORCA_SKIP_PROVISION=0 CLAUDE_ORCA_SKIP_SETUP=1 \
+        CLAUDE_ORCA_SKIP_PROVISION=0 CLAUDE_ORCA_PROVISION_TIMEOUT=30 \
+            CLAUDE_ORCA_SKIP_SETUP=1 \
         CLAUDE_ORCA_SKIP_BEADS=1 CLAUDE_ORCA_ENTRYPOINT_NO_PRIVDROP=1
     [[ "$output" == *"waiting on the sshd supervisor"* ]]
     [ ! -e "$proj2/.beads" ]
+}
+
+# --- where the template comes from (claude-orca-qa2.9) ---------------------
+
+@test "entrypoint resolves the template from /opt/claude-orca or the mounted .claude-dev/template" {
+    # Guards:   setup.sh and the other template-shaped files come from ONE
+    #           root: the folder's own clone when it carries an executable
+    #           setup.sh, else the baked /opt/claude-orca, else the clone bare
+    #           -- and the setup.sh at that root is the one that really runs.
+    # Fails if: the root rule changes, the logged "template root" / "setup:"
+    #           paths disagree with it, the folder's setup.sh is not run
+    #           (argv/run/setup.log stay empty), or the image-branch test in
+    #           entrypoint.sh disappears.
+    # Run:      bats -f 'resolves the template from' tests/container-entrypoint.bats
+    [ -x "$ENTRYPOINT" ]
+
+    local proj="$TMP/project" expect_root
+    make_project "$proj"
+
+    # The prebuilt image carries the template at /opt/claude-orca; a base
+    # image has only the folder's own mounted clone. The entrypoint's rule
+    # (entrypoint.sh, "where the template is"): the folder's template wins
+    # when it carries an executable setup.sh, then the baked copy, then
+    # the folder clone bare. expect_root follows that same rule, so the
+    # case holds on a base image, on the baked image, and on a project
+    # that has pulled its own template clone -- whichever this box is.
+    if [ -x "$proj/.claude-dev/template/scripts/container/setup.sh" ]; then
+        expect_root="$proj/.claude-dev/template"
+    elif [ -d /opt/claude-orca ]; then
+        expect_root="/opt/claude-orca"
+    else
+        expect_root="$proj/.claude-dev/template"
+    fi
+
+    run_entrypoint_once HOME="$proj/.claude-dev/home" PROJECT_DIR="$proj" \
+        CLAUDE_ORCA_SKIP_SETUP=1 CLAUDE_ORCA_SKIP_BEADS=1 \
+        CLAUDE_ORCA_ENTRYPOINT_NO_PRIVDROP=1
+    [ "$ep_status" = "143" ]
+    [[ "$output" == *"template root: $expect_root"* ]]
+    [[ "$output" == *"setup: $expect_root/scripts/container/setup.sh"* ]]
+
+    # ...and that default is the script that actually runs. The folder's
+    # stub outranks a baked /opt/claude-orca, so this leg holds on every box.
+    : > "$TMP/setup.argv"
+    write_setup_stub "$proj/.claude-dev/template/scripts/container/setup.sh"
+    run_entrypoint_once HOME="$proj/.claude-dev/home" PROJECT_DIR="$proj" \
+        CLAUDE_ORCA_SKIP_BEADS=1 CLAUDE_ORCA_ENTRYPOINT_NO_PRIVDROP=1
+    [ "$ep_status" = "143" ]
+    [[ "$output" == *"setup: $proj/.claude-dev/template/scripts/container/setup.sh"* ]]
+    grep -qxF 'argv:' "$TMP/setup.argv"
+    grep -qF 'stub setup: installing everything' \
+        "$proj/.claude-dev/run/setup.log"
+
+    # The image branch, which a folder with its own template never reaches,
+    # is pinned here.
+    run grep -qF '[ -d /opt/claude-orca ]' "$ENTRYPOINT"
+    [ "$status" -eq 0 ]
+}
+
+@test "entrypoint prefers the folder's own template when it carries an executable setup.sh, even over a baked /opt/claude-orca" {
+    # Guards:   a folder that has pulled its own scripts/container/* (what
+    #           --update leaves behind) runs those, not the stale copy baked
+    #           into the image months earlier.
+    # Fails if: the baked /opt/claude-orca wins the tiebreak over a folder
+    #           template with an executable setup.sh, or a folder template
+    #           WITHOUT one starts to win.
+    # Run:      bats -f 'prefers the folder' tests/container-entrypoint.bats
+    [ -x "$ENTRYPOINT" ]
+
+    local proj="$TMP/project"
+    make_project "$proj"
+
+    # No setup.sh in the folder's clone yet: whichever root this box would
+    # have picked before (see the test above) still wins.
+    if [ -d /opt/claude-orca ]; then
+        run_entrypoint_once HOME="$proj/.claude-dev/home" PROJECT_DIR="$proj" \
+            CLAUDE_ORCA_SKIP_SETUP=1 CLAUDE_ORCA_SKIP_BEADS=1 \
+            CLAUDE_ORCA_ENTRYPOINT_NO_PRIVDROP=1
+        [[ "$output" == *"template root: /opt/claude-orca"* ]]
+    fi
+
+    # An executable setup.sh in the folder's own clone -- what `--update`
+    # leaves behind -- outranks the baked copy even when /opt/claude-orca
+    # is still there, so a scripts/container/* fix reaches a folder on the
+    # next recreate with no image rebuild.
+    write_setup_stub "$proj/.claude-dev/template/scripts/container/setup.sh"
+    run_entrypoint_once HOME="$proj/.claude-dev/home" PROJECT_DIR="$proj" \
+        CLAUDE_ORCA_SKIP_SETUP=1 CLAUDE_ORCA_SKIP_BEADS=1 \
+        CLAUDE_ORCA_ENTRYPOINT_NO_PRIVDROP=1
+    [[ "$output" == *"template root: $proj/.claude-dev/template"* ]]
 }

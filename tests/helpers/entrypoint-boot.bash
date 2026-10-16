@@ -163,3 +163,29 @@ STUB
     chmod +x "$path"
 }
 
+
+# Stages a hermetic folder template at <proj>/.claude-dev/template so a case
+# that sets CLAUDE_ORCA_SKIP_PROVISION=0 runs ONLY the provision.d steps it
+# names -- not the whole baked set under /opt/claude-orca (which exists on
+# the image and on this box, and holds slow steps that wait on things the
+# test does not have). It copies provision-run.sh, provision-lib.sh,
+# seed-project.sh and the named steps (e.g. 30-claude-first-run
+# 40-git-identity 50-seed-project) into the same layout the repo has, and
+# adds an executable stub setup.sh: the entrypoint picks the folder's
+# template exactly when that file is executable (entrypoint.sh, "where the
+# template is"). Pair it with CLAUDE_ORCA_SKIP_SETUP=1 unless the case is
+# about setup.sh itself. Needs $TMP (write_setup_stub records there).
+stage_template_tree() {
+    local proj="$1" step c
+    shift
+    c="$proj/.claude-dev/template/scripts/container"
+    mkdir -p "$c/provision.d"
+    cp "$REPO_ROOT/scripts/container/provision-run.sh" \
+        "$REPO_ROOT/scripts/container/provision-lib.sh" \
+        "$REPO_ROOT/scripts/container/seed-project.sh" "$c/"
+    for step in "$@"; do
+        cp "$REPO_ROOT/scripts/container/provision.d/$step" "$c/provision.d/$step"
+        chmod +x "$c/provision.d/$step"
+    done
+    write_setup_stub "$c/setup.sh"
+}
