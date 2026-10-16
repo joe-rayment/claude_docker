@@ -652,7 +652,7 @@ bash_call() {
 
 # ── the nudge points at the Orca dispatch loop (claude-orca-qa2.14) ─────────
 
-@test "delegation-gate names orca-dispatch in its nudge" {
+@test "delegation-gate names dispatch in its nudge" {
     # the repeating warn note
     export DELEGATION_GATE_MODE=warn-only
     export DELEGATION_GATE_WARN_AT=2
@@ -662,7 +662,7 @@ bash_call() {
     run bash_call s40
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.hookSpecificOutput.permissionDecision == "allow"'
-    echo "$output" | jq -e '.hookSpecificOutput.additionalContext | test("orca-dispatch")'
+    echo "$output" | jq -e '.hookSpecificOutput.additionalContext | test("dispatch")'
 
     # and the guard-mode edit note
     unset DELEGATION_GATE_MODE
@@ -670,7 +670,7 @@ bash_call() {
     run sh -c 'jq -cn "{tool_name:\"Write\",session_id:\"s41\",agent_id:null,tool_input:{file_path:\"/srv/app/x.py\"}}" | python3 '"$GATE"
     [ "$status" -eq 0 ]
     echo "$output" | jq -e '.hookSpecificOutput.permissionDecision == "allow"'
-    echo "$output" | jq -e '.hookSpecificOutput.additionalContext | test("orca-dispatch")'
+    echo "$output" | jq -e '.hookSpecificOutput.additionalContext | test("dispatch")'
     echo "$output" | jq -e '.hookSpecificOutput.additionalContext | test("executor")'
 }
 
@@ -720,7 +720,7 @@ bash_call() {
     # the note names the exact spawn to use instead
     echo "$output" | jq -e '.hookSpecificOutput.additionalContext | test("scout")'
     echo "$output" | jq -e '.hookSpecificOutput.additionalContext | test("executor")'
-    echo "$output" | jq -e '.hookSpecificOutput.additionalContext | test("orca-dispatch")'
+    echo "$output" | jq -e '.hookSpecificOutput.additionalContext | test("dispatch")'
     jq -e '.denies == 0' "$(state_file s50)"
 
     # the exempt list still passes at any streak, and still counts for nothing

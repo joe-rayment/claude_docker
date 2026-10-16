@@ -509,7 +509,7 @@ seed_state() {  # seed_state <worker> <recon> -- a bound, unpinned, non-overdriv
 
     # an orca-backed non-Claude worker: the model-less spawn is DENIED
     # (claude-orca-424.2, superseding the old note-only pin), the reason
-    # naming orca-dispatch -- the command that follows the tier
+    # naming dispatch -- the command that follows the tier
     TIER_DERIVE="$DERIVE" tier_set fable
     TIER_DERIVE="$DERIVE" tier_set worker openrouter:qwen/qwen3-coder
     gate '{"tool_name":"Agent","tool_input":{"subagent_type":"executor","prompt":"p"}}'
@@ -517,7 +517,7 @@ seed_state() {  # seed_state <worker> <recon> -- a bound, unpinned, non-overdriv
     orca_out="$output"
     run jq -e '.hookSpecificOutput.permissionDecision == "deny"' <<<"$orca_out"
     [ "$status" -eq 0 ]
-    run jq -e '.hookSpecificOutput.permissionDecisionReason | test("orca-dispatch")' <<<"$orca_out"
+    run jq -e '.hookSpecificOutput.permissionDecisionReason | test("dispatch <bead>")' <<<"$orca_out"
     [ "$status" -eq 0 ]
     run jq -e 'has("systemMessage") | not' <<<"$orca_out"
     [ "$status" -eq 0 ]
