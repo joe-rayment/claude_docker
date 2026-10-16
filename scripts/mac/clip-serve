@@ -1,0 +1,277 @@
+#!/bin/bash
+# claude-dev clip-serve v1
+#
+# clip-serve -- the Mac end of the clipboard bridge (claude-orca-9bh.9).
+# Reads ONE HTTP/1.0 request on stdin, writes ONE response on stdout, and
+# exits. clip-listen runs it once per connection behind `nc -lU`.
+#
+# Usage: clip-serve < request > response        (no arguments)
+#
+# Routes -- images only. There is NO route that returns clipboard text, so a
+# process in the container can never read a password off the Mac clipboard:
+#   GET  /targets  200 "image/png\n" when the clipboard holds an image, else
+#                  204 with no body. An image is «class PNGf», or
+#                  «class furl» whose file has an image extension
+#                  (png jpg jpeg gif webp heic heif tif tiff bmp), or
+#                  «class TIFF». Order: PNGf first; a furl decides on its own
+#                  (a Finder file copy is the file, not its icon); TIFF last.
+#   GET  /png      200 image/png bytes: PNGf written by osascript; TIFF run
+#                  through `sips -s format png`; a furl PNG served as is, any
+#                  other furl image through sips. Over 32 MB -> 413.
+#                  No image -> 404.
+#   POST /copy     body (Content-Length <= 1 MB) piped to pbcopy -> 204.
+#   anything else  404.
+#
+# Seams (tests stub the Mac tools; the defaults are the stock ones):
+#   CLAUDE_ORCA_OSASCRIPT, CLAUDE_ORCA_SIPS, CLAUDE_ORCA_PBCOPY
+#   CLAUDE_ORCA_CLIP_MAX_BYTES   image size cap (default 33554432)
+#   CLAUDE_ORCA_CLIP_STATE       temp-file parent (default
+#                                ~/.local/state/claude-dev)
+#   CLAUDE_ORCA_CLIP_READ_S      per-line read timeout (default 10)
+# One line per request goes to stderr (clip-listen's log): time, route,
+# status. Never the clipboard, never a POST body.
+#
+# Exit code: 0 always once a request was read (the status is in the HTTP
+# reply); bash 3.2 and stock macOS tools only.
+
+set -u
+
+OSASCRIPT=${CLAUDE_ORCA_OSASCRIPT:-osascript}
+SIPS=${CLAUDE_ORCA_SIPS:-sips}
+PBCOPY=${CLAUDE_ORCA_PBCOPY:-pbcopy}
+MAX_BYTES=${CLAUDE_ORCA_CLIP_MAX_BYTES:-33554432}
+STATE=${CLAUDE_ORCA_CLIP_STATE:-${HOME:-/tmp}/.local/state/claude-dev}
+READ_T=${CLAUDE_ORCA_CLIP_READ_S:-10}
+MAX_COPY=1048576
+# AppleScript's four-character-class brackets; ASCII source keeps the bytes
+# right whatever encoding an editor or a copy step applies to this file.
+LQ=$(printf '\302\253')
+RQ=$(printf '\302\273')
+# pbcopy decodes stdin with the locale; a bare environment would mangle UTF-8.
+if [ -z "${LC_ALL:-}${LC_CTYPE:-}${LANG:-}" ]; then
+    export LANG=en_US.UTF-8
+fi
+
+method=
+path=
+tmp=
+trap '[ -n "$tmp" ] && rm -rf "$tmp"' EXIT
+
+# reply CODE [CTYPE LENGTH] -- the status line and headers; a 200 caller
+# writes its body next. Also the one log line.
+reply() {
+    case $1 in
+        200) msg='OK' ;;
+        204) msg='No Content' ;;
+        400) msg='Bad Request' ;;
+        404) msg='Not Found' ;;
+        413) msg='Payload Too Large' ;;
+        *) msg='Internal Server Error' ;;
+    esac
+    printf 'HTTP/1.0 %s %s\r\n' "$1" "$msg"
+    if [ "$1" = 200 ]; then
+        printf 'Content-Type: %s\r\nContent-Length: %s\r\n' "$2" "$3"
+    elif [ "$1" != 204 ]; then
+        printf 'Content-Length: 0\r\n'
+    fi
+    printf 'Connection: close\r\n\r\n'
+    shown=$(printf '%s' "$path" | tr -cd '[:print:]' | cut -c1-60)
+    printf '%s clip-serve: %s %s -> %s\n' \
+        "$(date '+%Y-%m-%dT%H:%M:%S')" "${method:-?}" "$shown" "$1" >&2
+}
+
+# mk_tmp -- a private temp dir under the claude-dev state dir, once.
+mk_tmp() {
+    [ -n "$tmp" ] && return 0
+    (umask 077 && mkdir -p "$STATE") 2>/dev/null
+    tmp=$(umask 077 && mktemp -d "$STATE/clip-serve.XXXXXX" 2>/dev/null) || {
+        tmp=
+        return 1
+    }
+    # The path is spliced into AppleScript text: refuse anything that could
+    # end the string.
+    case "$tmp" in
+        *'"'* | *'\'*)
+            rm -rf "$tmp"
+            tmp=
+            return 1
+            ;;
+    esac
+    return 0
+}
+
+# is_image_ext PATH -- 0 when the file name's extension is an image type.
+is_image_ext() {
+    case "${1##*/}" in
+        *.*) ;;
+        *) return 1 ;;
+    esac
+    ext=$(printf '%s' "${1##*.}" | tr '[:upper:]' '[:lower:]')
+    case "$ext" in
+        png | jpg | jpeg | gif | webp | heic | heif | tif | tiff | bmp) return 0 ;;
+    esac
+    return 1
+}
+
+# probe -- sets KIND (png|furl|tiff|none) and FURL_PATH from the clipboard.
+probe() {
+    KIND=none
+    FURL_PATH=
+    info=$("$OSASCRIPT" -e 'clipboard info' 2>/dev/null) || return 0
+    case "$info" in
+        *"class PNGf"*)
+            KIND=png
+            return 0
+            ;;
+        *"class furl"*)
+            p=$("$OSASCRIPT" -e "POSIX path of (the clipboard as ${LQ}class furl${RQ})" 2>/dev/null) || return 0
+            if [ -n "$p" ] && [ -f "$p" ] && is_image_ext "$p"; then
+                KIND=furl
+                FURL_PATH=$p
+            fi
+            return 0
+            ;;
+        *"class TIFF"*)
+            KIND=tiff
+            return 0
+            ;;
+    esac
+    return 0
+}
+
+# write_class CLASS FILE -- the clipboard's CLASS data into FILE, the way
+# native Claude Code does it (open for access + write).
+write_class() {
+    "$OSASCRIPT" \
+        -e "set fp to open for access POSIX file \"$2\" with write permission" \
+        -e "write (the clipboard as ${LQ}class $1${RQ}) to fp" \
+        -e 'close access fp' >/dev/null 2>&1
+}
+
+# size_of FILE -- bytes, digits only.
+size_of() {
+    wc -c <"$1" | tr -d ' '
+}
+
+# is_png FILE -- 0 when FILE starts with the 8-byte PNG signature.
+is_png() {
+    [ "$(head -c 8 "$1" 2>/dev/null | od -An -tx1 | tr -d ' \n')" = 89504e470d0a1a0a ]
+}
+
+route_targets() {
+    probe
+    if [ "$KIND" = none ]; then
+        reply 204
+    else
+        reply 200 text/plain 10
+        printf 'image/png\n'
+    fi
+}
+
+route_png() {
+    probe
+    if [ "$KIND" = none ]; then
+        reply 404
+        return 0
+    fi
+    mk_tmp || {
+        reply 500
+        return 0
+    }
+    out=$tmp/clip.png
+    case $KIND in
+        png)
+            write_class PNGf "$out" || {
+                reply 404
+                return 0
+            }
+            ;;
+        tiff)
+            write_class TIFF "$tmp/clip.tiff" || {
+                reply 404
+                return 0
+            }
+            "$SIPS" -s format png "$tmp/clip.tiff" --out "$out" >/dev/null 2>&1 || {
+                reply 404
+                return 0
+            }
+            ;;
+        furl)
+            if [ "$(size_of "$FURL_PATH")" -gt "$MAX_BYTES" ]; then
+                reply 413
+                return 0
+            fi
+            if is_png "$FURL_PATH"; then
+                out=$FURL_PATH
+            else
+                "$SIPS" -s format png "$FURL_PATH" --out "$out" >/dev/null 2>&1 || {
+                    reply 404
+                    return 0
+                }
+            fi
+            ;;
+    esac
+    [ -f "$out" ] || {
+        reply 404
+        return 0
+    }
+    n=$(size_of "$out")
+    if [ "${n:-0}" -le 0 ]; then
+        reply 404
+    elif [ "$n" -gt "$MAX_BYTES" ]; then
+        reply 413
+    else
+        reply 200 image/png "$n"
+        cat "$out"
+    fi
+    return 0
+}
+
+route_copy() {
+    case "$clen" in
+        '' | *[!0-9]* | ??????????*)
+            reply 400
+            return 0
+            ;;
+    esac
+    if [ "$clen" -gt "$MAX_COPY" ]; then
+        reply 413
+        return 0
+    fi
+    if head -c "$clen" | "$PBCOPY" >/dev/null 2>&1; then
+        reply 204
+    else
+        reply 500
+    fi
+    return 0
+}
+
+# --- the request: line, headers, then (POST only) the body left in stdin ---
+IFS=' ' read -r -t "$READ_T" method path _ || exit 0
+path=${path%$'\r'}
+clen=
+nh=0
+while IFS= read -r -t "$READ_T" h; do
+    h=${h%$'\r'}
+    [ -z "$h" ] && break
+    nh=$((nh + 1))
+    if [ "$nh" -gt 100 ]; then
+        reply 400
+        exit 0
+    fi
+    case "$h" in
+        [Cc][Oo][Nn][Tt][Ee][Nn][Tt]-[Ll][Ee][Nn][Gg][Tt][Hh]:*)
+            clen=${h#*:}
+            clen=${clen// /}
+            clen=${clen//$'\t'/}
+            ;;
+    esac
+done
+
+case "$method $path" in
+    'GET /targets') route_targets ;;
+    'GET /png') route_png ;;
+    'POST /copy') route_copy ;;
+    *) reply 404 ;;
+esac
+exit 0
