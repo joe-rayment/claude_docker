@@ -2,20 +2,19 @@
 #
 # opencode-openai-launch.bats -- an openai/... model (the user's ChatGPT
 # subscription, signed in with opencode's own login) runs through the same
-# two launch paths an openrouter/... model does: orca-dispatch (headless and
-# --tui) and recon (epic claude-orca-c3p, slice B2 / claude-orca-c3p.2).
+# two launch paths an openrouter/... model does: dispatch (headless) and recon
+# (epic claude-orca-c3p, slice B2 / claude-orca-c3p.2).
 # Covers the readiness/catalogue/resolve helpers appended to
 # scripts/lib/tier-roles.sh, the ONE per-launch config writer
-# scripts/lib/opencode-launch.sh behind orca_opencode_command and recon,
-# and the signed-in guards orca-dispatch and recon put in front of an
+# scripts/lib/opencode-launch.sh behind workers_opencode_command and recon,
+# and the signed-in guards dispatch and recon put in front of an
 # openai/ launch. Every openrouter/ behaviour stays what it is today; the
 # frozen files pin that, this file pins the new provider.
 #
 # Nothing here touches a network or a real opencode: the auth store is a
 # fixture pointed at by TIER_OPENAI_AUTH_FILE, the catalogue is a fixture
 # pointed at by TIER_OPENAI_MODELS_FILE (or a stub opencode via
-# TIER_OPENCODE_BIN), and the Orca runtime is the stub in
-# tests/helpers/orca-stub.bash. Scripts are pinned by repo path, never
+# TIER_OPENCODE_BIN), and bd is a stub. Scripts are pinned by repo path, never
 # trusted to PATH; PROJECT_DIR/CLAUDE_ORCA_ROOT point at this test's own
 # tmp dir so no ambient project is inherited.
 
@@ -24,8 +23,8 @@ bats_require_minimum_version 1.5.0
 REPO_ROOT="$(cd "${BATS_TEST_DIRNAME:-.}/.." && pwd)"
 ROLES="$REPO_ROOT/scripts/lib/tier-roles.sh"
 LAUNCH="$REPO_ROOT/scripts/lib/opencode-launch.sh"
-ORCA_ORCH="$REPO_ROOT/scripts/lib/orca-orch.sh"
-DISPATCH="$REPO_ROOT/scripts/orca-dispatch.sh"
+WORKERS_LIB="$REPO_ROOT/scripts/lib/workers.sh"
+DISPATCH="$REPO_ROOT/scripts/dispatch.sh"
 RECON="$REPO_ROOT/scripts/recon.sh"
 
 setup() {
@@ -256,9 +255,9 @@ STUB
     [ "$(jq -r '.[1].family' <<<"$output")" = "gpt-sol" ]
 }
 
-# ── orca_opencode_command on an openai/ model ─────────────────────────────
+# ── workers_opencode_command on an openai/ model ───────────────────────
 
-@test "orca_opencode_command: an openai/ model carries reasoningEffort and no guard, even with a token file present" {
+@test "workers_opencode_command: an openai/ model carries reasoningEffort and no guard, even with a token file present" {
     # Guards: an openai launch's config keys the effort under
     # provider.openai.models.<id>.options.reasoningEffort (opencode's own
     # ChatGPT login supplies the credential) and its env file carries ONLY
@@ -267,7 +266,7 @@ STUB
     # OPENROUTER_API_KEY/OPENROUTER_ line leaks into an openai launch.
     # Run:      bats tests/opencode-openai-launch.bats
     printf 'tok-guard-secret\n' >"$RUN/openrouter-guard.token"
-    run bash -c ". '$ORCA_ORCH'; orca_opencode_command 'openai/gpt-5.6-luna' '$RUN' high"
+    run bash -c ". '$WORKERS_LIB'; workers_opencode_command 'openai/gpt-5.6-luna' '$RUN' high"
     [ "$status" -eq 0 ]
     [ "$output" = "set -a; . '$RUN/openrouter-guard.env'; set +a; opencode --model openai/gpt-5.6-luna" ]
 
@@ -288,7 +287,7 @@ STUB
 # ── opencode_launch_config, the one writer ────────────────────────────────
 
 @test "opencode_launch_config: an openrouter/ model with a base URL and a variant is today's config" {
-    # Guards: the shared writer reproduces orca_opencode_command's
+    # Guards: the shared writer reproduces workers_opencode_command's
     # openrouter config exactly -- options.apiKey/baseURL plus
     # reasoning.effort under the vendor model.
     # Fails if: the openrouter options or the reasoning.effort nesting
@@ -352,25 +351,30 @@ STUB
     ! grep -q 'ambient-decoy-key' "$cfg"
 }
 
-# ── orca-dispatch's signed-in guard ───────────────────────────────────────
+# ── dispatch's signed-in guard ────────────────────────────────────────────
 
-@test "orca-dispatch: an openai/ model when the folder is not signed in dies with /tier auth openai and exit 2" {
-    # Guards: orca-dispatch refuses an openai/ worker before composing any
+@test "dispatch: an openai/ model when the folder is not signed in dies with /tier auth openai and exit 2" {
+    # Guards: dispatch refuses an openai/ worker before composing any
     # launch, telling the orchestrator the one command that fixes it.
     # Fails if: the dispatch proceeds (exit 0/3) or the message loses
     # `/tier auth openai`.
-    # Run:      bats tests/opencode-openai-launch.bats
-    # shellcheck source=helpers/orca-stub.bash
-    . "$BATS_TEST_DIRNAME/helpers/orca-stub.bash"
-    orca_stub_init
-    orca_stub_reply orchestration-run-create \
-        '{"ok":true,"result":{"run":{"id":"run1","coordinator_handle":"term_coord"}}}'
-    orca_stub_reply orchestration-task-create \
-        '{"ok":true,"result":{"task":{"id":"t1"}}}'
+    # Run:      bats -f 'signed in dies' tests/opencode-openai-launch.bats
+    mkdir -p "$T/bin" "$CLAUDE_ORCA_ROOT"
+    cat >"$T/bin/bd" <<'EOF'
+#!/bin/sh
+if [ "$1" = show ]; then
+    printf '[{"id":"%s","title":"t","description":"d","acceptance_criteria":"","notes":""}]\n' "$2"
+    exit 0
+fi
+exit 1
+EOF
+    chmod +x "$T/bin/bd"
+    export PATH="$T/bin:$PATH"
+    export CLAUDE_ORCA_WORKER_RUN="$T/must-not-run.sh"
 
     run --separate-stderr "$DISPATCH" b1 --agent opencode \
         --model "openai/~gpt-luna-latest" --worktree "path:$CLAUDE_ORCA_ROOT"
     [ "$status" -eq 2 ]
     grep -q '/tier auth openai' <<<"$stderr"
-    [ -z "$(orca_stub_calls 'terminal create')" ]
+    [ ! -e "$T/must-not-run.sh" ]
 }

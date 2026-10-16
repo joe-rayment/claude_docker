@@ -191,7 +191,7 @@ http.server.HTTPServer(('127.0.0.1', $port),
 
 @test "an opencode dispatch sources the guard env when a token file exists" {
     printf 'tok-abc\n' > "$RUN_DIR/openrouter-guard.token"
-    run bash -c ". '$REPO_ROOT/scripts/lib/orca-orch.sh'; orca_opencode_command 'openrouter/z-ai/glm-5.3-flash' '$RUN_DIR'"
+    run bash -c ". '$REPO_ROOT/scripts/lib/workers.sh'; workers_opencode_command 'openrouter/z-ai/glm-5.3-flash' '$RUN_DIR'"
     [ "$status" -eq 0 ]
     [[ "$output" == *"openrouter-guard.env"* ]]
     [[ "$output" == *"opencode --model openrouter/z-ai/glm-5.3-flash"* ]]
@@ -204,7 +204,7 @@ http.server.HTTPServer(('127.0.0.1', $port),
     # (permission allow-all, git push denied) and an env file naming it, so
     # the command is never the bare one; what "no token" means is that the
     # env file carries no OPENROUTER_API_KEY and the config no baseURL.
-    run bash -c ". '$REPO_ROOT/scripts/lib/orca-orch.sh'; orca_opencode_command 'openrouter/z-ai/glm-5.3-flash' '$RUN_DIR'"
+    run bash -c ". '$REPO_ROOT/scripts/lib/workers.sh'; workers_opencode_command 'openrouter/z-ai/glm-5.3-flash' '$RUN_DIR'"
     [ "$status" -eq 0 ]
     [[ "$output" == *"opencode --model openrouter/z-ai/glm-5.3-flash" ]]
     [ -f "$RUN_DIR/openrouter-guard.env" ]
@@ -218,7 +218,7 @@ http.server.HTTPServer(('127.0.0.1', $port),
 
 @test "the guard token is not passed on the command line" {
     printf 'tok-abc\n' > "$RUN_DIR/openrouter-guard.token"
-    run bash -c ". '$REPO_ROOT/scripts/lib/orca-orch.sh'; orca_opencode_command 'openrouter/z-ai/glm-5.3-flash' '$RUN_DIR'"
+    run bash -c ". '$REPO_ROOT/scripts/lib/workers.sh'; workers_opencode_command 'openrouter/z-ai/glm-5.3-flash' '$RUN_DIR'"
     [ "$status" -eq 0 ]
     [[ "$output" != *"tok-abc"* ]]
 }

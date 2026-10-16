@@ -220,7 +220,7 @@ JSON
 
 @test "the headless worker path runs the subscription model through the stub, end to end" {
     # Guards: orca-dispatch's headless composition driven for real --
-    #   orca_opencode_command writes the openai env file (OPENCODE_CONFIG,
+    #   workers_opencode_command writes the openai env file (OPENCODE_CONFIG,
     #   no token), orca-worker-run sources it and runs the REAL opencode
     #   headless on the subscription, the stub receives the codex request
     #   with the fake login's bearer, and the receipt records exit 0.
@@ -251,8 +251,8 @@ STUB
     git init -q "$T/proj"
     local run="$T/run"
     mkdir -p "$run/orchestration/dispatch"
-    bash -c ". '$REPO_ROOT/scripts/lib/orca-orch.sh'; \
-        orca_opencode_command 'openai/gpt-5.6-luna' '$run' >/dev/null"
+    bash -c ". '$REPO_ROOT/scripts/lib/workers.sh'; \
+        workers_opencode_command 'openai/gpt-5.6-luna' '$run' >/dev/null"
     [ -f "$run/openrouter-guard.env" ]
     ! grep -q 'OPENROUTER' "$run/openrouter-guard.env"
     printf '{"task_id":"task_e2e","dispatch_id":"ctx_e2e"}\n' \

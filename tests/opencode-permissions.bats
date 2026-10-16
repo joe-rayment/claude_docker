@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
 #
-# opencode-permissions.bats -- orca_opencode_command (scripts/lib/orca-orch.sh)
+# opencode-permissions.bats -- workers_opencode_command (scripts/lib/workers.sh)
 # must never leave a dispatched opencode TUI worker stalled on an
 # interactive "Permission required" prompt (claude-orca-gh9): opencode's own
 # "ask" default on external_directory/doom_loop has nobody at the keyboard
@@ -17,7 +17,7 @@ bats_require_minimum_version 1.5.0
 
 load helpers/setup
 
-ORCA_ORCH="$REPO_ROOT/scripts/lib/orca-orch.sh"
+WORKERS_LIB="$REPO_ROOT/scripts/lib/workers.sh"
 
 setup() {
     export TMPDIR="$BATS_TEST_TMPDIR"
@@ -27,7 +27,7 @@ setup() {
 }
 
 # opencode_config_from_env <env-file> -- the OPENCODE_CONFIG path an
-# orca_opencode_command env file resolves to, sourced the same way the
+# workers_opencode_command env file resolves to, sourced the same way the
 # printed command sources it.
 opencode_config_from_env() {
     bash -c "set -a; . '$1'; set +a; printf '%s' \"\$OPENCODE_CONFIG\""
@@ -36,7 +36,7 @@ opencode_config_from_env() {
 @test "no variant, no token -- command still sources an env file naming a config with the permission block, no models, no baseURL" {
     RUN_DIR="$BATS_TEST_TMPDIR/run1"
     mkdir -p "$RUN_DIR"
-    run bash -c ". '$ORCA_ORCH'; orca_opencode_command 'openrouter/openai/gpt-5.6-luna' '$RUN_DIR'"
+    run bash -c ". '$WORKERS_LIB'; workers_opencode_command 'openrouter/openai/gpt-5.6-luna' '$RUN_DIR'"
     [ "$status" -eq 0 ]
     [[ "$output" == *"opencode --model openrouter/openai/gpt-5.6-luna"* ]]
     [[ "$output" == *"openrouter-guard.env"* ]]
@@ -63,7 +63,7 @@ opencode_config_from_env() {
     RUN_DIR="$BATS_TEST_TMPDIR/run2"
     mkdir -p "$RUN_DIR"
     printf 'tok-xyz\n' > "$RUN_DIR/openrouter-guard.token"
-    run bash -c ". '$ORCA_ORCH'; orca_opencode_command 'openrouter/openai/gpt-5.6-luna' '$RUN_DIR' high"
+    run bash -c ". '$WORKERS_LIB'; workers_opencode_command 'openrouter/openai/gpt-5.6-luna' '$RUN_DIR' high"
     [ "$status" -eq 0 ]
 
     env_file="$RUN_DIR/openrouter-guard.env"
@@ -86,7 +86,7 @@ opencode_config_from_env() {
     RUN_DIR="$BATS_TEST_TMPDIR/run3"
     mkdir -p "$RUN_DIR"
     export CLAUDE_ORCA_OPENCODE_PERMISSIONS=ask
-    run bash -c "export CLAUDE_ORCA_OPENCODE_PERMISSIONS=ask; . '$ORCA_ORCH'; orca_opencode_command 'openrouter/openai/gpt-5.6-luna' '$RUN_DIR'"
+    run bash -c "export CLAUDE_ORCA_OPENCODE_PERMISSIONS=ask; . '$WORKERS_LIB'; workers_opencode_command 'openrouter/openai/gpt-5.6-luna' '$RUN_DIR'"
     [ "$status" -eq 0 ]
 
     env_file="$RUN_DIR/openrouter-guard.env"
@@ -100,7 +100,7 @@ opencode_config_from_env() {
 @test "the per-launch config file stays mode 600 with the permission block written" {
     RUN_DIR="$BATS_TEST_TMPDIR/run4"
     mkdir -p "$RUN_DIR"
-    run bash -c ". '$ORCA_ORCH'; orca_opencode_command 'openrouter/openai/gpt-5.6-luna' '$RUN_DIR' high"
+    run bash -c ". '$WORKERS_LIB'; workers_opencode_command 'openrouter/openai/gpt-5.6-luna' '$RUN_DIR' high"
     [ "$status" -eq 0 ]
     env_file="$RUN_DIR/openrouter-guard.env"
     cfg="$(opencode_config_from_env "$env_file")"
