@@ -1426,6 +1426,81 @@ ssh_host_key_fingerprint() {
         | awk 'NR == 1 { print $2 }' || true
 }
 
+# Ghostty's terminfo entry, pushed into the container once per Ghostty
+# version (claude-orca-9bh.7): the image has no xterm-ghostty, and without it
+# a pane's pane-entry falls back to xterm-256color (still works, loses a few
+# Ghostty-only capabilities). Only when this terminal IS xterm-ghostty and
+# the Mac's infocmp can print the entry; run/terminfo.stamp holds the
+# TERM_PROGRAM_VERSION already pushed. One warning line on failure, never
+# fatal, and no stamp then, so the next open tries again.
+ssh_push_terminfo() {
+    local dir="$1" stamp ver entry cfg alias
+    [ "${TERM:-}" = "xterm-ghostty" ] || return 0
+    command -v infocmp >/dev/null 2>&1 || return 0
+    entry="$(infocmp -x xterm-ghostty 2>/dev/null)" || return 0
+    [ -n "$entry" ] || return 0
+    ver="${TERM_PROGRAM_VERSION:-}"
+    stamp="$dir/.claude-dev/run/terminfo.stamp"
+    if [ -f "$stamp" ] && [ "$(head -1 "$stamp")" = "$ver" ]; then
+        return 0
+    fi
+    cfg="$(ssh_state_dir "$dir")/config"
+    alias="$(ssh_host_alias "$dir")"
+    if printf '%s\n' "$entry" \
+        | "${CLAUDE_ORCA_SSH:-ssh}" -F "$cfg" -o BatchMode=yes "$alias" 'tic -x -o ~/.terminfo - ' >/dev/null 2>&1; then
+        mkdir -p "$dir/.claude-dev/run" && printf '%s\n' "$ver" > "$stamp"
+    else
+        echo "  terminfo: could not install xterm-ghostty in the sandbox (continuing; panes use xterm-256color)" >&2
+    fi
+    return 0
+}
+
+# Turns THIS terminal into a sandbox pane: `exec ssh -F config -tt alias`.
+# $2 is the directory the pane should start in (default $PWD), sent as
+# CDEV_CWD relative to the project (empty at the root or outside it --
+# pane-entry then lands in the project root); $3 names the path taken, for
+# run/pane.log ("slow" when open/pane did the whole bring-up, "fast" when the
+# master connection was already up). ssh honours only the FIRST -o SetEnv,
+# so every variable rides in one option; a value with a space is wrapped in
+# double quotes inside it, and empty variables are left out. Without a
+# terminal on stdin and stdout (a script, a bats case) it does not exec: it
+# says how to get a pane and returns 0. CLAUDE_ORCA_PANE_FORCE_TTY=1 is the
+# test seam that treats both as terminals.
+pane_exec() {
+    local dir="$1" cwd="${2:-$PWD}" mode="${3:-slow}" rel="" real cfg alias log setenv="" pair
+    if [ -z "${CLAUDE_ORCA_PANE_FORCE_TTY:-}" ] && { [ ! -t 0 ] || [ ! -t 1 ]; }; then
+        echo "ready: run ./claude-dev pane in a terminal"
+        return 0
+    fi
+    real="$(cd "$cwd" 2>/dev/null && pwd -P)" || real="$cwd"
+    case "$real" in
+        "$dir") rel="" ;;
+        "$dir"/*) rel="${real#"$dir"/}" ;;
+        *) rel="" ;;
+    esac
+    case "$rel" in *'"'* | *'\'*)
+        echo "  pane: '$rel' has a quote or backslash ssh cannot carry; starting at the project root" >&2
+        rel="" ;;
+    esac
+    cfg="$(ssh_state_dir "$dir")/config"
+    alias="$(ssh_host_alias "$dir")"
+    for pair in "CDEV_CWD=$rel" "TERM_PROGRAM=${TERM_PROGRAM:-}" \
+        "TERM_PROGRAM_VERSION=${TERM_PROGRAM_VERSION:-}" "COLORTERM=${COLORTERM:-}"; do
+        case "$pair" in *=) continue ;; esac
+        case "$pair" in
+            *' '*) pair="${pair%%=*}=\"${pair#*=}\"" ;;
+        esac
+        setenv="${setenv:+$setenv }$pair"
+    done
+    log="$dir/.claude-dev/run/pane.log"
+    mkdir -p "$dir/.claude-dev/run" 2>/dev/null \
+        && printf '%s %s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$mode" "$rel" >> "$log" 2>/dev/null || true
+    if [ -n "$setenv" ]; then
+        exec "${CLAUDE_ORCA_SSH:-ssh}" -F "$cfg" -tt -o "SetEnv=$setenv" "$alias"
+    fi
+    exec "${CLAUDE_ORCA_SSH:-ssh}" -F "$cfg" -tt "$alias"
+}
+
 # The pairing URL Orca minted for this container -- what a desktop Orca on
 # the Mac needs to attach to the runtime inside it -- by either of the two
 # paths a folder can have it.
