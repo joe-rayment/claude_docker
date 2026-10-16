@@ -219,61 +219,47 @@ JSON
 }
 
 @test "the headless worker path runs the subscription model through the stub, end to end" {
-    # Guards: orca-dispatch's headless composition driven for real --
-    #   workers_opencode_command writes the openai env file (OPENCODE_CONFIG,
-    #   no token), orca-worker-run sources it and runs the REAL opencode
-    #   headless on the subscription, the stub receives the codex request
-    #   with the fake login's bearer, and the receipt records exit 0.
+    # Guards: scripts/worker-run.sh driven for real on an opencode job --
+    #   it composes the openai env file itself (OPENCODE_CONFIG, no guard
+    #   token), runs the REAL opencode headless on the subscription, the
+    #   stub receives the codex request with the fake login's bearer, the
+    #   receipt records exit 0 and the inbox gets a worker_done line.
     # Fails if: the env file leaked a guard token into an openai launch,
-    #   the worker exited non-zero, or the stub saw no authenticated codex
-    #   request.
+    #   the worker exited non-zero, the stub saw no authenticated codex
+    #   request, or the receipt/inbox line is missing.
     # Run: bats -f 'headless worker path' tests/openai-stub-real.bats
     openai_stub_login "$T/data"
-    local access
+    local access root jobdir
     access="$(jq -r .openai.access "$T/data/opencode/auth.json")"
 
-    # Orca CLI and cost-mirror stubs, the technique of
-    # tests/orca-worker-run.bats: the CLI logs argv and answers ok.
-    mkdir -p "$T/bin"
-    cat >"$T/bin/orca-ide" <<'STUB'
-#!/usr/bin/env bash
-printf '%s\n' "$*" >>"$ORCA_STUB_LOG"
-printf '{"ok":true}\n'
-STUB
-    cat >"$T/bin/cost-mirror" <<'STUB'
-#!/usr/bin/env bash
-:
-STUB
-    chmod +x "$T/bin/orca-ide" "$T/bin/cost-mirror"
-    export ORCA_STUB_LOG="$T/orca-calls.log"
-    : >"$ORCA_STUB_LOG"
-
+    # A throwaway project root: the job dir sits under it, so worker-run.sh
+    # derives the root (and run/ dir) from the job dir's own path.
+    root="$T/root"
+    jobdir="$root/.claude-dev/run/workers/j1"
+    mkdir -p "$jobdir"
     git init -q "$T/proj"
-    local run="$T/run"
-    mkdir -p "$run/orchestration/dispatch"
-    bash -c ". '$REPO_ROOT/scripts/lib/workers.sh'; \
-        workers_opencode_command 'openai/gpt-5.6-luna' '$run' >/dev/null"
-    [ -f "$run/openrouter-guard.env" ]
-    ! grep -q 'OPENROUTER' "$run/openrouter-guard.env"
-    printf '{"task_id":"task_e2e","dispatch_id":"ctx_e2e"}\n' \
-        >"$run/orchestration/dispatch/ctx_e2e.json"
-    printf 'say hi\n' >"$T/spec.txt"
-    export CLAUDE_ORCA_WORKER_DISPATCH_WAIT_S=1
+    printf 'say hi\n' >"$jobdir/spec.md"
+    jq -n --arg dir "$T/proj" \
+        '{job:"j1",bead:"",role:"executor",agent:"opencode",
+          model:"openai/gpt-5.6-luna",variant:"",effort:"",dir:$dir,
+          branch:"b",frozen_hooks:"",state:"started",
+          created:"2026-01-01T00:00:00Z"}' >"$jobdir/job.json"
 
     run env -u OPENAI_API_KEY -u OPENROUTER_API_KEY \
-        HOME="$T/home" XDG_DATA_HOME="$T/data" PATH="$T/bin:$PATH" \
+        HOME="$T/home" XDG_DATA_HOME="$T/data" \
+        PROJECT_DIR="$root" CLAUDE_ORCA_ROOT="$root" \
         $(openai_stub_env) \
-        "$REPO_ROOT/scripts/orca-worker-run.sh" \
-        --task task_e2e --spec "$T/spec.txt" --model openai/gpt-5.6-luna \
-        --dir "$T/proj" --run-dir "$run" --env "$run/openrouter-guard.env" \
-        --bead claude-orca-c3p.4
+        "$REPO_ROOT/scripts/worker-run.sh" "$jobdir"
     [ "$status" -eq 0 ]
+    [ -f "$root/.claude-dev/run/openrouter-guard.env" ]
+    ! grep -q 'OPENROUTER' "$root/.claude-dev/run/openrouter-guard.env"
     jq -s -e --arg tok "$access" '
         map(select(.host == "chatgpt.com" and .method == "POST"
                    and .path == "/backend-api/codex/responses"
                    and .headers.authorization == "Bearer " + $tok
                    and .body.model == "gpt-5.6-luna"))
         | length > 0' "$T/requests.jsonl" >/dev/null
-    [ "$(jq -r '.exit_code' "$run/orchestration/workers/task_e2e.receipt.json")" = "0" ]
-    grep -q 'worker_done' "$ORCA_STUB_LOG"
+    [ "$(jq -r .exit "$jobdir/receipt.json")" = "0" ]
+    jq -s -e 'map(select(.type == "worker_done")) | length == 1' \
+        "$root/.claude-dev/run/orchestration/inbox.jsonl" >/dev/null
 }
