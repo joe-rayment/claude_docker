@@ -478,7 +478,7 @@ elif [ -d "$HOST_DIR/template/config" ]; then
 fi
 
 if [ -z "$early_sync_host" ]; then
-    warn "early config sync: no template config found (looked in $PROJECT_DIR/.claude-dev/template, $TEMPLATE_ROOT, $HOST_DIR); skipping -- provision.d/20-config-sync will retry after the URL"
+    warn "early config sync: no template config found (looked in $PROJECT_DIR/.claude-dev/template, $TEMPLATE_ROOT, $HOST_DIR); skipping -- provision.d/20-config-sync will retry once sshd is up"
 else
     early_sync_timeout="${CLAUDE_ORCA_EARLY_SYNC_TIMEOUT:-30}"
     if command -v timeout >/dev/null 2>&1; then
@@ -492,7 +492,7 @@ else
     if [ "$early_sync_rc" = "0" ]; then
         log "early config sync from $early_sync_host/template/config: ok"
     else
-        warn "early config sync from $early_sync_host/template/config failed (exit $early_sync_rc); provision.d/20-config-sync will retry after the URL"
+        warn "early config sync from $early_sync_host/template/config failed (exit $early_sync_rc); provision.d/20-config-sync will retry once sshd is up"
     fi
 fi
 
