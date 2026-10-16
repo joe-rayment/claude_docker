@@ -31,7 +31,7 @@ if [ "${1:-}" = show ]; then printf '[{"title":"T"}]\n'; fi
 exit 0
 EOF
     # The agent stub: argv/stdin/cwd to $STUB_OUT/<what>.$STUB_TAG, then a
-    # canned stream. STUB_KIND claude|opencode, STUB_RESULT the final text,
+    # canned stream. STUB_KIND claude|opencode|opencode-finish|codex|gemini, STUB_RESULT the final text,
     # STUB_EXIT its exit code, STUB_SLEEP seconds to hang, STUB_COMMIT=<file> to
     # commit that file in its cwd, STUB_ECHO_TOKEN=<file> to echo a secret.
     cat >"$BATS_TEST_TMPDIR/bin/agent-stub" <<'EOF'
@@ -39,6 +39,7 @@ EOF
 t="${STUB_TAG:-1}"
 printf '%s\n' "$@" >"$STUB_OUT/argv.$t"
 pwd >"$STUB_OUT/cwd.$t"
+env | sort >"$STUB_OUT/env.$t"
 env | grep -c '^CLAUDE_CODE_CHILD_SESSION=' >"$STUB_OUT/childenv.$t"
 [ -n "${OPENROUTER_API_KEY:-}" ] && echo 1 >"$STUB_OUT/keyenv.$t"
 cat >"$STUB_OUT/stdin.$t"
@@ -53,6 +54,16 @@ res="${STUB_RESULT:-all done}${secret:+ leaked:$secret}"
 if [ "${STUB_KIND:-claude}" = opencode ]; then
     jq -n -c --arg t "$res" '{type:"text",sessionID:"ses_x",part:{text:$t}}'
     echo '{"type":"step_finish","part":{"tokens":{"input":3,"output":4},"cost":0.1}}'
+elif [ "${STUB_KIND:-claude}" = opencode-finish ]; then
+    jq -n -c --arg t "$res" '{type:"text",sessionID:"ses_x",part:{text:$t}}'
+    echo '{"type":"finish","usage":{"inputTokens":21,"outputTokens":22,"cost":0.02}}'
+elif [ "${STUB_KIND:-claude}" = codex ]; then
+    echo '{"type":"thread.started","thread_id":"th-1"}'
+    jq -n -c --arg t "$res" '{type:"item.completed",item:{id:"i1",type:"agent_message",text:$t}}'
+    echo '{"type":"turn.completed","usage":{"input_tokens":31,"cached_input_tokens":0,"output_tokens":32}}'
+elif [ "${STUB_KIND:-claude}" = gemini ]; then
+    printf '%s\n' "$res"
+    echo "gemini stderr note" >&2
 else
     echo '{"type":"system","session_id":"sid-1"}'
     jq -n -c --arg r "$res" '{type:"result",result:$r,usage:{input_tokens:5,output_tokens:7},total_cost_usd:0.5}'
@@ -232,7 +243,7 @@ wait_state() {
     [ "$status" -eq 2 ]
     run "$WR" "$WORKERS/nope"
     [ "$status" -eq 2 ]
-    jq '.agent="gemini"' "$JOBDIR/job.json" >"$JOBDIR/j.tmp" && mv "$JOBDIR/j.tmp" "$JOBDIR/job.json"
+    jq '.agent="bogus"' "$JOBDIR/job.json" >"$JOBDIR/j.tmp" && mv "$JOBDIR/j.tmp" "$JOBDIR/job.json"
     run "$WR" "$JOBDIR"
     [ "$status" -eq 2 ]
     [[ "$output" == *"unknown agent"* ]]
@@ -338,4 +349,48 @@ mkguard() {
     [ "$status" -eq 0 ]
     [ "$(jv "$JOBDIR/job.json" .slot)" = "1" ]
     [ "$(jv "$JOBDIR/job.json" .state)" = "done" ]
+}
+
+# ---- claude-orca-9bh.5 (A5): codex / gemini / isolated-env / merged-log jobs --
+
+# jobset <jq-filter> [jq options] -- rewrite $JOBDIR/job.json in place.
+jobset() {
+    jq "${@:2}" "$1" "$JOBDIR/job.json" >"$JOBDIR/j.tmp" && mv "$JOBDIR/j.tmp" "$JOBDIR/job.json"
+}
+
+@test "codex: argv is exec --model <name> --cd <dir> --json --full-auto <spec>; the receipt reads the agent_message and turn.completed usage; --resume exits 2" {
+    # Guards:   a codex job runs `codex exec` with the model's provider prefix dropped and reports the final agent message and token usage
+    # Fails if: the argv order or the model name changes, the receipt takes the wrong event as the summary, or usage_found is not true
+    # Run:      bats -f 'codex: argv' tests/workers-run.bats
+    mkjob c1 codex
+    jobset '.model="openai/gpt-5"'
+    STUB_KIND=codex STUB_RESULT="codex says hi" run "$WR" "$JOBDIR"
+    [ "$status" -eq 0 ]
+    [ "$(cat "$OUT/argv.1")" = "$(printf '%s\n' exec --model gpt-5 --cd "$DIR" --json --full-auto "do the thing")" ]
+    [ "$(cat "$OUT/cwd.1")" = "$(cd "$DIR" && pwd -P)" ]
+    jq -e '.agent=="codex" and .summary=="codex says hi" and .tokens_in==31 and .tokens_out==32
+           and .usage_found==true and .session_id==""' "$JOBDIR/receipt.json"
+    jq -e '.state=="done"' "$JOBDIR/job.json"
+    STUB_TAG=2 run "$WR" "$JOBDIR" --resume sid-1 --message hi
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"cannot --resume"* ]]
+    [ ! -e "$OUT/argv.2" ]
+}
+
+@test "gemini: argv is -m <name> --yolo -p <spec> in the job dir; the whole raw output is the summary; usage_found is false" {
+    # Guards:   a gemini job runs `gemini -p` in the worktree and reports its plain-text output as the summary, with no invented token counts
+    # Fails if: the flags or cwd change, the summary drops text, or a run with no usage block claims usage_found true
+    # Run:      bats -f 'gemini: argv' tests/workers-run.bats
+    mkjob g1 gemini
+    jobset '.model="google/gemini-2.5-pro"'
+    STUB_KIND=gemini STUB_RESULT="plain gemini answer" run "$WR" "$JOBDIR"
+    [ "$status" -eq 0 ]
+    [ "$(cat "$OUT/argv.1")" = "$(printf '%s\n' -m gemini-2.5-pro --yolo -p "do the thing")" ]
+    [ "$(cat "$OUT/cwd.1")" = "$(cd "$DIR" && pwd -P)" ]
+    [ "$(jv "$JOBDIR/receipt.json" .summary)" = "plain gemini answer" ]
+    jq -e '.agent=="gemini" and .tokens_in==0 and .tokens_out==0 and .usage_found==false
+           and .session_id==""' "$JOBDIR/receipt.json"
+    # not merged: the agent's stderr stays in runner.log, out of the summary
+    grep -q 'gemini stderr note' "$JOBDIR/runner.log"
+    absent 'gemini stderr note' "$JOBDIR/log.jsonl" "$JOBDIR/receipt.json"
 }
