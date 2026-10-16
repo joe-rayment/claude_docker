@@ -66,8 +66,7 @@ assert_line_once() {
         printf '# claude_orca\n'
         printf '%s\n' \
             '.claude-dev/' '.claude-dev-snapshots/' '/claude-dev' \
-            'Orca.app/' '.mcp.json' 'attachments/' '.claude/logs/' \
-            '.orca/' '.orca-worktrees/' 'orca.yaml' \
+            '.mcp.json' 'attachments/' '.claude/logs/' \
             'graphify-out/' '__pycache__/'
     } > "$d/.gitignore"
 

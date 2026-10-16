@@ -27,7 +27,10 @@ set -uo pipefail
 
 PROJECT_DIR="${PROJECT_DIR:-${CLAUDE_ORCA_ROOT:-}}"
 AGENT_HOME="${HOME:-/home/agent}"
-TEMPLATE_ROOT="/opt/claude-orca"
+# TEMPLATE_ROOT is the same name provision-run.sh and the entrypoint use;
+# set it to point this at a checkout. Unset, the image's /opt/claude-orca
+# wins when it exists, else the folder's own template clone.
+TEMPLATE_ROOT="${TEMPLATE_ROOT:-/opt/claude-orca}"
 [ -d "$TEMPLATE_ROOT" ] || TEMPLATE_ROOT="$PROJECT_DIR/.claude-dev/template"
 
 FAILED=0

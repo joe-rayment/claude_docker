@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
 #
-# The folder's own seeding -- .gitignore, attachments/, orca.yaml, the
-# beads snapshot restore and `bd init` -- through the one script that has
-# two callers: Orca's `scripts.setup` in the project's orca.yaml, and this
-# step as the FLOOR. A folder must never depend on a hook having fired to
-# have a tracker in it, and on 2026-09-08 Orca's setup script could not be
-# made to fire from the CLI at all.
+# The folder's own seeding -- .gitignore, attachments/, the beads snapshot
+# restore and `bd init` -- through seed-project.sh, which this step is the
+# only caller of. A folder must never depend on a hook having fired to have
+# a tracker in it, so the seeding is a provision step that runs on every
+# start and not a callback some other tool may or may not make.
 #
 # seed-project.sh is idempotent by construction and exits 0 for anything it
 # merely could not do, so this step's status says "the script ran", which
