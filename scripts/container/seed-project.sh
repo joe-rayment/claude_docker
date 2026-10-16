@@ -1,37 +1,26 @@
 #!/usr/bin/env bash
 #
 # seed-project.sh -- everything a project folder needs seeding, in one
-# idempotent script with TWO callers and no privileged step.
+# idempotent script: the .gitignore block, attachments/, the beads
+# snapshot restore and `bd init`.
 #
 # WHY IT IS ITS OWN SCRIPT. This work used to live inside the entrypoint,
-# which is PID 1 of the container: the same process that has to bring Orca
-# up. Anything in there is on the critical path of the boot, and a folder
-# whose seeding misbehaves is a folder that will not start. It is also
-# invisible -- it happens before there is a terminal to watch it in, and
-# the only trace is a line in a log nobody reads until something is wrong.
+# which is PID 1 of the container. Anything in there is on the critical
+# path of the boot, and a folder whose seeding misbehaves is a folder that
+# will not start. It is also invisible -- it happens before there is a
+# terminal to watch it in, and the only trace is a line in a log nobody
+# reads until something is wrong.
 #
-# Orca already has the right home for this: `scripts.setup` in the repo's
-# own `orca.yaml`, which Orca runs in a terminal pane when a workspace is
-# created (its own words: "setup script runs when a new workspace is
-# created"). That is committed with the project, shared with the team,
-# editable without rebuilding an image, and visible while it runs.
-#
-# So this script is the single body, and both callers run it:
-#
-#   1. Orca, through `scripts.setup` in <project>/orca.yaml.
-#   2. The entrypoint, best-effort, as the FLOOR -- because a folder must
-#      never depend on a hook having fired to have a tracker in it. On
-#      2026-09-08 Orca's setup script could not be made to fire from the
-#      CLI at all (three attempts, `--setup run`, before and after a
-#      runtime restart, with orca.yaml confirmed parsed by `orca vm recipe
-#      doctor`); it appears to be adopted through the app. Staking a
-#      folder's beads database on a path that could not be verified would
-#      be trading one point of failure for a less honest one.
+# So it is a provision step now: provision.d/50-seed-project runs this
+# script on every start, with its own run/provision log and status row,
+# off the boot's critical path. It can also be run by hand from inside the
+# project. A folder must never depend on a hook having fired to have a
+# tracker in it, and nothing here waits on one.
 #
 # Everything here is idempotent and safe to run from any directory, as any
 # user, any number of times. It never exits non-zero for a step it merely
-# could not do: the caller is either a terminal a person is watching or
-# PID 1 of the container, and neither should die over a seeding step.
+# could not do: the caller is either a terminal a person is watching or a
+# provision step, and neither should die over a seeding step.
 #
 # bash 3.2 clean.
 
@@ -39,8 +28,8 @@ set -uo pipefail
 
 PROJECT_DIR="${PROJECT_DIR:-${CLAUDE_ORCA_ROOT:-}}"
 if [ -z "$PROJECT_DIR" ]; then
-    # Run by hand from inside the project, most likely from an Orca
-    # terminal: walk up for the folder that carries .claude-dev.
+    # Run by hand from inside the project: walk up for the folder that
+    # carries .claude-dev.
     d="$PWD"
     while [ "$d" != "/" ]; do
         if [ -d "$d/.claude-dev" ]; then PROJECT_DIR="$d"; break; fi
@@ -69,13 +58,17 @@ seed_gitignore() {
             echo "# claude_orca"
         } >> "$gitignore"
     fi
-    # claude-orca-vm1: the last three are 'orca skills install --local'
-    # (provision.d/75-orca-skills) artefacts, which land in the project root
-    # like every other local-only sandbox artifact -- ignored exactly, so a
+    # The last three are the skills artefacts an earlier template's
+    # `skills install --local` step left in the project root -- ignored
+    # exactly, so a folder that still carries them stays clean while a
     # user's own skills under .claude/skills/ stay visible to git.
+    #
+    # Nothing here names the Orca desktop app's files (Orca.app/, .orca/,
+    # .orca-worktrees/, orca.yaml): this template no longer ships or runs
+    # Orca, so it stops ADDING those lines. Lines already in a user's
+    # .gitignore are never stripped.
     for pattern in '.claude-dev/' '.claude-dev-snapshots/' '/claude-dev' \
-                   'Orca.app/' '.mcp.json' 'attachments/' '.claude/logs/' \
-                   '.orca/' '.orca-worktrees/' 'orca.yaml' \
+                   '.mcp.json' 'attachments/' '.claude/logs/' \
                    'graphify-out/' '__pycache__/' \
                    '.agents/skills/orchestration/' \
                    '.claude/skills/orchestration' 'skills-lock.json'; do
@@ -86,77 +79,6 @@ seed_gitignore() {
 # --- where take-screenshot puts images ---------------------------------
 seed_attachments() {
     mkdir -p "$PROJECT_DIR/attachments" 2>/dev/null || true
-}
-
-# --- orca.yaml ----------------------------------------------------------
-#
-# The file this project's own Orca config lives in. Seeded only when the
-# project has none: a folder that already carries one belongs to whoever
-# wrote it, and this must never overwrite a team's own config.
-#
-# claude-orca-8jb: this used to also seed a `scripts.setup` key that made
-# Orca run this same script AGAIN, visibly, in a terminal on every
-# workspace creation -- a second tab, for work provision.d/50-seed-project
-# already does invisibly with its own log and status row. Comment-only,
-# now: no scripts:, no setup:.
-#
-# PREVIOUSLY_SEEDED_ORCA_YAML is that old content, byte for byte, kept
-# only so a folder that already carries it (seeded before this change)
-# can be migrated: replaced with the new comment-only content, but ONLY
-# on an exact byte match. Anything else -- a user's own setup script, our
-# old content plus their edits, any differing byte -- is left completely
-# alone. This is the whole safety rule: no YAML parsing, no partial edit,
-# no pattern match.
-PREVIOUSLY_SEEDED_ORCA_YAML="$(cat <<'EOF'
-# Orca reads this file from the repo root. `scripts.setup` runs in a
-# terminal when a workspace is created, so the work below is watchable and
-# is not on the critical path of the container's boot.
-#
-# Seeded by claude_orca on this folder's first start, and yours from here
-# on -- nothing rewrites it. The script it calls is idempotent.
-scripts:
-  setup: bash /opt/claude-orca/scripts/container/seed-project.sh 2>/dev/null || bash .claude-dev/template/scripts/container/seed-project.sh
-EOF
-)"
-
-seed_orca_yaml() {
-    yaml="$PROJECT_DIR/orca.yaml"
-    new_content="$(cat <<'EOF'
-# This is this project's own Orca config (https://orca.dev), read from
-# the repo root. It is yours to edit -- nothing here rewrites it once it
-# exists.
-#
-# A `scripts.setup` key here makes Orca open a terminal running it every
-# time a workspace is created. This project's own seeding already runs,
-# invisibly, during container provisioning (see run/provision/ inside the
-# container) -- adding scripts.setup here to watch that work again means
-# an extra terminal tab on every workspace, for no additional work done.
-EOF
-)"
-    # $(...) strips trailing newlines on both sides of this comparison
-    # (the heredoc above and the file read below), so a byte-for-byte
-    # match here means a byte-for-byte match once the trailing newline is
-    # restored by printf '%s\n' on write.
-    # A symlink is left entirely alone, before anything reads or writes
-    # it: `[ -e ]`, `cat` and `>` all resolve a link, so without this the
-    # migration below would rewrite whatever the link points AT, outside
-    # the project (claude-orca-bbd). A folder's tooling touches that
-    # folder. Someone pointing orca.yaml at a shared config keeps it.
-    if [ -L "$yaml" ]; then
-        log "$yaml is a symlink; left alone"
-        return 0
-    fi
-    if [ ! -e "$yaml" ]; then
-        printf '%s\n' "$new_content" > "$yaml" 2>/dev/null || return 0
-        log "seeded $yaml (comment-only; no scripts.setup)"
-        return 0
-    fi
-    if [ "$(cat "$yaml" 2>/dev/null)" = "$PREVIOUSLY_SEEDED_ORCA_YAML" ]; then
-        printf '%s\n' "$new_content" > "$yaml" 2>/dev/null || return 0
-        log "migrated $yaml (dropped the scripts.setup this template used to seed)"
-        return 0
-    fi
-    log "$yaml already exists; left alone"
 }
 
 # --- beads --------------------------------------------------------------
@@ -212,7 +134,6 @@ quiet_bd_metrics() {
 
 seed_gitignore
 seed_attachments
-seed_orca_yaml
 restore_beads_snapshot
 init_beads
 quiet_bd_metrics
