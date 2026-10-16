@@ -76,6 +76,7 @@ cdev_sshd_config() {
     'PermitUserEnvironment no' \
     'PrintMotd no' \
     'AcceptEnv TERM_PROGRAM TERM_PROGRAM_VERSION COLORTERM CDEV_CWD LANG LC_*' \
+    "SetEnv $(_cdev_sshd_q "CLAUDE_ORCA_RUNTIME_DIR=$rt")" \
     "ForceCommand '$fc'" \
     'LogLevel INFO'
 }

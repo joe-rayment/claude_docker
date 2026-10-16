@@ -41,6 +41,7 @@ lib() { run "$BASH_BIN" -c 'source "$1"; shift; "$@"' _ "$LIB" "$@"; }
       'AllowStreamLocalForwarding remote' 'StreamLocalBindUnlink yes' \
       'PermitUserEnvironment no' 'PrintMotd no' \
       'AcceptEnv TERM_PROGRAM TERM_PROGRAM_VERSION COLORTERM CDEV_CWD LANG LC_*' \
+      'SetEnv "CLAUDE_ORCA_RUNTIME_DIR=/tmp/my run"' \
       "ForceCommand '/opt/with space/pane-entry'" 'LogLevel INFO'; do
     printf '%s\n' "$output" | grep -Fxq -- "$want" || { echo "missing: $want"; false; }
   done
@@ -51,6 +52,7 @@ lib() { run "$BASH_BIN" -c 'source "$1"; shift; "$@"' _ "$LIB" "$@"; }
   lib cdev_sshd_config /run/cdev /workspace/p 22 bob "/x/it's/pane-entry"
   [ "$status" -eq 0 ]
   printf '%s\n' "$output" | grep -Fxq 'HostKey /run/cdev/ssh/host_ed25519'
+  printf '%s\n' "$output" | grep -Fxq 'SetEnv CLAUDE_ORCA_RUNTIME_DIR=/run/cdev'
   printf '%s\n' "$output" | grep -Fxq "ForceCommand '/x/it'\\''s/pane-entry'"
 }
 
