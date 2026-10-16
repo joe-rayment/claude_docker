@@ -50,6 +50,9 @@ resolve_script_path() {
 
 SCRIPT_PATH="$(resolve_script_path)"
 SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
+# `claude-dev ghostty` and the Ghostty rows of doctor/verify (functions only).
+# shellcheck source=mac/ghostty-install.sh
+. "$SCRIPT_DIR/mac/ghostty-install.sh"
 TEMPLATE_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 HOST_DIR="$(dirname "$TEMPLATE_ROOT")"
 # The folder this launcher belongs to: <project>/.claude-dev/template ->
@@ -2892,6 +2895,8 @@ resync_config() {
 
 cmd_open_v3() {
     local dir="${1:-$PROJECT_SELF}" name port was state url rc=0 t0 t1
+    # An older Ghostty install is re-applied here (one line, never fatal).
+    ghostty_refresh_if_stale || true
     [ -d "$dir" ] || { echo "Error: directory does not exist: $dir" >&2; return 1; }
     dir="$(cd "$dir" && pwd -P)"
     if [ ! -f "$(orca_json "$dir")" ]; then
@@ -3326,6 +3331,7 @@ PROVISION
         [ "$prov" -eq 0 ] && doctor_row warn "provisioning" "no step statuses yet -- ./claude-dev logs, or ./claude-dev --update"
     fi
 
+    ghostty_doctor_rows || rc=2
     return "$rc"
 }
 
@@ -3459,6 +3465,7 @@ VERIFY
         rc=2
     fi
 
+    ghostty_doctor_rows || rc=2
     if [ "$rc" -eq 0 ]; then
         echo "Everything this folder promises is there."
     else
@@ -3708,6 +3715,10 @@ Usage:
                                 toolchain, beads, the rulebook, agents,
                                 hooks, git identity and Orca's own state
   claude-dev logs               Follow the container's output
+  claude-dev ghostty [--uninstall|--check]
+                                Route Ghostty panes into sandboxed folders
+                                (one include line in your Ghostty config);
+                                --uninstall gives the config back unchanged
   claude-dev key openrouter     Store this folder's OpenRouter key (not
                                 echoed) for the delegate routes
   claude-dev --how-to-run       Print the URL and the two commands
@@ -3728,6 +3739,7 @@ case "${1:-}" in
     verify)        shift; cmd_verify_v3 "${1:-$PROJECT_SELF}" || exit $?; exit 0 ;;
     logs)          shift; cmd_logs_v3 "${1:-$PROJECT_SELF}" || exit $?; exit 0 ;;
     key)           shift; cmd_key_v3 "$@" || exit $?; exit 0 ;;
+    ghostty)       shift; ghostty_main "$@" || exit $?; exit 0 ;;
     --how-to-run)
         if [ "$(ui_of "$PROJECT_SELF")" = "desktop" ]; then
             print_desktop_block_v3 "$PROJECT_SELF"
