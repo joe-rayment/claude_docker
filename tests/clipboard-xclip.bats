@@ -109,3 +109,104 @@ logfield() { python3 -I -c 'import json,sys; print(json.loads(open(sys.argv[1]).
   [ "$(requests)" -eq 3 ]
   [ "$(logfield 3 path)" = /png ]
 }
+
+@test "xclip: -i posts the text to /copy with its length; -in and no flag at all do too" {
+  serve "$(png_cfg)"
+  run env -i PATH="$PATH" HOME="$BATS_TEST_TMPDIR" TMPDIR="$BATS_TEST_TMPDIR" CLAUDE_ORCA_CLIP_SOCK="$SOCK" \
+    bash -c "printf 'hello mac' | '$XCLIP' -selection clipboard -i"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  [ "$(logfield 1 method)" = POST ]
+  [ "$(logfield 1 path)" = /copy ]
+  [ "$(logfield 1 length)" = 9 ]
+  [ "$(logfield 1 body)" = "hello mac" ]
+  run env -i PATH="$PATH" HOME="$BATS_TEST_TMPDIR" TMPDIR="$BATS_TEST_TMPDIR" CLAUDE_ORCA_CLIP_SOCK="$SOCK" \
+    bash -c "printf 'second' | '$XCLIP' -in; printf 'third' | '$XCLIP'"
+  [ "$status" -eq 0 ]
+  [ "$(requests)" -eq 3 ]
+  [ "$(logfield 3 body)" = third ]
+}
+
+@test "xclip: -i of an image target, or of more than 1 MB, sends nothing and exits 1" {
+  serve "$(png_cfg)"
+  run env -i PATH="$PATH" HOME="$BATS_TEST_TMPDIR" TMPDIR="$BATS_TEST_TMPDIR" CLAUDE_ORCA_CLIP_SOCK="$SOCK" \
+    bash -c "printf 'x' | '$XCLIP' -selection clipboard -t image/png -i"
+  [ "$status" -eq 1 ]
+  run env -i PATH="$PATH" HOME="$BATS_TEST_TMPDIR" TMPDIR="$BATS_TEST_TMPDIR" CLAUDE_ORCA_CLIP_SOCK="$SOCK" \
+    bash -c "head -c 1048577 /dev/zero | tr '\\0' a | '$XCLIP' -i"
+  [ "$status" -eq 1 ]
+  [ "$(requests)" -eq 0 ]
+}
+
+@test "xclip: no socket at all -> exit 1, no output, no error text, no delay to speak of" {
+  [ ! -e "$SOCK" ]
+  local t0=$SECONDS
+  xc -selection clipboard -t TARGETS -o
+  [ "$status" -eq 1 ]
+  [ -z "$output" ]
+  xc -selection clipboard -t image/png -o
+  [ "$status" -eq 1 ]
+  [ -z "$output" ]
+  [ $((SECONDS - t0)) -lt 2 ]
+}
+
+@test "xclip: a 204 on /targets and a 404 on /png -> exit 1 with nothing printed (stdout and stderr)" {
+  serve '{"routes": {"GET /targets": [204, ""]}}'
+  run env -i PATH="$PATH" HOME="$BATS_TEST_TMPDIR" TMPDIR="$BATS_TEST_TMPDIR" CLAUDE_ORCA_CLIP_SOCK="$SOCK" \
+    bash -c "'$XCLIP' -selection clipboard -t TARGETS -o 2>&1"
+  [ "$status" -eq 1 ]
+  [ -z "$output" ]
+  run env -i PATH="$PATH" HOME="$BATS_TEST_TMPDIR" TMPDIR="$BATS_TEST_TMPDIR" CLAUDE_ORCA_CLIP_SOCK="$SOCK" \
+    bash -c "'$XCLIP' -selection clipboard -t image/png -o 2>&1"
+  [ "$status" -eq 1 ]
+  [ -z "$output" ]
+  # a real answer is final: one connection each, never retried
+  [ "$(requests)" -eq 2 ]
+}
+
+@test "xclip: a 413 (image too big) is final too -> exit 1, nothing printed, one try" {
+  serve '{"routes": {"GET /png": [413, "too big"]}}'
+  run env -i PATH="$PATH" HOME="$BATS_TEST_TMPDIR" TMPDIR="$BATS_TEST_TMPDIR" CLAUDE_ORCA_CLIP_SOCK="$SOCK" \
+    bash -c "'$XCLIP' -t image/png -o 2>&1"
+  [ "$status" -eq 1 ]
+  [ -z "$output" ]
+  [ "$(requests)" -eq 1 ]
+}
+
+@test "xclip: a connection the listener drops is retried: 3 tries, 0.1 s apart, then gives up" {
+  serve '{"drop_first": 2, "routes": {"GET /targets": [200, "image/png\n"]}}'
+  xc -selection clipboard -t TARGETS -o
+  [ "$status" -eq 0 ]
+  [ "$output" = "image/png" ]
+  [ "$(requests)" -eq 3 ]
+  run python3 -I -c '
+import json, sys
+ts = [json.loads(l)["t"] for l in open(sys.argv[1])]
+gaps = [b - a for a, b in zip(ts, ts[1:])]
+print(" ".join("%.3f" % g for g in gaps))
+sys.exit(0 if all(0.09 <= g < 0.6 for g in gaps) else 1)' "$LOG"
+  [ "$status" -eq 0 ]
+  # three drops in a row: exactly three tries, then exit 1 with nothing printed
+  rm -f "$LOG"
+  printf '{"drop_first": 99, "routes": {}}' > "$CFG"
+  xc -selection clipboard -t image/png -o
+  [ "$status" -eq 1 ]
+  [ -z "$output" ]
+  [ "$(requests)" -eq 3 ]
+}
+
+@test "xclip: a stale socket file nobody listens on -> exit 1, nothing printed" {
+  python3 -I -c 'import socket,sys; s=socket.socket(socket.AF_UNIX); s.bind(sys.argv[1]); s.close()' "$SOCK"
+  [ -S "$SOCK" ]
+  run env -i PATH="$PATH" HOME="$BATS_TEST_TMPDIR" TMPDIR="$BATS_TEST_TMPDIR" CLAUDE_ORCA_CLIP_SOCK="$SOCK" \
+    bash -c "'$XCLIP' -selection clipboard -t TARGETS -o 2>&1"
+  [ "$status" -eq 1 ]
+  [ -z "$output" ]
+}
+
+@test "xclip: -version answers without reading stdin or touching the socket" {
+  serve "$(png_cfg)"
+  run env -i PATH="$PATH" HOME="$BATS_TEST_TMPDIR" CLAUDE_ORCA_CLIP_SOCK="$SOCK" "$XCLIP" -version < /dev/null
+  [ "$status" -eq 0 ]
+  [ "$(requests)" -eq 0 ]
+}
