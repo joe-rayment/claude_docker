@@ -304,8 +304,9 @@ run_agent() {
         __keep="${__keep:+$__keep$__nl}$__v"
     fi
     if [ "$__iso" = true ]; then
-        for __v in $(compgen -e); do unset "$__v" 2>/dev/null; done
+        # functions first: the sed below needs the PATH the next loop unsets
         for __v in $(declare -F | sed -n 's/^declare -fx //p'); do unset -f "$__v" 2>/dev/null; done
+        for __v in $(compgen -e); do unset "$__v" 2>/dev/null; done
     fi
     while IFS= read -r __kv; do
         if [ -n "$__kv" ]; then export "$__kv"; fi

@@ -394,3 +394,142 @@ jobset() {
     grep -q 'gemini stderr note' "$JOBDIR/runner.log"
     absent 'gemini stderr note' "$JOBDIR/log.jsonl" "$JOBDIR/receipt.json"
 }
+
+@test "env_isolate: the agent sees only PATH HOME TERM, env_set, the named env_pass variables and the hook's git config; the passed secret is redacted everywhere" {
+    # Guards:   an env_isolate job runs its agent in a wiped environment (no stray variables or exported functions) and no secret it was handed reaches a log or receipt
+    # Fails if: an unrelated exported variable or function leaks in, an env_pass name is dropped, HOME/TERM are wrong, or the fake key survives in argv/log/runner.log/receipt
+    # Run:      bats -f 'env_isolate: the agent sees' tests/workers-run.bats
+    mkjob e1
+    mkdir -p "$BATS_TEST_TMPDIR/hooks" "$BATS_TEST_TMPDIR/ihome"
+    jobset '.env_isolate=true | .home=$h | .env_set={FOO_SET:"val1"}
+            | .env_pass=["STUB_OUT","STUB_TAG","STUB_KIND","STUB_RESULT","MY_KEY"]
+            | .frozen_hooks=$k' --arg h "$BATS_TEST_TMPDIR/ihome" --arg k "$BATS_TEST_TMPDIR/hooks"
+    leakfn() { :; }
+    export -f leakfn
+    export UNRELATED_VAR=leak MY_KEY=fakekey-abc123xyz STUB_TAG=1 STUB_KIND=claude
+    export STUB_RESULT="saw fakekey-abc123xyz in my env"
+    run "$WR" "$JOBDIR"
+    [ "$status" -eq 0 ]
+    names="$(sed 's/=.*//' "$OUT/env.1" | grep -v -e '^PWD$' -e '^SHLVL$' -e '^_$' -e '^OLDPWD$' | LC_ALL=C sort | tr '\n' ' ')"
+    want="$(printf '%s\n' PATH HOME TERM FOO_SET MY_KEY STUB_OUT STUB_TAG STUB_KIND STUB_RESULT \
+        GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 | LC_ALL=C sort | tr '\n' ' ')"
+    [ "$names" = "$want" ] || { echo "got:  $names" >&2; echo "want: $want" >&2; false; }
+    grep -qx "HOME=$BATS_TEST_TMPDIR/ihome" "$OUT/env.1"
+    grep -qx 'TERM=dumb' "$OUT/env.1"
+    grep -qx 'FOO_SET=val1' "$OUT/env.1"
+    grep -qx "GIT_CONFIG_VALUE_0=$BATS_TEST_TMPDIR/hooks" "$OUT/env.1"
+    absent 'BASH_FUNC_' "$OUT/env.1"
+    absent 'UNRELATED_VAR' "$OUT/env.1"
+    # the stub echoed the key into its stream, so the log would hold it unredacted
+    absent 'fakekey-abc123xyz' "$OUT/argv.1" "$JOBDIR/log.jsonl" "$JOBDIR/runner.log" "$JOBDIR/receipt.json" "$INBOX"
+    grep -q '\*\*\*REDACTED\*\*\*' "$JOBDIR/log.jsonl"
+    grep -q '\*\*\*REDACTED\*\*\*' "$JOBDIR/receipt.json"
+}
+
+@test "env_isolate + opencode: the composer's guard env is not used, no --variant flag, and OPENROUTER_API_KEY comes only from env_pass" {
+    # Guards:   an isolated opencode job brings its own key and config through env_set/env_pass instead of the shared guard env, and takes no --variant flag
+    # Fails if: the openrouter-guard.env is composed or sourced for an isolated job, --variant is passed, or the env_pass key does not reach the agent
+    # Run:      bats -f 'env_isolate [+] opencode' tests/workers-run.bats
+    mkjob e2 opencode bead-e2 high
+    mkdir -p "$BATS_TEST_TMPDIR/ihome"
+    jobset '.env_isolate=true | .home=$h | .env_pass=["STUB_OUT","STUB_TAG","STUB_KIND","OPENROUTER_API_KEY"]' \
+        --arg h "$BATS_TEST_TMPDIR/ihome"
+    export STUB_KIND=opencode STUB_TAG=1 OPENROUTER_API_KEY=sk-fake-passed-key-777
+    run "$WR" "$JOBDIR"
+    [ "$status" -eq 0 ]
+    [ ! -e "$PROJ/.claude-dev/run/openrouter-guard.env" ]
+    absent -x -- '--variant' "$OUT/argv.1"
+    absent -x -- 'high' "$OUT/argv.1"
+    [ "$(cat "$OUT/keyenv.1")" = "1" ]
+    grep -qx 'OPENROUTER_API_KEY=sk-fake-passed-key-777' "$OUT/env.1"
+    absent 'sk-fake-passed-key-777' "$OUT/argv.1" "$JOBDIR/log.jsonl" "$JOBDIR/runner.log" "$JOBDIR/receipt.json"
+    # the variant is still recorded in the receipt, only not passed as a flag
+    [ "$(jv "$JOBDIR/receipt.json" .variant)" = "high" ]
+}
+
+@test "slot false: a job that opts out of the slot cap runs while the only slot is held, and records no slot" {
+    # Guards:   a job with slot:false (delegate's runs have their own cap) neither waits for nor takes a worker-run slot
+    # Fails if: slot:false still queues behind a running job, job.json gains a .slot, or the opted-out job disturbs the running one
+    # Run:      bats -f 'slot false' tests/workers-run.bats
+    export CLAUDE_ORCA_MAX_WORKERS=1
+    mkjob f1; J1="$JOBDIR"
+    mkjob f2; J2="$JOBDIR"
+    jobset '.slot=false'
+    STUB_SLEEP=3 STUB_TAG=1 "$WR" "$J1" >/dev/null 2>&1 &
+    P1=$!
+    wait_state "$J1" running
+    STUB_TAG=2 run timeout 20 "$WR" "$J2"
+    [ "$status" -eq 0 ]
+    [ "$(jv "$J2/job.json" .state)" = "done" ]
+    # .slot stays the opt-out flag; the runner never overwrites it with a slot number
+    [ "$(jq -c .slot "$J2/job.json")" = "false" ]
+    # job 1 held the only slot the whole time and is still going
+    [ "$(jv "$J1/job.json" .state)" = "running" ]
+    [ "$(jv "$J1/job.json" .slot)" = "1" ]
+    wait "$P1"
+    [ "$(jv "$J1/job.json" .state)" = "done" ]
+    [ "$(wc -l <"$INBOX")" -eq 2 ]
+}
+
+@test "merged_log: stdout and stderr share runner.log, there is no log.jsonl, and the receipt is parsed from runner.log" {
+    # Guards:   a merged_log job (delegate's runs) puts the agent's stdout and stderr in one runner.log and reads the receipt from it
+    # Fails if: log.jsonl is still written, stderr is lost or kept apart, or the receipt is parsed from an empty log.jsonl
+    # Run:      bats -f 'merged_log' tests/workers-run.bats
+    mkjob m1 gemini
+    jobset '.merged_log=true'
+    STUB_KIND=gemini STUB_RESULT="merged gemini answer" run "$WR" "$JOBDIR"
+    [ "$status" -eq 0 ]
+    grep -q 'merged gemini answer' "$JOBDIR/runner.log"
+    grep -q 'gemini stderr note' "$JOBDIR/runner.log"
+    [ ! -e "$JOBDIR/log.jsonl" ]
+    mkjob m2 claude
+    jobset '.merged_log=true'
+    STUB_TAG=2 run "$WR" "$JOBDIR"
+    [ "$status" -eq 0 ]
+    [ ! -e "$JOBDIR/log.jsonl" ]
+    grep -q '"type":"result"' "$JOBDIR/runner.log"
+    jq -e '.session_id=="sid-1" and .tokens_in==5 and .tokens_out==7 and .summary=="all done"' "$JOBDIR/receipt.json"
+}
+
+@test "receipt_name and variant: the receipt lands under the requested name, later turns count from it, an empty variant is null" {
+    # Guards:   a job can name its receipt file (result-a.json), turn N writes result-a-N.json, and the receipt records the variant (null when none)
+    # Fails if: the receipt still goes to receipt.json, last_receipt points elsewhere, the resume turn is not result-a-2.json, or an empty variant is not null
+    # Run:      bats -f 'receipt_name and variant' tests/workers-run.bats
+    mkjob r1 claude bead-r1 high
+    jobset '.receipt_name="result-a.json"'
+    run "$WR" "$JOBDIR"
+    [ "$status" -eq 0 ]
+    [ -f "$JOBDIR/result-a.json" ]
+    [ ! -e "$JOBDIR/receipt.json" ]
+    [ "$(jv "$JOBDIR/result-a.json" .variant)" = "high" ]
+    jq -e '(.last_receipt|endswith("/result-a.json"))' "$JOBDIR/job.json"
+    STUB_TAG=2 run "$WR" "$JOBDIR" --resume sid-1 --message "again"
+    [ "$status" -eq 0 ]
+    [ -f "$JOBDIR/result-a-2.json" ]
+    jq -e '(.last_receipt|endswith("/result-a-2.json")) and .turns==2' "$JOBDIR/job.json"
+    mkjob r2 claude bead-r2 ""
+    run "$WR" "$JOBDIR"
+    [ "$status" -eq 0 ]
+    [ "$(jq -c .variant "$JOBDIR/receipt.json")" = "null" ]
+}
+
+@test "usage: an opencode finish event is read for tokens and cost; usage_found is true for step_finish and finish, false for a claude run with no result" {
+    # Guards:   the receipt finds opencode token counts in a step_finish OR a finish event and says whether it found any usage at all
+    # Fails if: a finish event's usage block is ignored (tokens 0), or usage_found stays true/false regardless of what the stream held
+    # Run:      bats -f 'usage: an opencode finish' tests/workers-run.bats
+    mkguard
+    mkjob u1 opencode
+    STUB_KIND=opencode-finish run "$WR" "$JOBDIR"
+    [ "$status" -eq 0 ]
+    jq -e '.tokens_in==21 and .tokens_out==22 and .usd==0.02 and .usage_found==true' "$JOBDIR/receipt.json"
+    mkjob u2 opencode
+    STUB_TAG=2 STUB_KIND=opencode run "$WR" "$JOBDIR"
+    [ "$status" -eq 0 ]
+    jq -e '.tokens_in==3 and .tokens_out==4 and .usd==0.1 and .usage_found==true' "$JOBDIR/receipt.json"
+    # a claude stream with no result event: nothing to count
+    mkjob u3 claude
+    printf '#!/usr/bin/env bash\necho "{\\"type\\":\\"system\\",\\"session_id\\":\\"s9\\"}"\n' >"$BATS_TEST_TMPDIR/bin/agent-stub"
+    run "$WR" "$JOBDIR"
+    [ "$status" -eq 0 ]
+    jq -e '.tokens_in==0 and .usage_found==false' "$JOBDIR/receipt.json"
+}
