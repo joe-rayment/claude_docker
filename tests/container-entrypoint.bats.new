@@ -187,3 +187,212 @@ STUB
     [ "$status" -eq 0 ]
     [ "$(printf '%s' "$output" | tr -d '[:space:]')" = "0" ]
 }
+
+@test "Dockerfile, setup.sh and smoke.sh exist, and the image runs the entrypoint" {
+    # Guards:   the image's moving parts are all in the repo: the Dockerfile
+    #           that builds it, setup.sh that installs it, smoke.sh that
+    #           checks it, and the entrypoint it starts under tini.
+    # Fails if: the Dockerfile stops naming scripts/container/entrypoint.sh,
+    #           or one of the four files is deleted or loses its exec bit.
+    # Run:      bats -f 'the image runs the entrypoint' tests/container-entrypoint.bats
+    [ -f "$DOCKERFILE" ]
+    [ -x "$SETUP" ]
+    [ -x "$SMOKE" ]
+    [ -x "$ENTRYPOINT" ]
+
+    # The image runs the entrypoint under tini.
+    run grep -q 'scripts/container/entrypoint.sh' "$DOCKERFILE"
+    [ "$status" -eq 0 ]
+}
+
+@test "entrypoint seeds .gitignore, attachments/ and the home gitconfig from CLAUDE_ORCA_GIT_NAME and CLAUDE_ORCA_GIT_EMAIL" {
+    # Guards:   a fresh folder gets its .gitignore entries (once each), the
+    #           attachments/ directory and a home gitconfig carrying the Mac's
+    #           git identity -- and never overwrites a gitconfig that exists.
+    # Fails if: a start appends the .gitignore block twice, the identity
+    #           stops reaching ~/.gitconfig, an existing gitconfig is
+    #           replaced, or an empty [user] stanza is written without env.
+    # Run:      bats -f 'seeds .gitignore, attachments' tests/container-entrypoint.bats
+    [ -x "$ENTRYPOINT" ]
+
+    local proj="$TMP/project" home pattern
+    make_project "$proj"
+    home="$proj/.claude-dev/home"
+
+    # Twice, because the seed has to be idempotent: a folder is registered
+    # again on every start.
+    local i
+    for i in 1 2; do
+        run_entrypoint_once HOME="$home" PROJECT_DIR="$proj" \
+            CLAUDE_ORCA_SKIP_PROVISION=0 CLAUDE_ORCA_SKIP_SETUP=1 \
+            CLAUDE_ORCA_SKIP_BEADS=1 CLAUDE_ORCA_ENTRYPOINT_NO_PRIVDROP=1 \
+            CLAUDE_ORCA_GIT_NAME="Ada Lovelace" \
+            CLAUDE_ORCA_GIT_EMAIL="ada@example.com"
+        [ "$ep_status" = "143" ]
+        [[ "$output" == *"waiting on the sshd supervisor"* ]]
+    done
+
+    # The same entries and marker seed_gitignore writes on the Mac, each
+    # exactly once.
+    [ -f "$proj/.gitignore" ]
+    run grep -c '^# claude_orca$' "$proj/.gitignore"
+    [ "$output" = "1" ]
+    for pattern in '.claude-dev/' '.claude-dev-snapshots/' '/claude-dev' \
+                   'Orca.app/' '.mcp.json' 'attachments/' '.claude/logs/'; do
+        run grep -c -xF "$pattern" "$proj/.gitignore"
+        [ "$output" = "1" ]
+    done
+
+    # Where take-screenshot drops images.
+    [ -d "$proj/attachments" ]
+
+    # A fresh .claude-dev/home has no git identity at all, so every commit
+    # inside the container would fail. The Mac passes its own as env.
+    [ -f "$home/.gitconfig" ]
+    run cat "$home/.gitconfig"
+    [[ "$output" == *"name = Ada Lovelace"* ]]
+    [[ "$output" == *"email = ada@example.com"* ]]
+
+    # Never over an existing one: whatever the agent set up in there wins.
+    run_entrypoint_once HOME="$home" PROJECT_DIR="$proj" \
+        CLAUDE_ORCA_SKIP_PROVISION=0 CLAUDE_ORCA_SKIP_SETUP=1 \
+        CLAUDE_ORCA_SKIP_BEADS=1 CLAUDE_ORCA_ENTRYPOINT_NO_PRIVDROP=1 \
+        CLAUDE_ORCA_GIT_NAME="Someone Else" \
+        CLAUDE_ORCA_GIT_EMAIL="else@example.com"
+    run cat "$home/.gitconfig"
+    [[ "$output" == *"Ada Lovelace"* ]]
+    [[ "$output" != *"Someone Else"* ]]
+
+    # Nothing to copy: no env, no file (and no empty [user] stanza).
+    local proj2="$TMP/project2" home2
+    make_project "$proj2"
+    home2="$proj2/.claude-dev/home"
+    # unset: a claude-orca container exports the identity into every
+    # shell, and this leg is about the folder that ships none.
+    unset CLAUDE_ORCA_GIT_NAME CLAUDE_ORCA_GIT_EMAIL
+    run_entrypoint_once HOME="$home2" PROJECT_DIR="$proj2" \
+        CLAUDE_ORCA_SKIP_PROVISION=0 CLAUDE_ORCA_SKIP_SETUP=1 \
+        CLAUDE_ORCA_SKIP_BEADS=1 CLAUDE_ORCA_ENTRYPOINT_NO_PRIVDROP=1
+    [ ! -f "$home2/.gitconfig" ]
+    [ -d "$proj2/attachments" ]
+}
+
+# --- first-run friction (claude-orca-qa2.17) ------------------------------
+#
+# A Claude Code worker in a fresh .claude-dev/home sat on the trust dialog
+# forever (the 2026-09-06 live demo on this box). The Orca-CLI half of that
+# pair of cases is gone with Orca; the trust seed stays.
+
+@test "entrypoint seeds the Claude Code trust and bypass-permissions keys without overwriting existing ones" {
+    # Guards:   a fresh home gets the folder-trust, onboarding and
+    #           skip-permissions-prompt keys so a worker never stalls on a
+    #           dialog -- while any value, or non-JSON file, already there wins.
+    # Fails if: the seed stops writing a key, replaces a value the agent set,
+    #           disturbs other keys in the file, or rewrites a non-JSON file.
+    # Run:      bats -f 'trust and bypass-permissions keys' tests/container-entrypoint.bats
+    [ -x "$ENTRYPOINT" ]
+    command -v jq >/dev/null 2>&1
+
+    local proj="$TMP/project" home cj sj
+    make_project "$proj"
+    home="$proj/.claude-dev/home"
+    cj="$home/.claude.json"
+    sj="$home/.claude/settings.json"
+
+    run_entrypoint_once HOME="$home" PROJECT_DIR="$proj" \
+        CLAUDE_ORCA_SKIP_PROVISION=0 CLAUDE_ORCA_SKIP_SETUP=1 \
+        CLAUDE_ORCA_SKIP_BEADS=1 CLAUDE_ORCA_ENTRYPOINT_NO_PRIVDROP=1
+    [ "$ep_status" = "143" ]
+    [[ "$output" == *"waiting on the sshd supervisor"* ]]
+
+    # The folder-trust dialog and the first-run wizard.
+    [ -f "$cj" ]
+    run jq -r --arg p "$proj" '.projects[$p].hasTrustDialogAccepted' "$cj"
+    [ "$output" = "true" ]
+    run jq -r '.hasCompletedOnboarding' "$cj"
+    [ "$output" = "true" ]
+
+    # The disclaimer --dangerously-skip-permissions raises once per install.
+    [ -f "$sj" ]
+    run jq -r '.skipDangerousModePermissionPrompt' "$sj"
+    [ "$output" = "true" ]
+
+    # A value already on disk always wins, and nothing else in the file is
+    # disturbed: these are the agent's own config files.
+    jq -n --arg p "$proj" '{
+        hasCompletedOnboarding: false,
+        oauthAccount: {emailAddress: "someone@example.com"},
+        projects: {($p): {hasTrustDialogAccepted: false, allowedTools: ["Bash"]}}
+    }' > "$cj"
+    jq -n '{skipDangerousModePermissionPrompt: false, model: "opus"}' > "$sj"
+
+    run_entrypoint_once HOME="$home" PROJECT_DIR="$proj" \
+        CLAUDE_ORCA_SKIP_PROVISION=0 CLAUDE_ORCA_SKIP_SETUP=1 \
+        CLAUDE_ORCA_SKIP_BEADS=1 CLAUDE_ORCA_ENTRYPOINT_NO_PRIVDROP=1
+    run jq -r --arg p "$proj" '[.hasCompletedOnboarding,
+        .projects[$p].hasTrustDialogAccepted,
+        .projects[$p].allowedTools[0],
+        .oauthAccount.emailAddress] | join(",")' "$cj"
+    [ "$output" = "false,false,Bash,someone@example.com" ]
+    run jq -r '[.skipDangerousModePermissionPrompt, .model] | join(",")' "$sj"
+    [ "$output" = "false,opus" ]
+
+    # A config file that is not JSON is left exactly as it was found --
+    # never replaced, because that file is the agent's login.
+    printf 'not json at all\n' > "$cj"
+    run_entrypoint_once HOME="$home" PROJECT_DIR="$proj" \
+        CLAUDE_ORCA_SKIP_PROVISION=0 CLAUDE_ORCA_SKIP_SETUP=1 \
+        CLAUDE_ORCA_SKIP_BEADS=1 CLAUDE_ORCA_ENTRYPOINT_NO_PRIVDROP=1
+    run cat "$cj"
+    [ "$output" = "not json at all" ]
+}
+
+@test "entrypoint restores the newest beads snapshot before bd init when the project has no beads" {
+    # Guards:   a folder with no .beads gets the NEWEST snapshot from
+    #           .claude-dev-snapshots restored; live beads are never
+    #           overwritten; no snapshots is a silent no-op.
+    # Fails if: the oldest snapshot is restored, a project that already has
+    #           beads is overwritten, or an empty snapshot dir creates .beads.
+    # Run:      bats -f 'newest beads snapshot' tests/container-entrypoint.bats
+    [ -x "$ENTRYPOINT" ]
+
+    local proj="$TMP/project" snaps
+    make_project "$proj"
+    snaps="$proj/.claude-dev-snapshots"
+    mkdir -p "$snaps/20200101-000000" "$snaps/20240101-000000"
+    echo '{"id":"old"}' > "$snaps/20200101-000000/issues.jsonl"
+    echo '{"id":"newest"}' > "$snaps/20240101-000000/issues.jsonl"
+    echo '{"prefix":"newest"}' > "$snaps/20240101-000000/metadata.json"
+    [ ! -e "$proj/.beads" ]
+
+    run_entrypoint_once HOME="$proj/.claude-dev/home" PROJECT_DIR="$proj" \
+        CLAUDE_ORCA_SKIP_PROVISION=0 CLAUDE_ORCA_SKIP_SETUP=1 \
+        CLAUDE_ORCA_SKIP_BEADS=1 CLAUDE_ORCA_ENTRYPOINT_NO_PRIVDROP=1
+    [ "$ep_status" = "143" ]
+    [[ "$output" == *"waiting on the sshd supervisor"* ]]
+
+    # The newest snapshot, not the first one listed.
+    [ -f "$proj/.beads/issues.jsonl" ]
+    run cat "$proj/.beads/issues.jsonl"
+    [ "$output" = '{"id":"newest"}' ]
+    run cat "$proj/.beads/metadata.json"
+    [ "$output" = '{"prefix":"newest"}' ]
+
+    # A project that already carries beads keeps them: an older snapshot
+    # must never overwrite live data.
+    echo '{"id":"live"}' > "$proj/.beads/issues.jsonl"
+    run_entrypoint_once HOME="$proj/.claude-dev/home" PROJECT_DIR="$proj" \
+        CLAUDE_ORCA_SKIP_PROVISION=0 CLAUDE_ORCA_SKIP_SETUP=1 \
+        CLAUDE_ORCA_SKIP_BEADS=1 CLAUDE_ORCA_ENTRYPOINT_NO_PRIVDROP=1
+    run cat "$proj/.beads/issues.jsonl"
+    [ "$output" = '{"id":"live"}' ]
+
+    # No snapshots at all is a silent no-op, not a failure.
+    local proj2="$TMP/project2"
+    make_project "$proj2"
+    run_entrypoint_once HOME="$proj2/.claude-dev/home" PROJECT_DIR="$proj2" \
+        CLAUDE_ORCA_SKIP_PROVISION=0 CLAUDE_ORCA_SKIP_SETUP=1 \
+        CLAUDE_ORCA_SKIP_BEADS=1 CLAUDE_ORCA_ENTRYPOINT_NO_PRIVDROP=1
+    [[ "$output" == *"waiting on the sshd supervisor"* ]]
+    [ ! -e "$proj2/.beads" ]
+}
