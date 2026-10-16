@@ -220,11 +220,11 @@ _gh_uninstall_core() {
         cat "$tmp" > "$cfg" || { rm -f "$tmp" "$tmp2"; return 1; }
         rm -f "$tmp" "$tmp2"
     fi
+    [ -n "$cfg" ] && rm -f "$(dirname "$cfg")/claude-dev.ghostty"
     if [ "$created" = 1 ] && [ -n "$cfg" ] && [ -f "$cfg" ] && [ ! -s "$cfg" ]; then
         rm -f "$cfg"
         rmdir "$(dirname "$cfg")" 2>/dev/null || true
     fi
-    [ -n "$cfg" ] && rm -f "$(dirname "$cfg")/claude-dev.ghostty"
     rm -f "$_GH_ROUTER" "$_GH_REC"
     rmdir "$(dirname "$_GH_ROUTER")" "$(dirname "$_GH_REC")" 2>/dev/null || true
     _GH_CFG="$cfg"
