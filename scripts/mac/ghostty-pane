@@ -1,0 +1,75 @@
+#!/bin/sh
+# claude-dev ghostty v1
+#
+# ghostty-pane -- the router behind Ghostty's `command`
+# (config/ghostty/claude-dev.ghostty). Every new pane, split, tab and window
+# starts here. Installed by `claude-dev ghostty` as a COPY at
+# ~/.local/share/claude-dev/ghostty-pane (never a symlink into a project, so
+# deleting a project can never break Ghostty).
+#
+# Usage: ghostty-pane          (no arguments; it reads $PWD)
+#   CLAUDE_DEV_ROUTER_TRACE=1  print the decision to stderr (tests)
+#
+# What it does, and nothing else -- no docker, no network, about ten stat
+# calls, no jq (a fresh Mac may not have one):
+#   1. Walk up from $PWD (at most 40 levels, stopping at /) to the first
+#      folder holding .claude-dev/claude-orca.json.
+#   2. If that file says "route": false, or <folder>/claude-dev is not
+#      executable, fall through.
+#   3. Otherwise `exec <folder>/claude-dev pane <folder>`.
+# Fall-through, and every doubt (no folder, unreadable or deleted $PWD, a
+# relative $PWD): `exec "$SHELL" -l`, the user's normal Mac login shell.
+# It never exits with an error of its own and never prints to the pane.
+#
+# Exit code: that of whatever it execs. The first comment line is the
+# version stamp `claude-dev ghostty` compares with the template's.
+
+trace() {
+    if [ -n "${CLAUDE_DEV_ROUTER_TRACE:-}" ]; then
+        printf 'ghostty-pane: %s\n' "$*" >&2
+    fi
+    return 0
+}
+
+# The Mac shell. $SHELL may be unset or stale after a shell change, so the
+# last resorts are zsh and then sh: a pane must always come up.
+mac_shell() {
+    trace "shell ($1)"
+    sh_bin="${SHELL:-/bin/zsh}"
+    [ -x "$sh_bin" ] || sh_bin=/bin/zsh
+    [ -x "$sh_bin" ] || sh_bin=/bin/sh
+    exec "$sh_bin" -l
+}
+
+d="${PWD:-}"
+case "$d" in
+    /*) ;;
+    *) mac_shell "no absolute PWD" ;;
+esac
+# A deleted or unreadable directory proves nothing about where we are.
+if [ ! -d "$d" ] || [ ! -r "$d" ] || [ ! -x "$d" ]; then
+    mac_shell "PWD is gone or unreadable"
+fi
+
+n=0
+found=""
+while [ "$n" -lt 40 ]; do
+    if [ -f "$d/.claude-dev/claude-orca.json" ]; then
+        found="$d"
+        break
+    fi
+    [ "$d" = "/" ] && break
+    d="${d%/*}"
+    [ -n "$d" ] || d=/
+    n=$((n + 1))
+done
+
+[ -n "$found" ] || mac_shell "no sandboxed folder above $PWD"
+
+if grep -q '"route"[[:space:]]*:[[:space:]]*false' "$found/.claude-dev/claude-orca.json" 2>/dev/null; then
+    mac_shell "route:false in $found"
+fi
+[ -x "$found/claude-dev" ] || mac_shell "$found/claude-dev is not executable"
+
+trace "route $found"
+exec "$found/claude-dev" pane "$found"

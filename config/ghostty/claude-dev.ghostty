@@ -1,0 +1,18 @@
+# claude-dev ghostty v1
+# Installed by `claude-dev ghostty`. Your config includes it with
+#   config-file = ?claude-dev.ghostty
+# Delete that line (or `claude-dev ghostty --uninstall`) and Ghostty is stock.
+
+# Every new pane, split, tab and window starts here: inside a sandboxed folder
+# it opens that folder's container, anywhere else your normal login shell. If
+# the router has gone missing, the shell starts directly -- never an error.
+command = /bin/sh -c 'r="$HOME/.local/share/claude-dev/ghostty-pane"; [ -x "$r" ] && exec "$r"; exec "${SHELL:-/bin/zsh}" -l'
+
+# `command` is no longer a shell, so Ghostty cannot detect one; naming it keeps
+# Ghostty's shell integration in Mac panes. (Written from $SHELL at install.)
+shell-integration = @SHELL_INTEGRATION@
+
+# Splits and tabs stay where you are -- in a sandbox pane, that is the sandbox.
+# A NEW WINDOW (cmd+n) starts in your home folder: a Mac shell. That is the
+# one-keystroke way out.
+window-inherit-working-directory = false
