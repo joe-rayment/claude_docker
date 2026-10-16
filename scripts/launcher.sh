@@ -18,7 +18,7 @@
 #   claude-dev verify             Check the folder is set up as promised
 #   claude-dev key openrouter     Store this folder's OpenRouter key
 #   claude-dev --how-to-run       Print the URL and the two commands
-#   claude-dev --doctor           CLI, service, image, container, port, web url
+#   claude-dev --doctor           CLI, service, image, container, port, sshd, ssh
 #   claude-dev --update           Pull the template, rebuild the image, re-sync
 #                                 the config, recreate
 #   claude-dev --teardown         Snapshot beads, remove this folder's install
@@ -3339,7 +3339,7 @@ doctor_row() {
 # the CLI, the service, the image, the container, the port and the URL the
 # entrypoint published. Exits 2 on any finding, so it is usable in a script.
 cmd_doctor_v3() {
-    local dir="$PROJECT_SELF" rc=0 ref name state port url_file src vol app ver cli
+    local dir="$PROJECT_SELF" rc=0 ref name state port src vol app ver cli
     local prov=0 st nm detail want="" imgver=""
     # Whichever image THIS folder runs: a runtime-install folder has no
     # prebuilt image and never will, so asking after one would be a finding
@@ -3478,15 +3478,10 @@ cmd_doctor_v3() {
         doctor_row n/a "openrouter key" "absent -- optional: ./claude-dev key openrouter"
     fi
 
-    # The URL itself is a credential (the fragment carries the pairing
-    # code), so the doctor names the file, never its contents.
-    url_file="$dir/.claude-dev/run/orca-web-url.txt"
-    if [ -s "$url_file" ]; then
-        doctor_row ok "web url" "published -- $url_file"
-    else
-        doctor_row missing "web url" "not published yet -- $url_file"
-        rc=2
-    fi
+    # What `open` and `pane` actually use: sshd answering on the folder's
+    # port, the ControlMaster, and the folder's key being accepted. These
+    # replace the old `web url` row -- the Mac no longer talks to Orca.
+    doctor_ssh_rows "$dir" || rc=2
 
     # ... and one row per provisioning step (S5, claude-orca-dbu.5). The
     # steps run inside the container and write their status there; the
@@ -3538,7 +3533,7 @@ docker_image_of() {
 }
 
 cmd_verify_v3() {
-    local dir="${1:-$PROJECT_SELF}" name state rc=0 url_file port st nm detail rows
+    local dir="${1:-$PROJECT_SELF}" name state rc=0 port st nm detail rows
     local app="" cli="" data="" src="" running=""
     [ -d "$dir" ] || { echo "Error: directory does not exist: $dir" >&2; return 1; }
     dir="$(cd "$dir" && pwd -P)"
@@ -3570,13 +3565,8 @@ cmd_verify_v3() {
         rc=2
     fi
 
-    url_file="$dir/.claude-dev/run/orca-web-url.txt"
-    if [ -s "$url_file" ]; then
-        doctor_row ok "web url" "published -- $url_file"
-    else
-        doctor_row missing "web url" "not published -- $url_file"
-        rc=2
-    fi
+    # sshd / ssh master / ssh key auth, in place of the old `web url` row.
+    doctor_ssh_rows "$dir" || rc=2
 
     # The one row only the Mac can answer, and the guard for the one risk
     # the desktop client adds (.claude/plans/desktop-orca.md S5,
@@ -3762,6 +3752,12 @@ cmd_teardown_v3() {
     if [ "$(ui_of "$dir")" = "desktop" ]; then
         orca_env_forget "$dir"
     fi
+    # The folder's ssh ControlMaster is a process on the Mac, not in the
+    # container: left alone it would outlive the folder it points at. The
+    # keys, config and known_hosts under state/ssh go with .claude-dev below.
+    if [ -f "$(ssh_state_dir "$dir")/config" ]; then
+        "${CLAUDE_ORCA_SSH:-ssh}" -F "$(ssh_state_dir "$dir")/config" -O exit "$(ssh_host_alias "$dir")" >/dev/null 2>&1 || true
+    fi
     ctr stop "$name" >/dev/null 2>&1 || true
     ctr rm "$name" >/dev/null 2>&1 || true
     # Orca's user-data-dir is the one piece of folder state that lives in a
@@ -3900,7 +3896,7 @@ Usage:
   claude-dev key openrouter     Store this folder's OpenRouter key (not
                                 echoed) for the delegate routes
   claude-dev --how-to-run       Print the URL and the two commands
-  claude-dev --doctor           CLI, service, image, container, port, web url
+  claude-dev --doctor           CLI, service, image, container, port, sshd, ssh
   claude-dev --update           Pull the template, rebuild the image, re-sync
                                 the config, recreate
   claude-dev --teardown [--purge-beads]

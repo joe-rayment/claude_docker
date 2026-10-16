@@ -297,11 +297,11 @@ lacks() {
     chmod +x "$primary/.claude-dev/toolchain/opt-Orca/orca-ide"
     printf 'runtime\n' > "$primary/.claude-dev/run/image-source"
 
-    # ... and a container that comes up but publishes no URL, so the wait
+    # ... and a container that comes up but never gets sshd listening, so the wait
     # runs to its limit and the error names the limit it chose.
-    export CLAUDE_ORCA_TEST_NO_URL=1
+    export CLAUDE_ORCA_TEST_NO_SSHD=1
     export CLAUDE_ORCA_WEBURL_TIMEOUT_RUNTIME=2
-    rm -f "$primary/.claude-dev/run/orca-web-url.txt"
+    rm -f "$primary/.claude-dev/run/sshd.ready"
     rm -f "$CONTAINER_STUB_STATE/containers/claude-orca-$(basename "$primary")"
 
     run bash -c "cd '$primary' && ./claude-dev open"

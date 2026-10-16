@@ -204,13 +204,13 @@ echo 'apt-get install -y fonts-liberation would run here'"
     run make_project_v3 "$primary"
     [ "$status" -eq 0 ]
 
-    # The container is listed as running and never publishes a URL; two
+    # The container is listed as running and sshd never comes up; two
     # seconds in, it is gone -- what setup.sh dying looks like from the Mac.
     name="claude-orca-$(basename "$primary")"
     marker="$CONTAINER_STUB_STATE/containers/$name"
     [ "$(cat "$marker")" = "running" ]
-    rm -f "$primary/.claude-dev/run/orca-web-url.txt"
-    export CLAUDE_ORCA_TEST_NO_URL=1
+    rm -f "$primary/.claude-dev/run/sshd.ready"
+    export CLAUDE_ORCA_TEST_NO_SSHD=1
     export CLAUDE_ORCA_WEBURL_TIMEOUT=60
 
     before=$SECONDS
@@ -222,7 +222,7 @@ cd '$primary' && ./claude-dev"
     [[ "$output" == *"exited during startup"* ]]
     [[ "$output" == *"not running"* ]]
     [[ "$output" == *"./claude-dev logs"* ]]
-    [[ "$output" != *"did not publish a web URL within"* ]]
+    [[ "$output" != *"sshd did not come up within"* ]]
     [[ "$output" != *"The VM keeps running"* ]]
 
     # A container that is never listed at all (removed, or gone before the
@@ -230,14 +230,14 @@ cd '$primary' && ./claude-dev"
     # container" with no running state ever seen is dead too. Lifted the
     # way tests/launcher-v3-pull.bats lifts these, with a state stub that
     # never lists anything.
-    fns="$(sed -n '/^image_source()/,/^}/p;/^weburl_timeout()/,/^}/p;/^wait_for_web_url()/,/^}/p' \
+    fns="$(sed -n '/^image_source()/,/^}/p;/^weburl_timeout()/,/^}/p;/^wait_for_sshd_ready()/,/^}/p' \
         "$primary/.claude-dev/template/scripts/launcher.sh")"
     quiet="$BATS_TEST_TMPDIR/quiet"
     mkdir -p "$quiet/.claude-dev/run"
     before=$SECONDS
     run bash -c "export CLAUDE_ORCA_WEBURL_TIMEOUT=60; $fns
 container_state() { printf ''; }
-wait_for_web_url '$quiet' claude-orca-never-listed"
+wait_for_sshd_ready '$quiet' claude-orca-never-listed"
     elapsed=$((SECONDS - before))
     [ "$status" -eq 2 ]
     [ "$elapsed" -ge 15 ]
@@ -260,15 +260,15 @@ wait_for_web_url '$quiet' claude-orca-never-listed"
         echo "E: Unable to locate package fonts-liberation"
     } > "$primary/.claude-dev/run/setup.log"
 
-    # The container runs but never publishes: a short timeout ends the wait.
+    # The container runs but sshd never comes up: a short timeout ends the wait.
     name="claude-orca-$(basename "$primary")"
     rm -f "$CONTAINER_STUB_STATE/containers/$name"
-    rm -f "$primary/.claude-dev/run/orca-web-url.txt"
-    export CLAUDE_ORCA_TEST_NO_URL=1
+    rm -f "$primary/.claude-dev/run/sshd.ready"
+    export CLAUDE_ORCA_TEST_NO_SSHD=1
     export CLAUDE_ORCA_WEBURL_TIMEOUT=2
     run bash -c "cd '$primary' && ./claude-dev"
     [ "$status" -ne 0 ]
-    [[ "$output" == *"did not publish a web URL within 2s"* ]]
+    [[ "$output" == *"sshd did not come up within 2s"* ]]
     [[ "$output" == *"Last lines of the toolchain install:"* ]]
     [[ "$output" == *"E: Unable to locate package fonts-liberation"* ]]
 
@@ -282,13 +282,13 @@ cd '$primary' && ./claude-dev"
     [[ "$output" == *"E: Unable to locate package fonts-liberation"* ]]
 }
 
-@test "an early-exit start shows Orca's serve log tail, with the pairing code redacted" {
-    # Guards:   a container that dies before Orca publishes a URL shows the
-    #           serve log's own last words on the Mac side, with the
-    #           '#pairing=' fragment and any 'code=' query value redacted --
-    #           the diagnosis must not cost a secret.
-    # Fails if: the tail is dropped, or 'SECRET' survives into the output.
-    # Run:      bats tests/first-start-dns.bats
+@test "an early-exit start shows sshd's log tail" {
+    # Guards:   a container that dies before sshd is listening shows sshd's
+    #           own last words on the Mac side (run/sshd.log), and no longer
+    #           points at Orca's serve log, which the Mac does not read.
+    # Fails if: the sshd log tail is dropped from the failure, or the old
+    #           'Last lines of Orca's serve log:' block comes back.
+    # Run:      bats -f "sshd's log tail" tests/first-start-dns.bats
     mkdir -p "$PROJECT_DIR"
     primary="$(abspath "$PROJECT_DIR")"
     run make_project_v3 "$primary"
@@ -296,25 +296,22 @@ cd '$primary' && ./claude-dev"
 
     mkdir -p "$primary/.claude-dev/run"
     {
-        echo "[serve] starting up"
-        echo "handoff http://127.0.0.1:6770/?next=1#pairing=SECRETFRAG"
-        echo "oauth callback http://127.0.0.1:1/?code=SECRETCODE"
-        echo "[serve] died"
-    } > "$primary/.claude-dev/run/orca-serve.log"
+        echo "[sshd] starting up"
+        echo "[sshd] Could not load host key: /etc/ssh/host_ed25519"
+        echo "[sshd] died"
+    } > "$primary/.claude-dev/run/sshd.log"
 
     name="claude-orca-$(basename "$primary")"
     marker="$CONTAINER_STUB_STATE/containers/$name"
-    rm -f "$primary/.claude-dev/run/orca-web-url.txt"
-    export CLAUDE_ORCA_TEST_NO_URL=1
+    rm -f "$primary/.claude-dev/run/sshd.ready"
+    export CLAUDE_ORCA_TEST_NO_SSHD=1
     export CLAUDE_ORCA_WEBURL_TIMEOUT=60
     run bash -c "( sleep 2; rm -f '$marker' ) >/dev/null 2>&1 &
 cd '$primary' && ./claude-dev"
     [ "$status" -ne 0 ]
     [[ "$output" == *"exited during startup"* ]]
-    [[ "$output" == *"Last lines of Orca's serve log:"* ]]
-    [[ "$output" == *"[serve] died"* ]]
-    [[ "$output" == *"#pairing=<redacted>"* ]]
-    [[ "$output" == *"?code=<redacted>"* ]]
-    [[ "$output" != *"SECRET"* ]]
+    [[ "$output" == *"Last lines of sshd's log:"* ]]
+    [[ "$output" == *"[sshd] died"* ]]
+    [[ "$output" != *"Orca's serve log"* ]]
 }
 

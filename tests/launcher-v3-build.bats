@@ -197,7 +197,7 @@ BASE_IMAGE="docker.io/library/ubuntu:24.04"
 # than sourcing it or duplicating them here.
 lift_launcher_fns() {
     local f="$1/.claude-dev/template/scripts/launcher.sh"
-    sed -n '/^image_source()/,/^}/p;/^folder_installs_toolchain()/,/^}/p;/^weburl_timeout()/,/^}/p;/^wait_for_web_url()/,/^}/p' "$f"
+    sed -n '/^image_source()/,/^}/p;/^folder_installs_toolchain()/,/^}/p;/^weburl_timeout()/,/^}/p;/^wait_for_sshd_ready()/,/^}/p' "$f"
 }
 
 # One question decides the wait: which image is this folder running?
@@ -284,7 +284,7 @@ weburl_timeout '$primary'"
     printf 'runtime\n' > "$quiet/.claude-dev/run/image-source"
     printf '[setup] node: installing 22.x\n' > "$quiet/.claude-dev/run/setup.log"
     run bash -c "export CLAUDE_ORCA_WEBURL_TIMEOUT=2; $fns
-wait_for_web_url '$quiet' 2>&1 >/dev/null"
+wait_for_sshd_ready '$quiet' 2>&1 >/dev/null"
     [ "$status" -ne 0 ]
     [[ "$output" == *"installing toolchain: [setup] node: installing 22.x"* ]]
 
@@ -296,12 +296,12 @@ wait_for_web_url '$quiet' 2>&1 >/dev/null"
     name="claude-orca-$(basename "$primary")"
     rm -f "$CONTAINER_STUB_STATE/containers/$name"
     : > "$CONTAINER_STUB_LOG"
-    rm -f "$primary/.claude-dev/run/orca-web-url.txt"
+    rm -f "$primary/.claude-dev/run/sshd.ready"
     export CLAUDE_ORCA_WEBURL_TIMEOUT=2
-    export CLAUDE_ORCA_TEST_NO_URL=1
+    export CLAUDE_ORCA_TEST_NO_SSHD=1
     run bash -c "cd '$primary' && ./claude-dev"
     [ "$status" -ne 0 ]
-    [[ "$output" == *"did not publish a web URL within 2s"* ]]
+    [[ "$output" == *"sshd did not come up within 2s"* ]]
     [[ "$output" == *"Toolchain install log:"* ]]
     [[ "$output" == *"setup.log"* ]]
 }

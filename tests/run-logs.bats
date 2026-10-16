@@ -74,7 +74,7 @@ STAMP='^[0-9][0-9]:[0-9][0-9]:[0-9][0-9] '
     no_line_matches "$primary/.claude-dev/run/container.log" 'docker inspect '
 }
 
-@test "the launcher says how long Orca took to come up" {
+@test "the launcher says how long sshd took to come up" {
     mkdir -p "$PROJECT_DIR"
     local primary
     primary="$(abspath "$PROJECT_DIR")"
@@ -82,7 +82,7 @@ STAMP='^[0-9][0-9]:[0-9][0-9]:[0-9][0-9] '
 
     run bash -c "cd '$primary' && ./claude-dev open"
     [ "$status" -eq 0 ]
-    output_matches 'Orca is up \([0-9]+s\)'
+    output_matches 'sshd is up \([0-9]+s\)'
 }
 
 @test "setup.sh stamps its own messages with elapsed seconds" {
