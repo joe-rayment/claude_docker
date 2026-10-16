@@ -15,7 +15,12 @@
 #      uncommitted changes -> kept; directory gone -> pruned; clean ->
 #      removed with plain `git worktree remove`; no Orca is consulted --
 #      worker worktrees are ordinary worktree-list entries, wherever
-#      they live). Removing a worktree frees its branch for step 3, so
+#      they live). A git-LOCKED worktree (Claude Code locks the worktree
+#      of each live agent: "claude agent agent-x (pid N)") is the one
+#      exception to all of the above: it is reported as
+#      "locked: <the lock's reason> (<path> kept; ...)" and left exactly
+#      as it is -- never unlocked, never pruned, never removed. Removing
+#      a worktree frees its branch for step 3, so
 #      the branch of a merged piece of work goes in the same sweep.
 #      A clean worktree whose branch, or detached HEAD, carries commits
 #      main does not contain is kept instead and reported STRANDED with
@@ -285,26 +290,41 @@ is_freed() {
 }
 
 # --- the worktree inventory (porcelain: path, then optionally its branch) ---
+# A git-locked worktree (`git worktree lock`) shows up as a bare "locked" line
+# or "locked <reason>"; Claude Code locks the worktree of each live agent
+# ("claude agent agent-x (pid N)"). wt_locked is 1/0, wt_lockreason the text.
 wt_paths=()
 wt_branches=()
+wt_locked=()
+wt_lockreason=()
 _cur=""
 _curbr=""
+_curlock=0
+_curreason=""
 while IFS= read -r line; do
     case "$line" in
         worktree\ *)
             if [ -n "$_cur" ]; then
                 wt_paths+=("$_cur")
                 wt_branches+=("$_curbr")
+                wt_locked+=("$_curlock")
+                wt_lockreason+=("$_curreason")
             fi
             _cur="${line#worktree }"
             _curbr=""
+            _curlock=0
+            _curreason=""
             ;;
         branch\ refs/heads/*) _curbr="${line#branch refs/heads/}" ;;
+        locked) _curlock=1 ;;
+        locked\ *) _curlock=1; _curreason="${line#locked }" ;;
     esac
 done < <(git -C "$PROJECT" worktree list --porcelain 2>/dev/null)
 if [ -n "$_cur" ]; then
     wt_paths+=("$_cur")
     wt_branches+=("$_curbr")
+    wt_locked+=("$_curlock")
+    wt_lockreason+=("$_curreason")
 fi
 
 if [ "${#wt_paths[@]}" -eq 0 ]; then
@@ -350,6 +370,20 @@ while [ "$i" -lt "$n_wt" ]; do
     branch="${wt_branches[i]}"
     i=$((i + 1))
     [ "$path" = "$MAIN_PATH" ] && continue
+
+    # A git-locked worktree belongs to a live agent (Claude Code's Agent-tool
+    # worktrees hold no cwd, so the lock is the only liveness signal there
+    # is): reported with the lock's own reason and kept -- never unlocked,
+    # never pruned, never removed, whatever state it is in. It is not a
+    # STRANDED line by itself; its branch is judged like a busy worktree's.
+    if [ "${wt_locked[i - 1]}" = "1" ]; then
+        lock_reason="${wt_lockreason[i - 1]:-no reason given}"
+        emit "locked: $lock_reason ($path kept; worktree-gc never unlocks)"
+        kept_paths+=("$path")
+        kept_branches+=("$branch")
+        kept_reasons+=("locked")
+        continue
+    fi
 
     if [ ! -d "$path" ]; then
         [ "$REPORT" = "1" ] || git -C "$PROJECT" worktree prune >/dev/null 2>&1
