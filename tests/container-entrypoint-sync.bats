@@ -188,3 +188,65 @@ JSON
     grep -qF 'early config sync' "$TMP/entrypoint.out"
     grep -qF 'provision.d/20-config-sync will retry' "$TMP/entrypoint.out"
 }
+
+# Pin the folder's template as TEMPLATE_ROOT (entrypoint.sh picks it when it
+# carries an executable scripts/container/setup.sh). Without the pin a box
+# that bakes /opt/claude-orca provisions from the IMAGE's frozen copy.
+sync_pin_template_root() {
+    local d="$1/.claude-dev/template/scripts/container"
+    mkdir -p "$d"
+    : > "$d/setup.sh"
+    chmod +x "$d/setup.sh"
+}
+
+@test "the early config sync and the later provision.d/20-config-sync do not double-run destructively" {
+    # Guards:   the checksum gate is shared: provision.d/20-config-sync finds the early sync's hash and rewrites nothing.
+    # Fails if: provision.d re-syncs from scratch (a second source of truth), so config-hash changes after provisioning starts.
+    # Run:      bats -f "do not double-run" tests/container-entrypoint-sync.bats
+    [ -x "$ENTRYPOINT" ]
+
+    local proj="$TMP/project" tcfg port hashfile pdir before
+    make_project "$proj"
+    tcfg="$proj/.claude-dev/template/config"
+    mkdir -p "$tcfg/claude-commands"
+    printf '{"hooks":{}}\n'        > "$tcfg/claude-settings.json"
+    printf 'folder memory\n'       > "$tcfg/claude-user-memory.md"
+    printf '#!/bin/sh\necho hi\n'  > "$tcfg/statusline.sh"
+    printf 'marker\n'              > "$tcfg/claude-commands/marker.md"
+
+    # Provisioning is the real runner from this repo, but entered through a
+    # wrapper that notes config-hash's timestamp the instant provisioning
+    # starts -- i.e. what the EARLY sync left, before any provision.d step.
+    sync_pin_template_root "$proj"
+    cat > "$proj/.claude-dev/template/scripts/container/provision-run.sh" <<WRAP
+#!/usr/bin/env bash
+stat -c %y "$proj/.claude-dev/run/config-hash" > "$TMP/hash.before"
+exec bash "$REPO_ROOT/scripts/container/provision-run.sh"
+WRAP
+    chmod +x "$proj/.claude-dev/template/scripts/container/provision-run.sh"
+
+    sync_stage_ssh_keys "$proj"
+    sync_write_sshd_stub "$TMP/bin/sshd-stub" "$proj"
+    port="$(free_port)"
+    sync_env "$proj"
+    export CLAUDE_ORCA_SSHD_BIN="$TMP/bin/sshd-stub" CLAUDE_ORCA_SSHD_PORT="$port"
+    export CLAUDE_ORCA_SKIP_PROVISION=0
+
+    start_entrypoint_bg
+
+    hashfile="$proj/.claude-dev/run/config-hash"
+    pdir="$proj/.claude-dev/run/provision"
+    if ! wait_for_file "$pdir/20-config-sync.status" 90; then
+        cat "$TMP/entrypoint.out" >&2 || true
+        ls -la "$pdir" >&2 || true
+        false
+    fi
+    [ "$(tr -d '[:space:]' < "$pdir/20-config-sync.status")" = "0" ]
+
+    # The step really ran (and said it synced from the folder's clone) ...
+    grep -qF "config synced from $proj/.claude-dev/template/config" "$pdir/20-config-sync.log"
+    # ... yet it left the early sync's hash file untouched.
+    [ -s "$TMP/hash.before" ]
+    before="$(cat "$TMP/hash.before")"
+    [ "$(stat -c %y "$hashfile")" = "$before" ]
+}
