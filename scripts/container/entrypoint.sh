@@ -443,17 +443,17 @@ fi
 # --- early config sync (claude-orca-0jn) --------------------------------
 #
 # (a) WHY: settings.json's statusLine key is written only by config-sync,
-# and config-sync used to run exclusively from provision.d, AFTER the web
-# URL is published and the Mac side's browser opens. Claude Code reads
+# and config-sync used to run exclusively from provision.d, AFTER sshd
+# is up and the Mac side's terminal pane has connected. Claude Code reads
 # statusLine once, at process start, and never catches up mid-session -- so
 # a session opened against a first-ever boot could read a settings.json
 # that did not exist yet, or existed without statusLine, and would carry
-# that gap for its entire life. Running the sync once here, before serve
+# that gap for its entire life. Running the sync once here, before sshd
 # is even started, closes that window.
 #
 # (b) WHY NOT FATAL: provision.d/20-config-sync (checksum-gated, so this
 # is a no-op on its second call within the same boot) still runs on the
-# normal schedule after the URL, and is still the retry path. A failure
+# normal schedule after sshd is up, and is still the retry path. A failure
 # here changes nothing about claude-orca-dbu.4's anti-silent-failure
 # property -- no exit, no die, and the folder still gets a logged,
 # retried attempt exactly as before this existed. It is a pure improvement
@@ -462,7 +462,7 @@ fi
 # (c) WHY TIMED: this is local file I/O against a template that is already
 # on disk -- near-instant in the success case -- so it is bounded rather
 # than trusted, the same way every other step here is: a hang must not
-# delay serve past a bounded window, whatever caused it.
+# delay sshd past a bounded window, whatever caused it.
 #
 # The three-way fallback is copied verbatim from provision.d/20-config-sync
 # (do not let the two drift): the folder's own template clone wins when it
