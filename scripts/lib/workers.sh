@@ -7,17 +7,16 @@
 #
 # Two kinds of helper live here:
 #
-#   * the ones orca-orch.sh used to own and the Orca tools still call
-#     (orch_root, orch_dir, orch_bead_json, orch_note_bead, orch_last_handoff,
-#     orch_spec, orch_mtime) -- moved verbatim; orca-orch.sh sources this file
-#     so every old caller is unchanged;
+#   * the bead/spec helpers (orch_root, orch_dir, orch_bead_json,
+#     orch_note_bead, orch_last_handoff, orch_spec, orch_mtime) -- the names
+#     kept from the Orca era so every caller is unchanged;
 #   * the small shared pieces dispatch / worker-run / workers need:
 #     workers_dir, workers_max, workers_inbox_append, workers_job_set.
 #
 # A job lives at <root>/.claude-dev/run/workers/<job>/ (job.json, spec.md,
 # later pid, log.jsonl, receipt.json). Slot lock files sit in
-# <root>/.claude-dev/run/workers/slots/. The inbox is the one orca-wait
-# already reads: <root>/.claude-dev/run/orchestration/inbox.jsonl.
+# <root>/.claude-dev/run/workers/slots/. The inbox is
+# <root>/.claude-dev/run/orchestration/inbox.jsonl.
 #
 #   CLAUDE_ORCA_MAX_WORKERS   slot cap override (else .maxWorkers, else 3)
 
@@ -63,17 +62,17 @@ orch_note_bead() {
 
 # --- the Task spec -------------------------------------------------------
 #
-# One text, used twice: as the Orca Task spec and, when there is no runtime
-# to dispatch into, as the Agent-tool prompt the orchestrator falls back to.
-# It ends with the WORKER RULES block, which is the whole reason a worker
-# on a foreign model behaves like one of ours.
+# One text, used twice: as the headless worker's spec and, when there is no
+# runtime to dispatch into, as the Agent-tool prompt the orchestrator falls
+# back to. It ends with the WORKER RULES block, which is the whole reason a
+# worker on a foreign model behaves like one of ours.
 
-# orch_last_handoff <notes> -- the last HANDOFF the relay (orca-wait.sh)
+# orch_last_handoff <notes> -- the last HANDOFF the relay
 # appended to a bead's notes as "HANDOFF-AT <ts> dispatch=<id>" followed by
 # the block. Prints the lines after the LAST such line, through the first
 # following line that starts with "relay:" (included), or up to but not
-# including the next line starting with "ORCA " when there is no relay:
-# line, or to the end of the notes otherwise. Exit 1, no output, when
+# including the next line starting with "ORCA " (old relay notes) when there
+# is no relay: line, or to the end of the notes otherwise. Exit 1, no output, when
 # <notes> has no "HANDOFF-AT " line.
 orch_last_handoff() {
     local notes="$1"
@@ -91,16 +90,14 @@ orch_last_handoff() {
     '
 }
 
-# orch_spec <bead-json> <bead-id> [headless]
+# orch_spec <bead-json> <bead-id> [mode]
 #
-# The optional third argument picks the WORKER RULES block. Default (absent or
-# anything else): the Orca rules, byte-identical to what orca-dispatch has
-# always composed (they tell the worker to run `orca-ide orchestration
-# send/ask`). "headless": the Orca-free rules for `dispatch`/`worker-run` --
-# no orca-ide calls; the worker reports in its FINAL message, and asks by
-# ending that message with a line starting `QUESTION:`.
+# The WORKER RULES are the headless ones: no runtime calls; the worker reports
+# in its FINAL message, and asks by ending that message with a line starting
+# `QUESTION:`. The optional third argument is accepted (callers still pass
+# "headless") and ignored -- there is only one set of rules.
 orch_spec() {
-    local bj="$1" id="$2" mode="${3:-}" title desc ac notes handoff
+    local bj="$1" id="$2" title desc ac notes handoff
     title="$(printf '%s' "$bj" | jq -r '.title // ""')"
     desc="$(printf '%s' "$bj" | jq -r '.description // ""')"
     ac="$(printf '%s' "$bj" | jq -r '.acceptance_criteria // ""')"
@@ -118,8 +115,7 @@ orch_spec() {
                 "$handoff"
         fi
     fi
-    if [ "$mode" = "headless" ]; then
-        cat <<'RULES'
+    cat <<'RULES'
 WORKER RULES
 - You are a worker on this one slice. Do not delegate, do not spawn agents
   or sub-agents, do not start further workers.
@@ -142,40 +138,6 @@ WORKER RULES
 - If you are blocked on a decision that is not yours, stop and end your
   final message with one line starting `QUESTION:` followed by the
   question. The orchestrator answers and resumes you in this same session.
-RULES
-        return 0
-    fi
-    cat <<'RULES'
-WORKER RULES
-- You are a worker on this one slice. Do not delegate, do not spawn agents
-  or sub-agents, do not start further Orca workers.
-- You do not close the bead and you never write a VERIFIED line on it: that
-  record belongs to the orchestrator, after an independent checker has run.
-- Verify by running the real thing, never a stand-in. Install whatever that
-  needs. Report the command you ran and the output you saw.
-- When the bead carries an acceptance contract: write the test first, run
-  it, observe it fail, commit the test ALONE with a pathspec-limited
-  `git commit -- <test file>`, and note RED-AT: <sha> on the bead with
-  `bd update <bead> --append-notes`. Then implement, run the contract's
-  CHECK verbatim, commit the implementation, note GREEN-AT: <sha>. The
-  FROZEN files are frozen from the RED commit onward -- never edit one to
-  make an implementation pass.
-- Stay visible: after every commit, and at least every 5 minutes of work,
-  send one heartbeat --
-  `orca-ide orchestration send --type heartbeat --subject alive
-   --task-id <task id> --dispatch-id <dispatch id> --json`
-  A worker that goes quiet for longer than the orchestrator's stall window
-  (a commit, a file change or a heartbeat all count as being alive) is
-  nudged once through its terminal and then replaced.
-- Ask before guessing past a decision that is not yours:
-  `orca-ide orchestration ask --question "<question>" --json` blocks until
-  the orchestrator answers.
-- Report exactly once, when the slice is done or you are blocked (the ids
-  are in the dispatch preamble above; --outcome is succeeded or failed):
-  `orca-ide orchestration send --type worker_done --subject "<bead> done"
-   --body "<what changed, where, how you checked it>"
-   --task-id <task id> --dispatch-id <dispatch id>
-   --outcome succeeded --files-modified <comma,separated,paths> --json`
 RULES
 }
 
