@@ -708,3 +708,121 @@ write_opencode_auth() {  # write_opencode_auth <path> <type> <key>
     stop_entrypoint
     pkill -f -- "$TMP/upstream.py" 2>/dev/null || true
 }
+
+# Guards:   once the guard is up, the real key is nowhere a same-uid process can
+#           read it: not in the guard's environment, not on its command line, not
+#           in a file under run/, not on any live process's argv.
+# Fails if: the key reaches the guard through env or argv instead of the
+#           read-once handover file, or that file is left behind.
+# Run:      bats -f 'real OpenRouter key is not in the guard process' tests/container-entrypoint-guard.bats
+@test "the real OpenRouter key is not in the guard process environment or argv, and the key file is gone once the guard is up" {
+    [ -x "$ENTRYPOINT" ]
+    [ -r /proc/self/cmdline ]
+
+    local proj="$TMP/project" gport gpid tree steps
+    make_project "$proj"
+    gport="$(free_port)"
+
+    # A step tree carrying the REAL guard step and nothing else: this case
+    # is about where the key is, not about what the other steps do.
+    tree="$TMP/tree/scripts/container"
+    steps="$tree/provision.d"
+    mkdir -p "$steps"
+    ln -s "$REPO_ROOT/scripts/container/provision-lib.sh" "$tree/provision-lib.sh"
+    ln -s "$REPO_ROOT/scripts/container/openrouter-guard.py" "$tree/openrouter-guard.py"
+    ln -s "$REPO_ROOT/scripts/container/provision.d/70-openrouter-guard" \
+        "$steps/70-openrouter-guard"
+
+    export_guard_test_env "$proj"
+    # export_guard_test_env turns provisioning off; this case needs the
+    # guard step, so it turns it back on for the step tree above only.
+    export CLAUDE_ORCA_SKIP_PROVISION=0
+    export CLAUDE_ORCA_GUARD_PORT="$gport"
+    export CLAUDE_ORCA_PROVISION_STEPS="$steps"
+    export OPENROUTER_API_KEY="$REAL_KEY"
+    # started, never allowed out
+    export OPENROUTER_UPSTREAM="http://127.0.0.1:1"
+
+    boot_entrypoint keep
+    if ! wait_for_file "$proj/.claude-dev/run/provision/70-openrouter-guard.status" 60; then
+        cat "$TMP/entrypoint.out" >&2 || true
+        false
+    fi
+
+    # It did get a key: it is up, it is listening, and it is the guard.
+    [ -s "$proj/.claude-dev/run/openrouter-guard.pid" ]
+    gpid="$(cat "$proj/.claude-dev/run/openrouter-guard.pid")"
+    kill -0 "$gpid"
+    wait_tcp_port "$gport"
+    grep -qF 'openrouter-guard: listening' "$proj/.claude-dev/run/openrouter-guard.log"
+
+    # The two places a same-uid process reads a running process from.
+    run bash -c "tr '\0' '\n' < /proc/$gpid/environ | grep -c -- '$REAL_KEY'"
+    [ "$output" = "0" ]
+    run bash -c "tr '\0' '\n' < /proc/$gpid/cmdline | grep -c -- '$REAL_KEY'"
+    [ "$output" = "0" ]
+
+    # The handover file is read once and unlinked, so nothing under run/
+    # is still holding the key when the guard is serving.
+    [ ! -e "$proj/.claude-dev/run/openrouter-guard.key" ]
+    run bash -c "grep -rl -- '$REAL_KEY' '$proj/.claude-dev/run' | wc -l"
+    [ "$output" = "0" ]
+
+    # ... and no live process anywhere carries it on its command line.
+    # The pattern comes from a file so that this check is not itself the
+    # process that puts the key in an argv.
+    printf '%s\n' "$REAL_KEY" > "$TMP/key.pat"
+    run bash -c "ps -eo args= | grep -c -F -f $TMP/key.pat"
+    [ "$output" = "0" ]
+
+    stop_entrypoint
+}
+
+# Guards:   the guard script itself refuses to start without a usable key file
+#           (missing, empty, or none named), says so in its log, and never
+#           listens -- it does not fall back to an environment variable.
+# Fails if: the guard starts with no key, falls back to OPENROUTER_API_KEY in
+#           its environment, or fails silently without naming the key file.
+# Run:      bats -f 'guard refuses to start without a key file' tests/container-entrypoint-guard.bats
+@test "the guard refuses to start without a key file and says so in its log" {
+    local guard="$REPO_ROOT/scripts/container/openrouter-guard.py"
+    local rund="$TMP/run" glog port
+    mkdir -p "$rund"
+    glog="$rund/openrouter-guard.log"
+    port="$(free_port)"
+
+    # Named but not there. A guard that cannot find its key file must not
+    # quietly fall back to an environment every terminal here can read: it
+    # refuses, and the refusal lands in the log the entrypoint points at.
+    run bash -c "env -u OPENROUTER_API_KEY \
+        CLAUDE_ORCA_GUARD_KEY_FILE='$TMP/no-such.key' \
+        python3 '$guard' --port $port --run-dir '$rund' >>'$glog' 2>&1"
+    [ "$status" -ne 0 ]
+    grep -qF 'openrouter-guard' "$glog"
+    grep -qF "$TMP/no-such.key" "$glog"
+
+    # An empty key file is the same failure, not a guard with no key.
+    : > "$TMP/empty.key"
+    chmod 600 "$TMP/empty.key"
+    : > "$glog"
+    run bash -c "env -u OPENROUTER_API_KEY \
+        CLAUDE_ORCA_GUARD_KEY_FILE='$TMP/empty.key' \
+        python3 '$guard' --port $port --run-dir '$rund' >>'$glog' 2>&1"
+    [ "$status" -ne 0 ]
+    grep -qF "$TMP/empty.key" "$glog"
+
+    # Nothing at all is a refusal too, and it names the key file rather
+    # than pointing at an environment variable nobody should be setting.
+    : > "$glog"
+    run bash -c "env -u OPENROUTER_API_KEY \
+        python3 '$guard' --port $port --run-dir '$rund' >>'$glog' 2>&1"
+    [ "$status" -ne 0 ]
+    grep -qF 'key file' "$glog"
+
+    # And it never started: nothing is listening on that port.
+    run python3 -c "import socket,sys
+s = socket.socket()
+s.settimeout(0.3)
+sys.exit(0 if s.connect_ex(('127.0.0.1', $port)) == 0 else 1)"
+    [ "$status" -ne 0 ]
+}
