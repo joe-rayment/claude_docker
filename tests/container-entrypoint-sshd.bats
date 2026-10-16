@@ -109,3 +109,30 @@ write_sshd_wrap() {  # write_sshd_wrap <path>
     kill -0 "$(cat "$TMP/ep.pid")"
     [ ! -e "$TMP/ep.rc" ]
 }
+
+# Guards:   keys in state/ssh but a runtime dir that cannot be made is a logged, retried refusal, not a dead boot: both logs name it, no sshd.ready, run/port is written
+# Fails if: an uncreatable runtime dir makes the entrypoint die, the refusal is only silent, or a run/sshd.ready appears without an sshd
+# Run:      bats -f 'runtime dir cannot be made' tests/container-entrypoint-sshd.bats
+@test "keys present but the runtime dir cannot be made: both logs say so, no sshd.ready, run/port is written" {
+    local proj="$TMP/project"
+    make_project "$proj"
+    export_ep_env "$proj"
+    export CLAUDE_ORCA_RUNTIME_DIR=/proc/no-such-dir/cdev
+    local st="$proj/.claude-dev/state/ssh"
+    mkdir -p "$st"
+    echo placeholder > "$st/host_ed25519"
+    echo placeholder > "$st/host_ed25519.pub"
+    echo placeholder > "$st/authorized_keys"
+
+    boot_ep
+    wait_for_line "$TMP/entrypoint.out" 'waiting on the sshd supervisor' 30
+    wait_for_line "$proj/.claude-dev/run/sshd.log" 'not writable' 10
+
+    grep -qF 'is not creatable; sshd will not start' "$TMP/entrypoint.out"
+    grep -qF 'sshd runtime dir /proc/no-such-dir/cdev/ssh is not writable; sshd not started' \
+        "$proj/.claude-dev/run/sshd.log"
+    [ ! -e "$proj/.claude-dev/run/sshd.ready" ]
+    [ "$(cat "$proj/.claude-dev/run/port")" = "$CLAUDE_ORCA_SSHD_PORT" ]
+    kill -0 "$(cat "$TMP/ep.pid")"
+    [ ! -e "$TMP/ep.rc" ]
+}
