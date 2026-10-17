@@ -2,7 +2,8 @@
 #
 # seed-project.sh -- everything a project folder needs seeding, in one
 # idempotent script: the .gitignore block, attachments/, the beads
-# snapshot restore and `bd init`.
+# snapshot restore. (`bd init` is not here: the first pane's startup menu
+# offers the tracker, so a person chooses it.)
 #
 # WHY IT IS ITS OWN SCRIPT. This work used to live inside the entrypoint,
 # which is PID 1 of the container. Anything in there is on the critical
@@ -83,7 +84,7 @@ seed_attachments() {
 
 # --- beads --------------------------------------------------------------
 #
-# The snapshot restore first, because `bd init` must not clobber what a
+# The snapshot restore first, because a later `bd init` must not clobber what a
 # teardown put aside. Only ever when the project has no issues.jsonl of
 # its own, so there is nothing here to lose.
 restore_beads_snapshot() {
@@ -103,7 +104,9 @@ restore_beads_snapshot() {
 }
 
 init_beads() {
-    # Honoured HERE, because this is where the tracker is created now.
+    # No tracker is created here any more: a folder with no .beads waits for
+    # the first pane's startup menu (scripts/startup-menu.sh), which asks.
+    # CLAUDE_ORCA_SKIP_BEADS is still honoured, so the log stays truthful.
     if [ "${CLAUDE_ORCA_SKIP_BEADS:-0}" = "1" ]; then
         log "CLAUDE_ORCA_SKIP_BEADS=1; not creating a tracker"
         return 0
@@ -116,13 +119,7 @@ init_beads() {
         log "beads already initialized"
         return 0
     fi
-    prefix="${CLAUDE_ORCA_PROJECT_NAME:-}"
-    [ -n "$prefix" ] || prefix="$(basename "$PROJECT_DIR")"
-    if ( cd "$PROJECT_DIR" && bd init --prefix "$prefix" ) >/dev/null 2>&1; then
-        log "beads initialized (prefix $prefix)"
-    else
-        log "bd init did not succeed; run 'bd init' here when you want a tracker"
-    fi
+    log "no tracker yet -- the first pane's startup menu offers one (or run 'bd init' in the folder)"
 }
 
 # The metrics banner is printed once per config and is the first thing a

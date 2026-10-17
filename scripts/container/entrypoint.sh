@@ -37,9 +37,9 @@
 #   HOST_UID      the Mac uid owning the bind mount; `agent` is re-mapped
 #                 to it so files written inside look right outside.
 #   GH_TOKEN      passed through to the agent environment untouched.
-#   CLAUDE_ORCA_PROJECT_NAME  the beads prefix for `bd init` (default:
+#   CLAUDE_ORCA_PROJECT_NAME  the beads prefix the startup menu's `bd init` uses (default:
 #                 the project folder's basename).
-#   CLAUDE_ORCA_SKIP_BEADS=1  do not `bd init` the project folder.
+#   CLAUDE_ORCA_SKIP_BEADS=1  the startup menu does not offer a tracker.
 #   CLAUDE_ORCA_GIT_NAME / CLAUDE_ORCA_GIT_EMAIL   the Mac's global git
 #                 identity, copied into the agent's ~/.gitconfig on a
 #                 folder that has none. Optional; may be empty.
@@ -499,7 +499,7 @@ fi
 # --- what used to be here (claude-orca-dbu.4) ---------------------------
 #
 # The config sync, the git identity, the Claude Code first-run seed and the
-# project seed (.gitignore, attachments/, the beads snapshot, `bd init`)
+# project seed (.gitignore, attachments/, the beads snapshot)
 # all ran on this line, between the privilege drop and sshd.
 # Every one of them is about THIS FOLDER rather than about the image, and
 # every one of them is a way for a folder to fail to start in silence.

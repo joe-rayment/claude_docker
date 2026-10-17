@@ -215,7 +215,7 @@ and starts `orca-ide --serve`; it writes the browser URL to
 `run/orca-web-url.txt` (mode 600 — the fragment carries a pairing code) —
 the handshake the Mac side waits on before `open`. Only
 then does it run `scripts/container/provision-run.sh`, where everything
-folder-shaped lives now — the config sync, the seeds, `bd init`, a git init
+folder-shaped lives now — the config sync, the seeds, a git init
 when the folder has no commits, `orca repo add`, the toolchain verify, the
 guard check — as numbered idempotent steps
 under `scripts/container/provision.d/`, each writing

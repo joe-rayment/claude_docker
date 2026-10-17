@@ -147,3 +147,27 @@ run_hooks() {  # run_hooks <subdir> [VAR=value ...]; stdout of the hooks lands i
   run grep -c $'\033]' "$FIX/out"    # a bare `! grep` never fails a bats test
   [ "$output" = "0" ]
 }
+
+# Guards:   the pane block runs `startup-menu --pane` only for a person at a terminal, never under Claude Code
+# Fails if: the call loses its interactive/tty/CLAUDECODE guard, or fires outside a pane
+# Run:      bats -f 'startup-menu' tests/pane-entry.bats
+@test ".zshrc: the pane block calls startup-menu --pane only when interactive on a tty and not under CLAUDECODE" {
+  mkdir -p "$FIX/stub"
+  printf '#!/bin/sh\necho "called $*"\n' > "$FIX/stub/startup-menu"
+  chmod +x "$FIX/stub/startup-menu"
+  cp "$ROOT/config/.zshrc" "$FIX/home/.zshrc"
+  command -v script >/dev/null || skip "no script(1) to give zsh a tty"
+  tty_zsh() {  # tty_zsh [VAR=value ...]
+    env -i PATH="$FIX/stub:$PATH" HOME="$FIX/home" PROJECT_DIR="$PROJECT_DIR" TERM=xterm "$@" \
+      script -qec "$ZSH_BIN -i" /dev/null < <(printf 'exit\n') 2>&1
+  }
+  run tty_zsh CDEV_PANE=1
+  case "$output" in *"called --pane"*) ;; *) echo "pane on a tty did not call it: $output"; return 1 ;; esac
+  run tty_zsh CDEV_PANE=1 CLAUDECODE=1
+  case "$output" in *"called"*) echo "ran under CLAUDECODE: $output"; return 1 ;; esac
+  run tty_zsh
+  case "$output" in *"called"*) echo "ran outside a pane: $output"; return 1 ;; esac
+  # and not on a pipe, even in a pane
+  run env -i PATH="$FIX/stub:$PATH" HOME="$FIX/home" PROJECT_DIR="$PROJECT_DIR" CDEV_PANE=1 "$ZSH_BIN" -i -c 'exit' </dev/null
+  case "$output" in *"called"*) echo "ran without a tty: $output"; return 1 ;; esac
+}

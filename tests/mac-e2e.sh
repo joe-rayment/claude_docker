@@ -456,6 +456,14 @@ in_pwd() {
     printf '%s\n' "$p"
 }
 
+# The tracker is no longer made at provision: the first pane's startup menu
+# asks. Answer it the way a user would -- yes to beads, no to GitHub, then 2
+# at the Claude Code offer -- through the container's own template bin.
+in_startup_menu_made_beads() {
+    printf 'y\nn\n2\n' | docker exec -i -u agent -e HOME=/home/agent -w "$GUEST_DIR" \
+        "$CNAME" bash -lc "PATH='$GUEST_DIR/.claude-dev/template/bin':\$PATH startup-menu" >/dev/null 2>&1
+    inc_wd "$GUEST_DIR" test -d .beads
+}
 in_bd_in_project() { inc_wd "$GUEST_DIR" bd status; }
 in_bd_anywhere() {
     # bd walks UP for .beads, so from / it can only work if the container
@@ -541,6 +549,7 @@ check "inside: setup.sh --check (the toolchain's own shape)"  in_toolchain_shape
 check "inside: no Mac paths visible (step 4)"                 in_no_mac_paths
 check "inside: the project is the only folder beside it"      in_one_folder
 check "inside: a login shell lands in the project"            in_pwd
+check "inside: startup menu created .beads"                  in_startup_menu_made_beads
 check "inside: bd works in the project"                       in_bd_in_project
 check "inside: bd works from any directory (step 5)"          in_bd_anywhere
 check "inside: every tool is at its pin"                      in_versions

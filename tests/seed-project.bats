@@ -248,6 +248,51 @@ scripts:
     grep -qF 'kept' "$d/.beads/issues.jsonl"
 }
 
+# Guards:   provisioning no longer creates a tracker; the first pane's startup menu asks instead
+# Fails if: init_beads runs `bd init` again for a folder with no .beads, or stops logging that the menu offers one
+# Run:      bats -f 'no bd init at provision' tests/seed-project.bats
+@test "a new folder gets no bd init at provision, just a log line pointing at the startup menu" {
+    local d bin
+    d="$(fresh_project newf)"
+    bin="$BATS_TEST_TMPDIR/stubbin"
+    mkdir -p "$bin"
+    printf '#!/bin/sh\necho "$*" >> "%s/bd.calls"\n' "$BATS_TEST_TMPDIR" > "$bin/bd"
+    chmod +x "$bin/bd"
+    run env -u CLAUDE_ORCA_SKIP_BEADS PATH="$bin:$PATH" PROJECT_DIR="$d" bash "$SEED"
+    [ "$status" -eq 0 ]
+    [ ! -e "$d/.beads" ]
+    case "$output" in
+        *"startup menu"*) ;;
+        *) echo "expected the log to point at the startup menu: $output"; return 1 ;;
+    esac
+    # only the metrics call is allowed; never init
+    if [ -f "$BATS_TEST_TMPDIR/bd.calls" ]; then
+        run grep -c '^init' "$BATS_TEST_TMPDIR/bd.calls"
+        [ "$output" = "0" ]
+    fi
+}
+
+# Guards:   a folder that already has .beads is left alone and logged as such
+# Fails if: the seed touches an existing tracker or stops saying it is already initialized
+# Run:      bats -f 'with a .beads already' tests/seed-project.bats
+@test "a folder with a .beads already is left untouched" {
+    local d bin
+    d="$(fresh_project hasf)"
+    mkdir -p "$d/.beads"
+    printf 'mine\n' > "$d/.beads/marker"
+    bin="$BATS_TEST_TMPDIR/stubbin2"
+    mkdir -p "$bin"
+    printf '#!/bin/sh\nexit 0\n' > "$bin/bd"
+    chmod +x "$bin/bd"
+    run env -u CLAUDE_ORCA_SKIP_BEADS PATH="$bin:$PATH" PROJECT_DIR="$d" bash "$SEED"
+    [ "$status" -eq 0 ]
+    case "$output" in
+        *"already initialized"*) ;;
+        *) echo "expected 'already initialized': $output"; return 1 ;;
+    esac
+    [ "$(cat "$d/.beads/marker")" = "mine" ]
+}
+
 @test "an orca.yaml that is a SYMLINK is left alone: still a link, its target unchanged" {
     local d outside
     d="$(fresh_project)"

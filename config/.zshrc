@@ -222,6 +222,15 @@ if [[ -n "$CDEV_PANE" ]]; then
     autoload -Uz add-zsh-hook
     add-zsh-hook precmd _cdev_pane_osc7
     add-zsh-hook precmd _cdev_pane_title
+
+    # The startup menu: the first pane of a new folder is asked about beads and
+    # GitHub, every later one gets a single identity line. Only for a person at
+    # a terminal -- Claude Code's own shell snapshots source this file too
+    # ($CLAUDECODE is set there), and nothing else may print into them.
+    if [[ -o interactive && -t 0 && -t 1 && -z $CLAUDECODE ]] \
+        && (( $+commands[startup-menu] )); then
+        startup-menu --pane || true
+    fi
 fi
 
 # User customizations — this file survives config version updates

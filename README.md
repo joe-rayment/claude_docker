@@ -84,7 +84,10 @@ To isolate another folder, run the same one-liner from inside it.
 the folder's own Orca, already paired and already holding the project. Pick
 **Claude Code** and work as usual: the first `claude` run prints a login URL
 in that terminal — open it on this Mac and paste the code back. That is the
-whole first run. Nothing is asked of you along the way.
+whole first run. On a new folder, the first terminal pane opens a startup
+menu instead of a bare prompt: it offers to set up beads, then GitHub, then
+starts Claude Code. Say no to any of it; `startup-menu` runs it again whenever
+you want, and every later pane just says where it is.
 
 ### How it opens — the desktop app, or the browser
 
