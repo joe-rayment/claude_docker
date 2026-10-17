@@ -150,15 +150,11 @@ and `run-tests.sh` names it in `SLOW_FILES` and prints how many it skipped.
 Both times assume GNU `parallel` (`brew install parallel`), which lets
 `run-tests.sh` run files side by side; one file at a time they are ~8 and
 ~15 minutes on a 4-core Linux box.
-There is no CI in this repo: `.github/workflows/image.yml` used to build and
-publish the image on every push to main and run its own smoke and e2e
-checks, but once the image stopped being pulled from a registry and started
-being built on the machine that runs it, there was nothing left for a
-shared workflow to gate -- a red test must never stop a fix from reaching
-the machine that needs it, and neither should a build nobody but that
-machine can act on. `scripts/container/smoke.sh` (the image's own check) and
-`tests/mac-e2e.sh` (the host-side launcher against a real daemon) are both
-run by hand now, on demand, against a real Mac.
+There is no CI in this repo: the image is built on the machine that runs it,
+so a red test must never stop a fix from reaching that machine.
+`scripts/container/smoke.sh` (the image's own check) and `tests/mac-e2e.sh`
+(the host-side launcher against a real daemon) are run by hand, on demand,
+against a real Mac.
 
 Tests are bats-core, and they run on Linux as well as macOS: the suite stubs
 the host tooling (`docker`, `open`, `uname`, `gh`) and exercises the
@@ -168,7 +164,7 @@ on — but containers still cannot run here: Docker on this box dies with
 `failed to register layer: unshare: operation not permitted`, no images
 cached, user namespaces denied. So proving the image itself, and the
 host-side launcher against a real daemon (a throwaway folder, a real
-container, a real HTTP request to the URL Orca published), is
+container, a real ssh login that lands in the project), is
 `tests/mac-e2e.sh`'s job -- see "Definition of done for host-side changes"
 below.
 
@@ -177,98 +173,74 @@ below.
 One command (`gh api … bootstrap.sh | bash`), run from inside a project
 folder, gives that folder **its own Linux container** (on a Mac, inside
 Docker Desktop's own Linux VM). `<project>/.claude-dev/` carries the template
-clone, `bin/claude-dev`, the folder's `claude-orca.json` and the `home/` that
-becomes the agent's home directory. There is no central install; nothing on
-the Mac runs an agent.
+clone, `bin/claude-dev`, the folder's `claude-orca.json`, the `home/` that
+becomes the agent's home directory, `run/` (results) and `state/` (authority,
+including the folder's ssh keys). There is no central install; nothing on the
+Mac runs an agent. The door is a **terminal pane**, not a UI: Ghostty (or any
+terminal) ssh-es into the container and lands in the project.
 
 The boundary is the container's. `claude-dev` runs one Docker container per
 folder from an image built on that machine (`claude-orca`, pinned by the
 `IMAGE_TAG` file; `CLAUDE_ORCA_IMAGE_REPO`/`CLAUDE_ORCA_IMAGE` override it),
 mounting the project at **`/workspace/<name>`** and `.claude-dev/home` as
-`/home/agent`, publishing Orca's port on `127.0.0.1` only. The project used
-to be mounted at its own Mac path so paths meant the same thing on both
-sides; the price was a container that spelled out its owner's home directory
-and folder tree at every prompt — no sandbox at all. Everything
-inside takes the path from `PROJECT_DIR`, so nothing needed them to agree;
-the Mac path still rides in as `CLAUDE_ORCA_HOST_PROJECT_DIR` for messages
-that name a file to open on the Mac, and `BEADS_DIR` names the folder's
+`/home/agent`. The only published port is sshd's, on `127.0.0.1`: it listens
+on 2222 inside, and the launcher sets `CLAUDE_ORCA_SSHD_PORT` to the folder's
+published port. The Mac path rides in as `CLAUDE_ORCA_HOST_PROJECT_DIR` for
+messages that name a file to open on the Mac; `BEADS_DIR` names the folder's
 tracker so `bd` answers from any directory.
 
 The image carries the whole install: apt state (`setup.sh`'s `IMAGE_PHASES`)
-plus the payload — Orca, opencode, bd, dolt, helix, bats — one
-Docker layer per phase, rarest-changing first, with the repo copy below them
-so editing a script rebuilds no payload layer. That payload was briefly
-installed per folder into `<project>/.claude-dev/toolchain` instead; the
-measurement that ended the experiment was an ~18-minute first start — 15.5
-of them downloading 1.3 GB at 2.5 MB/s — once per folder, shared with no
-other folder, the job Docker's layer cache does for every folder at once.
-Claude Code is the exception: `provision.d/15-claude-on-path` installs the
-latest natively into the folder's home, where `claude update` updates it.
-A folder still carries a toolchain on
-the **runtime path** — plain `ubuntu:24.04`, where a folder lands when the
-local `docker build` cannot run or fails — because there is no baked
-anything to reuse there.
-`setup.sh --check` is what says the image is the filesystem it promised.
-Inside,
-`scripts/container/entrypoint.sh` runs as PID 1, drops to the `agent` user,
-and starts `orca-ide --serve`; it writes the browser URL to
-`run/orca-web-url.txt` (mode 600 — the fragment carries a pairing code) —
-the handshake the Mac side waits on before `open`. Only
-then does it run `scripts/container/provision-run.sh`, where everything
-folder-shaped lives now — the config sync, the seeds, a git init
-when the folder has no commits, `orca repo add`, the toolchain verify, the
-guard check — as numbered idempotent steps
-under `scripts/container/provision.d/`, each writing
-`run/provision/<step>.log` and `.status`, none fatal, all re-run by the next
-start. Those two files per step are what `provision
-status` reads back (one row per step; `provision run <step>` re-runs
-exactly one) -- the SessionStart hook prints the FAILED rows only, so a
-broken folder names its own fault on the first prompt and a clean one says
-nothing, and `claude-dev --doctor` fetches the same rows over `docker
-exec`. The one exception is the OpenRouter guard's
-*start*, which stays in front of `--serve`: Orca's environment is fixed at
-exec, so whether the guard's token reaches it is decided before it starts.
-The steps run on the Orca-cannot-start path too, right before
-the die. Claude
-Code signs in on its own first run inside Orca. Registration seeds the stack
-this template assumes — Claude Code as the master, low-cost OpenRouter models
-as delegate-route workers, and Orca's native coordination, which needs no
-opt-in now that Orca runs in the container. An opencode worker is a headless
-`orca-worker-run` that exits when the slice is done (peak ~700 MB, nothing
-resident afterwards); `--tui` restores the resident TUI for watching.
+plus the payload -- opencode, bd, dolt, helix, bats -- one Docker layer per
+phase, rarest-changing first, with the repo copy below them. Claude Code is
+the exception: `provision.d/15-claude-on-path` installs the latest natively
+into the folder's home, where `claude update` updates it. On the **runtime
+path** (plain `ubuntu:24.04`, when the local `docker build` fails) a folder
+carries a toolchain instead. `setup.sh --check` says the image is the
+filesystem it promised.
 
-The UI is a client of that runtime, and on a Mac with the Orca desktop app
-installed the client is the app, not a browser tab: the launcher launches it
-and registers the container as a remote environment named
-`remote-<project>` — the environment name IS the sidebar badge on every
-workspace under the project, and the badge truncates, so the word the user
-reads has to come first; the container itself is still
-`claude-orca-<project>` — over Orca's pairing protocol (the E2EE websocket to
-the published loopback port, keyed by `run/orca-pairing-url.txt` or the web
-URL's `#pairing=` fragment). The `ui` key in `claude-orca.json`
-(`desktop`|`web`, written at register) decides; no app found, or
-`CLAUDE_ORCA_UI=web`, means Orca Web — the browser path stays whole. The
-image is built at the app's version because Orca refuses a protocol
-mismatch. The app can also open *local* unsandboxed workspaces, so the
-launcher strips this folder out of `orca-data.json` while Orca is closed --
-it never quits a running Orca for that window, attaches the remote host
-either way, and prints the in-app clicks when a local project survives.
+`scripts/container/entrypoint.sh` is PID 1: the OpenRouter guard first (its
+environment is fixed at exec, so whether the token reaches sshd is decided
+before it starts), then the sshd supervisor (`sshd-lib.sh`; it retries every
+5 s on any refusal, such as no keys yet), then
+`scripts/container/provision-run.sh` as a waited background job. TERM exits
+143 within a second. Idle memory is ~36 MB. `run/sshd.ready` is the handshake
+the Mac side waits on. Provisioning is numbered idempotent steps under
+`scripts/container/provision.d/`, each writing `run/provision/<step>.log` and
+`.status`, none fatal; `provision status` reads them back and the
+SessionStart hook prints the FAILED rows only.
+
+**The Mac side.** `./claude-dev` starts the container and waits for
+`run/sshd.ready`. `./claude-dev pane` opens a shell in it (fast through the
+ssh master; when it cannot, it says `== Mac shell -- NOT sandboxed ==`).
+`./claude-dev ghostty [--check|--uninstall]` installs the Ghostty include and
+the `ghostty-pane` router, so every new tab in a sandboxed folder lands in its
+container. `--how-to-run` prints that how-to; `--update` migrates an old Orca
+folder (removes its Orca state volume, creates the ssh keys). Keys and
+`known_hosts` live in `state/ssh` -- no trust-on-first-use, nothing in
+`~/.ssh`. `state/ssh/config` sets `ControlMaster auto`, `ControlPersist`, a
+`ControlPath` under `~/.local/state/claude-dev` (a literal path) and, unless
+`claude-orca.json` says `"clipboard": false`, the clipboard `RemoteForward`;
+the pane adds `SetEnv` for `TERM_PROGRAM` and friends on its command line.
+`pane-entry` (sshd's ForceCommand) rebuilds the environment and the cwd.
+
+**Clipboard.** Claude Code on Linux pastes through `xclip -selection
+clipboard -t TARGETS -o` / `-t image/png -o`. The container's `bin/xclip`
+shim asks the Mac's `clip-serve` through the forwarded socket. Only images
+cross Mac -> container, text never does; `xclip -i` copies text to the Mac.
+
+**Workers.** `dispatch <bead>` hands one bead to a headless `worker-run`;
+`workers list|wait|reply|tail|stop` watch them; `dispatch --epic` runs ready
+children in waves, and a failed blocker blocks its dependents.
 
 `HOME` is `<project>/.claude-dev/home`, whose `.claude` config dir is
-populated from this repo's `config/` by a checksum-gated sync that preserves
-Orca's own managed hook entries (status dots, sub-agent rows). One directory
-under that home is NOT the folder's: Orca's `--user-data-dir`
-(`~/.config/orca`) is a docker volume named after the container, because a
-macOS bind mount cannot `chmod` or `link` a unix socket and that is where
-Orca puts its RPC and daemon sockets. `./claude-dev --teardown` removes the
-volumes with the container, so the state still dies with the folder. Four
-more volumes (`.cache`, `.npm`, `.local/share/opencode`, `worktrees`) keep
+populated from this repo's `config/` by a checksum-gated sync. Four docker
+volumes (`.cache`, `.npm`, `.local/share/opencode`, `worktrees`) keep
 small-file churn off the share (15x slower); the project folder stays
-bind-mounted. The hook/guard
-suite (lane, tier, bd-guard, outbound-guard, auth-guard, contract-gate,
-cost-mirror…) runs from there. `/tier` state lives in
-`.claude-dev/run/tier.json` and is injected into sub-agent spawns by a
-`PreToolUse` hook rather than written into agent frontmatter, because
+bind-mounted, and `./claude-dev --teardown` removes the volumes with the
+container. The hook/guard suite (lane, tier, bd-guard, outbound-guard,
+auth-guard, contract-gate, cost-mirror…) runs from there. `/tier` state
+lives in `.claude-dev/run/tier.json` and is injected into sub-agent spawns by
+a `PreToolUse` hook rather than written into agent frontmatter, because
 config-sync owns those files.
 
 ## Definition of done for host-side changes
@@ -304,10 +276,7 @@ parked off main — and any STRANDED line exits 1. It runs from boot step 65
 PostToolUse hook's `--after-merge`), at SessionStart (`--quiet`, so the
 first prompt carries the STRANDED lines and one summary), at SessionEnd
 (`session-end-audit` dev-logs each STRANDED line), and from `disk-cleanup`.
-An occupant that is only Orca's idle worktree terminal — a shell whose
-parent is the orca-ide daemon and which has no children — does not make a
-worktree busy, because `orca worktree rm` closes it; any other process
-still does. `branch-guard` (PreToolUse, Bash) denies creating or switching
+A locked worktree is reported as `locked: <reason>` and never unlocked. `branch-guard` (PreToolUse, Bash) denies creating or switching
 to a branch off main unless the command carries `BRANCH_OK=1`, so solo
 work stays on main where the user can see it.
 
