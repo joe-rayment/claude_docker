@@ -23,8 +23,10 @@ reason, or a note about the summarizer, replaces the model name).
 Cadence (the summarizer decides "unchanged" itself): it is run once at
 start, then at most once per EVERY_S; when the digest's episode or its set
 of running sources changes it is run at once, but never within MIN_GAP_S
-of the last run. Redraws when page.md or meta.json change, every REDRAW_S,
-and on SIGWINCH.
+of the last run. Every run adds one line to <run>/activity/panel.log saying
+why it started (first run, cadence, a new request, or which source ids joined
+or left the running set). Redraws when page.md or meta.json change, every
+REDRAW_S, and on SIGWINCH.
 
 Exit codes: 0 ok / quit; 2 bad arguments, no folder, or no terminal.
 
@@ -323,6 +325,7 @@ class Panel:
         self.next_watch = 0.0
         self.seen = None           # (episode, running ids) the digest last saw
         self.urgent = False
+        self.why = []              # what made the digest urgent since the last run
         self.note = ""
 
     def tick(self, now, rows, cols):
@@ -339,7 +342,10 @@ class Panel:
             due = True
         if not due or (since is not None and since < self.gap):
             return
-        self.last_call, self.urgent = now, False
+        self._log_run("first run" if since is None else
+                      ("cadence %ds" % self.every if since >= self.every else "; ".join(self.why)),
+                      since)
+        self.last_call, self.urgent, self.why = now, False, []
         argv = command(self.sum_path)
         if argv is None:
             self.note = "summarizer not installed (activity-summarize.py)"
@@ -380,7 +386,32 @@ class Panel:
             return
         if self.seen is not None and key != self.seen:
             self.urgent = True
+            if key[0] != self.seen[0]:
+                self.why.append("new request (episode %s -> %s)" % (self.seen[0], key[0]))
+            else:
+                old, new = set(self.seen[1]), set(key[1])
+                self.why.append("running set changed +%s -%s" % (
+                    sorted(i[-6:] for i in new - old), sorted(i[-6:] for i in old - new)))
+            del self.why[:-3]
         self.seen = key
+
+    def _log_run(self, reason, since):
+        """One line in <run>/activity/panel.log per summarizer run: why it was started."""
+        path = os.path.join(self.act_dir, "panel.log")
+        line = "%s run reason=%s since_last=%s\n" % (
+            datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            reason, "-" if since is None else "%ds" % since)
+        try:
+            os.makedirs(self.act_dir, exist_ok=True)
+            if os.path.exists(path) and os.path.getsize(path) > 65536:
+                with open(path, encoding="utf-8", errors="replace") as fh:
+                    keep = fh.readlines()[-100:]
+                with open(path, "w", encoding="utf-8") as fh:
+                    fh.writelines(keep)
+            with open(path, "a", encoding="utf-8") as fh:
+                fh.write(line)
+        except OSError:
+            pass
 
     def close(self):
         for c in (self.summ, self.digest):

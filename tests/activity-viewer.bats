@@ -204,6 +204,53 @@ has_bytes() { grep -aqF -- "$1" "$OUT"; }
   [ "$(calls)" -eq 1 ]
 }
 
+# stub_digest_sources set|noise: one episode and a finished source. "set": the
+# one RUNNING source swaps ids every run (the set of running sources changes);
+# "noise": the same source keeps running but every `last` stamp moves (it only
+# wrote more) -- the case that must NOT call the summarizer again.
+stub_digest_sources() {
+  cat >"$BATS_TEST_TMPDIR/stub-digest" <<STUB
+#!/usr/bin/env bash
+n=\$(cat "$BATS_TEST_TMPDIR/digest.n" 2>/dev/null || echo 0)
+n=\$((n + 1)); echo "\$n" >"$BATS_TEST_TMPDIR/digest.n"
+id=agent-aaa111
+[ "$1" = set ] && [ \$((n % 2)) -eq 0 ] && id=agent-bbb222
+printf '{"episode": "ep1", "sources": [{"id": "%s", "state": "running", "last": "t%s"}, {"id": "agent-fin999", "state": "finished", "last": "t%s"}]}\\n' "\$id" "\$n" "\$n"
+STUB
+  chmod +x "$BATS_TEST_TMPDIR/stub-digest"
+  export CLAUDE_ORCA_ACTIVITY_DIGEST="$BATS_TEST_TMPDIR/stub-digest"
+}
+
+@test "live: a different set of running sources calls the summarizer again, and panel.log says which ids" {
+  stub_summarizer; stub_digest_sources set
+  export CLAUDE_ORCA_ACTIVITY_EVERY_S=600 CLAUDE_ORCA_ACTIVITY_MIN_GAP_S=1 CLAUDE_ORCA_ACTIVITY_WATCH_S=1
+  run drive --at 4.5:send:q
+  [ "$status" -eq 0 ]
+  [ "$(calls)" -ge 2 ]
+  head -n1 "$ACT/panel.log" | grep -q 'run reason=first run since_last=-'
+  grep -q 'reason=running set changed +\[.aaa111.\] -\[.bbb222.\]\|reason=running set changed +\[.bbb222.\] -\[.aaa111.\]' "$ACT/panel.log"
+  [ "$(wc -l <"$ACT/panel.log" | tr -d ' ')" -eq "$(calls)" ]
+}
+
+@test "live: sources that only write more, with the same ones running, do not call the summarizer again" {
+  stub_summarizer; stub_digest_sources noise
+  export CLAUDE_ORCA_ACTIVITY_EVERY_S=600 CLAUDE_ORCA_ACTIVITY_MIN_GAP_S=1 CLAUDE_ORCA_ACTIVITY_WATCH_S=1
+  run drive --at 4.5:send:q
+  [ "$status" -eq 0 ]
+  [ "$(cat "$BATS_TEST_TMPDIR/digest.n")" -ge 3 ]       # the digest really did run again and again
+  [ "$(calls)" -eq 1 ]
+  [ "$(wc -l <"$ACT/panel.log" | tr -d ' ')" -eq 1 ]
+}
+
+@test "live: a call forced by the clock is logged as cadence, not as a change" {
+  stub_summarizer; stub_digest same
+  export CLAUDE_ORCA_ACTIVITY_EVERY_S=1 CLAUDE_ORCA_ACTIVITY_MIN_GAP_S=1 CLAUDE_ORCA_ACTIVITY_WATCH_S=100
+  run drive --at 3.5:send:q
+  [ "$status" -eq 0 ]
+  grep -q 'reason=cadence 1s' "$ACT/panel.log"
+  ! grep -q 'running set changed\|new request' "$ACT/panel.log"
+}
+
 @test "live: with nothing new the summarizer is asked again every EVERY_S seconds" {
   stub_summarizer; stub_digest same
   export CLAUDE_ORCA_ACTIVITY_EVERY_S=1 CLAUDE_ORCA_ACTIVITY_MIN_GAP_S=1 CLAUDE_ORCA_ACTIVITY_WATCH_S=100
