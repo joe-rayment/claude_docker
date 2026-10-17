@@ -112,6 +112,8 @@ def redact_text(text, extra=()):
 
     def long_run(m):
         run = m.group(0)
+        if "/" in run and not re.search(r"[+=]", run):
+            return run  # a path (dir/dir/agent-abc123...), not base64: keep it readable
         mixed = re.search(r"\d", run) and re.search(r"[A-Za-z]", run)
         return "[redacted]" if mixed else run
     return LONG_RUN.sub(long_run, text)
@@ -286,10 +288,14 @@ def system_prompt(rows, cols):
         "You write the status panel a person glances at while Claude Code works in the next "
         "window. The person is not reading the code. In a few seconds they want to know what "
         "is being worked on, what has been done, what is happening now, and what comes next.\n\n"
-        "Write plain English in short sentences. Say what the work achieves, not which "
-        "commands were run. No file paths, command names, flags or jargon unless the person "
-        "needs them to act. Never list every step: pick the one or two things that matter. "
-        "Use only facts in the digest; if you do not know something, leave it out.\n\n"
+        "Write plain English in short sentences, as if to someone who has never written code. "
+        "Say what the work achieves, not which commands were run. No file paths, command "
+        "names, flags or jargon unless the person needs them to act. Avoid developer words "
+        "(worktree, branch, merge, commit, main, slice, bats, epic, stub, lint, CLI): say "
+        "\"saved\", \"added to the project\", \"checks\", \"part of the job\" instead, and "
+        "turn a cryptic title into a few plain words. Never list every step: pick the one "
+        "or two things that matter. Use only facts in the digest; if you do not know "
+        "something, leave it out.\n\n"
         "Size: at most %d lines, each at most %d characters. Plain text only: no markdown, no "
         "#, no asterisks, no bullets, no code, no tables. A blank line between blocks is fine "
         "(it counts as a line).\n\n"
@@ -300,6 +306,9 @@ def system_prompt(rows, cols):
         "Now: one sentence.\n"
         "Next: one sentence.\n"
         "For each source that has FINISHED, one line: Finished: <title> -- <outcome>.\n"
+        "If there are too many running executors to fit in the size above, give the first "
+        "ones the full block, then one line for each of the rest: <title> -- <what it is "
+        "doing now>. Never go over the size: shorten instead.\n"
         "If nothing is running, say in a line or two what the session last did and what it "
         "is waiting for.\n\n"
         "You also get the previous page. Keep what is still true and drop what is stale. If "
@@ -323,8 +332,10 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 def call_model(base_url, token, model, system, user, timeout):
     """One chat completion. Returns {status, text, model, usage, ms, error}; error is
     None, or one of refused | timeout | http | empty (never carries content)."""
+    # reasoning off: the glm-flash alias is a reasoning model, and with a 600-token
+    # cap it spent every token thinking and sent back an empty page (measured 2026-10-17)
     payload = {"model": model, "max_tokens": MAX_TOKENS, "temperature": TEMPERATURE,
-               "usage": {"include": True},
+               "usage": {"include": True}, "reasoning": {"enabled": False},
                "messages": [{"role": "system", "content": system},
                             {"role": "user", "content": user}]}
     body = json.dumps(payload).encode("utf-8").replace(token.encode("utf-8"), b"[redacted]")
