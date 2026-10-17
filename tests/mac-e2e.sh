@@ -15,9 +15,9 @@
 #
 # So this script runs the real thing: the real bootstrap.sh, into a real
 # throwaway folder, building or reusing a real image, starting a real
-# container on the real Docker daemon, and asking Orca for a real HTTP
-# response -- then it asks the container what it looks like from the
-# inside, recreates it, and tears it down. Every check is a row in a table
+# container on the real Docker daemon, and logging in to its sshd with the
+# folder's own key and host key -- then it asks the container what it looks
+# like from the inside, recreates it, updates it, and tears it down. Every check is a row in a table
 # with the seconds it took. Nothing here is stubbed, and nothing here is
 # allowed to pass by being skipped.
 #
@@ -39,12 +39,15 @@
 # this paragraph spells them out rather than quoting them. Results
 # accumulate in a file rather than an array for the same reason.
 #
-# THE DESKTOP ROWS (sections 0b and 4b) are the only evidence anywhere that the
-# Mac's own Orca attaches to the container's runtime: the bats suite stubs
-# the orca CLI, so it proves the launcher's argv and nothing about a real
-# app. They run only when the folder registered `ui: desktop`; a browser
-# folder records them SKIP, which is not a failure and does not touch the
-# exit status.
+# THE SSH ROWS (section 3) are the only evidence anywhere that the Mac's
+# own `ssh` reaches the container's sshd: the bats suite stubs ssh, so it
+# proves the launcher's argv and nothing about a real login. They check
+# run/sshd.ready and run/port, then `ssh -F state/ssh/config <alias> pwd`
+# with the host key verified (and refused when it is not known), then the
+# doctor's sshd / ssh master / ssh key auth rows. Section 5b plants an old
+# <container>-orca-state volume (what a folder from before the ssh panes
+# left behind) and checks that `./claude-dev --update` removes it.
+#
 
 set -uo pipefail
 
@@ -194,6 +197,7 @@ cleanup() {
         return 0
     fi
     docker rm -f "$CNAME" >/dev/null 2>&1
+    # legacy: the old Orca state volume, planted by section 5b/6 below
     docker volume rm "$CNAME-orca-state" >/dev/null 2>&1
     [ -n "$TMP_ROOT" ] && rm -rf "$TMP_ROOT"
     return 0
@@ -213,130 +217,6 @@ fi
 
 
 # =========================================================================
-# 0b. the desktop client, before anything opens
-# =========================================================================
-#
-# The app has to be RUNNING before ./claude-dev opens the folder. S3's
-# desktop branch launches it with `open -a <app>` and then waits for the
-# app's CLI to report the runtime reachable -- but CLAUDE_ORCA_OPEN=0,
-# which this script sets so that no browser tab is thrown at whoever is
-# watching, suppresses that launch and not the wait, and a wait that times
-# out makes the branch give up and fall back to Orca Web. So a headless run
-# would register no environment at all, and section 4b would report the
-# app's absence as a product bug. This script launches it itself, in the
-# background (`open -g`), and waits for the same signal.
-#
-# find_orca_app()/orca_cli() in scripts/launcher.sh, reproduced -- the
-# override first and authoritative, then /Applications, then the user's
-# own; then the bundle's CLI (`orca`, or `orca-ide` on older builds) and
-# only last an `orca` already on PATH. Resolved out here, not inside a row:
-# check() runs its command in a command substitution, so anything a row
-# assigns dies with the subshell.
-d_find_app() {
-    local a
-    if [ -n "${CLAUDE_ORCA_APP:-}" ]; then
-        [ -d "$CLAUDE_ORCA_APP" ] || return 1
-        printf '%s\n' "$CLAUDE_ORCA_APP"
-        return 0
-    fi
-    for a in "/Applications/Orca.app" "$HOME/Applications/Orca.app"; do
-        if [ -d "$a" ]; then printf '%s\n' "$a"; return 0; fi
-    done
-    return 1
-}
-d_find_cli() {
-    local app="${1:-}" c
-    if [ -n "$app" ]; then
-        for c in "$app/Contents/Resources/bin/orca" "$app/Contents/Resources/bin/orca-ide"; do
-            if [ -x "$c" ]; then printf '%s\n' "$c"; return 0; fi
-        done
-    fi
-    c="$(command -v orca 2>/dev/null)" || c=""
-    [ -n "$c" ] || return 1
-    printf '%s\n' "$c"
-}
-
-# A table cell out of a multi-line answer. The CLI's failures are JSON,
-# so `tail -1` on one of them says "}" and diagnoses nothing.
-d_oneline() { printf '%s' "$1" | tr '\n' ' ' | sed 's/  */ /g' | cut -c1-90; }
-
-ORCA_APP="$(d_find_app)" || ORCA_APP=""
-ORCA_CLI="$(d_find_cli "$ORCA_APP")" || ORCA_CLI=""
-APP_VER=""
-if [ -n "$ORCA_APP" ]; then
-    APP_VER="$(defaults read "$ORCA_APP/Contents/Info.plist" CFBundleShortVersionString 2>/dev/null)" || APP_VER=""
-fi
-
-# Which path this folder is on. A folder already registered has answered
-# it (the `ui` key); a folder about to be registered will be given the
-# same answer bootstrap gives -- desktop when an app was found and
-# CLAUDE_ORCA_UI does not say otherwise. Section 4b re-reads the key that
-# registration actually wrote, which is the authority from then on.
-UI="web"
-if [ -n "$EXISTING_FOLDER" ]; then
-    if command -v jq >/dev/null 2>&1 && [ -f "$HOST/claude-orca.json" ]; then
-        UI="$(jq -r '.ui // "web"' "$HOST/claude-orca.json" 2>/dev/null || echo web)"
-    fi
-elif [ -n "$ORCA_APP" ] && [ "${CLAUDE_ORCA_UI:-}" != "web" ]; then
-    UI="desktop"
-fi
-[ "$UI" = "desktop" ] || UI="web"
-
-# The environment the launcher registers is remote-<project> (launcher.sh
-# orca_env_name, since d2cd8c1) -- the name IS the sidebar badge. Before
-# that it was the container's name, which the launcher still removes on
-# add and on teardown. This used to say "$CNAME", and the 2026-09-19 Mac
-# run showed what that costs: `repo list --environment` failed with
-# "Unknown Orca server", and the teardown row passed on a name that had
-# never existed.
-ENV_NAME="remote-$(project_name "$PROJECT")"
-LEGACY_ENV_NAME="$CNAME"
-
-# dcheck <name> <command...> -- one desktop row: SKIP on a browser folder
-# (row() does not count a SKIP, so the exit status is unmoved and the
-# browser path stays whole), check_detail otherwise.
-dcheck() {
-    local name="$1"
-    shift
-    if [ "$UI" != "desktop" ]; then
-        row SKIP "-" "$name" "ui is web -- this folder opens in a browser"
-        return 0
-    fi
-    check_detail "$name" "$@"
-}
-
-# `status --json` ALWAYS exits 0 (S3's note): the boolean is the signal,
-# never the exit code. CLAUDE_ORCA_ORCA_WAIT is the launcher's own budget,
-# shared here so both wait the same length.
-d_app_launched() {
-    local budget deadline out t0 now
-    [ -n "$ORCA_APP" ] || { echo "no Orca app to launch"; return 1; }
-    [ -n "$ORCA_CLI" ] || { echo "no orca CLI to ask"; return 1; }
-    out="$(open -g -a "$ORCA_APP" 2>&1)" \
-        || { echo "open -g -a $ORCA_APP: $(d_oneline "$out")"; return 1; }
-    budget="${CLAUDE_ORCA_ORCA_WAIT:-60}"
-    t0="$(date +%s)"
-    deadline=$((t0 + budget))
-    while :; do
-        out="$("$ORCA_CLI" status --json 2>&1)"
-        printf '%s\n' "$out" >> "$RUN_LOG"
-        if printf '%s' "$out" | jq -e '.result.runtime.reachable == true' >/dev/null 2>&1; then
-            now="$(date +%s)"
-            printf '%s reachable after %ss\n' "$ORCA_APP" "$((now - t0))"
-            return 0
-        fi
-        now="$(date +%s)"
-        [ "$now" -lt "$deadline" ] || break
-        sleep 2
-    done
-    echo "the app's runtime is not reachable after ${budget}s: $(d_oneline "$out")"
-    return 1
-}
-
-note "desktop: the app has to be up before the folder opens"
-dcheck "desktop: app launched and reachable" d_app_launched
-
-# =========================================================================
 # 1. bootstrap (steps 1-3 of the pipeline: preflight, register, image)
 # =========================================================================
 
@@ -351,6 +231,7 @@ if [ -z "$EXISTING_FOLDER" ]; then
     # A leftover container from an interrupted run would make every later
     # row lie about which container it is looking at.
     docker rm -f "$CNAME" >/dev/null 2>&1
+    # legacy: an old Orca state volume left by an interrupted run
     docker volume rm "$CNAME-orca-state" >/dev/null 2>&1
 
     t0="$(date +%s)"
@@ -404,13 +285,18 @@ check "layout: claude-orca.json v3 and the port"     layout_json
 check "layout: nothing created outside the folder"   layout_nothing_outside
 
 # =========================================================================
-# 3. the container, and Orca answering on the published port (steps 4, 7)
+# 3. the container, and sshd answering on the published port (steps 4, 7)
 # =========================================================================
 
-note "container: what the Mac started, and whether Orca answers"
+note "container: what the Mac started, and whether sshd answers"
 
 PORT="$(cat "$HOST/run/port" 2>/dev/null || echo "")"
-URL_FILE="$HOST/run/orca-web-url.txt"
+READY_FILE="$HOST/run/sshd.ready"
+SSH_BIN="${CLAUDE_ORCA_SSH:-ssh}"
+SSH_CFG="$HOST/state/ssh/config"
+# ssh_host_alias() in scripts/launcher.sh, reproduced.
+SSH_ALIAS="claude-dev-$(project_name "$PROJECT")"
+DOCTOR_OUT="$LOG_DIR/mac-e2e-$STAMP.doctor.txt"
 
 c_running() {
     local s
@@ -424,30 +310,80 @@ c_loopback() {
     p="$(docker inspect -f '{{json .NetworkSettings.Ports}}' "$CNAME")"
     case "$p" in *127.0.0.1*) printf '%s\n' "$p" ;; *) echo "not bound to loopback: $p"; return 1 ;; esac
 }
-c_url_mode() {
-    [ -s "$URL_FILE" ] || { echo "no $URL_FILE"; return 1; }
-    local m
-    m="$(stat -f '%Lp' "$URL_FILE")"
-    [ "$m" = "600" ] || { echo "mode $m, want 600 (the fragment is a pairing code)"; return 1; }
+# run/port is the port the container publishes on loopback AND the port
+# sshd listens on inside (launcher.sh publishes -p 127.0.0.1:P:P).
+c_port_published() {
+    local hp
+    [ -n "$PORT" ] || { echo "no $HOST/run/port"; return 1; }
+    hp="$(docker inspect -f "{{(index (index .NetworkSettings.Ports \"$PORT/tcp\") 0).HostPort}}" "$CNAME" 2>&1)" \
+        || { echo "$hp"; return 1; }
+    [ "$hp" = "$PORT" ] || { echo "run/port is $PORT, docker publishes '$hp'"; return 1; }
+    printf 'port %s\n' "$PORT"
 }
-c_serves_orca() {
-    local url base body code
-    url="$(head -1 "$URL_FILE")"
-    base="${url%%#*}"
-    body="$LOG_DIR/mac-e2e-$STAMP.body.html"
-    code="$(curl -sSL -o "$body" -w '%{http_code}' --max-time 30 "$base")" || return 1
-    case "$code" in 2??|3??) ;; *) echo "GET $base -> $code"; return 1 ;; esac
-    grep -qi 'orca' "$body" || { echo "the page served is not Orca: $(head -c 120 "$body")"; return 1; }
-    printf 'GET %s -> %s\n' "$base" "$code"
+# run/sshd.ready is the handshake the container writes once sshd listens:
+# `port=N` and `host_key_sha256=SHA256:...`. The fingerprint has to be the
+# one in this folder's state/ssh, or the Mac would refuse the connection.
+c_sshd_ready() {
+    local p fp want
+    [ -s "$READY_FILE" ] || { echo "no $READY_FILE"; return 1; }
+    p="$(sed -n 's/^port=//p' "$READY_FILE" | head -1)"
+    [ "$p" = "$PORT" ] || { echo "sshd.ready says port '$p', run/port says '$PORT'"; return 1; }
+    fp="$(sed -n 's/^host_key_sha256=//p' "$READY_FILE" | head -1)"
+    want="$(ssh-keygen -lf "$HOST/state/ssh/host_ed25519.pub" 2>/dev/null | awk 'NR == 1 { print $2 }')"
+    [ -n "$want" ] && [ "$fp" = "$want" ] \
+        || { echo "host key: the container presents '${fp:-none}', the folder's is '${want:-unreadable}'"; return 1; }
+    printf 'port %s, host key %s\n' "$p" "$fp"
 }
-c_state_volume() { docker volume inspect "$CNAME-orca-state" >/dev/null; }
+# The login a pane does, minus the multiplexing: ControlPath=none makes
+# this connection do its own host key check instead of riding a master
+# that did it earlier. The config says StrictHostKeyChecking yes and
+# known_hosts is keyed by the alias, so a pass means the key was VERIFIED.
+c_ssh_pwd() {
+    local out
+    out="$("$SSH_BIN" -F "$SSH_CFG" -o ControlMaster=no -o ControlPath=none \
+        -o BatchMode=yes -o ConnectTimeout=15 "$SSH_ALIAS" pwd 2>&1 | tr -d '\r')" \
+        || { printf '%s\n' "$out" | tail -1; return 1; }
+    out="$(printf '%s\n' "$out" | tail -1)"
+    [ "$out" = "$GUEST_DIR" ] || { echo "ssh pwd printed '$out', want $GUEST_DIR"; return 1; }
+    printf '%s (host key verified)\n' "$out"
+}
+# ... and the verification is real: with no known_hosts entry the same
+# login must be REFUSED, not trusted on first use.
+c_ssh_refuses_unknown() {
+    local kh out
+    kh="$LOG_DIR/mac-e2e-$STAMP.empty_known_hosts"
+    : > "$kh"
+    if out="$("$SSH_BIN" -F "$SSH_CFG" -o ControlMaster=no -o ControlPath=none \
+            -o UserKnownHostsFile="$kh" -o BatchMode=yes -o ConnectTimeout=15 \
+            "$SSH_ALIAS" pwd 2>&1)"; then
+        echo "logged in with an empty known_hosts: $out"
+        return 1
+    fi
+    printf 'refused: %s\n' "$(printf '%s' "$out" | tail -1 | cut -c1-70)"
+}
+# One login through the config as it stands starts the folder's
+# ControlMaster, which is what the doctor's "ssh master" row looks for.
+c_ssh_master() {
+    "$SSH_BIN" -F "$SSH_CFG" -o BatchMode=yes -o ConnectTimeout=15 "$SSH_ALIAS" true || return 1
+    "$SSH_BIN" -F "$SSH_CFG" -O check "$SSH_ALIAS" 2>&1
+}
+# A doctor row by name, from the one doctor run in $DOCTOR_OUT. Only the
+# [ok] form passes: n/a (master not running) and FAIL both fail here.
+doctor_row_ok() {
+    local line
+    line="$(grep -E "^  \[ok +\] $1 " "$DOCTOR_OUT" | head -1)"
+    [ -n "$line" ] || {
+        echo "doctor has no ok row '$1': $(grep -E "^  \[[^]]*\] $1 " "$DOCTOR_OUT" | head -1 | cut -c1-80)"
+        return 1
+    }
+    printf '%s\n' "$line" | sed 's/^  \[[^]]*\] *//'
+}
 
 check "container: running"                       c_running
 check "container: image it runs"                 c_image
 check "container: port published on 127.0.0.1"   c_loopback
-check "handshake: run/orca-web-url.txt is 0600"  c_url_mode
-check "serve: the URL answers with Orca Web"     c_serves_orca
-check "state: Orca's user-data volume exists"    c_state_volume
+check "run/port is the published port"           c_port_published
+check "handshake: run/sshd.ready and its host key" c_sshd_ready
 
 # =========================================================================
 # 4. what the container looks like FROM THE INSIDE (steps 5, 6, and the
@@ -529,11 +465,7 @@ in_bd_anywhere() {
 }
 
 # "Its pin" is what the launcher asked the build for, which for bd and
-# dolt is setup.sh's literal and for Orca is the Mac app's version
-# (claude-orca-8uo.5), so wanting the literal failed a correct container
-# on 2026-09-19. The Orca half is also the only real-Mac guard on
-# claude-orca-jg1: a boot that reinstalls setup.sh's pin over the image's
-# build reads here as "orca(want <app> got <pin>)". Claude Code is the
+# dolt is setup.sh's literal. Claude Code is the
 # exception -- the home's native install at the LATEST release
 # (provision.d/15-claude-on-path), never an image pin -- so its want is
 # resolved live from downloads.claude.ai, and when that cannot be fetched
@@ -542,22 +474,18 @@ in_bd_anywhere() {
 # Claude Code either: the one-binary assertion below is how that reads
 # in a running container.
 in_versions() {
-    local want got bad="" orca_want="" claude_want=""
+    local want got bad="" claude_want=""
     claude_want="$(curl -fsSL --max-time 10 \
         https://downloads.claude.ai/claude-code-releases/latest 2>/dev/null \
         | tr -d '[:space:]')"
-    orca_want="$APP_VER"
-    [ -n "$orca_want" ] || orca_want="$(sed -n 's/^ORCA_VERSION="${ORCA_VERSION:-\(.*\)}"$/\1/p' "$REPO_ROOT/scripts/container/setup.sh")"
     for pair in \
         "bd:$(sed -n 's/^BD_VERSION="${BD_VERSION:-\(.*\)}"$/\1/p' "$REPO_ROOT/scripts/container/setup.sh")" \
-        "dolt:$(sed -n 's/^DOLT_VERSION="${DOLT_VERSION:-\(.*\)}"$/\1/p' "$REPO_ROOT/scripts/container/setup.sh")" \
-        "orca:$orca_want"
+        "dolt:$(sed -n 's/^DOLT_VERSION="${DOLT_VERSION:-\(.*\)}"$/\1/p' "$REPO_ROOT/scripts/container/setup.sh")"
     do
         want="${pair#*:}"
         case "${pair%%:*}" in
             bd)     got="$(inc bd version 2>/dev/null | sed -n 's/^bd version \([0-9][^ ]*\).*/\1/p' | head -1)" ;;
             dolt)   got="$(inc dolt version 2>/dev/null | sed -n 's/^dolt version \([0-9][^ ]*\).*/\1/p' | head -1)" ;;
-            orca)   got="$(inc cat /opt/orca/VERSION 2>/dev/null | tr -d '[:space:]')" ;;
         esac
         [ "$got" = "$want" ] || bad="$bad ${pair%%:*}(want $want got ${got:-none})"
     done
@@ -587,7 +515,7 @@ in_versions() {
         bad="$bad claude(not one native install: got '${cl_where:-none}' -> '${cl_target:-none}')"
     fi
     [ -z "$bad" ] || { echo "pins disagree:$bad"; return 1; }
-    printf 'claude/bd/dolt/orca all at their pins\n'
+    printf 'claude/bd/dolt all at their pins\n'
 }
 
 in_uid_maps() {
@@ -620,103 +548,20 @@ check "inside: writes map to the Mac user"                    in_uid_maps
 check "inside: the mount list"                                in_mounts
 
 # =========================================================================
-# 4b. the desktop client -- the Mac's own Orca attached to this container
+# 4a. the login -- the Mac's own ssh against the container's sshd
 # =========================================================================
-#
-# Only the folder that asked for it, and by now the folder has answered:
-# the `ui` key registration wrote is the authority, not 0b's guess at it.
-# A browser folder records every row SKIP, which row() does not count as a
-# failure, so the browser path stays whole and the exit status is unmoved.
-#
-# The app itself was launched and waited for back in 0b, because
-# CLAUDE_ORCA_OPEN=0 suppresses the launcher's own `open -a <app>` while
-# leaving its wait in place. So "no environment" here is a real finding,
-# not a side-effect of running headless.
 
-note "desktop: the Mac's own Orca as the client of this container"
+note "ssh: a real login with the folder's key, host key verified"
 
-if command -v jq >/dev/null 2>&1 && [ -f "$HOST/claude-orca.json" ]; then
-    UI="$(jq -r '.ui // "web"' "$HOST/claude-orca.json" 2>/dev/null || echo web)"
-fi
-[ "$UI" = "desktop" ] || UI="web"
-
-# The version the IMAGE actually carries, asked of the running container
-# rather than of the pin -- S4 builds the image at the app's version, so
-# the pin in setup.sh is the fallback, not the authority.
-IMG_ORCA_VER="$(inc cat /opt/orca/VERSION 2>/dev/null | tr -d '[:space:]')"
-if [ -z "$IMG_ORCA_VER" ]; then
-    IMG_ORCA_VER="$(sed -n 's/^ORCA_VERSION="${ORCA_VERSION:-\(.*\)}"$/\1/p' "$REPO_ROOT/scripts/container/setup.sh")"
-fi
-
-d_app_found() {
-    [ -n "$ORCA_APP" ] || {
-        echo "no Orca app in /Applications, ~/Applications or CLAUDE_ORCA_APP"; return 1; }
-    [ -n "$ORCA_CLI" ] || { echo "$ORCA_APP has no CLI and none is on PATH"; return 1; }
-    [ -n "$APP_VER" ] || { echo "$ORCA_APP has no CFBundleShortVersionString"; return 1; }
-    printf '%s %s, cli %s\n' "$ORCA_APP" "$APP_VER" "$ORCA_CLI"
-}
-
-# A hard refusal on Orca's side, not a nicety: evaluateRuntimeCompat()
-# blocks a protocol mismatch outright, which is why S4 builds the image at
-# the installed app's version.
-d_versions_equal() {
-    [ -n "$APP_VER" ] || { echo "the app's version is unknown"; return 1; }
-    [ -n "$IMG_ORCA_VER" ] || { echo "the image's ORCA_VERSION is unknown"; return 1; }
-    [ "$APP_VER" = "$IMG_ORCA_VER" ] \
-        || { echo "app $APP_VER vs image $IMG_ORCA_VER"; return 1; }
-    printf 'app and image both at Orca %s\n' "$APP_VER"
-}
-
-d_env_registered() {
-    local f="$HOST/run/orca-environment.json" id name
-    [ -s "$f" ] || { echo "no run/orca-environment.json -- nothing was registered"; return 1; }
-    id="$(jq -r '.id // .environment.id // .result.environment.id // empty' "$f" 2>/dev/null)"
-    [ -n "$id" ] || { echo "no id in run/orca-environment.json: $(head -c 100 "$f")"; return 1; }
-    # The launcher's own record of the name has to be the one every later
-    # row asks for, or those rows measure nothing.
-    name="$(jq -r '.name // empty' "$f" 2>/dev/null)"
-    [ "$name" = "$ENV_NAME" ] \
-        || { echo "the launcher registered '${name:-?}', this script expects '$ENV_NAME'"; return 1; }
-    printf '%s id %s\n' "$ENV_NAME" "$id"
-}
-
-# The pairing, end to end: the Mac's CLI asks the paired environment for
-# its repos and the container's own mount comes back.
-d_repo_remote() {
-    local out
-    [ -n "$ORCA_CLI" ] || { echo "no orca CLI to ask"; return 1; }
-    out="$("$ORCA_CLI" repo list --environment "$ENV_NAME" --json 2>&1)" \
-        || { d_oneline "$out"; return 1; }
-    printf '%s\n' "$out" >> "$RUN_LOG"
-    printf '%s' "$out" | jq -e --arg p "$GUEST_DIR" \
-        '[.result.repos[]?.path] | map(select(. == $p or startswith($p + "/"))) | length > 0' \
-        >/dev/null 2>&1 \
-        || { echo "$ENV_NAME does not list $GUEST_DIR: $(d_oneline "$out")"; return 1; }
-    printf '%s lists %s\n' "$ENV_NAME" "$GUEST_DIR"
-}
-
-# The §5 guard, and the one new risk of the desktop path: the app can also
-# open LOCAL workspaces, which run agents on the Mac with no sandbox. The
-# launcher never hands it one, and this row reads the app's own local repo
-# list back to say so. `repo list` has no --host flag: bare IS local.
-d_repo_local_clean() {
-    local out hit
-    [ -n "$ORCA_CLI" ] || { echo "no orca CLI to ask"; return 1; }
-    out="$("$ORCA_CLI" repo list --json 2>&1)" \
-        || { d_oneline "$out"; return 1; }
-    printf '%s\n' "$out" >> "$RUN_LOG"
-    hit="$(printf '%s' "$out" | jq -r --arg a "$PROJECT" --arg b "$GUEST_DIR" \
-        '[.result.repos[]?.path] | map(select(. == $a or . == $b)) | .[]' 2>/dev/null)"
-    [ -z "$hit" ] || { echo "the Mac's own Orca tracks this folder locally: $hit"; return 1; }
-    printf 'the local repo list does not hold this folder\n'
-}
-
-dcheck "desktop: orca app found"                            d_app_found
-dcheck "desktop: orca versions equal (app vs image)"        d_versions_equal
-dcheck "desktop: environment add ok"                        d_env_registered
-dcheck "desktop: repo list --environment lists the project" d_repo_remote
-dcheck "desktop: repo list (local) does not list it"        d_repo_local_clean
-
+check_detail "ssh: pwd prints the project path"              c_ssh_pwd
+check_detail "ssh: an unknown host key is refused"           c_ssh_refuses_unknown
+check_detail "ssh: the folder's ControlMaster comes up"      c_ssh_master
+# The doctor, once, after the master is up so "ssh master" can read ok.
+( cd "$PROJECT" && ./claude-dev --doctor ) > "$DOCTOR_OUT" 2>&1
+cat "$DOCTOR_OUT" >> "$RUN_LOG"
+check_detail "doctor: sshd row ok"                           doctor_row_ok "sshd"
+check_detail "doctor: ssh master row ok"                     doctor_row_ok "ssh master"
+check_detail "doctor: ssh key auth row ok"                   doctor_row_ok "ssh key auth"
 
 # =========================================================================
 # 5. the recreate -- the number a person feels every day
@@ -735,9 +580,52 @@ if [ -z "$EXISTING_FOLDER" ]; then
     else
         row FAIL "$RECREATE_SECS" "recreate: it came back up" "exit $rc -- see $RUN_LOG"
     fi
-    check "recreate: Orca answers again" c_serves_orca
+    PORT="$(cat "$HOST/run/port" 2>/dev/null || echo "")"
+    check_detail "recreate: sshd answers again, same host key"  c_sshd_ready
+    check_detail "recreate: ssh pwd prints the project path"    c_ssh_pwd
 else
     RECREATE_SECS="-"
+fi
+
+# =========================================================================
+# 5b. the update -- a folder from the Orca days loses its old state volume
+# =========================================================================
+#
+# LEGACY, on purpose: <container>-orca-state is the docker volume the old
+# Orca image mounted at ~/.config/orca. Nothing mounts it now, so
+# `./claude-dev --update` removes it (cmd_update_v3). A fresh folder never
+# has one, so the volume is planted here with `docker volume create` -- the
+# real thing an Orca-era folder carries -- and the update is the real update.
+
+if [ -z "$EXISTING_FOLDER" ]; then
+    note "update: ./claude-dev --update on a folder with an old Orca state volume"
+    UPDATE_OUT="$LOG_DIR/mac-e2e-$STAMP.update.txt"
+    up_planted() { docker volume inspect "$CNAME-orca-state" >/dev/null; }
+    up_volume_gone() {
+        if docker volume inspect "$CNAME-orca-state" >/dev/null 2>&1; then
+            echo "$CNAME-orca-state is still there after --update"
+            return 1
+        fi
+        grep -q 'removed the old Orca state volume' "$UPDATE_OUT" \
+            || { echo "--update did not say it removed the old Orca state volume"; return 1; }
+        printf 'gone, and --update said so\n'
+    }
+    docker volume create "$CNAME-orca-state" >/dev/null 2>&1
+    check "update: the old Orca state volume is planted" up_planted
+    t0="$(date +%s)"
+    ( cd "$PROJECT" && ./claude-dev --update ) > "$UPDATE_OUT" 2>&1
+    rc=$?
+    t1="$(date +%s)"
+    cat "$UPDATE_OUT" >> "$RUN_LOG"
+    if [ "$rc" -eq 0 ]; then
+        row ok "$((t1 - t0))" "update: ./claude-dev --update ran" ""
+    else
+        row FAIL "$((t1 - t0))" "update: ./claude-dev --update ran" "exit $rc -- see $UPDATE_OUT"
+    fi
+    check_detail "update: it removed the old Orca state volume"  up_volume_gone
+    PORT="$(cat "$HOST/run/port" 2>/dev/null || echo "")"
+    check_detail "update: sshd answers on the new container"     c_sshd_ready
+    check_detail "update: ssh pwd prints the project path"       c_ssh_pwd
 fi
 
 # =========================================================================
@@ -748,35 +636,24 @@ if [ "$KEEP" -eq 0 ] && [ -z "$EXISTING_FOLDER" ]; then
     note "teardown: the folder goes, and takes its container and volume with it"
     td_runs() { ( cd "$PROJECT" && ./claude-dev --teardown ); }
     td_gone() { [ ! -e "$HOST" ] || { echo "$(du -sh "$HOST" | cut -f1) left behind"; return 1; }; }
+    # LEGACY: plant an old Orca state volume again; a `docker rm` never
+    # touches a named volume, so teardown has to remove it by name.
+    docker volume create "$CNAME-orca-state" >/dev/null 2>&1
     td_volume_gone() {
         docker volume inspect "$CNAME-orca-state" >/dev/null 2>&1 \
-            && { echo "the Orca state volume survived teardown"; return 1; }
+            && { echo "the old Orca state volume survived teardown"; return 1; }
         return 0
     }
-    # The environment goes with the folder: a saved environment pointing at
-    # a container that no longer exists is state outliving its folder,
-    # which is the one thing teardown is for.
-    td_env_gone() {
-        local out
-        [ -n "$ORCA_CLI" ] || { echo "no orca CLI to ask"; return 1; }
-        out="$("$ORCA_CLI" environment list --json 2>&1)" \
-            || { d_oneline "$out"; return 1; }
-        printf '%s\n' "$out" >> "$RUN_LOG"
-        local n
-        for n in "$ENV_NAME" "$LEGACY_ENV_NAME"; do
-            if printf '%s' "$out" | jq -e --arg n "$n" \
-                '[.result.environments[]?.name] | index($n)' >/dev/null 2>&1; then
-                echo "$n is still registered after teardown"
-                return 1
-            fi
-        done
-        printf '%s is gone from the environment list\n' "$ENV_NAME"
+    td_container_gone() {
+        docker inspect "$CNAME" >/dev/null 2>&1 \
+            && { echo "$CNAME still exists after teardown"; return 1; }
+        return 0
     }
 
     check  "teardown: ./claude-dev --teardown"          td_runs
     check  "teardown: .claude-dev is gone"              td_gone
-    check  "teardown: the state volume is gone"         td_volume_gone
-    dcheck "teardown: the environment was removed"      td_env_gone
+    check  "teardown: the container is gone"            td_container_gone
+    check  "teardown: the old Orca state volume is gone" td_volume_gone
 fi
 
 # =========================================================================
