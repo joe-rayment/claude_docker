@@ -17,7 +17,7 @@ and names what changed. If everything behaves, it stays **green** (passes).
 
 - A **test case** is one check (one `@test "…"` block).
 - A **test file** (`tests/<name>.bats`) groups the cases for one script or feature.
-- The **suite** is all of them: 104 files, about 1,270 cases.
+- The **suite** is all of them: 105 files, 1,451 cases.
 
 ### What bats is
 
@@ -36,7 +36,7 @@ Two words you will see in the files:
   run. The catch: a stubbed test proves the script's logic, not that the
   real program behaves the same way.
 - **Fixture** — sample input kept on disk (`tests/fixtures/`), such as a
-  recorded Orca web page or a real opencode output stream.
+  recorded ssh or clipboard exchange or a real opencode output stream.
 
 ### How to run them
 
@@ -93,11 +93,14 @@ not ok 2 (b) mode=warn, contract but no PASS: warns on stderr, exits 0
 ### What the tests cannot tell you
 
 Every test here runs on Linux with stubs. None of them proves the real Mac
-path: a real Docker Desktop, a real container, a real browser. Those checks
-are run by hand:
+path: a real Docker Desktop, a real container, a real terminal window.
+Those checks are run by hand:
 
-- `tests/mac-e2e.sh` — on a Mac: a throwaway folder, a real container, a
-  real HTTP request to the URL Orca publishes.
+- `tests/mac-e2e.sh` — on a Mac: a throwaway folder, a real container, an
+  ssh login with the folder's own key and a verified host key, the doctor's
+  sshd / ssh master / ssh key auth rows, the `--update` migration, and a
+  real pane (`./claude-dev pane` on a pty) that must land in
+  `/workspace/<name>`.
 - `scripts/container/smoke.sh` — the image's own self-check.
 
 ### Who runs what
@@ -118,7 +121,7 @@ are run by hand:
 
 ## Part 2 — the map
 
-104 files, 1,267 cases: 89 files check behavior only, 11 mix behavior with
+105 files, 1,451 cases: 88 files check behavior only, 13 mix behavior with
 a few config checks, and 4 are config checks only. **Speed** is from
 `run-tests.sh`'s timing: `slow` files are skipped by the everyday run.
 
@@ -135,7 +138,9 @@ exists) and one case that re-ran two other test files from inside itself. Five f
 entirely: `rulebook`, `agent-report-relay`, `recon-routing-docs`, `v2-gone`,
 `gha-workflows-lint`. If you add a test, it should run something and check
 what happens; a test that greps prose goes red on harmless edits and
-catches no bugs.
+catches no bugs. In Oct 2026 the 24 files that tested Orca itself (its
+dispatcher and waiter, its web theme, its hooks and its state volume) went
+too, once Orca was removed from the project.
 
 | File | Tests | Speed | What it guards (what breaks if this goes red) | Kind | Non-behavior checks kept, and why |
 |---|---|---|---|---|---|
