@@ -153,10 +153,9 @@ BASE_IMAGE="docker.io/library/ubuntu:24.04"
 # for free.
 @test "a failed build with a local image already on this machine uses it instead of installing" {
     export CLAUDE_ORCA_TEST_BUILD_FAIL=1
-    # The daemon already has an image under this folder's ref (no app on
-    # this host, so the tag carries the Dockerfile's ORCA_VERSION).
-    ver="$(sed -n 's/^ARG ORCA_VERSION=\([^ ]*\).*$/\1/p' "$REPO_ROOT/Dockerfile" | head -1)"
-    printf '%s\n' "claude-orca:latest-orca$ver" > "$CONTAINER_STUB_STATE/image"
+    # The daemon already has an image under this folder's ref (the ref is
+    # the IMAGE_TAG file alone; the test template's is "latest").
+    printf '%s\n' "claude-orca:latest" > "$CONTAINER_STUB_STATE/image"
 
     mkdir -p "$PROJECT_DIR"
     primary="$(abspath "$PROJECT_DIR")"
@@ -233,9 +232,8 @@ weburl_timeout '$primary'"
     # a folder that once ran that way keeps the directory. It must not
     # move the answer either way.
     cache_full() {
-        mkdir -p "$primary/.claude-dev/toolchain/opt-Orca"
-        printf '#!/bin/sh\n' > "$primary/.claude-dev/toolchain/opt-Orca/orca-ide"
-        chmod +x "$primary/.claude-dev/toolchain/opt-Orca/orca-ide"
+        mkdir -p "$primary/.claude-dev/toolchain/usr-local"
+        printf '#!/bin/sh\n' > "$primary/.claude-dev/toolchain/usr-local/marker"
     }
     cache_empty() { rm -rf "$primary/.claude-dev/toolchain"; }
 
@@ -307,101 +305,62 @@ wait_for_sshd_ready '$quiet' 2>&1 >/dev/null"
     [[ "$output" == *"setup.log"* ]]
 }
 
-# --- desktop Orca, S4 (claude-orca-8uo.5) --------------------------------
+# --- the image carries no Orca (claude-orca-9bh.12) ------------------------
 #
-# The image and the Mac's Orca.app are one pair: Orca's protocol check is
-# a hard refusal on a mismatch, not a warning, so the version the image is
-# built at is the version of the app that will attach to it. The app is
-# therefore an INPUT to the build -- `--build-arg ORCA_VERSION` -- and the
-# version rides in the tag, so a folder whose app moved gets a different
-# ref and a build rather than the image it already had under that name.
-#
-# With no app to read (a Mac without Orca, and every Linux host) there is
-# no build arg at all: the Dockerfile's own `ARG ORCA_VERSION=` default is
-# the answer, and passing it explicitly would only be a second place for
-# that pin to be wrong.
+# The image used to be built at the Mac's Orca.app version and carry it in
+# its tag, because Orca refused a protocol mismatch. No Orca is installed in
+# the image any more, so the build takes no version argument and the tag is
+# exactly what the IMAGE_TAG file says -- no desktop app is read at all.
 
-# The pin as the template spells it, read rather than repeated: this file
-# must not become the third copy of the version number.
-template_orca_default() {
-    sed -n 's/^ARG ORCA_VERSION=\([^ ]*\).*$/\1/p' "$1/.claude-dev/template/Dockerfile" | head -1
-}
-
-@test "build passes --build-arg ORCA_VERSION from the installed app" {
-    # A version no default can be confused with, so the build arg can only
-    # have come from the bundle.
-    export CLAUDE_ORCA_APP="$(make_fake_orca_app "$BATS_TEST_TMPDIR/Applications/Orca9.app" 9.9.9)"
-
+# Guards:   the build passes no ORCA_VERSION build arg and tags the image with
+#           the IMAGE_TAG file's value alone -- no app is read at all
+# Fails if: the launcher goes looking for an installed app again and folds its
+#           version into the tag or into a --build-arg
+# Run:      bats -f 'build passes no ORCA_VERSION' tests/launcher-v3-build.bats
+@test "build passes no ORCA_VERSION build arg and tags the image with the IMAGE_TAG file alone" {
     mkdir -p "$PROJECT_DIR"
     primary="$(abspath "$PROJECT_DIR")"
     run make_project_v3 "$primary"
     [ "$status" -eq 0 ]
 
+    tag="$(cat "$primary/.claude-dev/template/IMAGE_TAG")"
+    [ -n "$tag" ]
     buildline="$(grep "^build " "$CONTAINER_STUB_LOG" | head -1)"
     [ -n "$buildline" ]
-    [[ "$buildline" == *"--build-arg ORCA_VERSION=9.9.9"* ]]
-    [[ "$buildline" == *"--tag claude-orca:latest-orca9.9.9"* ]]
+    [[ "$buildline" != *"ORCA_VERSION"* ]]
+    [[ "$buildline" == *"--tag claude-orca:$tag "* || "$buildline" == *"--tag claude-orca:$tag" ]]
+    [[ "$buildline" != *"-orca9.9.9"* ]]
 
-    # ...and the container runs the image that build produced, not the
-    # version-less ref: every reader goes through image_ref.
+    # ...and the container runs the image that build produced.
     runline="$(grep "^run " "$CONTAINER_STUB_LOG" | head -1)"
-    [[ "$runline" == *"claude-orca:latest-orca9.9.9"* ]]
+    [[ "$runline" == *"claude-orca:$tag"* ]]
+    [[ "$runline" != *"ORCA_VERSION"* ]]
 }
 
-@test "build uses the template default when no app is found" {
-    export CLAUDE_ORCA_APP="$(make_fake_orca_app "$BATS_TEST_TMPDIR/Applications/Orca9.app" 9.9.9)"
-
-    mkdir -p "$PROJECT_DIR"
-    primary="$(abspath "$PROJECT_DIR")"
-    run make_project_v3 "$primary"
-    [ "$status" -eq 0 ]
-
-    want="$(template_orca_default "$primary")"
-    [ -n "$want" ]
-    [ "$want" != "9.9.9" ]
-
-    # The same folder on a host with no Orca.app: no build arg at all,
-    # and the Dockerfile's own default is what both the tag and the image
-    # are at. (CLAUDE_ORCA_APP pointing nowhere is an answer, on any
-    # host.) ORCA_VERSION is the only build arg left, so the absence of
-    # the arg is again the whole assertion.
-    : > "$CONTAINER_STUB_LOG"
-    run bash -c "cd '$primary' \
-        && CLAUDE_ORCA_APP='$BATS_TEST_TMPDIR/no-such-Orca.app' ./claude-dev --update"
-    [ "$status" -eq 0 ]
-
-    buildline="$(grep "^build " "$CONTAINER_STUB_LOG" | head -1)"
-    [ -n "$buildline" ]
-    [[ "$buildline" != *"--build-arg ORCA_VERSION="* ]]
-    [[ "$buildline" == *"--tag claude-orca:latest-orca$want"* ]]
-}
-
-@test "the image tag changes with the Orca version" {
-    app="$BATS_TEST_TMPDIR/Applications/Orca9.app"
-    export CLAUDE_ORCA_APP="$(make_fake_orca_app "$app" 9.9.9)"
-
+# Guards:   a new IMAGE_TAG in the template is the one thing that makes --update
+#           ask for (and build) a different image ref
+# Fails if: the tag stops following the IMAGE_TAG file, so --update keeps the
+#           old image under the old ref
+# Run:      bats -f 'the image tag follows the IMAGE_TAG file' tests/launcher-v3-build.bats
+@test "the image tag follows the IMAGE_TAG file and nothing else" {
     mkdir -p "$PROJECT_DIR"
     primary="$(abspath "$PROJECT_DIR")"
     run make_project_v3 "$primary"
     [ "$status" -eq 0 ]
     first="$(grep "^build " "$CONTAINER_STUB_LOG" | head -1)"
-    [[ "$first" == *"--tag claude-orca:latest-orca9.9.9"* ]]
+    [[ "$first" == *"--tag claude-orca:latest"* ]]
 
-    # The user upgrades Orca.app. Nothing else about the folder changes --
-    # same IMAGE_TAG file, same template -- and the ref it asks the daemon
-    # for is a different one, which is what forces the rebuild.
-    make_fake_orca_app "$app" 9.9.10 >/dev/null
+    # The template moves to a new image tag; the Mac's apps do not matter.
+    printf 'ssh9\n' > "$TEMPLATE_SRC/IMAGE_TAG"
+    git -C "$TEMPLATE_SRC" -c user.email=test@example.com -c user.name=test \
+        commit --quiet -am "new image tag"
     : > "$CONTAINER_STUB_LOG"
-    run bash -c "cd '$primary' && STUB_UNAME_S=Darwin STUB_UNAME_M=arm64 ./claude-dev --update"
+    run bash -c "cd '$primary' && ./claude-dev --update"
     [ "$status" -eq 0 ]
 
     second="$(grep "^build " "$CONTAINER_STUB_LOG" | head -1)"
     [ -n "$second" ]
-    [[ "$second" == *"--build-arg ORCA_VERSION=9.9.10"* ]]
-    [[ "$second" == *"--tag claude-orca:latest-orca9.9.10"* ]]
-    [[ "$second" != *"latest-orca9.9.9"* ]]
-
-    # The tag file is still the base of the tag -- the version is folded
-    # in, it does not replace what IMAGE_TAG pins.
-    [ "$(cat "$primary/.claude-dev/template/IMAGE_TAG")" = "latest" ]
+    [[ "$second" == *"--tag claude-orca:ssh9"* ]]
+    [[ "$second" != *"claude-orca:latest"* ]]
+    [[ "$second" != *"ORCA_VERSION"* ]]
 }

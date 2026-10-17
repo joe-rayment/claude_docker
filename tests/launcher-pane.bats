@@ -500,8 +500,8 @@ healthy_folder() {
     run bash -c "cd '$primary' && ./claude-dev verify"
     [ "$status" -eq 0 ]
     [[ "$output" != *"web url"* ]]
-    # No orca-web-url.txt is needed either way, so a failing folder is no different.
-    rm -f "$primary/.claude-dev/run/sshd.ready" "$primary/.claude-dev/run/orca-web-url.txt"
+    # A failing folder (no sshd.ready) is no different: no web url is ever asked after.
+    rm -f "$primary/.claude-dev/run/sshd.ready"
     run bash -c "cd '$primary' && ./claude-dev --doctor"
     [ "$status" -eq 2 ]
     [[ "$output" != *"web url"* ]]

@@ -3,12 +3,13 @@
 # seed-project.sh -- the project seeding, out of the boot's critical path.
 #
 # It used to live inside the entrypoint, which is PID 1: every line of it
-# sat on the path that has to bring Orca up, and it ran before there was a
-# terminal to watch it in. Orca's own `scripts.setup` (from orca.yaml, run
-# in a terminal when a workspace is created) is the right home for it, so
-# the body moved into one script with two callers -- Orca's hook, and the
-# entrypoint as a floor, because a folder must never depend on a hook
-# having fired to have a tracker in it.
+# sat on the path that has to bring the folder up, and it ran before
+# there was a terminal to watch it in. It is one script with one caller now,
+# provision.d/50-seed-project, which runs on every start so a folder never
+# depends on a hook having fired to have a tracker in it. The template no
+# longer ships or runs Orca, so it seeds no orca.yaml and adds no Orca
+# ignore lines; a file or line of that kind that a project already has is
+# the project's and stays exactly as it is.
 #
 # Assertions are `[ ]` and functions, never a bare `[[ ]]` (run-tests.sh).
 
@@ -25,7 +26,7 @@ fresh_project() {
     printf '%s\n' "$d"
 }
 
-@test "it seeds the gitignore block, attachments and orca.yaml, and says what it did" {
+@test "it seeds the gitignore block and attachments, no orca.yaml, and says what it did" {
     local d
     d="$(fresh_project)"
     run seed "$d"
@@ -35,40 +36,38 @@ fresh_project() {
     grep -qxF '.claude-dev/' "$d/.gitignore"
     grep -qxF 'attachments/' "$d/.gitignore"
     [ -d "$d/attachments" ]
-    [ -f "$d/orca.yaml" ]
-    # claude-orca-8jb: a scripts.setup key here makes Orca open a second,
-    # redundant terminal on workspace creation -- provision.d/50-seed-project
-    # already runs this same seeding invisibly. The seeded file is comments
-    # only now.
-    run grep -c 'scripts:' "$d/orca.yaml"
-    [ "$output" = "0" ]
-    run grep -c 'setup:' "$d/orca.yaml"
-    [ "$output" = "0" ]
-    run grep -c 'seed-project.sh' "$d/orca.yaml"
-    [ "$output" = "0" ]
+    # This template no longer ships or runs Orca: nothing seeds its file.
+    [ ! -e "$d/orca.yaml" ]
+    case "$output" in
+        *orca.yaml*) echo "the log still talks about orca.yaml: $output"; return 1 ;;
+    esac
 }
 
-# claude-orca-e8m: the local-only artefacts Orca and the tooling leave in a
-# folder -- Orca's own state and per-project config, graphify output, Python
-# caches -- must be in the seeded .gitignore, so a seeded folder can stage
-# everything or push to GitHub without shipping any of them.
-@test "the seeded .gitignore carries .orca-worktrees/, .orca/, orca.yaml, graphify-out/ and __pycache__/" {
+# claude-orca-e8m: the local-only artefacts the tooling leaves in a folder
+# (graphify output, Python caches) must be in the seeded .gitignore, so a
+# seeded folder can stage everything or push to GitHub without shipping
+# them. The Orca desktop app's files (Orca.app/, .orca/, .orca-worktrees/,
+# orca.yaml) are NOT added any more: the template no longer ships Orca.
+@test "the seeded .gitignore carries graphify-out/ and __pycache__/ and adds no Orca lines" {
     local d
     d="$(fresh_project)"
     run seed "$d"
     [ "$status" -eq 0 ]
-    for pattern in '.orca-worktrees/' '.orca/' 'orca.yaml' 'graphify-out/' '__pycache__/'; do
+    for pattern in 'graphify-out/' '__pycache__/'; do
         grep -qxF "$pattern" "$d/.gitignore"
+    done
+    for pattern in 'Orca.app/' '.orca/' '.orca-worktrees/' 'orca.yaml'; do
+        if grep -qxF "$pattern" "$d/.gitignore"; then
+            echo "the seeded .gitignore still adds: $pattern"
+            return 1
+        fi
     done
 
     # And they work: in a git-inited seeded folder that has been through
-    # the seed commit (55-git-init), none of them shows up as untracked.
-    mkdir -p "$d/.orca" "$d/.orca-worktrees" "$d/graphify-out" "$d/__pycache__"
-    : > "$d/.orca/x"
-    : > "$d/.orca-worktrees/x"
+    # the seed commit (55-git-init), neither of them shows up as untracked.
+    mkdir -p "$d/graphify-out" "$d/__pycache__"
     : > "$d/graphify-out/x"
     : > "$d/__pycache__/x"
-    printf 'scripts: {}\n' > "$d/orca.yaml"
     git -C "$d" add .gitignore
     git -C "$d" -c user.name=t -c user.email=t@example.com -c commit.gpgsign=false \
         commit -q --no-verify -m seed -- .gitignore
@@ -77,9 +76,27 @@ fresh_project() {
     [ -z "$output" ]
 }
 
-# claude-orca-8jb: the exact content the template used to seed, byte for
-# byte, kept here so the migration case below can reproduce it. This is
-# NOT the current seeded content -- it is history, for the safety check.
+@test "a .gitignore that already has Orca lines keeps every one of them, byte for byte" {
+    local d
+    d="$(fresh_project)"
+    # The user's own file, from before the template dropped Orca: seeding
+    # appends what is missing and never strips a line.
+    printf 'node_modules/\n.orca/\n.orca-worktrees/\norca.yaml\nOrca.app/\n' > "$d/.gitignore"
+    seed "$d" >/dev/null
+    for pattern in 'node_modules/' '.orca/' '.orca-worktrees/' 'orca.yaml' 'Orca.app/'; do
+        grep -qxF "$pattern" "$d/.gitignore"
+    done
+    # Exactly once each: seeding added none and duplicated none.
+    run grep -cxF '.orca/' "$d/.gitignore"
+    [ "$output" = "1" ]
+    # The user's lines are still the file's first lines, in order.
+    run head -n 5 "$d/.gitignore"
+    [ "$output" = "$(printf 'node_modules/\n.orca/\n.orca-worktrees/\norca.yaml\nOrca.app/')" ]
+}
+
+# What an earlier template seeded into orca.yaml, byte for byte. It is a
+# user's file now: seeding neither rewrites nor deletes it, which the cases
+# below pin.
 PREVIOUSLY_SEEDED_ORCA_YAML='# Orca reads this file from the repo root. `scripts.setup` runs in a
 # terminal when a workspace is created, so the work below is watchable and
 # is not on the critical path of the container'"'"'s boot.
@@ -90,31 +107,28 @@ scripts:
   setup: bash /opt/claude-orca/scripts/container/seed-project.sh 2>/dev/null || bash .claude-dev/template/scripts/container/seed-project.sh
 '
 
-@test "MIGRATION: an orca.yaml byte-identical to the previously-seeded content is replaced" {
+@test "an orca.yaml an earlier template seeded is left byte-identical, and the log never mentions it" {
     local d
     d="$(fresh_project)"
     printf '%s' "$PREVIOUSLY_SEEDED_ORCA_YAML" > "$d/orca.yaml"
-    seed "$d" >/dev/null
-    run grep -c 'scripts:' "$d/orca.yaml"
-    [ "$output" = "0" ]
-    run grep -c 'setup:' "$d/orca.yaml"
-    [ "$output" = "0" ]
+    cp "$d/orca.yaml" "$d/orca.yaml.before"
+    run seed "$d"
+    [ "$status" -eq 0 ]
+    cmp -s "$d/orca.yaml" "$d/orca.yaml.before"
+    case "$output" in
+        *orca.yaml*) echo "the log talks about orca.yaml: $output"; return 1 ;;
+    esac
 }
 
-@test "NEVER-CLOBBER, harder: previously-seeded content plus one extra line is left byte-identical" {
-    local d before after
+@test "the same file with one extra line is left byte-identical too" {
+    local d
     d="$(fresh_project)"
     printf '%s' "$PREVIOUSLY_SEEDED_ORCA_YAML" > "$d/orca.yaml"
     printf '  extra: true\n' >> "$d/orca.yaml"
-    before="$(cat "$d/orca.yaml")"
+    cp "$d/orca.yaml" "$d/orca.yaml.before"
     run seed "$d"
     [ "$status" -eq 0 ]
-    after="$(cat "$d/orca.yaml")"
-    [ "$before" = "$after" ]
-    case "$output" in
-        *"left alone"*) ;;
-        *) echo "expected it to log that the file was left alone: $output"; return 1 ;;
-    esac
+    cmp -s "$d/orca.yaml" "$d/orca.yaml.before"
 }
 
 @test "running it twice changes nothing the second time" {
@@ -131,10 +145,9 @@ scripts:
     local d
     d="$(fresh_project)"
     printf 'scripts:\n  setup: make bootstrap\n' > "$d/orca.yaml"
+    cp "$d/orca.yaml" "$d/orca.yaml.before"
     seed "$d" >/dev/null
-    grep -qF 'make bootstrap' "$d/orca.yaml"
-    run grep -c 'seed-project.sh' "$d/orca.yaml"
-    [ "$output" = "0" ]
+    cmp -s "$d/orca.yaml" "$d/orca.yaml.before"
 }
 
 @test "a beads snapshot is restored, and an existing issues.jsonl is left alone" {
@@ -178,7 +191,10 @@ scripts:
     mkdir -p "$d/.claude-dev" "$d/deep/deeper"
     run env -u PROJECT_DIR -u CLAUDE_ORCA_ROOT bash -c "cd '$d/deep/deeper' && bash '$SEED'"
     [ "$status" -eq 0 ]
-    [ -f "$d/orca.yaml" ]
+    # It found the folder (not the cwd): the seeded block landed in the
+    # project's own .gitignore, two levels above where it ran.
+    grep -qxF 'attachments/' "$d/.gitignore"
+    [ ! -e "$d/deep/deeper/.gitignore" ]
 }
 
 # Re-registered by claude-orca-88v (supersedes the seed-project contract
@@ -186,7 +202,7 @@ scripts:
 # intent is verbatim -- the entrypoint calls it, and it can never take PID
 # 1 down -- and only the structure it asserts has changed. seed-project.sh
 # is provision.d/50-seed-project now, reached through provision-run.sh
-# after Orca is serving, and "never dies when it fails" is a stronger
+# after the container is up, and "never dies when it fails" is a stronger
 # claim there than it was here: the runner records every step's exit code
 # and exits 0 regardless, so the failure cannot propagate at all.
 @test "the entrypoint calls it, and never dies when it fails" {
@@ -232,15 +248,14 @@ scripts:
     grep -qF 'kept' "$d/.beads/issues.jsonl"
 }
 
-@test "an orca.yaml that is a SYMLINK is never followed or written through" {
+@test "an orca.yaml that is a SYMLINK is left alone: still a link, its target unchanged" {
     local d outside
     d="$(fresh_project)"
+    # The target holds the content an earlier template seeded. Seeding no
+    # longer touches orca.yaml at all, so a link out of the folder is never
+    # followed or written through (claude-orca-bbd kept this as a standing
+    # check: this folder's tooling writes inside this folder only).
     outside="$BATS_TEST_TMPDIR/outside-target.yaml"
-    # The target holds exactly the content the migration replaces, so the
-    # only thing standing between it and a rewrite is the symlink guard
-    # (claude-orca-bbd, from claude-orca-8jb's verifier probe 7). This
-    # folder's tooling writes inside this folder, never through a link
-    # out of it.
     printf '%s' "$PREVIOUSLY_SEEDED_ORCA_YAML" > "$outside"
     cp "$outside" "$outside.before"
     ln -s "$outside" "$d/orca.yaml"
@@ -249,8 +264,6 @@ scripts:
 
     [ -L "$d/orca.yaml" ]
     # cmp, not a string compare: "$(cat ...)" strips the trailing newline
-    # the fixture carries, so a string compare fails on an UNCHANGED file
-    # and would have passed on a rewritten one that happened to differ
-    # only by that byte. Compare the bytes.
+    # the fixture carries, so compare the bytes.
     cmp -s "$outside" "$outside.before"
 }

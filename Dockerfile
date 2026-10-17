@@ -1,10 +1,10 @@
-# claude_orca v3 -- the Linux side of "Orca in a VM the project folder owns".
+# claude_orca v3 -- the Linux side of "a VM the project folder owns".
 #
-# One image per project runs one Orca in serve mode, headless, with the
-# project bind-mounted at the same absolute path it has on the Mac and
-# /home/agent bind-mounted from <project>/.claude-dev/home. The VM
-# boundary IS the sandbox: there is no Seatbelt profile and no srt here.
-# See .claude/plans/container-v3.md S3-S4.
+# One image per project runs one sshd (the way in for the Mac's terminal
+# panes), headless, with the project bind-mounted at /workspace/<name> and
+# /home/agent bind-mounted from <project>/.claude-dev/home. The VM boundary
+# IS the sandbox: there is no Seatbelt profile and no srt here.
+# See .claude/plans/container-v3.md S3-S4 and .claude/plans/ghostty.md.
 #
 # The install logic lives in scripts/container/setup.sh so it can be run
 # and verified natively (scripts/container/verify-rootfs.sh runs it inside
@@ -22,18 +22,13 @@ ENV DEBIAN_FRONTEND=noninteractive \
     DISABLE_AUTOUPDATER=1 \
     DISABLE_AUTO_MIGRATE_TO_NATIVE=1
 
-# The one pin the build takes as an argument (image.yml passes neither
-# today, so this default is what ships); setup.sh reads it as env.
-ARG ORCA_VERSION=1.4.197
-
-# The apt half (setup.sh's IMAGE_PHASES: base, node, gh, Orca's runtime
-# libraries, the agent user), in one layer that is cached until setup.sh
-# itself changes -- the repo copy below must NOT invalidate it.
+# The apt half (setup.sh's IMAGE_PHASES: base, node, gh, the agent user),
+# in one layer that is cached until setup.sh itself changes -- the repo copy
+# below must NOT invalidate it.
 COPY scripts/container/setup.sh /opt/claude-orca-setup.sh
-RUN ORCA_VERSION=$ORCA_VERSION /opt/claude-orca-setup.sh --image
+RUN /opt/claude-orca-setup.sh --image
 
-# ... and the payload: Orca, opencode, bd, dolt, helix and bats,
-# ~1.3 GB of pinned tools. Claude Code is the exception: it is installed
+# ... and the payload: opencode, bd, dolt, helix and bats, pinned tools. Claude Code is the exception: it is installed
 # per folder by provision.d/15-claude-on-path, never baked here.
 #
 # This was briefly NOT baked -- the entrypoint installed it on a folder's
@@ -49,9 +44,7 @@ RUN ORCA_VERSION=$ORCA_VERSION /opt/claude-orca-setup.sh --image
 # layer and the ones below it rather than all 1.3 GB. Each phase's code
 # and pin live in their own file (scripts/container/phases/), copied in
 # right before the RUN that uses it -- copying all of setup.sh up front
-# meant any edit to it rebuilt every layer here. The ARG above is in scope
-# for every RUN in this stage, which is how setup.sh sees the pin the
-# build takes as an argument.
+# meant any edit to it rebuilt every layer here.
 COPY scripts/container/phases/bats.sh /opt/claude-orca-phases/bats.sh
 RUN /opt/claude-orca-setup.sh --phase bats
 COPY scripts/container/phases/dolt.sh /opt/claude-orca-phases/dolt.sh
@@ -60,12 +53,6 @@ COPY scripts/container/phases/helix.sh /opt/claude-orca-phases/helix.sh
 RUN /opt/claude-orca-setup.sh --phase helix
 COPY scripts/container/phases/bd.sh /opt/claude-orca-phases/bd.sh
 RUN /opt/claude-orca-setup.sh --phase bd
-# phase_orca seeds the default web theme into app.asar in the same layer
-# that unpacks it; a later layer rewriting the archive carried a second
-# ~113 MB copy (.claude/plans/recovery.md, `docker history`).
-COPY scripts/container/patch-orca-web-theme.py /opt/patch-orca-web-theme.py
-COPY scripts/container/phases/orca.sh /opt/claude-orca-phases/orca.sh
-RUN /opt/claude-orca-setup.sh --phase orca
 COPY scripts/container/phases/opencode.sh /opt/claude-orca-phases/opencode.sh
 RUN /opt/claude-orca-setup.sh --phase opencode
 
@@ -78,11 +65,9 @@ COPY --chown=agent:agent . /opt/claude-orca
 RUN /opt/claude-orca/scripts/container/setup.sh --phase template
 
 ENV HOME=/home/agent \
-    ORCA_BIN=/opt/orca/orca-ide \
-    ORCA_CLI=/opt/orca/resources/bin/orca-ide \
-    ORCA_PORT=6768 \
     PATH=/home/agent/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
 
-EXPOSE 6768
+# sshd listens on CLAUDE_ORCA_SSHD_PORT (the launcher sets it; 2222 when unset).
+EXPOSE 2222
 WORKDIR /home/agent
 ENTRYPOINT ["/usr/bin/tini", "--", "/opt/claude-orca/scripts/container/entrypoint.sh"]

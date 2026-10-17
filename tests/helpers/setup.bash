@@ -86,10 +86,6 @@ write_stub_brew() {
     cat > "$1" <<'STUB'
 #!/usr/bin/env bash
 echo "brew $*" >> "$STUB_LOG"
-if [ "$1" = "list" ] && [ "$2" = "--cask" ] && [ "$3" = "orca" ]; then
-    [ "${STUB_ORCA_INSTALLED:-}" = "1" ] && exit 0
-    exit 1
-fi
 # The bootstrap's gh install, brew branch: stand in for the formula by
 # putting the saved gh stub back on PATH.
 if [ "$1" = "install" ] && [ "$2" = "gh" ]; then
@@ -570,18 +566,16 @@ case "$cmd" in
             echo "docker: Error response from daemon: pull access denied" >&2
             exit 1
         fi
-        name=""; port=""; orca_port=""; proj=""; hostproj=""; prev=""
+        name=""; port=""; proj=""; hostproj=""; prev=""
         for a in "$@"; do
             case "$prev" in
                 --name) name="$a" ;;
                 -p|--publish)
-                    # The folder's port is the PUBLISHED one: ORCA_PORT is
-                    # port+1 now (sshd has the folder port), so it no longer
-                    # says which port run/port and the web URL should carry.
+                    # The folder's port is the PUBLISHED one (sshd has it):
+                    # it is what run/port and sshd.ready should carry.
                     port="${a%:*}"; port="${port##*:}" ;;
                 -e|--env)
                     case "$a" in
-                        ORCA_PORT=*)   orca_port="${a#ORCA_PORT=}" ;;
                         PROJECT_DIR=*) proj="${a#PROJECT_DIR=}" ;;
                         CLAUDE_ORCA_HOST_PROJECT_DIR=*)
                             hostproj="${a#CLAUDE_ORCA_HOST_PROJECT_DIR=}" ;;
@@ -589,7 +583,6 @@ case "$cmd" in
             esac
             prev="$a"
         done
-        [ -n "$port" ] || port="$orca_port"
         # PROJECT_DIR is the path INSIDE the container (/workspace/<name>),
         # which does not exist out here. What the entrypoint writes to it
         # lands in the bind mount, and the bind mount is the host folder --
@@ -678,14 +671,10 @@ case "$cmd" in
             done
         } > "$state/containers/$name.meta"
         # Stands in for the entrypoint (scripts/container/entrypoint.sh):
-        # Orca comes up and publishes its pairing URL and bound port.
-        # CLAUDE_ORCA_TEST_NO_URL: the container starts but never publishes
-        # a URL -- what a first start looks like while setup.sh is still
-        # installing the toolchain.
-        if [ -n "$proj" ] && [ -z "${CLAUDE_ORCA_TEST_NO_URL:-}" ]; then
+        # it mirrors the published port to run/port. (No pairing URL file:
+        # nothing publishes one now.)
+        if [ -n "$proj" ]; then
             mkdir -p "$proj/.claude-dev/run"
-            printf 'http://127.0.0.1:%s/web-index.html#pairing=stub\n' "$port" \
-                > "$proj/.claude-dev/run/orca-web-url.txt"
             printf '%s\n' "$port" > "$proj/.claude-dev/run/port"
         fi
         # And sshd-lib: run/sshd.ready once sshd listens, with the host key
@@ -834,22 +823,12 @@ STUB
     chmod +x "$1"
 }
 
-# Records what macOS was asked to open: a URL for the default browser, or
-# `-a <bundle>` for an application (S3, claude-orca-8uo.4). The whole argv,
-# so the one-argument URL case still logs exactly the URL. Also stands in
-# for the app process itself actually coming up: any `-a <bundle>` launch
-# flips the orca stub's own "is the app running" answer to true, the way a
-# real `open -a` starting the process would (claude-orca-tgr) -- guarded
-# on $ORCA_STUB_STATE existing at all, so a suite that never touches the
-# orca stub writes one unread file and nothing else.
+# Records what macOS was asked to open (the whole argv): the launcher opens
+# nothing on the Mac itself, so cases assert $OPEN_STUB_LOG stays empty.
 write_stub_open() {
     cat > "$1" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "${OPEN_STUB_LOG:-/dev/null}"
-if [ "${1:-}" = "-a" ] && [ -n "${ORCA_STUB_STATE:-}" ]; then
-    mkdir -p "$ORCA_STUB_STATE"
-    printf 'true\n' > "$ORCA_STUB_STATE/app-running"
-fi
 exit "${STUB_OPEN_EXIT:-0}"
 STUB
     chmod +x "$1"
@@ -884,9 +863,9 @@ STUB
     chmod +x "$1"
 }
 
-# V1 (claude-orca-qt9.1): the Orca DMG download. Only a download (`-o
-# <file>`) is faked -- every other curl call is handed to the real binary
-# so suites that probe reachability keep their unstubbed behaviour.
+# Only a download (`-o <file>`) is faked -- every other curl call is handed
+# to the real binary so suites that probe reachability keep their unstubbed
+# behaviour. The one download the bootstrap makes is the no-brew gh install.
 write_stub_curl() {
     cat > "$1" <<'STUB'
 #!/usr/bin/env bash
@@ -915,48 +894,20 @@ JSON
         ;;
 esac
 
-printf 'FAKE-DMG %s\n' "${STUB_DMG_BODY:-orca}" > "$out"
+printf 'FAKE-DOWNLOAD\n' > "$out"
 exit "${STUB_CURL_EXIT:-0}"
 STUB
     chmod +x "$1"
 }
 
-# V1: `hdiutil attach -nobrowse -readonly -mountpoint <mnt> <dmg>` fakes a
-# mounted Orca.app (Info.plist carrying $STUB_ORCA_DMG_VERSION); `detach`
-# unmounts it. macOS-only tool, so there is nothing to fall back to.
+# A canary: nothing in the bootstrap or launcher mounts a disk image any
+# more, so this only records the call. Cases assert "hdiutil" never lands in
+# $STUB_LOG -- without the stub a Mac would run the real one and the
+# assertion could never fail.
 write_stub_hdiutil() {
     cat > "$1" <<'STUB'
 #!/usr/bin/env bash
 echo "hdiutil $*" >> "$STUB_LOG"
-
-mnt=""
-prev=""
-for arg in "$@"; do
-    [ "$prev" = "-mountpoint" ] && mnt="$arg"
-    prev="$arg"
-done
-
-case "$1" in
-    attach)
-        [ -n "$mnt" ] || exit 1
-        [ "${STUB_HDIUTIL_EXIT:-0}" = "0" ] || exit "$STUB_HDIUTIL_EXIT"
-        mkdir -p "$mnt/Orca.app/Contents/MacOS"
-        printf 'fake orca binary\n' > "$mnt/Orca.app/Contents/MacOS/Orca"
-        chmod +x "$mnt/Orca.app/Contents/MacOS/Orca"
-        cat > "$mnt/Orca.app/Contents/Info.plist" <<PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<plist version="1.0">
-<dict>
-	<key>CFBundleShortVersionString</key>
-	<string>${STUB_ORCA_DMG_VERSION:-1.4.197}</string>
-</dict>
-</plist>
-PLIST
-        ;;
-    detach)
-        [ -d "$2" ] && rm -rf "$2"
-        ;;
-esac
 exit 0
 STUB
     chmod +x "$1"
@@ -1159,243 +1110,6 @@ STUB
     chmod +x "$1"
 }
 
-# S2 (claude-orca-8uo.3): `defaults read <plist> <key>` -- enough of the
-# real macOS tool to read CFBundleShortVersionString out of the Info.plist
-# of the fake Orca.app below, and nothing else. The real one takes the
-# path with or without the .plist extension, so this takes both.
-write_stub_defaults() {
-    cat > "$1" <<'STUB'
-#!/usr/bin/env bash
-[ "${1:-}" = "read" ] || exit 1
-plist="${2:-}"
-key="${3:-}"
-[ -f "$plist" ] || plist="$plist.plist"
-[ -f "$plist" ] || { echo "Domain ${2:-} does not exist" >&2; exit 1; }
-v="$(grep -A1 "<key>$key</key>" "$plist" \
-    | sed -n 's|.*<string>\(.*\)</string>.*|\1|p' | head -1)"
-[ -n "$v" ] || { echo "The domain/default pair of (${2:-}, $key) does not exist" >&2; exit 1; }
-printf '%s\n' "$v"
-STUB
-    chmod +x "$1"
-}
-
-# An Orca.app bundle with the two files the launcher reads: the CLI under
-# Contents/Resources/bin and the Info.plist `defaults` is asked for.
-# Prints the bundle path. $1 is the bundle, $2 the version string.
-make_fake_orca_app() {
-    local app="${1:-$BATS_TEST_TMPDIR/Applications/Orca.app}" version="${2:-1.4.197}"
-    mkdir -p "$app/Contents/Resources/bin"
-    printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$app/Contents/Resources/bin/orca"
-    chmod +x "$app/Contents/Resources/bin/orca"
-    cat > "$app/Contents/Info.plist" <<PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<plist version="1.0">
-<dict>
-	<key>CFBundleName</key>
-	<string>Orca</string>
-	<key>CFBundleShortVersionString</key>
-	<string>$version</string>
-</dict>
-</plist>
-PLIST
-    printf '%s\n' "$app"
-}
-
-# S3 (claude-orca-8uo.4): the Orca CLI the desktop hand-off drives, at
-# the path orca_cli() resolves -- the app bundle's own
-# Contents/Resources/bin/orca. It logs every invocation's argv as one line
-# to $ORCA_STUB_LOG and keeps its world (how many times it has been asked
-# for status, which environments the app has saved, which repos the Mac's
-# own Orca tracks locally) in $ORCA_STUB_STATE and a handful of env vars,
-# so a test puts it into any state without a fixture file.
-#
-# The one behaviour that matters and is easy to get wrong: `status --json`
-# EXITS 0 whether the runtime is reachable or not (verified against
-# 1.4.197, bead claude-orca-8uo.1), so the boolean in the JSON is the only
-# signal there is. Same for a refused `environment add`: ok:false, exit 0.
-write_stub_orca() {
-    mkdir -p "$(dirname "$1")"
-    cat > "$1" <<'STUB'
-#!/usr/bin/env bash
-printf '%s\n' "$*" >> "${ORCA_STUB_LOG:-/dev/null}"
-printf '%s\n' "${ORCA_USER_DATA_PATH:-}" >> "${ORCA_STUB_ENVPATH_LOG:-/dev/null}"
-state="${ORCA_STUB_STATE:-${TMPDIR:-/tmp}/orca-stub}"
-mkdir -p "$state"
-envs="$state/environments"
-[ -f "$envs" ] || : > "$envs"
-
-# The value after a flag in argv, or nothing.
-arg_after() {
-    local want="$1" prev="" a
-    shift
-    for a in "$@"; do
-        if [ "$prev" = "$want" ]; then printf '%s\n' "$a"; return 0; fi
-        prev="$a"
-    done
-    return 1
-}
-
-case "$1" in
-    status)
-        n=0
-        [ -f "$state/status-calls" ] && n="$(cat "$state/status-calls")"
-        n=$((n + 1))
-        printf '%s\n' "$n" > "$state/status-calls"
-        reachable=true
-        [ "$n" -le "${ORCA_STUB_REACHABLE_AFTER:-0}" ] && reachable=false
-        [ "${ORCA_STUB_UNREACHABLE:-0}" = "1" ] && reachable=false
-        # .result.app.running is a SEPARATE signal from runtime.reachable
-        # (claude-orca-tgr): whether the desktop PROCESS is up at all.
-        # ORCA_STUB_APP_RUNNING sets the initial answer (false by
-        # default -- the ordinary "not launched yet" case); the file lets
-        # the open/osascript stubs flip it as the run actually happens.
-        running="${ORCA_STUB_APP_RUNNING:-false}"
-        [ -f "$state/app-running" ] && running="$(cat "$state/app-running")"
-        # .result.app.pid: the running app's own process id, orca_user_data_dir()'s
-        # own way into lsof discovery (claude-orca-tgr). A fixed default is
-        # fine -- nothing here forks a real Orca process for this pid to
-        # name -- a test that needs to watch a REAL backgrounded osascript
-        # instead pins $! itself.
-        printf '{"ok":true,"result":{"runtime":{"reachable":%s},"app":{"running":%s,"pid":%s}}}\n' \
-            "$reachable" "$running" "${ORCA_STUB_APP_PID:-4242}"
-        exit 0 ;;
-    environment)
-        sub="${2:-}"; shift 2 2>/dev/null || shift $#
-        case "$sub" in
-            add)
-                name="$(arg_after --name "$@")" || name=""
-                code="$(arg_after --pairing-code "$@")" || code=""
-                if [ "${ORCA_STUB_ADD_FAIL:-0}" = "1" ]; then
-                    printf '{"ok":false,"error":"the pairing offer was refused"}\n'
-                    exit 0
-                fi
-                if grep -qxF "$name" "$envs"; then
-                    printf '{"ok":false,"error":"A server named \"%s\" already exists."}\n' "$name"
-                    exit 0
-                fi
-                printf '%s\n' "$name" >> "$envs"
-                printf '%s\n' "$code" > "$state/pairing-code"
-                printf '{"ok":true,"result":{"environment":{"id":"%s","name":"%s"}}}\n' \
-                    "${ORCA_STUB_ENV_ID:-68b6f2e5-1111-2222-3333-444455556666}" "$name"
-                exit 0 ;;
-            rm)
-                name="$(arg_after --environment "$@")" || name=""
-                if grep -qxF "$name" "$envs"; then
-                    grep -vxF "$name" "$envs" > "$envs.t" || :
-                    mv "$envs.t" "$envs"
-                    printf '{"ok":true,"result":{"removed":{"name":"%s"}}}\n' "$name"
-                    exit 0
-                fi
-                printf '{"ok":false,"error":"No server named \"%s\" is saved."}\n' "$name"
-                exit 0 ;;
-            list)
-                out=""; sep=""
-                while IFS= read -r nm; do
-                    [ -n "$nm" ] || continue
-                    out="$out$sep{\"name\":\"$nm\"}"; sep=","
-                done < "$envs"
-                printf '{"ok":true,"result":{"environments":[%s]}}\n' "$out"
-                exit 0 ;;
-        esac
-        exit 0 ;;
-    repo)
-        # `repo list --json` with NO --environment is the MAC's own list --
-        # the local workspaces the desktop app would run outside any
-        # container. `repo list` has no --host flag (1.4.197). When
-        # $ORCA_STUB_DATA_DIR/orca-data.json exists this reads that file
-        # back (the same store orca_strip_local_repo rewrites, so a strip
-        # actually changes what this answers next); otherwise it falls
-        # back to the plain $ORCA_STUB_LOCAL_REPOS list, for a case that
-        # wants a leak the strip can never clear (claude-orca-tgr).
-        remote=0
-        for a in "$@"; do [ "$a" = "--environment" ] && remote=1; done
-        if [ "$remote" = "1" ]; then
-            printf '{"ok":true,"result":{"repos":[{"path":"/workspace/stub"}]}}\n'
-            exit 0
-        fi
-        out=""; sep=""
-        f="${ORCA_STUB_DATA_DIR:-}/orca-data.json"
-        if [ -n "${ORCA_STUB_DATA_DIR:-}" ] && [ -f "$f" ] && command -v jq >/dev/null 2>&1; then
-            while IFS= read -r p; do
-                [ -n "$p" ] || continue
-                out="$out$sep{\"path\":\"$p\"}"; sep=","
-            done <<PATHS
-$(jq -r '.repos[]?.path // empty' "$f" 2>/dev/null)
-PATHS
-        else
-            # The full record shape, not just the path: 1.4.197 stores
-            # {id, path, executionHostId, ...} and the launcher's own
-            # diagnostic prints the host and the id of whatever entry
-            # matched this folder. $ORCA_STUB_LOCAL_HOST sets that host --
-            # "local" (the default) is the leak this is all about, a
-            # "runtime:<env>" value is the container's own workspace.
-            n=0
-            for p in ${ORCA_STUB_LOCAL_REPOS:-}; do
-                n=$((n + 1))
-                out="$out$sep{\"id\":\"repo-$n\",\"path\":\"$p\",\"executionHostId\":\"${ORCA_STUB_LOCAL_HOST:-local}\"}"
-                sep=","
-            done
-        fi
-        printf '{"ok":true,"result":{"repos":[%s]}}\n' "$out"
-        exit 0 ;;
-esac
-exit 0
-STUB
-    chmod +x "$1"
-}
-
-# The Mac's clipboard, as a file: the manual fallback puts the pairing URL
-# on it when the CLI could not save the environment.
-write_stub_pbcopy() {
-    cat > "$1" <<'STUB'
-#!/usr/bin/env bash
-cat > "${PBCOPY_STUB_LOG:-/dev/null}"
-STUB
-    chmod +x "$1"
-}
-
-# The GUI scripting bridge -- the only way anything can quit the Mac's own
-# Orca, since 1.4.197 registers no `orca://` protocol handler. The launcher
-# does NOT do that any more (the user's decision, 2026-09-13: their windows
-# and their running agents are never this launcher's to close), so this
-# stub exists to CATCH one: a case asserts $OSASCRIPT_STUB_LOG is empty,
-# which it can only do if a real osascript call would have landed in it.
-write_stub_osascript() {
-    cat > "$1" <<'STUB'
-#!/usr/bin/env bash
-printf '%s\n' "$*" >> "${OSASCRIPT_STUB_LOG:-/dev/null}"
-if [ "${OSASCRIPT_STUB_FAIL:-0}" = "1" ]; then
-    exit 1
-fi
-if [ -n "${ORCA_STUB_STATE:-}" ]; then
-    mkdir -p "$ORCA_STUB_STATE"
-    printf 'false\n' > "$ORCA_STUB_STATE/app-running"
-fi
-exit 0
-STUB
-    chmod +x "$1"
-}
-
-# orca_user_data_dir()'s own discovery path (claude-orca-tgr): a running
-# app's open files, read with `lsof -p <pid> -Fn`. A minimal -Fn shape --
-# the 'p' (pid) header line every lsof answer carries, and one 'n'-prefixed
-# name line per open file -- with $ORCA_STUB_LSOF_DIR standing in for the
-# directory the app's orca-environments.json actually lives in. Prints
-# nothing at all when $ORCA_STUB_LSOF_DIR is unset, the same as a real
-# lsof against a process with no such file open.
-write_stub_lsof() {
-    cat > "$1" <<'STUB'
-#!/usr/bin/env bash
-printf 'p%s\n' "${ORCA_STUB_APP_PID:-4242}"
-if [ -n "${ORCA_STUB_LSOF_DIR:-}" ]; then
-    printf 'f10\n'
-    printf 'n%s/orca-environments.json\n' "$ORCA_STUB_LSOF_DIR"
-fi
-exit 0
-STUB
-    chmod +x "$1"
-}
-
 # --- per-test environment -------------------------------------------------
 
 # Every stub setup() puts on PATH, written into directory $1.
@@ -1410,10 +1124,6 @@ write_setup_stubs() {
     write_stub_open "$1/open"
     write_stub_sw_vers "$1/sw_vers"
     write_stub_uname "$1/uname"
-    write_stub_defaults "$1/defaults"
-    write_stub_pbcopy "$1/pbcopy"
-    write_stub_osascript "$1/osascript"
-    write_stub_lsof "$1/lsof"
     write_stub_sudo "$1/sudo"
     write_stub_installer "$1/installer"
     write_stub_softwareupdate "$1/softwareupdate"
@@ -1448,11 +1158,9 @@ STUB
 
 setup() {
     # This suite can itself be running inside a claude-orca container (the
-    # dev box this template runs on IS one), which sets these two for its
-    # OWN real Orca -- leaving either set would point orca_user_data_dir()
-    # and orca_strip_local_repo() at the HOST's actual state instead of a
-    # test's fixture (claude-orca-tgr).
-    unset ORCA_USER_DATA_PATH
+    # dev box this template runs on IS one), which sets this for its OWN
+    # folder -- leaving it set would point the launcher at the HOST's actual
+    # project instead of a test's fixture (claude-orca-tgr).
     unset CLAUDE_ORCA_HOST_PROJECT_DIR
 
     export HOME="$BATS_TEST_TMPDIR/home"
@@ -1486,51 +1194,6 @@ setup() {
     mkdir -p "$CONTAINER_STUB_STATE/containers"
     export OPEN_STUB_LOG="$BATS_TEST_TMPDIR/open.log"
     : > "$OPEN_STUB_LOG"
-
-    # S2 (claude-orca-8uo.3): every suite drives the bootstrap as a Mac
-    # (make_project_v3 pins uname to Darwin), and the Darwin preflight now
-    # refuses to install without an Orca.app. So the fixture Mac has one,
-    # pointed at by the same override a real user would use -- and the
-    # cases that are ABOUT a Mac with no Orca point the override at a path
-    # that does not exist, which is an answer on any host, Mac included.
-    export CLAUDE_ORCA_APP="$(make_fake_orca_app)"
-
-    # S3 (claude-orca-8uo.4): where the orca CLI stub logs its argv and
-    # keeps its state, and where the clipboard ends up. `pbcopy` goes on
-    # PATH for every suite and is inert until the desktop hand-off's
-    # manual fallback runs; the orca stub is NOT installed globally -- the
-    # fake app carries an inert `exit 0` until a desktop case replaces it,
-    # so no other suite's `./claude-dev` learns to talk to an app.
-    export ORCA_STUB_LOG="$BATS_TEST_TMPDIR/orca.log"
-    : > "$ORCA_STUB_LOG"
-    # One line per ORCA_STUB_LOG line, the value $ORCA_USER_DATA_PATH
-    # carried into that call (empty line when it carried none) -- a
-    # companion file rather than baking it into ORCA_STUB_LOG itself, so
-    # every existing exact-line assertion against that log stays literal.
-    # Since claude-orca-tgr the launcher never SETS this itself; the log
-    # is what "carries no override" (a PASS-IF case) checks against.
-    export ORCA_STUB_ENVPATH_LOG="$BATS_TEST_TMPDIR/orca-envpath.log"
-    : > "$ORCA_STUB_ENVPATH_LOG"
-    export ORCA_STUB_STATE="$BATS_TEST_TMPDIR/orca-state"
-    mkdir -p "$ORCA_STUB_STATE"
-    export PBCOPY_STUB_LOG="$BATS_TEST_TMPDIR/pbcopy.log"
-    : > "$PBCOPY_STUB_LOG"
-    export OSASCRIPT_STUB_LOG="$BATS_TEST_TMPDIR/osascript.log"
-    : > "$OSASCRIPT_STUB_LOG"
-    # orca_user_data_dir()'s own fallback path (claude-orca-tgr) --
-    # $HOME/Library/Application Support/Orca, standing in for the Mac's
-    # own copy without a folder-specific override. Not created here: a
-    # test creates it (and drops an orca-data.json fixture in it) only
-    # when it means to exercise that path, the same way no other Mac
-    # directory in this suite exists until a case needs it.
-    export ORCA_STUB_DATA_DIR="$HOME/Library/Application Support/Orca"
-
-    # A desktop hand-off that cannot complete falls back to the browser,
-    # and every suite that registers a folder takes that path (the docker
-    # stub publishes no real pairing offer). Nothing should sit in a poll
-    # loop for a minute to get there: the cases that are ABOUT the wait
-    # raise it themselves.
-    export CLAUDE_ORCA_ORCA_WAIT=2
 
     # The bootstrap installs a missing dependency rather than instructing
     # it, so the tools that install things are stubbed too. All four are

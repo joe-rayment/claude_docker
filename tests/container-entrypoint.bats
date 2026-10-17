@@ -240,10 +240,13 @@ STUB
     run grep -c '^# claude_orca$' "$proj/.gitignore"
     [ "$output" = "1" ]
     for pattern in '.claude-dev/' '.claude-dev-snapshots/' '/claude-dev' \
-                   'Orca.app/' '.mcp.json' 'attachments/' '.claude/logs/'; do
+                   '.mcp.json' 'attachments/' '.claude/logs/'; do
         run grep -c -xF "$pattern" "$proj/.gitignore"
         [ "$output" = "1" ]
     done
+    # No Orca any more (claude-orca-9bh.11): a fresh folder is not told to
+    # ignore an Orca.app it will never have.
+    ! grep -q -xF 'Orca.app/' "$proj/.gitignore"
 
     # Where take-screenshot drops images.
     [ -d "$proj/attachments" ]

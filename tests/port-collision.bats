@@ -58,8 +58,8 @@ other_container() {
     line="$(ctr_line "run ")"
     [[ "$line" == *"127.0.0.1:$moved:$moved"* ]]
     [[ "$line" == *"-e CLAUDE_ORCA_SSHD_PORT=$moved"* ]]
-    [[ "$line" == *"-e ORCA_PORT=$((moved + 1))"* ]]
-    [[ "$(cat "$primary/.claude-dev/run/orca-web-url.txt")" == *":$moved/"* ]]
+    [[ "$line" != *"ORCA_PORT="* ]]
+    grep -qx "port=$moved" "$primary/.claude-dev/run/sshd.ready"
 
     # The other folder's container was never touched.
     [ "$(cat "$CONTAINER_STUB_STATE/containers/claude-orca-other")" = "running" ]

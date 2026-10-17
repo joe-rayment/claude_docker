@@ -30,34 +30,31 @@ export LANG=en_US.UTF-8
 export LC_ALL=en_US.UTF-8
 
 # ── Terminal foreground ─────────────────────────────────────────────────────
-# Orca resolves its terminal palette BY NAME, and only in the browser: the
-# name lives in localStorage (`orca.web.settings.v1`), seeded into the served
-# web-index.html by scripts/container/patch-orca-web-theme.py. That makes the
-# colour a property of the IMAGE a folder happens to be running, which is how
-# it silently failed on 2026-09-08: the folder's `docker pull` came back 403
-# (private GHCR package), the launcher ran the local image anyway, that
-# image's older patcher reported "already seeds theme dark" and skipped the
-# palette, and every terminal stayed on Orca's default white-on-grey.
+# The terminal is the Mac's own (Ghostty over ssh), so the palette is the
+# Mac terminal's business; what the folder can still do is make unstyled
+# output the folder's colour, from the shell, with the OSC escapes the
+# terminal honours. (Until claude-orca-9bh the palette was resolved by name
+# inside Orca's browser UI, and a stale image once silently left every
+# terminal on Orca's default white-on-grey -- the shell never depended on
+# the image, which is why it stayed.)
 #
-# So the colour is set from the shell as well, with the OSC escapes xterm.js
-# honours. Deliberately only TWO of them: OSC 10 (the default foreground) and
+# Deliberately only TWO of them: OSC 10 (the default foreground) and
 # OSC 12 (the cursor).
 #
 # NOT OSC 4 and NOT OSC 11. Painting all sixteen ANSI slots and the ground is
 # what a terminal theme does, and it is what the "Homebrew" palette does in
-# Orca's own renderer -- but it also repaints the colours other programs chose
+# a terminal's own renderer -- but it also repaints the colours other programs chose
 # for themselves, and on 2026-09-08 doing it live collapsed Claude Code's TUI:
 # the chat input and the status bar disappeared, because their greys and
 # whites had been remapped onto the ground. The default foreground is the half
 # that makes unstyled output green without overruling anyone else's choices.
 #
 # CLAUDE_ORCA_TERMINAL_THEME (claude-orca.json's `terminalTheme`) names the
-# palette; the foreground is taken from Orca's own record for it. A name this
-# table does not carry leaves the terminal alone -- there the browser seed is
-# still the one that resolves it.
+# palette; the foreground is taken from this table. A name this table does
+# not carry leaves the terminal alone.
 _co_terminal_foreground() {
   case "${CLAUDE_ORCA_TERMINAL_THEME:-Homebrew}" in
-    Homebrew|homebrew) print -r -- '#00ff00' ;;   # Orca builtin: green phosphor
+    Homebrew|homebrew) print -r -- '#00ff00' ;;   # green phosphor
     *) return 1 ;;
   esac
 }

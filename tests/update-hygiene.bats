@@ -73,43 +73,44 @@ LIST
     ! grep -q "^rmi bbbbbbb" "$CONTAINER_STUB_LOG"   # the one just built
 }
 
-# S4 (claude-orca-8uo.5) folded the Orca version into the tag, so a
-# folder's first --update after it lands builds claude-orca:latest-orca<v>
-# and leaves the version-less claude-orca:latest it was built at before
-# sitting on the Mac -- tagged, so prune_old_images never collects it (that
-# one gathers <none> layers only). A built update therefore rmis every
-# OTHER ref of our repo that no container still uses: `docker ps -a` --
-# stopped ones included -- is what "in use" means. The ref a container was
-# run from, and its image id when the tag has since moved, both keep it.
-@test "update rmi's our repo's superseded tagged refs -- :latest and older -orca tags -- that no container still uses, never the new ref, never one in use, never another repo's" {
-    export CLAUDE_ORCA_APP="$(make_fake_orca_app "$BATS_TEST_TMPDIR/Applications/Orca197.app" 1.4.197)"
+# The tag is the IMAGE_TAG file alone now, so an update that moves a folder
+# onto a new tag (or off the old claude-orca:latest-orca<v> refs that
+# folded in an Orca version) leaves the previous refs on the Mac -- tagged,
+# so prune_old_images never collects them (that one gathers <none> layers
+# only). A built update therefore rmis every OTHER ref of our repo that no
+# container still uses: `docker ps -a` -- stopped ones included -- is what
+# "in use" means. The ref a container was run from keeps it.
+# Guards:   --update removes superseded tagged refs of our repo (an older tag, an
+#           old -orca<v> ref) but never the new ref, one in use, or another repo's
+# Fails if: the cleanup removes the ref just built, one a container runs from,
+#           or another repo's image -- or leaves old -orca<v> refs behind
+# Run:      bats -f 'update rmi' tests/update-hygiene.bats
+@test "update rmi's our repo's superseded tagged refs -- an older tag and old -orca<v> refs -- that no container still uses, never the new ref, never one in use, never another repo's" {
     export CLAUDE_ORCA_TEST_IMAGE_ID="$(stub_id a)"
     mkdir -p "$PROJECT_DIR"
     primary="$(abspath "$PROJECT_DIR")"
     run make_project_v3 "$primary"
     [ "$status" -eq 0 ]
 
-    # Registration ran this folder's container from the ref the update
-    # also wants -- same IMAGE_TAG, same app version both times. Another
-    # folder's container is still on latest-orca1.3.0 and must keep it.
+    # Another folder's container is still on latest-orca1.3.0 and must keep it.
     rm -f "$CONTAINER_STUB_STATE/preset-applied"
     export DOCKER_STUB_PRESET_CONTAINER="claude-orca-past:claude-orca:latest-orca1.3.0:$primary:7777"
     export CLAUDE_ORCA_TEST_IMAGE_ID="$(stub_id b)"
     cat > "$CONTAINER_STUB_STATE/images-list" <<LIST
-claude-orca:latest sha256:$(stub_id c)
+claude-orca:ssh1 sha256:$(stub_id c)
 claude-orca:latest-orca1.4.100 sha256:$(stub_id d)
 claude-orca:latest-orca1.3.0 sha256:$(stub_id f)
 someone/else-image:latest sha256:$(stub_id e)
-claude-orca:latest-orca1.4.197 sha256:$(stub_id b)
+claude-orca:latest sha256:$(stub_id b)
 LIST
 
     : > "$CONTAINER_STUB_LOG"
     run bash -c "cd '$primary' && ./claude-dev --update"
     [ "$status" -eq 0 ]
 
-    grep -qx "rmi claude-orca:latest" "$CONTAINER_STUB_LOG"
+    grep -qx "rmi claude-orca:ssh1" "$CONTAINER_STUB_LOG"
     grep -qx "rmi claude-orca:latest-orca1.4.100" "$CONTAINER_STUB_LOG"
-    ! grep -q "rmi claude-orca:latest-orca1.4.197" "$CONTAINER_STUB_LOG"
+    ! grep -q "rmi claude-orca:latest$" "$CONTAINER_STUB_LOG"
     ! grep -qx "rmi claude-orca:latest-orca1.3.0" "$CONTAINER_STUB_LOG"
     ! grep -qx "rmi someone/else-image:latest" "$CONTAINER_STUB_LOG"
 }
@@ -141,7 +142,7 @@ LIST
 
     run_dir="$primary/.claude-dev/run"
     mkdir -p "$run_dir" "$primary/.claude-dev/state"
-    printf 'http://127.0.0.1:1/web-index.html#pairing=STALE\n' > "$run_dir/orca-web-url.txt"
+    printf 'http://127.0.0.1:1/web-index.html#pairing=STALE\n' > "$run_dir/orca-web-url.txt"   # an old Orca result
     printf 'STALE\n' > "$run_dir/orca-serve.log"
     printf 'STALE\n' > "$run_dir/setup.log"
     printf '99999\n' > "$run_dir/port"
@@ -155,7 +156,7 @@ LIST
     # Results: the previous container's, and gone with it.
     [ ! -f "$run_dir/orca-serve.log" ]
     [ ! -f "$run_dir/setup.log" ]
-    ! grep -q STALE "$run_dir/orca-web-url.txt"
+    [ ! -e "$run_dir/orca-web-url.txt" ]   # an old Orca result: cleared too
     [ "$(cat "$run_dir/port")" = "$(jq -r '.port' "$json")" ]
 
     # Authority, config and home: untouched.

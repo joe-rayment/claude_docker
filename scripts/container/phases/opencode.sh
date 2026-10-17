@@ -22,13 +22,13 @@ installed_opencode() {
 
 # --- opencode, the OpenRouter worker's CLI (pinned) ---------------------
 #
-# An Orca worker terminal running a non-Anthropic model is `opencode
-# --model openrouter/<vendor>/<model>` (.claude/plans/orca-orchestration.md).
+# A worker running a non-Anthropic model is `opencode
+# --model openrouter/<vendor>/<model>` (scripts/worker-run.sh).
 # It is a plain npm global install -- the package ships the per-platform
 # binary in its postinstall, so nothing here maps an arch by hand -- and
 # its config comes from the file config-sync writes into the agent home,
-# pointed at by OPENCODE_CONFIG in Orca's own settings
-# (scripts/container/seed-orca-state.sh). No key is baked in anywhere: the
+# pointed at by OPENCODE_CONFIG in the worker's environment
+# (scripts/lib/opencode-launch.sh). No key is baked in anywhere: the
 # config reads OPENROUTER_API_KEY from the environment the VM already
 # carries (claude-orca-qa2.7).
 phase_opencode() {

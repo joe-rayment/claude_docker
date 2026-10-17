@@ -100,9 +100,8 @@ while IFS= read -r vol; do
             ;;
         *)
             # Worktrees and anything else: nothing to migrate, nothing to
-            # delete. Orca's worktree base was pointed at the volume by
-            # seed-orca-state.sh; worktrees already under .orca-worktrees
-            # keep working where they are (git tracks them by path).
+            # delete. Worktrees already created in the project keep working
+            # where they are (git tracks them by path).
             echo "$vol: nothing to migrate -- untouched"
             ;;
     esac

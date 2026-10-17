@@ -1,23 +1,21 @@
 #!/usr/bin/env bats
 #
 # 55-git-init -- the folder is a git repository with a commit on main (or
-# master) by the time 60-orca-repo-add hands it to Orca.
+# master) by the time anything wants to base a worker branch on it.
 #
-# Reproduced 2026-09-13 against Orca 1.4.197: `orca repo add` rejects a
-# folder that is not a repository ("Not a valid git repository"), accepts a
-# `git init`ed one with no commits, and then every "Create worktree" on it
-# fails "Could not resolve a default base ref for this repo" -- the app
-# shows that as "No base branch found". Orca resolves the base from
-# origin/HEAD, origin/main, origin/master, refs/heads/main and
-# refs/heads/master and nothing else, so a bootstrapped folder that was
-# never a repository showed up as a project nobody could open a workspace
-# in. Nothing before this step ever ran `git init` or a first commit.
+# Reproduced 2026-09-13: a folder that is not a repository, or a `git init`ed
+# one with no commits, has no branch to base a worktree on -- "Could not
+# resolve a default base ref". Git resolves a base from origin/HEAD,
+# origin/main, origin/master, refs/heads/main and refs/heads/master and
+# nothing else, so a bootstrapped folder that was never a repository
+# showed up as a project nobody could open a workspace in. Nothing before
+# this step ever ran `git init` or a first commit.
 #
 # The step's one promise is a repository with at least one commit on a
-# branch Orca can base on. What it never does: touch the user's own files
-# (only the seeds go into the commit, and only when they exist), rename a
-# branch that already has commits, `git init` over a .git that git cannot
-# read, or reach into a parent folder's repository.
+# branch a worktree can be based on. What it never does: touch the user's
+# own files (only the seeds go into the commit, and only when they exist),
+# rename a branch that already has commits, `git init` over a .git that git
+# cannot read, or reach into a parent folder's repository.
 #
 # Assertions are `[ ]` and functions, never a bare `[[ ]]` (run-tests.sh).
 
@@ -42,24 +40,22 @@ git_init_step() {  # git_init_step <project> [home] [NAME=value ...]
 }
 
 # A folder that is not a repository, holding a file of the user's own and
-# the two seeds 50-seed-project leaves behind (the .gitignore block as
-# seed_gitignore writes it since claude-orca-e8m, orca.yaml included).
+# the .gitignore block 50-seed-project leaves behind.
 plain_folder() {  # plain_folder [name]
     local d="$BATS_TEST_TMPDIR/${1:-proj}"
     mkdir -p "$d"
     printf 'x,y\n1,2\n' > "$d/data.csv"
-    printf '# claude_orca\n.claude-dev/\nattachments/\norca.yaml\n' > "$d/.gitignore"
-    printf 'scripts:\n  setup: bash .claude-dev/template/scripts/container/seed-project.sh\n' > "$d/orca.yaml"
+    printf '# claude_orca\n.claude-dev/\nattachments/\n' > "$d/.gitignore"
     printf '%s\n' "$d"
 }
 
-# `git init` on a branch and nothing else: the shape `orca repo add`
-# accepts but no workspace can be created in.
+# `git init` on a branch, plus a file of the user's own and nothing
+# committed: the shape no worktree can be based on.
 unborn_repo() {  # unborn_repo <name> <branch>
     local d="$BATS_TEST_TMPDIR/$1"
     mkdir -p "$d"
     git -C "$d" init -q -b "$2" >/dev/null 2>&1
-    printf 'scripts: {}\n' > "$d/orca.yaml"
+    printf 'key: value\n' > "$d/app.conf"
     printf '%s\n' "$d"
 }
 
@@ -84,8 +80,7 @@ says() {  # says <needle>: the last run's output contains it
     [ -d "$d/.git" ]
     [ "$(head_branch "$d")" = "main" ]
     [ "$(commit_count "$d")" = "1" ]
-    # claude-orca-e8m: orca.yaml is ignored by the seeded .gitignore now, so
-    # the seed commit carries .gitignore alone and orca.yaml shows nowhere.
+    # The seed commit carries .gitignore alone: data.csv is the user's own.
     [ "$(tracked "$d")" = ".gitignore" ]
     run git -C "$d" status --porcelain
     [ "$output" = "?? data.csv" ]
@@ -177,8 +172,8 @@ says() {  # says <needle>: the last run's output contains it
     run git_init_step "$d"
     [ "$status" -eq 0 ]
     [ "$(commit_count "$d")" = "1" ]
-    # claude-orca-e8m: orca.yaml is out of the pathspec, so a folder whose
-    # only seed is an ignored orca.yaml gets an empty commit.
+    # app.conf is the user's own and out of the pathspec, so a folder with
+    # no seed at all gets an empty commit.
     [ -z "$(git -C "$d" ls-tree --name-only HEAD)" ]
     [ "$(git -C "$d" diff --cached --name-only)" = "notes.txt" ]
 }
@@ -192,7 +187,7 @@ says() {  # says <needle>: the last run's output contains it
         commit -q --allow-empty -m init >/dev/null 2>&1
     before="$(git -C "$top" rev-parse HEAD)"
     d="$top/apps/thisone"
-    printf 'scripts: {}\n' > "$d/orca.yaml"
+    printf 'key: value\n' > "$d/app.conf"
     run git_init_step "$d"
     [ "$status" -eq 0 ]
     says "nothing to do"
@@ -222,15 +217,13 @@ says() {  # says <needle>: the last run's output contains it
     [ "$(cat "$d/.git")" = "gitdir: $why" ]
 }
 
-@test "the step is executable and runs after 50-seed-project, before 60-orca-repo-add" {
-    local n50 n55 n60
+@test "the step is executable and runs after 50-seed-project" {
+    local n50 n55
     [ -x "$STEP" ]
     n50="$(ls -1 "$PROVISION_D" | LC_ALL=C sort | grep -nx '50-seed-project' | cut -d: -f1)"
     n55="$(ls -1 "$PROVISION_D" | LC_ALL=C sort | grep -nx '55-git-init' | cut -d: -f1)"
-    n60="$(ls -1 "$PROVISION_D" | LC_ALL=C sort | grep -nx '60-orca-repo-add' | cut -d: -f1)"
-    [ -n "$n50" ] && [ -n "$n55" ] && [ -n "$n60" ]
+    [ -n "$n50" ] && [ -n "$n55" ]
     [ "$n50" -lt "$n55" ]
-    [ "$n55" -lt "$n60" ]
 }
 
 @test "a .beads directory seeded like bd init is committed minus what its own .gitignore ignores" {

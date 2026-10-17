@@ -2,11 +2,11 @@
 #
 # Is the OpenRouter chokepoint actually answering?
 #
-# The guard STARTS in the entrypoint, before serve, and that is deliberate
-# rather than left over: Orca's process environment is fixed at exec, and
-# the fail-closed rule -- the token and base URL reach Orca only when the
-# guard came up -- is a decision that has to be made before Orca is
-# started. What can safely wait is this: checking that it is still
+# The guard STARTS in the entrypoint, before sshd, and that is deliberate
+# rather than left over: sshd's environment is fixed at exec, and the
+# fail-closed rule -- the token and base URL reach the sessions sshd opens
+# only when the guard came up -- is a decision that has to be made before
+# sshd is started. What can safely wait is this: checking that it is still
 # listening, and restarting it if it is not.
 #
 # Idempotent: a guard that is answering makes this a probe and nothing
@@ -82,7 +82,7 @@ opencode_names_this_guard() {
 
 if [ -z "$REAL_KEY" ]; then
     if opencode_names_this_guard; then
-        echo "no OPENROUTER_API_KEY in this folder, but $OPENCODE_CONFIG already names the guard at 127.0.0.1:$GUARD_PORT -- opencode will fail closed until a key is set: run 'opencode auth login openrouter' in any terminal in this container, then restart the container (Orca's environment is fixed at exec, so a guard started later cannot reach terminals Orca already spawned); or write the key to $AGENT_HOME/.openrouter.key (mode 600) and restart, or run './claude-dev key openrouter' on the Mac (same file)" >&2
+        echo "no OPENROUTER_API_KEY in this folder, but $OPENCODE_CONFIG already names the guard at 127.0.0.1:$GUARD_PORT -- opencode will fail closed until a key is set: run 'opencode auth login openrouter' in any terminal in this container, then restart the container (sshd's environment is fixed at exec, so a guard started later cannot reach sessions sshd already opened); or write the key to $AGENT_HOME/.openrouter.key (mode 600) and restart, or run './claude-dev key openrouter' on the Mac (same file)" >&2
         exit 1
     fi
     echo "no OPENROUTER_API_KEY in this folder; there is nothing to guard"
@@ -95,7 +95,7 @@ if guard_port_open; then
 fi
 
 # Not answering. A restart is only worth anything if it comes back up on
-# the token Orca's environment already carries -- a fresh one would be a
+# the token sshd's environment already carries -- a fresh one would be a
 # credential every terminal in this container has never heard of.
 if [ ! -s "$GUARD_TOKEN_FILE" ]; then
     echo "the guard is not answering on 127.0.0.1:$GUARD_PORT and $GUARD_TOKEN_FILE is empty: it never started this boot, and a new token is one no terminal here carries. Agents have no OpenRouter access this run -- that is deliberate, because an unpoliced key in a terminal is what the guard exists to prevent." >&2
@@ -119,7 +119,7 @@ fi
 chmod 600 "$GUARD_KEY_FILE" 2>/dev/null
 
 # `env -u` and not just the file: this step inherits OPENROUTER_API_KEY from
-# Orca's environment, where it holds the guard TOKEN, and a guard started on
+# the sshd environment, where it holds the guard TOKEN, and a guard started on
 # its own token would authenticate nothing. The guard's own os.environ scrub
 # cannot clear /proc/<pid>/environ either -- that is fixed at exec.
 env -u OPENROUTER_API_KEY \

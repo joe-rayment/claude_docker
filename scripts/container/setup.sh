@@ -35,22 +35,20 @@ export DEBIAN_FRONTEND="${DEBIAN_FRONTEND:-noninteractive}"
 NPM_PREFIX="${NPM_PREFIX:-/usr/local}"
 npm_global_root() { printf '%s/lib/node_modules\n' "$NPM_PREFIX"; }
 
-PHASES="base node gh orcadeps bats bd dolt helix opencode orca user template"
+PHASES="base node gh bats bd dolt helix opencode user template"
 
 # WHERE EACH PHASE RUNS, and why the line falls here.
 #
 # A folder's toolchain cache is a bind mount (<project>/.claude-dev/
-# toolchain, mounted over /usr/local and /opt/Orca), so it can
-# hold FILES and nothing else. apt state is not files: it is /var/lib/dpkg,
-# /etc, ld.so caches and a hundred paths across the filesystem, and a bind
-# mount cannot carry any of it. So the line is drawn at apt:
+# toolchain, mounted over /usr/local), so it can hold FILES and nothing
+# else. apt state is not files: it is /var/lib/dpkg, /etc, ld.so caches and
+# a hundred paths across the filesystem, and a bind mount cannot carry any
+# of it. So the line is drawn at apt:
 #
-#   IMAGE_PHASES      everything apt-managed -- the base packages, node,
-#                     gh, and the GTK/at-spi/xvfb libraries Orca links
-#                     against. Slow (~340 s) and almost never changes.
-#   TOOLCHAIN_PHASES  the payload: six pinned tools that land under
-#                     /usr/local and /opt/Orca and nowhere
-#                     else. ~1.2 GB, ~340 s, and the half that actually
+#   IMAGE_PHASES      everything apt-managed -- the base packages, node
+#                     and gh. Slow and almost never changes.
+#   TOOLCHAIN_PHASES  the payload: five pinned tools that land under
+#                     /usr/local and nowhere else. The half that actually
 #                     churns -- a version bump here is a template pull,
 #                     not an image rebuild. Claude Code is the exception:
 #                     it is installed per folder by
@@ -61,30 +59,20 @@ PHASES="base node gh orcadeps bats bd dolt helix opencode orca user template"
 # `template` is in neither set on purpose: it only links a template that
 # has to be COPYed in first, so the Dockerfile runs it by name after the
 # copy, and a folder running the base image has nothing to link.
-IMAGE_PHASES="base node gh orcadeps user"
-TOOLCHAIN_PHASES="bats bd dolt helix opencode orca"
+IMAGE_PHASES="base node gh user"
+TOOLCHAIN_PHASES="bats bd dolt helix opencode"
 
-# The base apt set: only what Orca's own package does NOT already depend
-# on. The .deb pulls libgtk-3-0, libnss3, libnotify4, libxss1, libxtst6,
-# libsecret-1-0, libatspi2.0-0, libuuid1, xdg-utils, python3-gi,
-# at-spi2-core, xdotool, xclip and xvfb, so hand-listing them here only
-# invites drift.
+# The base apt set. util-linux carries setpriv, which the entrypoint uses
+# to drop root; libasound2t64 is 24.04's spelling of libasound2. libgbm1,
+# xauth, fonts-liberation and libasound2t64 are here for the headless
+# chromium that take-screenshot installs on demand.
 #
-# xvfb matters and arrives that way: `orca-ide --serve` refuses to start
-# with no usable display server and spawns its OWN (Xvfb :99 -screen 0
-# 1280x1024x24 -nolisten tcp -terminate) when the binary is present -- the
-# image supplies it, never runs it. An image without it is what failed
-# CI's first smoke stage.
-#
-# util-linux carries setpriv, which the entrypoint uses to drop root;
-# libasound2t64 is 24.04's spelling of libasound2.
-#
-# openssh-server is the other way into the container besides Orca: the
-# entrypoint runs its sshd on a high port so a terminal on the Mac (Ghostty)
-# can open panes here (claude-orca-9bh.6). Its postinst generates host keys;
-# the base phase deletes them again, because a key baked into the image would
-# be one key shared by every container built from it -- the real host key
-# lives in the folder's .claude-dev/state/ssh and is copied in at boot.
+# openssh-server is the way into the container: the entrypoint runs its
+# sshd on a high port so a terminal on the Mac (Ghostty) can open panes
+# here (claude-orca-9bh.6). Its postinst generates host keys; the base
+# phase deletes them again, because a key baked into the image would be one
+# key shared by every container built from it -- the real host key lives in
+# the folder's .claude-dev/state/ssh and is copied in at boot.
 BASE_PACKAGES="ca-certificates curl wget gnupg git jq ripgrep zsh less
 python3 python3-pip locales tini util-linux procps psmisc
 build-essential unzip xz-utils sudo openssh-server
@@ -150,7 +138,7 @@ stamp() {
     tr -d '[:space:]' < "$1"
 }
 
-# --- base tooling + the Electron runtime libraries Orca needs -----------
+# --- base tooling -------------------------------------------------------
 #
 # GNU coreutils' stty must be the one on PATH: Claude Code saves and
 # restores terminal state with `stty -g`, and uutils' stty can save but
@@ -217,44 +205,6 @@ phase_gh() {
     gh --version
 }
 
-# --- Orca's apt dependencies (image phase) ------------------------------
-#
-# These used to arrive for free: the .deb was installed with apt at build
-# time and apt pulled its Depends. The payload now installs at first start
-# into the folder's toolchain cache, which is a bind mount and cannot hold
-# apt state -- so the libraries Orca links against have to be here, in the
-# image, hand-listed.
-#
-# Hand-listing invites drift, so phase_orca CHECKS it: it reads Depends
-# straight out of the .deb it just downloaded and dies naming any package
-# that is missing. The list is 24.04's real package names (the .deb asks
-# for libgtk-3-0 and libatspi2.0-0, which 24.04 ships as the t64 variants).
-#
-# xvfb matters and is why it is here: `orca-ide --serve` refuses to start
-# with no usable display server and spawns its own Xvfb when the binary is
-# present. An image without it is what failed CI's first smoke stage.
-ORCA_PACKAGES="libgtk-3-0t64 libnotify4 libnss3 libxss1 libxtst6 xdg-utils
-libatspi2.0-0t64 libuuid1 libsecret-1-0 python3 python3-gi
-gir1.2-atspi-2.0 at-spi2-core xdotool xclip xvfb"
-
-phase_orcadeps() {
-    need_root orcadeps
-    local missing=0 p
-    for p in $ORCA_PACKAGES; do
-        dpkg-query -W -f='${Status}' "$p" 2>/dev/null \
-            | grep -q '^install ok installed$' || { missing=1; break; }
-    done
-    if [ "$missing" -eq 0 ]; then
-        say "orca deps: already present"
-        return 0
-    fi
-    say "orca deps: installing the libraries Orca links against"
-    apt_update_or_die
-    # shellcheck disable=SC2086
-    apt-get install -y --no-install-recommends $ORCA_PACKAGES
-    apt_cleanup
-}
-
 # --- the agent user -----------------------------------------------------
 #
 # 24.04 ships a stock `ubuntu` user at uid 1000; take that uid for
@@ -272,28 +222,23 @@ phase_user() {
         getent group 1000 >/dev/null 2>&1 || groupadd -g 1000 agent
         useradd -u 1000 -g 1000 -m -d /home/agent -s /usr/bin/zsh agent
     fi
-    mkdir -p /home/agent/.claude /home/agent/.config/orca /home/agent/.local/bin
+    mkdir -p /home/agent/.claude /home/agent/.local/bin
     # Not `chown -R`: /home/agent is the bind-mounted folder home, and
-    # chown on a unix socket over that mount returns EINVAL. Orca leaves
-    # its sockets in .config/orca, so on the next boot `chown -R` died on
-    # one -- `.config/orca/o-7563-9c89.sock: Invalid argument` on a real
-    # Mac run -- and under `set -Eeuo pipefail` that took setup.sh, the
-    # entrypoint and the container with it, every restart from then on.
-    # Chown everything that is not a socket instead. The sockets stay:
-    # they may belong to something running, and deleting a file in the
-    # user's home to make a chown succeed is the wrong trade. A real
+    # chown on a unix socket over that mount returns EINVAL. Any tool that
+    # leaves a socket in the home (an ssh ControlPath, an editor server)
+    # would take `chown -R` -- and under `set -Eeuo pipefail` setup.sh, the
+    # entrypoint and the container with it -- down on every restart from
+    # then on. Chown everything that is not a socket instead. The sockets
+    # stay: they may belong to something running, and deleting a file in
+    # the user's home to make a chown succeed is the wrong trade. A real
     # failure on a real file still fails the phase (xargs exits 123,
     # pipefail propagates it); an empty result does not (`xargs -r`).
-    # ... and -h, so a DANGLING symlink is chowned rather than followed.
-    # Orca leaves SingletonCookie, SingletonLock and SingletonSocket in
-    # .config/orca pointing at a pid, a cookie and a /tmp path that a new
-    # container does not have, and plain chown answers "cannot
+    # ... and -h, so a DANGLING symlink is chowned rather than followed:
+    # a lock or socket link left pointing at a pid or a /tmp path that a
+    # new container does not have answers plain chown with "cannot
     # dereference" -> xargs 123 -> pipefail -> the container dies on every
-    # recreate. CI run 34154457951 caught it; the Mac hid it, because
-    # .config/orca is a docker volume and `-xdev` stops find at a device
-    # boundary that exists on macOS (virtiofs vs the VM's disk) and does
-    # not on Linux (both on the same filesystem). -h needs neither to be
-    # true: owning the link is what was meant either way.
+    # recreate. -h needs no particular filesystem layout to be right:
+    # owning the link is what was meant either way.
     # Only what is not already agent:agent reaches chown: find looks at
     # every file anyway, and on a restart that is usually nothing, so the
     # boot no longer rewrites the owner of the whole home over the share.
@@ -306,47 +251,8 @@ phase_user() {
 # /opt/claude-orca-host/template -> /opt/claude-orca gives config-sync.sh
 # the <host>/template/config layout it expects without a --template flag
 # and without touching its contract (tests/config-sync.bats).
-# Orca Web keeps its theme in the browser (localStorage), not in the
-# orca-data.json seed-orca-state.sh writes, so the served web-index.html
-# inside app.asar carries a one-time seed (claude-orca-qa2.18). Runs at
-# image build (dark) and again at every boot, where the folder's
-# claude-orca.json theme arrives as CLAUDE_ORCA_THEME; a no-op once the
-# archive already seeds that theme.
-web_theme_patcher() {
-    local here
-    here="$(cd "$(dirname "$0")" && pwd)"
-    if [ -f "$here/patch-orca-web-theme.py" ]; then
-        printf '%s\n' "$here/patch-orca-web-theme.py"
-    elif [ -f /opt/claude-orca/scripts/container/patch-orca-web-theme.py ]; then
-        printf '%s\n' /opt/claude-orca/scripts/container/patch-orca-web-theme.py
-    fi
-}
-
-patch_orca_web_theme() {
-    local patcher
-    patcher="$(web_theme_patcher)"
-    if [ -z "$patcher" ]; then
-        say "orca web theme: patcher is not here yet, nothing to seed"
-        return 0
-    fi
-    if [ ! -f /opt/Orca/resources/app.asar ]; then
-        say "orca web theme: no /opt/Orca/resources/app.asar, nothing to seed"
-        return 0
-    fi
-    # Never fatal. This is a colour preference reaching into Orca's own
-    # archive: a future Orca whose web-index.html has a different shape
-    # must leave the folder booting in light mode, not refuse to start.
-    if ! python3 "$patcher" --asar /opt/Orca/resources/app.asar \
-        --theme "${CLAUDE_ORCA_THEME:-dark}" \
-        --terminal-theme "${CLAUDE_ORCA_TERMINAL_THEME:-Homebrew}"; then
-        warn "orca web theme: could not seed ${CLAUDE_ORCA_THEME:-dark}/${CLAUDE_ORCA_TERMINAL_THEME:-Homebrew} (Orca starts in its own default)"
-    fi
-    return 0
-}
-
 phase_template() {
     need_root template
-    patch_orca_web_theme
     if [ ! -d /opt/claude-orca ]; then
         say "template: /opt/claude-orca is not here yet, nothing to link"
         return 0
@@ -439,25 +345,6 @@ run_checks() {
         ck_fail "opencode: want ${OPENCODE_VERSION}, got ${v:-none}"
     fi
 
-    v="$(stamp /opt/orca/VERSION 2>/dev/null || true)"
-    if [ "$v" = "$ORCA_VERSION" ] && [ -x /opt/orca/orca-ide ] \
-        && [ -x /opt/orca/resources/bin/orca-ide ]; then
-        ck_ok "orca ${v} (/opt/orca/orca-ide executable, not run)"
-    else
-        ck_fail "orca: want ${ORCA_VERSION} in /opt/orca/VERSION with an executable orca-ide, got ${v:-none}"
-    fi
-
-    v="$(web_theme_patcher)"
-    if [ -n "$v" ] && [ -f /opt/Orca/resources/app.asar ] \
-        && python3 "$v" --check --asar /opt/Orca/resources/app.asar \
-            --theme "${CLAUDE_ORCA_THEME:-dark}" \
-        --terminal-theme "${CLAUDE_ORCA_TERMINAL_THEME:-Homebrew}" \
-        >/dev/null 2>&1; then
-        ck_ok "orca web theme seeded ${CLAUDE_ORCA_THEME:-dark} + terminal ${CLAUDE_ORCA_TERMINAL_THEME:-Homebrew} in app.asar"
-    else
-        ck_fail "orca web theme: app.asar does not seed ${CLAUDE_ORCA_THEME:-dark} + terminal ${CLAUDE_ORCA_TERMINAL_THEME:-Homebrew} (patch-orca-web-theme.py)"
-    fi
-
     # The image creates agent at 1000; on a Mac the entrypoint re-maps it to
     # HOST_UID so the bind mounts stay the owner's, and that is the uid a
     # running container has to show.
@@ -492,7 +379,7 @@ run_checks() {
 
 run_phase() {
     case "$1" in
-        base|node|gh|orcadeps|bats|bd|dolt|helix|opencode|orca|user|template)
+        base|node|gh|bats|bd|dolt|helix|opencode|user|template)
             # A phase whose file under phases/ was not copied next to
             # this script (the Dockerfile copies each one before its RUN).
             command -v "phase_$1" >/dev/null 2>&1 \
@@ -546,7 +433,7 @@ main() {
     esac
 }
 
-# The toolchain phases (bats bd dolt helix opencode orca) live one per file:
+# The toolchain phases (bats bd dolt helix opencode) live one per file:
 # phases/ next to this script in a checkout, /opt/claude-orca-phases/ next
 # to the copy the Dockerfile runs. A phase whose file is not here yet (an
 # earlier image layer) simply is not defined.

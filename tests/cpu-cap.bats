@@ -31,8 +31,9 @@ ctr_line() {
     grep "^$1" "$CONTAINER_STUB_LOG" | head -1
 }
 
-# Assertions as FUNCTIONS, never as a bare `[[ ... ]]` -- see
-# tests/orca-state-volume.bats for why (bash 3.2 errexit).
+# Assertions as FUNCTIONS, never as a bare `[[ ... ]]`: under bash 3.2 a
+# failing bare `[[ ... ]]` that is not the last command does not stop the
+# test (errexit ignores it), so it would pass for the wrong reason.
 contains() {
     case "$1" in
         *"$2"*) return 0 ;;

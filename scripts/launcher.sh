@@ -12,12 +12,13 @@
 # in anyone's shell rc. Everything else happens inside the VM.
 #
 # Usage:
-#   claude-dev                    Open this folder's Orca in a browser
+#   claude-dev                    Start this folder's container and wait for sshd
+#   claude-dev pane [dir]         A sandbox pane in this terminal
 #   claude-dev [register] [dir]   Register a project (default: current dir)
 #   claude-dev stop|shell|logs    Stop it / a shell inside it / its output
 #   claude-dev verify             Check the folder is set up as promised
 #   claude-dev key openrouter     Store this folder's OpenRouter key
-#   claude-dev --how-to-run       Print the URL and the two commands
+#   claude-dev --how-to-run       Print how to start, open and set up the sandbox
 #   claude-dev --doctor           CLI, service, image, container, port, sshd, ssh
 #   claude-dev --update           Pull the template, rebuild the image, re-sync
 #                                 the config, recreate
@@ -63,7 +64,7 @@ PROJECT_SELF="$(dirname "$HOST_DIR")"
 # WHERE THE PROJECT LIVES INSIDE THE CONTAINER.
 #
 # /workspace/<name>, not the folder's own Mac path. Mounting it at the Mac
-# path was deliberate once -- "every path Orca stores and every path an
+# path was deliberate once -- "every path a tool stores and every path an
 # agent prints means the same thing on both sides" -- and the price of it
 # was that the container spells out its owner's home directory and folder
 # tree at every prompt. `pwd` answered /Users/<them>/Documents/<project>
@@ -72,9 +73,8 @@ PROJECT_SELF="$(dirname "$HOST_DIR")"
 # scaffolding Docker creates so the mount can sit at that path; the only
 # host paths inside are the project and the folder's own home.)
 #
-# Nothing inside needs the two to agree: the entrypoint, seed-orca-state,
-# `bd init`, the Claude trust seed and `orca repo add` all take the path
-# from PROJECT_DIR. The Mac path still rides in as
+# Nothing inside needs the two to agree: the entrypoint, `bd init` and
+# the Claude trust seed all take the path from PROJECT_DIR. The Mac path still rides in as
 # CLAUDE_ORCA_HOST_PROJECT_DIR, for messages that name a file a person has
 # to open on the Mac.
 guest_project_dir() { printf '/workspace/%s\n' "$(derive_project_name "$1")"; }
@@ -193,6 +193,8 @@ gitignore_unseed() {
 
     local tmp
     tmp="$(mktemp "${file}.XXXXXX")"
+    # seeded() still lists the old Orca's patterns (Orca.app/, .orca/,
+    # .orca-worktrees/, orca.yaml): folders seeded in those days carry them.
     awk -v marker="$GITIGNORE_MARKER" '
         function seeded(l) {
             return l == ".claude-dev/" || l == ".claude-dev-snapshots/" || \
@@ -277,16 +279,9 @@ IMAGE_REPO="${CLAUDE_ORCA_IMAGE_REPO:-claude-orca}"
 
 # The tag lives in one file at the template root, so a folder that only
 # ever runs `claude-dev --update` moves to the new image with the rebuild.
-#
-# The Orca version is folded in (<tag>-orca<version>, S4/claude-orca-8uo.5)
-# because the image and the Mac's Orca.app are one pair: Orca's protocol
-# check is a hard refusal on a mismatch, not a warning. A folder whose app
-# has moved must therefore ask the daemon for a DIFFERENT ref -- otherwise
-# it finds the image it already has under the same name, decides it is
-# there, and runs a container the app cannot attach to. Everything reads
-# the ref through image_ref, so nothing else has to know this.
+# Nothing else is folded in: that file is the whole answer.
 image_tag() {
-    local f tag="" ver=""
+    local f tag=""
     for f in "$TEMPLATE_ROOT/IMAGE_TAG" "$HOST_DIR/template/IMAGE_TAG"; do
         if [ -f "$f" ]; then
             tag="$(tr -d '[:space:]' < "$f")"
@@ -294,8 +289,6 @@ image_tag() {
         fi
     done
     if [ -z "$tag" ]; then tag="latest"; fi
-    ver="$(wanted_orca_version)"
-    if [ -n "$ver" ]; then tag="$tag-orca$ver"; fi
     printf '%s\n' "$tag"
 }
 
@@ -409,7 +402,7 @@ ctr_daemon_start() {
 # capability set (CapEff 0000000000000000, no CAP_SYS_ADMIN in the bounding
 # set), so mount and unshare fail even for root and docker, podman and a
 # private dockerd all die the same way. With this backend the launcher, the
-# entrypoint and Orca can be exercised together for real.
+# entrypoint and sshd can be exercised together for real.
 #
 # There is NO BOUNDARY here, and this does not pretend otherwise: --volume,
 # -p, --cpus, --memory and --dns are parsed off the argv and ignored,
@@ -429,7 +422,7 @@ ctr_local_dir() {
 }
 
 # The recorded PROCESS GROUP id, not a bare pid: the entrypoint spawns
-# Orca, which spawns more, and stop has to be able to signal the whole tree
+# sshd, which spawns a session per login, and stop has to signal the whole tree
 # at once rather than trust one process to pass a signal down.
 ctr_local_pid() {
     local f
@@ -453,8 +446,8 @@ ctr_local_state() {
 }
 
 # Starts (or restarts) the entrypoint for a recorded container. The child
-# inherits this shell's environment -- DISPLAY above all, which is what
-# Orca needs -- and the recorded -e values are layered on top of it.
+# inherits this shell's environment, and the recorded -e values are
+# layered on top of it.
 ctr_local_spawn() {
     local name="$1" d proj entry log line waited
     d="$(ctr_local_dir)"
@@ -469,8 +462,8 @@ ctr_local_spawn() {
         [ -n "$line" ] || continue
         set -- "$@" "$line"
     done < "$d/$name.env"
-    # The folder's own home is HOME here, so Orca's user-data dir lands
-    # inside the project exactly as it does under /home/agent in the VM.
+    # The folder's own home is HOME here, so ~ lands inside the project
+    # exactly as /home/agent does in the VM.
     # No privilege drop: there is no agent user on this side to drop to.
     #
     # And the folder's REAL path everywhere the docker argv spells the
@@ -486,7 +479,6 @@ ctr_local_spawn() {
         "CLAUDE_ORCA_ROOT=$proj" \
         "BEADS_DIR=$proj/.beads" \
         "CLAUDE_ORCA_SETUP=$proj/.claude-dev/template/scripts/container/setup.sh" \
-        "ORCA_BIN=${CLAUDE_ORCA_ORCA_BIN:-/opt/Orca/orca-ide}" \
         CLAUDE_ORCA_SKIP_SETUP=1 \
         CLAUDE_ORCA_SKIP_BEADS=1 \
         CLAUDE_ORCA_ENTRYPOINT_NO_PRIVDROP=1
@@ -552,7 +544,7 @@ ctr_local_run() {
 }
 
 # TERM the whole process group -- the entrypoint has its own trap for
-# taking Orca down with it, and signalling the group catches whatever the
+# taking sshd down with it, and signalling the group catches whatever the
 # trap does not. KILL only when the group will not go.
 ctr_local_stop() {
     local name="$1" pgid waited=0
@@ -694,21 +686,12 @@ BUILD_STALL="${CLAUDE_ORCA_BUILD_STALL:-180}"
 
 try_build() {
     local ref="$1" ctx="$2" log rc=0 pid waited=0 quiet=0 last="" line="" said_how=0
-    local ver="" args=()
     log="${CTR_RUN_DIR:-${TMPDIR:-/tmp}}/build.log"
     : > "$log" 2>/dev/null || log="${TMPDIR:-/tmp}/claude-orca-build.log"
-    # The app decides the ORCA_VERSION (S4/claude-orca-8uo.5) -- and only
-    # the app. With no app on this host there is no build arg at all: the
-    # Dockerfile's own default is the answer, and passing it back in would
-    # be a second place for that pin to be wrong.
-    #
     # --tag stays the FIRST flag: `docker build --tag <ref>` is what every
-    # reader of the command line here greps for, the suite included.
-    ver="$(app_orca_version)"
-    if [ -n "$ver" ]; then
-        args+=(--build-arg "ORCA_VERSION=$ver")
-    fi
-    ctr build --tag "$ref" ${args[@]+"${args[@]}"} "$ctx" > "$log" 2>&1 &
+    # reader of the command line here greps for, the suite included. No
+    # build arg follows it: the Dockerfile's own pins are the whole answer.
+    ctr build --tag "$ref" "$ctx" > "$log" 2>&1 &
     pid=$!
     while kill -0 "$pid" 2>/dev/null; do
         sleep 1
@@ -875,8 +858,8 @@ prune_old_refs() {
         [ "${rt##*:}" = "$ntag" ] && continue
         [ "${rt##*:}" = "<none>" ] && continue
         id="${id#sha256:}"
-        # Exact lines -- claude-orca:latest is a PREFIX of every
-        # claude-orca:latest-orca<v>, so a substring match here would
+        # Exact lines -- claude-orca:latest is a PREFIX of every older
+        # claude-orca:latest-<suffix> tag, so a substring match here would
         # spare an image its container moved off long ago.
         if printf '%s\n' "$used" | grep -Fxq -e "$rt" -e "sha256:$id" \
                 -e "${id:0:12}"; then
@@ -891,9 +874,11 @@ PRUNE
 }
 
 # run/ holds RESULTS (CLAUDE.md: state/ holds authority), and every one of
-# them belongs to the container that wrote it: the pairing URL most of all
-# -- opening a previous session's URL is opening nothing. So a folder that
-# is about to get a new container starts from none of them. state/,
+# them belongs to the container that wrote it: sshd.ready and port most of
+# all -- trusting a previous container's marker is waiting on nothing. So a
+# folder that is about to get a new container starts from none of them.
+# orca-web-url.txt and orca-serve.log are the old Orca's results: no
+# container writes them now, but an old folder still carries them. state/,
 # claude-orca.json, the home, .beads and run/image-source are authority or
 # input and are never touched here.
 clear_run_results() {
@@ -1178,71 +1163,7 @@ cmd_key_v3() {
     echo "That file is /home/agent/.openrouter.key inside the container; the entrypoint reads it there next time you run ./claude-dev."
 }
 
-# --- the desktop Orca on the Mac (S2, claude-orca-8uo.3) -----------------
-#
-# A folder runs one of two UIs: Orca Web in the browser, or the Orca.app on
-# the Mac attached to the container's runtime. Which one is decided once,
-# at register, and the three functions below are everything the decision
-# and the doctor need to know about the app.
-
-ORCA_DOWNLOAD_URL="https://orca.dev/download"
-
-# The Orca.app bundle, or rc 1 and no output. macOS only: a Linux host has
-# no .app to find, whatever the environment says.
-#
-# CLAUDE_ORCA_APP is consulted FIRST and is authoritative -- an explicit
-# override that points nowhere is an answer ("this Mac has no Orca for
-# this folder"), not a reason to carry on to /Applications. That is what
-# lets a test, or a user with two Orca builds, say which one is meant on a
-# machine that also has the ordinary one installed.
-find_orca_app() {
-    local app
-    [ "$(uname -s)" = "Darwin" ] || return 1
-    if [ -n "${CLAUDE_ORCA_APP:-}" ]; then
-        [ -d "$CLAUDE_ORCA_APP" ] || return 1
-        printf '%s\n' "$CLAUDE_ORCA_APP"
-        return 0
-    fi
-    for app in "/Applications/Orca.app" "$HOME/Applications/Orca.app"; do
-        if [ -d "$app" ]; then
-            printf '%s\n' "$app"
-            return 0
-        fi
-    done
-    return 1
-}
-
-# The orca CLI that goes with a bundle. The app ships it under
-# Contents/Resources/bin (`orca` since 1.4, `orca-ide` on older builds);
-# an `orca` already on PATH -- a Homebrew install, a dev checkout -- is the
-# last answer rather than the first, so the CLI matches the app whenever
-# the app has one.
-orca_cli() {
-    local app="${1:-}" c
-    if [ -n "$app" ]; then
-        for c in "$app/Contents/Resources/bin/orca" "$app/Contents/Resources/bin/orca-ide"; do
-            if [ -x "$c" ]; then
-                printf '%s\n' "$c"
-                return 0
-            fi
-        done
-    fi
-    c="$(command -v orca 2>/dev/null)" || c=""
-    [ -n "$c" ] || return 1
-    printf '%s\n' "$c"
-}
-
-# CFBundleShortVersionString, or empty. `defaults` is the only reader of a
-# binary plist that is always on a Mac; off a Mac there is none and the
-# version is simply unknown, which is a row the doctor can still print.
-orca_app_version() {
-    local app="${1:-}" v=""
-    [ -n "$app" ] || return 0
-    if command -v defaults >/dev/null 2>&1; then
-        v="$(defaults read "$app/Contents/Info.plist" CFBundleShortVersionString 2>/dev/null)" || v=""
-    fi
-    printf '%s\n' "$v"
-}
+# --- reading the folder's config ------------------------------------------
 
 # One scalar out of claude-orca.json, empty when absent, null or unreadable.
 json_get() {
@@ -1253,31 +1174,6 @@ json_get() {
     fi
     if [ "$v" = "null" ]; then v=""; fi
     printf '%s\n' "$v"
-}
-
-# Which UI this folder runs. An absent key reads as web: every folder
-# registered before this template had the key is a browser folder, and a
-# folder whose config cannot be read is one too -- Orca Web is the answer
-# that needs nothing on the Mac.
-ui_of() {
-    case "$(json_get "$1" '.ui')" in
-        desktop) printf 'desktop\n' ;;
-        *)       printf 'web\n' ;;
-    esac
-}
-
-# Written once, at register, the same way the port is.
-persist_ui() {
-    local dir="$1" ui="$2" json tmp
-    json="$(orca_json "$dir")"
-    [ -f "$json" ] || return 0
-    command -v jq >/dev/null 2>&1 || return 0
-    tmp="$json.tmp"
-    if jq --arg u "$ui" '.ui = $u' "$json" > "$tmp" 2>/dev/null; then
-        mv "$tmp" "$json"
-    else
-        rm -f "$tmp"
-    fi
 }
 
 # A free port is one nothing answers on: bash's own /dev/tcp connect,
@@ -1393,10 +1289,10 @@ container_state() {
     printf '\n'
 }
 
-# The entrypoint writes <project>/.claude-dev/run/orca-web-url.txt (0600 --
-# the fragment carries a pairing code) once Orca is serving. That file is
-# the handshake between the two halves: everything before it is the Mac
-# starting a VM, everything after is a browser talking to Orca.
+# The entrypoint writes <project>/.claude-dev/run/sshd.ready once sshd is
+# accepting connections. That file is the handshake between the two halves:
+# everything before it is the Mac starting a VM, everything after is a pane
+# talking to sshd.
 # How long to wait for that handshake, and the one question that decides
 # it: is this start going to INSTALL something? The image answers it. A
 # folder running this template's image has the whole toolchain the
@@ -1424,64 +1320,10 @@ weburl_timeout() {
     fi
 }
 
-# Returns 0 with the URL on stdout, 1 on timeout, and -- when a container
-# name is given -- 2 the moment that container is no longer running: a
-# dead container writes no URL, so waiting out the timeout on it (a real
-# Mac run on 2026-09-06 sat 1800 s on a VM setup.sh had already killed)
-# is a wait for nothing. A just-created container may not be listed yet,
-# so an empty state only counts as dead once a running state has been
-# seen -- or, for a container that is never listed at all (removed, or
-# gone before the first poll), once 20 s have passed with no running state
-# ever observed: `container run -d` has long returned by then.
-# Any other non-empty state (stopped, exited) counts at once.
-wait_for_web_url() {
-    local dir="$1" name="${2:-}" file setup_log timeout waited=0 url="" runtime="" last="" line="" state="" seen_running="" unlisted=0
-    file="$dir/.claude-dev/run/orca-web-url.txt"
-    setup_log="$dir/.claude-dev/run/setup.log"
-    timeout="$(weburl_timeout "$dir")"
-    if folder_installs_toolchain "$dir"; then runtime=1; fi
-    while [ "$waited" -lt "$timeout" ]; do
-        if [ -s "$file" ]; then
-            url="$(head -1 "$file")"
-            if [ -n "$url" ]; then
-                printf '%s\n' "$url"
-                return 0
-            fi
-        fi
-        if [ -n "$name" ]; then
-            state="$(container_state "$name")"
-            case "$state" in
-                running) seen_running=1; unlisted=0 ;;
-                "")
-                    if [ -n "$seen_running" ]; then return 2; fi
-                    unlisted=$((unlisted + 1))
-                    if [ "$unlisted" -ge 20 ]; then return 2; fi
-                    ;;
-                *)       return 2 ;;
-            esac
-        fi
-        if [ "$waited" = "0" ]; then
-            echo "Waiting for Orca to come up inside the container..." >&2
-        fi
-        # While the toolchain installs, the silence is the whole problem:
-        # setup.sh is working, so show its last line every 15 s.
-        if [ -n "$runtime" ] && [ "$((waited % 15))" = "0" ] && [ -s "$setup_log" ]; then
-            line="$(tail -1 "$setup_log" 2>/dev/null)"
-            if [ -n "$line" ] && [ "$line" != "$last" ]; then
-                echo "  installing toolchain: $line" >&2
-                last="$line"
-            fi
-        fi
-        sleep 1
-        waited=$((waited + 1))
-    done
-    return 1
-}
-
-# The ssh twin of wait_for_web_url: waits for run/sshd.ready, which the
+# Waits for run/sshd.ready, which the
 # container's sshd-lib writes (`port=N`, `host_key_sha256=SHA256:...`) once
-# sshd is listening. Same return codes -- 0 ready, 1 timeout, 2 the container
-# died while waiting -- and the same timeout (weburl_timeout), plus 3 when
+# sshd is listening. Return codes -- 0 ready, 1 timeout, 2 the container
+# died while waiting -- and the timeout (weburl_timeout), plus 3 when
 # the host key sshd presents is not the one in state/ssh (a stale
 # container: the Mac would refuse the connection, so say so here, naming
 # both fingerprints). Nothing on stdout; the messages go to stderr.
@@ -1686,1001 +1528,30 @@ doctor_ssh_rows() {
     return "$rc"
 }
 
-# The pairing URL Orca minted for this container -- what a desktop Orca on
-# the Mac needs to attach to the runtime inside it -- by either of the two
-# paths a folder can have it.
+# --- the old Orca state volume (legacy) ------------------------------------
 #
-# run/orca-pairing-url.txt is serve's own `Pairing URL:` line, written by
-# the entrypoint (0600; it is a credential). It only exists in a folder
-# whose image carries that change, which is exactly why it is not the only
-# path: the web URL's fragment has carried the same URL percent-encoded
-# since v3, so `#pairing=orca%3A%2F%2Fpair%3Fcode%3D...` decoded is the
-# same string, and every folder already running has it. A change that can
-# only arrive in a rebuilt image reaches nobody.
-#
-# Decoding in bash 3.2 and no more: every %XX becomes \xXX and printf '%b'
-# turns those into bytes. Prints nothing and returns 1 when neither file
-# yields an orca://pair URL -- a truncated write or a web URL with no
-# fragment is "no pairing URL", never a half-decoded one.
-pairing_url_of() {
-    local dir="$1" pfile wfile url="" frag=""
-    pfile="$dir/.claude-dev/run/orca-pairing-url.txt"
-    wfile="$dir/.claude-dev/run/orca-web-url.txt"
-
-    if [ -s "$pfile" ]; then
-        url="$(head -1 "$pfile")"
-        case "$url" in
-            orca://pair*) printf '%s\n' "$url"; return 0 ;;
-        esac
-    fi
-
-    if [ -s "$wfile" ]; then
-        url="$(head -1 "$wfile")"
-        case "$url" in
-            *'#pairing='*) frag="${url#*#pairing=}" ;;
-            *)             frag="" ;;
-        esac
-        if [ -n "$frag" ]; then
-            url="$(printf '%b' "${frag//%/\\x}")"
-            case "$url" in
-                orca://pair*) printf '%s\n' "$url"; return 0 ;;
-            esac
-        fi
-    fi
-
-    return 1
-}
-
-open_url() {
-    local url="$1"
-    if [ "${CLAUDE_ORCA_OPEN:-1}" = "0" ]; then
-        return 0
-    fi
-    open "$url" || echo "Could not run 'open' -- paste this into a browser: $url" >&2
-}
-
-# --- the desktop hand-off (S3, claude-orca-8uo.4) -------------------------
-#
-# With ui = desktop the client is the Mac's own Orca.app and this folder's
-# container is its runtime, attached over Orca's own pairing protocol
-# (.claude/plans/desktop-orca.md). Nothing about the boundary moves: every
-# agent, shell and tool call still runs inside the container. Three facts
-# from the probe against 1.4.197 (bead claude-orca-8uo.1) shape every line
-# below:
-#
-#   * `orca status --json` EXITS 0 whether the runtime is reachable or
-#     not. The boolean in the JSON is the only signal there is.
-#   * a second `environment add` under a name that already exists is
-#     refused outright ("A server named ... already exists."), and a
-#     recreated container mints a fresh offer -- so the saved one is
-#     removed first, every time.
-#   * the app registers no `orca://` protocol handler, so it is launched
-#     by bundle (`open -a`) and paired through its CLI.
-#
-# All of it is best effort. The container is up and serving either way and
-# Orca Web is a complete client, so a hand-off that cannot even start (no
-# app, no CLI, no pairing offer, a runtime that never answers) says why on
-# stderr and falls back to the browser rather than failing the open.
-
-# The bundle a folder that has ALREADY decided it is a desktop folder
-# hands its runtime to. An explicit CLAUDE_ORCA_APP is authoritative here
-# on any host: find_orca_app's Darwin gate belongs to the REGISTER
-# decision (a Linux host has no desktop Orca to find, so it registers a
-# web folder whatever the environment says), and is the wrong question to
-# ask of a folder whose `ui` key already says desktop and whose owner has
-# named the bundle outright.
-desktop_app() {
-    if [ -n "${CLAUDE_ORCA_APP:-}" ]; then
-        [ -d "$CLAUDE_ORCA_APP" ] || return 1
-        printf '%s\n' "$CLAUDE_ORCA_APP"
-        return 0
-    fi
-    find_orca_app
-}
-
-# The name this folder's runtime is saved under in the app. The sidebar
-# badge on every workspace under this project IS this name, truncated to
-# about 17 characters ("claude-orca-claud..."), so the word the user
-# actually reads has to come FIRST: "remote-<project>" reads as remote
-# against the local badge's "Local Mac", where the container name read as
-# nothing at all. The container keeps its own name (claude-orca-<project>);
-# only what the app shows changes.
-orca_env_name() { printf 'remote-%s\n' "$(derive_project_name "$1")"; }
-
-# What the same folder was saved under before the rename -- a folder
-# opened once under the old name still has that environment in the app,
-# pointed at a container offer that is dead. Removed alongside the new
-# name on every add and on teardown, so no folder ends up with two.
-orca_env_legacy_name() { container_name "$1"; }
-
-# A Mac-side result, so run/ and not state/.
-orca_env_file() { printf '%s\n' "$1/.claude-dev/run/orca-environment.json"; }
-
-# The other Mac-side result of a hand-off: one line saying why this folder
-# is STILL a local project in the Mac's own Orca, written when the launcher
-# could not remove it and removed at the top of every hand-off. Also run/
-# and not state/ -- it is what the last run observed, never authority; the
-# block printer asks the app itself as well.
-orca_leak_file() { printf '%s\n' "$1/.claude-dev/run/orca-local-leak"; }
-
-# The template's own ORCA_VERSION default, read rather than repeated: the
-# pin lives at Dockerfile:30 and is mirrored once in setup.sh, and a third
-# copy here is a third thing to forget. Empty when there is no Dockerfile
-# to read, which is an answer -- the version is then simply not knowable.
-dockerfile_orca_version() {
-    local f="$TEMPLATE_ROOT/Dockerfile" v=""
-    if [ -f "$f" ]; then
-        v="$(sed -n 's/^ARG ORCA_VERSION=\([^ ]*\).*$/\1/p' "$f" | head -1)"
-    fi
-    printf '%s\n' "$v"
-}
-
-# The Orca version of the app on THIS host, or empty -- no app, no Mac, or
-# a bundle whose Info.plist will not answer.
-app_orca_version() {
-    local app=""
-    app="$(find_orca_app 2>/dev/null)" || return 0
-    orca_app_version "$app"
-}
-
-# The version the image is BUILT at (S4/claude-orca-8uo.5): the app's when
-# this host has one, because the app is the client that has to attach to
-# it, and the template default when it has not. One answer, used by both
-# the tag and the build arg, so the image a folder asks for and the image
-# it would build are never two different things.
-wanted_orca_version() {
-    local v=""
-    v="$(app_orca_version)"
-    if [ -z "$v" ]; then v="$(dockerfile_orca_version)"; fi
-    printf '%s\n' "$v"
-}
-
-# The ORCA_VERSION the image THIS MACHINE actually holds is at, read off
-# the tag the build gave it. Orca's protocol check is a hard refusal on a
-# mismatch (client-too-old / server-too-old), not a warning, so a
-# difference between it and the app is worth saying out loud -- and since
-# S4 the wanted version comes FROM the app, asking what this folder wants
-# could never show one. Only the daemon can: a folder whose app moved and
-# has not rebuilt still has the old image sitting there. Falls back to the
-# template default when there is nothing of ours to read.
-image_orca_version() {
-    local repo="" repository tag id v=""
-    repo="$(image_ref)"
-    repo="${repo%:*}"
-    if [ "${CTR_RUNTIME:-docker}" != "local" ]; then
-        while read -r repository tag id; do
-            [ -n "$tag" ] || continue
-            [ "$repository" = "$repo" ] || continue
-            case "$tag" in *-orca?*) ;; *) continue ;; esac
-            v="${tag##*-orca}"
-            break
-        done <<IMAGES
-$(ctr images --format '{{.Repository}} {{.Tag}} {{.ID}}' 2>/dev/null || true)
-IMAGES
-    fi
-    if [ -z "$v" ]; then v="$(dockerfile_orca_version)"; fi
-    printf '%s\n' "$v"
-}
-
-# Three readers for the CLI's --json answers. jq when the Mac has one and
-# a glob when it does not: every other config read here is guarded the
-# same way, and a missing jq must not be what silently turns a desktop
-# folder into a browser folder.
-orca_json_ok() {
-    local json="$1" v=""
-    if command -v jq >/dev/null 2>&1; then
-        v="$(printf '%s' "$json" | jq -r '.ok // false' 2>/dev/null || echo false)"
-        [ "$v" = "true" ]
-        return
-    fi
-    case "$json" in
-        *'"ok":true'*|*'"ok": true'*) return 0 ;;
-    esac
-    return 1
-}
-
-orca_json_reachable() {
-    local json="$1" v=""
-    if command -v jq >/dev/null 2>&1; then
-        v="$(printf '%s' "$json" | jq -r '.result.runtime.reachable // false' 2>/dev/null || echo false)"
-        [ "$v" = "true" ]
-        return
-    fi
-    case "$json" in
-        *'"reachable":true'*|*'"reachable": true'*) return 0 ;;
-    esac
-    return 1
-}
-
-orca_json_env_id() {
-    local json="$1" v=""
-    if command -v jq >/dev/null 2>&1; then
-        v="$(printf '%s' "$json" | jq -r '.result.environment.id // empty' 2>/dev/null || true)"
-    else
-        v="$(printf '%s' "$json" | tr '{},' '\n' \
-             | sed -n 's/^"id":"\([^"]*\)"$/\1/p' | head -1)"
-    fi
-    [ "$v" = "null" ] && v=""
-    printf '%s\n' "$v"
-}
-
-# --- one installed Orca.app, never a second one (claude-orca-tgr) --------
-#
-# Orca.app can open LOCAL workspaces (agents run on the Mac, no container
-# around them) and 1.4.197 has no knob to refuse them. claude-orca-qhq's
-# answer was a private per-folder profile, which opens a SECOND instance
-# of the app -- there must be exactly one Orca, the installed one, no
-# exception. So this enforces the invariant on THAT app instead: this
-# folder is never a local project there, self-healing (quit, strip,
-# relaunch) when it finds out otherwise.
-
-# `.result.app.running` -- distinct from `.result.runtime.reachable` --
-# says whether the desktop process itself is up, which is what decides
-# whether it is safe to rewrite orca-data.json out from under it and
-# whether a launch would be a first one or a second instance.
-orca_json_app_running() {
-    local json="$1" v=""
-    if command -v jq >/dev/null 2>&1; then
-        v="$(printf '%s' "$json" | jq -r '.result.app.running // false' 2>/dev/null || echo false)"
-        [ "$v" = "true" ]
-        return
-    fi
-    case "$json" in
-        *'"running":true'*|*'"running": true'*) return 0 ;;
-    esac
-    return 1
-}
-
-# `.result.app.pid` -- the running app's own process id, the one thing
-# lsof discovery (below) needs and `status --json` is the only place to
-# read it from. Empty when absent, null, or unreadable.
-orca_json_app_pid() {
-    local json="$1" v=""
-    if command -v jq >/dev/null 2>&1; then
-        v="$(printf '%s' "$json" | jq -r '.result.app.pid // empty' 2>/dev/null || true)"
-    else
-        v="$(printf '%s' "$json" | tr '{},' '\n' | sed -n 's/^"pid":\([0-9]*\)$/\1/p' | head -1)"
-    fi
-    [ "$v" = "null" ] && v=""
-    printf '%s\n' "$v"
-}
-
-# The one line this prints whenever nothing below can name the Mac's own
-# Orca "user data" directory at all -- a guess that used to no-op quietly
-# is now something that SAYS so, on stderr from the strip and in the
-# detail column from cmd_verify's own row.
-orca_no_data_dir_message() {
-    printf "cannot find Orca's data folder (looked for %s); set ORCA_USER_DATA_PATH to it" \
-        "$HOME/Library/Application Support/{Orca,ArchitectureGrammar}"
-}
-
-# The file Orca keeps its local project list in, under a user data dir.
-# Since Orca grew profiles (verified 1.4.197, still so on 1.4.218) that is
-# <dir>/profiles/<activeProfileId>/orca-data.json, with the active profile
-# named by <dir>/orca-profile-index.json -- the same resolution
-# seed-orca-state.sh does on the container side; the root <dir>/orca-data.json
-# is only the pre-profiles legacy copy Orca copies forward once and then
-# never reads again, so a reader aimed at it edits a file the app has
-# abandoned (the strip "succeeds", the app still lists the folder). One
-# helper, so no two readers of the list can disagree about which store
-# they read: the active profile's file when it exists, the legacy root
-# file when there is no profile (an Orca old enough to have neither).
-orca_data_json_file() {
-    local dir="$1" id="" f
-    if command -v jq >/dev/null 2>&1; then
-        id="$(jq -r '.activeProfileId // empty' "$dir/orca-profile-index.json" 2>/dev/null || true)"
-    fi
-    [ -n "$id" ] || id="local-default"
-    f="$dir/profiles/$id/orca-data.json"
-    if [ -f "$f" ]; then
-        printf '%s\n' "$f"
-        return 0
-    fi
-    printf '%s\n' "$dir/orca-data.json"
-}
-
-# The Mac's own Orca "user data" directory -- where it persists
-# orca-data.json, its local project list. In order: $ORCA_USER_DATA_PATH,
-# when the environment already carries one, is authoritative outright;
-# then the cache this discovered last time (.claude-dev/state/, Mac-side
-# authority the same as the legacy-profile cleanup above), as long as the
-# directory it named still exists; then discovery, while the app is
-# running ($2, its CLI) -- `status --json`'s own `.result.app.pid` and the
-# first line of `lsof -p <pid> -Fn` naming orca-environments.json or
-# orca-data.json, whose dirname is the answer -- or, when the open file is
-# a profile's own orca-data.json and the dirname ends in profiles/<id>,
-# that directory's grandparent -- cached for next time; and
-# only then the two Library guesses (the bundle's package name is
-# ArchitectureGrammar and the running app calls app.setName at startup, so
-# the ordinary default is one of the two -- the mac-e2e run settles
-# which). Empty when none of the above found anything -- the launcher
-# never invents a path to write one at, and every caller says so instead
-# of silently no-op'ing.
-orca_user_data_dir() {
-    local dir="${1:-}" cli="${2:-}" cache d pid lsof_line found="" rest
-    if [ -n "${ORCA_USER_DATA_PATH:-}" ]; then
-        printf '%s\n' "$ORCA_USER_DATA_PATH"
-        return 0
-    fi
-    if [ -n "$dir" ]; then
-        cache="$dir/.claude-dev/state/orca-data-dir"
-        if [ -s "$cache" ]; then
-            d="$(head -1 "$cache")"
-            if [ -n "$d" ] && [ -d "$d" ]; then
-                printf '%s\n' "$d"
-                return 0
-            fi
-        fi
-    fi
-    if [ -n "$cli" ] && command -v lsof >/dev/null 2>&1; then
-        pid="$(orca_json_app_pid "$("$cli" status --json 2>/dev/null || true)")"
-        if [ -n "$pid" ]; then
-            while IFS= read -r lsof_line; do
-                case "$lsof_line" in
-                    n*orca-environments.json|n*orca-data.json)
-                        found="$(dirname "${lsof_line#n}")"
-                        # Since Orca grew profiles, the open file can be
-                        # the active profile's orca-data.json, whose
-                        # dirname is .../profiles/<id> -- the user data
-                        # dir is that directory's grandparent.
-                        case "$found" in
-                            */profiles/*)
-                                rest="${found##*/profiles/}"
-                                case "$rest" in
-                                    */*) ;;   # deeper than one profile level
-                                    *) found="${found%/profiles/$rest}" ;;
-                                esac ;;
-                        esac
-                        break ;;
-                esac
-            done <<LSOF
-$(lsof -p "$pid" -Fn 2>/dev/null || true)
-LSOF
-            if [ -n "$found" ] && [ -d "$found" ]; then
-                if [ -n "$dir" ]; then
-                    mkdir -p "$dir/.claude-dev/state"
-                    printf '%s\n' "$found" > "$dir/.claude-dev/state/orca-data-dir"
-                fi
-                printf '%s\n' "$found"
-                return 0
-            fi
-        fi
-    fi
-    for d in "$HOME/Library/Application Support/Orca" \
-             "$HOME/Library/Application Support/ArchitectureGrammar"; do
-        if [ -d "$d" ]; then
-            printf '%s\n' "$d"
-            return 0
-        fi
-    done
-    return 0
-}
-
-# Rewrites the store orca_data_json_file resolves -- the active profile's
-# orca-data.json, or the pre-profiles root legacy file -- removing every
-# LOCAL .repos entry
-# that names this folder ($CLAUDE_ORCA_HOST_PROJECT_DIR too, when set) --
-# every other repo, every remote-host entry and every other top-level key
-# preserved untouched. Which entries those are is decided in shell, by the
-# same reader the caller's own precondition uses, so the rewrite can never
-# select differently from the check that follows it.
-#
-# And a check DOES follow it: this returns 0 only when the store no longer
-# lists the folder afterwards. A silent 0 for a no-op that left the folder
-# listed is exactly how the hand-off used to launch an app that still held
-# it and then quit that app again (claude-orca-tgr follow-up) -- every way
-# this can fail to land now says which on stderr and returns non-zero.
-#
-# Three kinds of non-zero, because they are three different situations:
-#   1  the folder IS listed and the rewrite did not remove it -- the
-#      caller must not hand this folder to the app; OR the store is a
-#      SQLite-era profile (profile-state.db beside it), which must never
-#      be edited at all -- the caller's in-app removal steps are the
-#      answer for both (claude-orca-pow).
-#   2  there is no store to read here at all (no data folder, no
-#      orca-data.json, no jq): said out loud, but it is not evidence of a
-#      leak -- a Mac whose Orca has never been launched has neither a
-#      folder to strip nor a project in it.
-#
-# Callers only ever run this while the app is NOT running: the app's
-# shutdown flushes this same file in parallel with stopping its RPC, so a
-# rewrite done the instant `status --json` says "not running" is a rewrite
-# the flush clobbers. The launcher never quits Orca to get that window
-# (claude-orca, 2026-09-13) -- it takes the one it is given, and says what
-# to remove by hand when there is none.
-orca_strip_local_repo() {
-    local dir="$1" cli="${2:-}" data f tmp p db="" drop=""
-    data="$(orca_user_data_dir "$dir" "$cli")"
-    if [ -z "$data" ]; then
-        echo "  $(orca_no_data_dir_message)" >&2
-        return 2
-    fi
-    f="$(orca_data_json_file "$data")"
-    if [ ! -f "$f" ]; then
-        echo "  $f not found" >&2
-        return 2
-    fi
-    if ! command -v jq >/dev/null 2>&1; then
-        echo "  jq not installed, so $f cannot be rewritten" >&2
-        return 2
-    fi
-    if ! orca_data_json_lists_dir "$f" "$dir"; then
-        return 0
-    fi
-
-    # A SQLite-era profile (Orca 1.4.219+) keeps its state in
-    # profiles/<id>/profile-state.db and treats orca-data.json as its
-    # export: ANY byte change to that JSON makes the user's next Orca
-    # start refuse outright ("cannot safely choose a profile-state
-    # authority", proven on the real 1.4.219 .deb). The rewrite below
-    # would brick the desktop app it is trying to help -- so this never
-    # edits such a profile, and says why: the caller's could-not-strip
-    # path (the in-app removal steps) is the answer.
-    db="${f%/orca-data.json}/profile-state.db"
-    if [ -f "$db" ]; then
-        echo "  Orca keeps this profile in SQLite; the launcher will not edit it" >&2
-        return 1
-    fi
-
-    # The paths to drop, chosen here and handed to jq as data: string
-    # prefixes both ways AND a pwd -P comparison, which no jq filter can
-    # do for a path that is a symlink on this Mac.
-    while IFS= read -r p; do
-        [ -n "$p" ] || continue
-        if orca_path_is_this_folder "$p" "$dir"; then
-            drop="$drop$p
-"
-        fi
-    done <<REPOS
-$(orca_data_json_repo_paths "$f")
-REPOS
-
-    tmp="$f.tmp.$$"
-    # The same removal in .projects[].sourceRepoIds: a project references
-    # its repos by id, so the ids this rewrite removes from .repos come out
-    # of every project's list too, and a project left referencing nothing
-    # goes with them. A project that never referenced anything is not
-    # touched.
-    if jq --arg drop "$drop" '
-        def islocal: ((.executionHostId // "local") | . == "" or . == "local");
-        ($drop | split("\n") | map(select(. != ""))) as $d
-        | (.repos // []) as $old
-        | ($old | map(. as $r | select(
-            (($r | islocal) and (($d | index($r.path)) != null)) | not))) as $kept
-        | ($old | map(. as $r
-              | select(($r | islocal) and (($d | index($r.path)) != null))
-              | (.id // ""))
-            | map(select(. != ""))) as $gone
-        | .repos = $kept
-        | .projects = ((.projects // []) | map(
-              (.sourceRepoIds // []) as $s
-              | if ($s | length) > 0
-                then .sourceRepoIds = ($s | map(
-                    . as $sid | select(($gone | index($sid)) == null)))
-                     | select((.sourceRepoIds | length) > 0)
-                else . end))
-    ' "$f" > "$tmp" 2>/dev/null; then
-        mv "$tmp" "$f" 2>/dev/null || rm -f "$tmp"
-    else
-        rm -f "$tmp"
-    fi
-
-    if orca_data_json_lists_dir "$f" "$dir"; then
-        echo "  $f still lists $dir after the rewrite" >&2
-        return 1
-    fi
-    return 0
-}
-
-# Poll until the app's runtime answers, <= CLAUDE_ORCA_ORCA_WAIT seconds
-# (60, the plan's number). The exit code says nothing, so the JSON is read
-# every time.
-orca_wait_reachable() {
-    local cli="$1" limit waited=0 out=""
-    limit="${CLAUDE_ORCA_ORCA_WAIT:-60}"
-    case "$limit" in
-        ''|*[!0-9]*) limit=60 ;;
-    esac
-    while :; do
-        out="$("$cli" status --json 2>/dev/null || true)"
-        if orca_json_reachable "$out"; then
-            return 0
-        fi
-        if [ "$waited" -ge "$limit" ]; then
-            return 1
-        fi
-        sleep 1
-        waited=$((waited + 1))
-    done
-}
-
-# Launch the app, wait for it, and save this folder's runtime as an
-# environment. Returns 0 when the desktop app is this folder's client --
-# whether or not the environment saved, and whether or not this folder is
-# ALSO a local project there, because the block that follows says which --
-# and 1 only when the hand-off cannot happen at all (no app, no CLI, no
-# pairing offer, an app that never answers), which is the one case the
-# browser is still the answer for.
-#
-# Nothing here ever quits Orca (the user's decision, 2026-09-13): their
-# windows and their running agents are worth more than the one thing a
-# quit buys, a writable orca-data.json. A local project this run could
-# not remove is reported instead -- the diagnostic below names the entry
-# that matched, and print_desktop_block_v3 prints the clicks that remove
-# it -- while the remote environment is registered regardless, so the
-# sandboxed workspace exists to open.
-orca_hand_off() {
-    local dir="$1" app="" cli="" pair="" name="" legacy="" appver="" imgver="" \
-          out="" id="" strip_rc=0 leak=0 leak_why=""
-
-    app="$(desktop_app)" || {
-        echo "  no Orca.app on this Mac -- opening Orca Web instead ($ORCA_DOWNLOAD_URL)" >&2
-        return 1
-    }
-    pair="$(pairing_url_of "$dir")" || {
-        echo "  this container published no pairing offer -- opening Orca Web instead" >&2
-        return 1
-    }
-    cli="$(orca_cli "$app")" || {
-        echo "  $app ships no orca CLI -- opening Orca Web instead" >&2
-        return 1
-    }
-
-    # A folder may still carry the private per-folder profile
-    # claude-orca-qhq created (4a1882c): that decision is reversed and
-    # nothing reads one any more, so clean it up the moment this folder
-    # is opened again.
-    if [ -e "$dir/.claude-dev/state/orca-profile" ]; then
-        echo "  removing this folder's old private Orca profile (no longer used)" >&2
-        rm -rf "$dir/.claude-dev/state/orca-profile"
-    fi
-
-    appver="$(orca_app_version "$app")"
-    imgver="$(image_orca_version)"
-    if [ -n "$appver" ] && [ -n "$imgver" ] && [ "$appver" != "$imgver" ]; then
-        {
-            echo "  Warning: Orca.app is $appver and this folder's image runs Orca $imgver."
-            echo "           Orca refuses a protocol mismatch outright, so if the app will"
-            echo "           not attach, './claude-dev --update' rebuilds at the app's version."
-        } >&2
-    fi
-
-    name="$(orca_env_name "$dir")"
-    legacy="$(orca_env_legacy_name "$dir")"
-    # Nothing may claim a saved environment until this run saves one, and
-    # nothing may claim a local project until this run sees one.
-    rm -f "$(orca_env_file "$dir")"
-    rm -f "$(orca_leak_file "$dir")"
-
-    # Two paths, and which one this is decides everything below: the app
-    # is already up (a launch would be a SECOND instance, which
-    # claude-orca-tgr forbids, and its store is being written under us,
-    # so there is no safe rewrite to attempt at all), or it is not (the
-    # store is ours to rewrite, and the app this run starts starts
-    # without this folder in it).
-    if orca_json_app_running "$("$cli" status --json 2>/dev/null || true)"; then
-        # Ask for the data dir while the process still exists: discovery
-        # goes through `lsof -p <pid>`, so the answer is only obtainable
-        # now, and it is cached under state/ for every later run that has
-        # no pid to ask about -- including the diagnostic below.
-        orca_user_data_dir "$dir" "$cli" >/dev/null
-        if ! orca_wait_reachable "$cli"; then
-            echo "  Orca.app did not answer in ${CLAUDE_ORCA_ORCA_WAIT:-60}s -- opening Orca Web instead" >&2
-            return 1
-        fi
-        if orca_lists_local_repo "$("$cli" repo list --json 2>/dev/null || true)" "$dir"; then
-            leak=1
-            leak_why="Orca lists this folder as a LOCAL project"
-            orca_report_local_leak "$dir" "$cli"
-        fi
-    else
-        # Not running: strip first, THEN launch. In this order the app
-        # this run starts has never held the folder -- and when the strip
-        # could not land, the hand-off still happens; the block at the end
-        # is what asks for the two clicks that finish it.
-        if [ "${CLAUDE_ORCA_OPEN:-1}" != "0" ]; then
-            strip_rc=0
-            orca_strip_local_repo "$dir" "$cli" || strip_rc=$?
-            # 2 is "there is no store here to read" -- said on stderr
-            # already, and no evidence of a leak. 1 is a folder this Mac's
-            # Orca still holds after the rewrite, which it also said.
-            if [ "$strip_rc" -eq 1 ]; then
-                leak=1
-                leak_why="this Mac's orca-data.json still lists this folder after the strip"
-            fi
-            open -a "$app" || echo "  Could not launch $app" >&2
-        fi
-        if ! orca_wait_reachable "$cli"; then
-            echo "  Orca.app did not answer in ${CLAUDE_ORCA_ORCA_WAIT:-60}s -- opening Orca Web instead" >&2
-            return 1
-        fi
-        if orca_lists_local_repo "$("$cli" repo list --json 2>/dev/null || true)" "$dir"; then
-            leak=1
-            leak_why="Orca re-added this folder as a LOCAL project on launch"
-            orca_report_local_leak "$dir" "$cli"
-        fi
-    fi
-
-    # A result, not authority: what the block printer says without having
-    # to ask the app a second time (it still asks, so a leak that appears
-    # between here and the block is reported too).
-    if [ "$leak" -eq 1 ]; then
-        mkdir -p "$dir/.claude-dev/run"
-        printf '%s\n' "$leak_why" > "$(orca_leak_file "$dir")"
-    fi
-
-    # Remove first, always. The name may be saved against the PREVIOUS
-    # container's offer, which is dead, and `add` on a name that exists is
-    # refused rather than replaced; an rm of a name that was never there
-    # answers ok:false and is the no-op it looks like. (The bead says
-    # "rm if the name exists"; doing it unconditionally is the same answer
-    # without having to guess the shape of `environment list --json`.)
-    # Both names: a folder opened before the rename still has one saved
-    # under the container's name, pointed at a dead offer.
-    "$cli" environment rm --environment "$name" --json >/dev/null 2>&1 || true
-    "$cli" environment rm --environment "$legacy" --json >/dev/null 2>&1 || true
-
-    out="$("$cli" environment add --name "$name" --pairing-code "$pair" --json 2>/dev/null || true)"
-    if orca_json_ok "$out"; then
-        id="$(orca_json_env_id "$out")"
-        printf '{"name":"%s","id":"%s"}\n' "$name" "$id" > "$(orca_env_file "$dir")"
-        return 0
-    fi
-
-    # The manual fallback that always works: the offer goes on the
-    # clipboard and the block below says where to paste it.
-    if command -v pbcopy >/dev/null 2>&1; then
-        printf '%s' "$pair" | pbcopy || true
-        echo "  Orca could not save the environment; the pairing URL is on your clipboard." >&2
-    else
-        echo "  Orca could not save the environment; the pairing URL is $pair" >&2
-    fi
-    return 0
-}
-
-# Teardown's half: the app is left holding a saved environment whose
-# runtime is about to stop existing. Quiet and best effort -- no app, no
-# CLI or an environment that was never saved are all "nothing to remove".
-# A profile from before claude-orca-qhq was reversed (4a1882c) has no
-# reason to survive the folder either, so teardown is where any last trace
-# of it goes even if a folder never got opened again to trigger the
-# hand-off's own cleanup.
-orca_env_forget() {
-    local dir="$1" app="" cli=""
-    rm -rf "$dir/.claude-dev/state/orca-profile"
-    app="$(desktop_app)" || return 0
-    cli="$(orca_cli "$app")" || return 0
-    "$cli" environment rm --environment "$(orca_env_name "$dir")" --json >/dev/null 2>&1 || true
-    "$cli" environment rm --environment "$(orca_env_legacy_name "$dir")" --json >/dev/null 2>&1 || true
-    rm -f "$(orca_env_file "$dir")"
-}
-
-# The paths a `repo list --json` answer names. `repo list` with no
-# --environment is the local list; there is no --host flag in 1.4.197
-# (bead claude-orca-8uo.1, correcting the plan).
-orca_json_repo_paths() {
-    local json="$1"
-    if command -v jq >/dev/null 2>&1; then
-        printf '%s' "$json" | jq -r '.result.repos[]?.path // empty' 2>/dev/null || true
-    else
-        printf '%s' "$json" | tr '{},' '\n' | sed -n 's/^"path":"\(.*\)"$/\1/p'
-    fi
-}
-
-# The same answer with the two fields that say WHICH entry this is:
-# path<TAB>host<TAB>id, one line each. Orca's own record (out/shared/
-# execution-host.js in 1.4.197) carries executionHostId normalised to
-# "local", "ssh:<target>" or "runtime:<env>", with connectionId as the
-# older spelling -- so the host column is the one thing that tells this
-# folder's own container workspace apart from a real local project.
-# Deliberately UNFILTERED: the diagnostic that prints these exists
-# precisely because a CLI answer and the persisted store disagreed once,
-# and hiding the host of whatever matched is how that stayed a mystery.
-# Empty without jq; the caller falls back to the path list.
-orca_json_repo_rows() {
-    local json="$1"
-    command -v jq >/dev/null 2>&1 || return 0
-    printf '%s' "$json" | jq -r '.result.repos[]?
-        | [(.path // ""), (.executionHostId // .connectionId // "local"), (.id // "")]
-        | @tsv' 2>/dev/null || true
-}
-
-# What the launcher saw, whenever `repo list` says this folder is a local
-# project in the Mac's own Orca. On a real Mac (2026-09-13) the CLI said
-# local and orca-data.json did not name the folder at all, and nothing in
-# the output said which entry had matched -- so every run that meets this
-# again prints the matching rows with their host, this folder's own path,
-# and what the persisted store lists locally. stderr, one line each.
-orca_report_local_leak() {
-    local dir="$1" cli="$2" json="" tab p host id data="" f="" locals="" sep=""
-    tab="$(printf '\t')"
-    json="$("$cli" repo list --json 2>/dev/null || true)"
-    echo "  Orca lists this folder as a LOCAL project:" >&2
-    if command -v jq >/dev/null 2>&1; then
-        while IFS="$tab" read -r p host id; do
-            [ -n "$p" ] || continue
-            orca_path_is_this_folder "$p" "$dir" || continue
-            echo "    $p  host=${host:-local}  id=$id" >&2
-        done <<ROWS
-$(orca_json_repo_rows "$json")
-ROWS
-    else
-        while IFS= read -r p; do
-            [ -n "$p" ] || continue
-            orca_path_is_this_folder "$p" "$dir" || continue
-            echo "    $p" >&2
-        done <<PATHS
-$(orca_json_repo_paths "$json")
-PATHS
-    fi
-    echo "    this folder: $dir" >&2
-    data="$(orca_user_data_dir "$dir" "$cli")"
-    if [ -n "$data" ]; then f="$(orca_data_json_file "$data")"; fi
-    if [ -n "$f" ] && [ -f "$f" ]; then
-        while IFS= read -r p; do
-            [ -n "$p" ] || continue
-            locals="$locals$sep$p"
-            sep=", "
-        done <<LOCALS
-$(orca_data_json_repo_paths "$f")
-LOCALS
-        [ -n "$locals" ] || locals="none"
-        echo "    $f local entries: $locals" >&2
-    else
-        echo "    $(orca_no_data_dir_message)" >&2
-    fi
-}
-
-# Same list, read straight off the Mac's own persisted store instead of
-# through the CLI -- the only way to ask while the app is not running,
-# since there is no `orca status` to answer with the process down.
-# LOCAL entries only. A repo attached to a remote host lives in this SAME
-# array, told apart by `executionHostId` (absent, null, "" or "local" is
-# the Mac itself) -- so an unfiltered read counts the container's own
-# workspace as a local leak, which is how this folder could look like two
-# "main" workspaces where one of them is ours.
-orca_data_json_repo_paths() {
-    local f="$1"
-    [ -f "$f" ] || return 0
-    command -v jq >/dev/null 2>&1 || return 0
-    jq -r '.repos[]?
-           | select((.executionHostId // "local") | . == "" or . == "local")
-           | .path // empty' "$f" 2>/dev/null || true
-}
-
-# Two paths naming the same directory. String equality first, because
-# neither side has to exist for that to be an answer; then `pwd -P` on
-# both, which is the only way /Users/joe/proj and the /Volumes path it is
-# a symlink to compare equal. `realpath` is not on a stock Mac, hence the
-# subshell.
-same_dir_path() {
-    local a="${1:-}" b="${2:-}" ra rb
-    [ -n "$a" ] && [ -n "$b" ] || return 1
-    [ "$a" = "$b" ] && return 0
-    ra="$(cd -P "$a" 2>/dev/null && pwd -P)" || ra=""
-    rb="$(cd -P "$b" 2>/dev/null && pwd -P)" || rb=""
-    [ -n "$ra" ] && [ -n "$rb" ] && [ "$ra" = "$rb" ]
-}
-
-# Does ONE repo path name this folder -- itself, a folder inside it, a
-# folder containing it, as a string or through symlinks? The single rule
-# the precondition, the doctor row and the strip's own selection all ask,
-# so no two of them can disagree about what to remove.
-orca_path_is_this_folder() {
-    local p="$1" dir="$2" host="${CLAUDE_ORCA_HOST_PROJECT_DIR:-}"
-    if orca_paths_include_dir "$dir" "$p"; then return 0; fi
-    if same_dir_path "$p" "$dir"; then return 0; fi
-    if [ -n "$host" ] && same_dir_path "$p" "$host"; then return 0; fi
-    return 1
-}
-
-# The same question of the persisted store: does <file> list <dir> as a
-# LOCAL project? This is what makes the strip verifiable -- the hand-off
-# asks it before quitting anything (no point quitting an app over a file
-# that does not name this folder) and the strip asks it again afterwards.
-orca_data_json_lists_dir() {
-    local f="$1" dir="$2" p
-    [ -f "$f" ] || return 1
-    while IFS= read -r p; do
-        [ -n "$p" ] || continue
-        if orca_path_is_this_folder "$p" "$dir"; then return 0; fi
-    done <<REPOS
-$(orca_data_json_repo_paths "$f")
-REPOS
-    return 1
-}
-
-# Is this folder one of them -- itself, a folder inside it, or a folder
-# that contains it? Any of the three is a workspace the desktop app can
-# open with no container around it. $2 is a newline-separated path list
-# (from either of the two readers above).
-orca_paths_include_dir() {
-    local dir="$1" paths="$2" host="${CLAUDE_ORCA_HOST_PROJECT_DIR:-}" p=""
-    while IFS= read -r p; do
-        [ -n "$p" ] || continue
-        case "$dir" in
-            "$p"|"$p"/*) return 0 ;;
-        esac
-        case "$p" in
-            "$dir"/*) return 0 ;;
-        esac
-        if [ -n "$host" ]; then
-            case "$host" in
-                "$p"|"$p"/*) return 0 ;;
-            esac
-            case "$p" in
-                "$host"/*) return 0 ;;
-            esac
-        fi
-    done <<REPOS
-$paths
-REPOS
-    return 1
-}
-
-# Folder-scoped again (claude-orca-tgr reverses claude-orca-qhq's
-# any-repo semantics along with the profile it depended on): is DIR
-# itself, a folder inside it, or a folder that contains it, one of the
-# paths a `repo list --json` answer names?
-orca_lists_local_repo() {
-    orca_paths_include_dir "$2" "$(orca_json_repo_paths "$1")"
-}
-
-# Nothing to pick, nothing named "Runtime Environments" (1.4.197 has no
-# such pane -- confirmed against /opt/Orca/resources/app.asar, which
-# titles the pane "Remote Hosts" both in Settings and in the status bar's
-# own host popover). orca_hand_off already ran `environment add`, so by
-# the time this prints the app already shows it Connected; what is left
-# to say is where it landed. The app's sidebar groups workspaces under a
-# PROJECT named after the repo (derive_project_name), and each workspace
-# under that project carries a badge with the environment name
-# (orca_env_name, truncated in the UI) -- that mapping, not an instruction
-# to go pick something, is the whole hand-off.
-#
-# When nothing was saved the first line is the click path instead
-# (AddRepoHostSelector in app.asar): sidebar "+" -> Add project -> Add
-# remote host, then paste the pairing URL that is already on the
-# clipboard (orca_hand_off's own pbcopy, above) and name it -- Remote
-# Hosts is where it shows up once that is done.
-print_desktop_block_v3() {
-    local dir="$1" name project file
-    name="$(orca_env_name "$dir")"
-    project="$(derive_project_name "$dir")"
-    file="$(orca_env_file "$dir")"
-    if [ -s "$file" ]; then
-        cat <<RUNIT
-
-How to run it:
-  Orca (the desktop app):  open and attached -- this folder is the project
-                           "$project" in the sidebar; workspaces under it
-                           badged "$name" run inside the container.
-                           (Remote Hosts lists "$name" as Connected.)
-  Reopen it later:         ./claude-dev
-  A terminal inside it:    ./claude-dev shell
-RUNIT
-    else
-        cat <<RUNIT
-
-How to run it:
-  Orca (the desktop app):  sidebar "+" > Add project > Add remote host,
-                           paste the pairing URL (it is on the clipboard)
-                           and name it "$name"; Remote Hosts then lists it.
-  Reopen it later:         ./claude-dev
-  A terminal inside it:    ./claude-dev shell
-RUNIT
-    fi
-    orca_local_leak_note "$dir"
-}
-
-# The two clicks that finish a hand-off the launcher could not finish
-# itself: the same folder is ALSO a LOCAL project in the Mac's own Orca
-# (badge "Local Mac"), where agents run with no container around them.
-# Since 2026-09-13 that is no longer a reason to withhold the app -- the
-# remote environment is registered either way -- so this is the ACTION,
-# not a warning printed on the way to the browser.
-#
-# Two sources, because neither alone is enough: the file orca_hand_off
-# wrote when it saw the leak itself (run/orca-local-leak, this run's own
-# observation), and the app's own answer right now -- which catches a
-# project added between the hand-off and this block, and keeps the note
-# working for every caller that never ran a hand-off at all. Quiet when
-# there is no app or no CLI to ask (the same gate as cmd_verify's "n/a"
-# row): a folder on Linux, or a Mac with no Orca.app, has nothing to say.
-#
-# The labels are Orca 1.4.197's own (renderer bundle): the workspace
-# context menu says "Remove Project from Orca", the local badge is
-# "Local Mac", the sidebar button is "New workspace" and its host picker
-# is "Run on". Settings > Remove Project is a DIFFERENT command --
-# "Remove this project from Orca on all configured hosts" -- which would
-# take the container's workspace with it, hence the warning against it.
-orca_local_leak_note() {
-    local dir="$1" name project app cli
-    if [ ! -s "$(orca_leak_file "$dir")" ]; then
-        app="$(find_orca_app 2>/dev/null)" || return 0
-        cli="$(orca_cli "$app" 2>/dev/null)" || return 0
-        orca_lists_local_repo "$("$cli" repo list --json 2>/dev/null || true)" "$dir" || return 0
-    fi
-    name="$(orca_env_name "$dir")"
-    project="$(derive_project_name "$dir")"
-    cat <<ACTION
-
-ACTION NEEDED in Orca, once. This folder is ALSO open there as a LOCAL project,
-and agents started in that workspace run on the Mac with no sandbox.
-  1. In Orca's sidebar, under the project "$project", find the workspace
-     badged "Local Mac".
-  2. Right-click that workspace and choose "Remove Project from Orca".
-     Do NOT use Settings > Remove Project: that removes it on every host,
-     the container's copy included.
-  3. The workspace badged "$name" is the sandboxed one -- open it.
-     To make another: click "+" (New workspace), pick the project
-     "$project", and under "Run on" choose "$name".
-  If the "$name" workspace is missing afterwards, rerun ./claude-dev.
-ACTION
-}
-
-# The whole hand-off, in three lines: where Orca is, how to get back to
-# it, and how to get a terminal inside the VM.
-print_run_it_block_v3() {
-    local dir="$1" url="${2:-}" file
-    file="$dir/.claude-dev/run/orca-web-url.txt"
-    if [ -z "$url" ] && [ -f "$file" ]; then
-        url="$(head -1 "$file")"
-    fi
-    cat <<RUNIT
-
-How to run it:
-  Orca (open in a browser):  $url
-  Reopen it later:           ./claude-dev
-  A terminal inside it:      ./claude-dev shell
-RUNIT
-}
-
-# `container run -d`. The project is mounted at its own absolute path, so
-# every path Orca stores and every path an agent prints means the same
-# thing on both sides; the folder-local home becomes /home/agent, so
-# credentials and Orca state live and die with the folder.
-#
-# ... with ONE exception, and it is the reason a Mac could not boot a
-# folder at all. Orca's --user-data-dir is where it puts its own unix
-# domain sockets: the headless RPC socket it chmods on startup, and the
-# daemon socket it publishes with link(2). A macOS bind mount is not a
-# Linux filesystem -- Docker Desktop hands it through virtiofs, where a
-# socket can be created and then neither chmod'd nor hard-linked:
-#
-#   chmod('<udd>/o-7563-9c89.sock')            -> EINVAL
-#   link('<udd>/.pce...' -> 'daemon-v36.sock') -> ENOENT
-#
-# Orca takes the first as an unhandled rejection and the second as a fatal
-# daemon start, so it never prints a Web client URL and the entrypoint
-# gives up on it (verified on this Mac against orca-ide 1.4.197: the same
-# image, the same mounts, a user-data-dir on the folder home publishes no
-# URL, one on a real Linux filesystem is ready in two seconds). On Linux
-# the same bind mount is an ordinary directory where all of this works, so
-# the ubuntu-latest e2e stays green; and the macOS CI job runs Docker under
-# colima, whose sshfs mount refuses setup.sh's chown outright ("Permission
-# denied" on every path in the home, run 34122589713) -- it dies one step
-# before Orca and has never reached this.
-#
-# So Orca's user-data-dir gets a docker volume -- a real Linux filesystem
-# at the path Orca already expects. It is named after the container and
-# removed by teardown, so the state still dies with the folder; what it
-# no longer does is sit in the folder where the Mac can see it.
+# In the old Orca days a folder's container mounted a docker volume named
+# <container>-orca-state at /home/agent/.config/orca, because the old Orca
+# put its unix sockets there and a macOS bind mount cannot chmod or link
+# them. Nothing mounts it any more. The name is kept for exactly two
+# callers: teardown, and --update, which removes the leftover volume of a
+# folder that predates this. Both ignore "no such volume".
 state_volume() { printf '%s-orca-state\n' "$1"; }
 
 # --- the scratch volumes (claude-orca-7uy) --------------------------------
 #
-# The other write-heavy, regenerable agent state gets the same treatment
-# as Orca's user-data-dir, because file-creating work on the bind-mount
-# share is what the Docker VM pays for (measured in claude-orca-19o: 3000
+# Write-heavy, regenerable agent state lives on docker volumes rather than
+# the bind-mount share, because file-creating work on the share is what the
+# Docker VM pays for (measured in claude-orca-19o: 3000
 # small files create/stat/rm = 901 ms and 61,129 VM interrupts on the
 # share vs 59 ms and 330 on a docker volume; a full checkout 842 ms /
 # 55,654 vs 283 ms / 10,848). Caches, opencode's session data and the
-# worktrees Orca links live on four more per-container volumes -- named
-# after the container like the state volume, so teardown can remove them
+# agents' git worktrees live on four per-container volumes -- named
+# after the container, so teardown can remove them
 # without a record, and the container half (claude-orca-1eh) migrates the
 # shadowed copies onto them. The project folder itself and the rest of
 # /home/agent STAY bind mounts: the user must keep seeing the folder the
-# template was started in, on the Mac and in Orca. The guest paths are the
+# template was started in, on the Mac. The guest paths are the
 # one interface with the container: they ride in as CLAUDE_ORCA_VOLUME_DIRS.
 SCRATCH_VOLUMES="cache:/home/agent/.cache npm:/home/agent/.npm opencode:/home/agent/.local/share/opencode worktrees:/home/agent/worktrees"
 scratch_volume() { printf '%s-%s\n' "$1" "$2"; }        # <container name> <suffix>
@@ -2756,12 +1627,15 @@ apply_cpu_cap() {
 # The runtime path is the exception and the reason this still exists. A
 # folder whose image could not be built runs plain ubuntu:24.04, where
 # there is no baked anything; setup.sh installs the payload at first start
-# into <project>/.claude-dev/toolchain, mounted here over the three paths
-# those tools live at, so at least the recreate after it is fast.
+# into <project>/.claude-dev/toolchain, mounted here over the path those
+# tools live at, so at least the recreate after it is fast.
 #
 # One mount per path, never /opt itself: /opt also holds /opt/claude-orca,
 # which IS the image's copy of this template.
-TOOLCHAIN_MOUNTS="usr-local:/usr/local opt-Orca:/opt/Orca"
+#
+# There is no opt-Orca:/opt/Orca mount any more: nothing installs Orca there.
+# An old opt-Orca directory on a Mac is left alone -- no removal code.
+TOOLCHAIN_MOUNTS="usr-local:/usr/local"
 
 container_dns() {
     local dns=""
@@ -2791,29 +1665,22 @@ folder_image_ref() {
 }
 
 container_create() {
-    local dir="$1" name="$2" port="$3" ref src token cpus memory mount theme dns guest ver
+    local dir="$1" name="$2" port="$3" ref src token cpus memory mount terminal_theme dns guest
     guest="$(guest_project_dir "$dir")"
     src="$(image_source "$dir")"
     ref="$(folder_image_ref "$dir")"
     token="$(gh auth token 2>/dev/null || true)"
-    # claude-orca.json's `theme` picks the Orca theme the entrypoint seeds
-    # on a folder's first run (dark|light|system); the project name is the
-    # beads prefix it inits with.
-    theme="$(json_get "$dir" '.theme')"
-    [ -n "$theme" ] || theme="dark"
-    # ... and `terminalTheme` picks the terminal PALETTE by name -- an Orca
-    # builtin, "Homebrew" (green on black) by default. It reaches the folder
-    # twice over on purpose: the entrypoint seeds the name for Orca's own
-    # renderer, and the shipped .zshrc paints the same colours with OSC
-    # escapes, which is the half that does not need the browser to have been
-    # seeded or the image to have been rebuilt.
+    # claude-orca.json's `terminalTheme` picks the terminal PALETTE by name,
+    # "Homebrew" (green on black) by default. The shipped .zshrc paints it
+    # with OSC escapes, so it needs no image rebuild to take effect; the
+    # project name below is the beads prefix the folder inits with.
     terminal_theme="$(json_get "$dir" '.terminalTheme')"
     [ -n "$terminal_theme" ] || terminal_theme="Homebrew"
     mkdir -p "$dir/.claude-dev/run" "$dir/.claude-dev/home"
-    # Never open a stale pairing URL from a previous container. (An
-    # update, which is where a container is deliberately replaced, clears
-    # the rest of the previous one's results too -- clear_run_results.)
-    rm -f "$dir/.claude-dev/run/orca-web-url.txt" "$dir/.claude-dev/run/sshd.ready"
+    # Never trust a previous container's "sshd is up" marker. (An update,
+    # which is where a container is deliberately replaced, clears the rest
+    # of the previous one's results too -- clear_run_results.)
+    rm -f "$dir/.claude-dev/run/sshd.ready"
 
     # The toolchain cache, made before the run so docker mounts real
     # directories rather than creating root-owned ones of its own -- and
@@ -2824,17 +1691,14 @@ container_create() {
         done
     fi
 
-    # The two bind mounts stay first, then the state volume and the four
-    # scratch ones -- these lines and SCRATCH_VOLUMES (see state_volume)
-    # say the same thing, in the same order.
+    # The two bind mounts stay first, then the four scratch volumes --
+    # these lines and SCRATCH_VOLUMES say the same thing, in the same order.
     #
     # The published port is sshd's (CLAUDE_ORCA_SSHD_PORT, the port the
-    # Mac's ssh config names). Orca still runs inside until it is removed,
-    # one port up and NOT published: the Mac no longer talks to it.
+    # Mac's ssh config names): the only way in, and the one thing to publish.
     set -- run -d --name "$name" \
         --volume "$dir:$guest" \
         --volume "$dir/.claude-dev/home:/home/agent" \
-        --volume "$(state_volume "$name"):/home/agent/.config/orca" \
         --volume "$(scratch_volume "$name" cache):/home/agent/.cache" \
         --volume "$(scratch_volume "$name" npm):/home/agent/.npm" \
         --volume "$(scratch_volume "$name" opencode):/home/agent/.local/share/opencode" \
@@ -2846,23 +1710,12 @@ container_create() {
         -e "CLAUDE_ORCA_ROOT=$guest" \
         -e "BEADS_DIR=$guest/.beads" \
         -e "CLAUDE_ORCA_SSHD_PORT=$port" \
-        -e "ORCA_PORT=$((port + 1))" \
         -e "HOST_UID=$(id -u)" \
         -e "GH_TOKEN=$token" \
-        -e "CLAUDE_ORCA_THEME=$theme" \
         -e "CLAUDE_ORCA_TERMINAL_THEME=$terminal_theme" \
         -e "CLAUDE_ORCA_PROJECT_NAME=$(derive_project_name "$dir")" \
         -e "CLAUDE_ORCA_GIT_NAME=$(git_identity_name)" \
         -e "CLAUDE_ORCA_GIT_EMAIL=$(git_identity_email)"
-
-    # The image was built at wanted_orca_version -- the ONE answer the tag
-    # and the build arg already use -- so boot-time setup.sh must not fall
-    # back to its own pin: measured 2026-09-19 as 1.4.197 reinstalled over
-    # an image built at 1.4.203, a download and a downgrade per recreate.
-    ver="$(wanted_orca_version)"
-    if [ -n "$ver" ]; then
-        set -- "$@" -e "ORCA_VERSION=$ver"
-    fi
 
     # Deliver a scripts/container/* fix without an image rebuild: the
     # entrypoint already baked into today's image reads
@@ -2965,17 +1818,17 @@ docker_host_path() {
 # older generation of this template used the same one, and bootstrap moves
 # that generation's .claude-dev aside without touching what it left
 # running -- so a fresh bootstrap of a second folder found a container by
-# the right name, reused it, and paired the Mac's Orca.app to a runtime
-# holding someone else's mounts: the project appeared in the sidebar and
-# was empty, no shell, no agents (a real Mac, 2026-09-13).
+# the right name, reused it, and handed the Mac a runtime holding someone
+# else's mounts: the project appeared empty, no shell, no agents (a real
+# Mac, 2026-09-13).
 #
 # So reuse is conditional on the five things that decide WHICH runtime the
-# app is about to be handed: the image, the project mount, the home mount,
+# Mac is about to be handed: the image, the project mount, the home mount,
 # the published port and the sshd port in its env. Returns 0 when all five
 # are this folder's, and
 # otherwise prints one line naming the FIRST mismatch and returns 1.
-# It never looks at the state volume -- that is Orca's own user-data dir,
-# it survives a recreate on purpose, and it is keyed by container name.
+# It never looks at volumes: they are keyed by container name and survive
+# a recreate on purpose.
 container_matches() {
     local name="$1" dir="$2" port="$3" guest want have want_id have_id have_port have_ssh mounts m found="" facts
     # CTR_RUNTIME=local runs the entrypoint as a host process: no image, no
@@ -3122,8 +1975,8 @@ MOUNTS
 # and when it did not, this is the repair. That makes the config path
 # independent of the image's age, which is the whole point.
 #
-# It runs AFTER the web URL is published, on purpose. The entrypoint syncs
-# before it starts `orca-ide --serve`, so waiting on the URL is what keeps
+# It runs AFTER sshd is ready, on purpose. The entrypoint syncs config
+# before it starts sshd, so waiting on sshd.ready is what keeps
 # two syncs from racing over the same config dir -- both of them `rm -rf`
 # and repopulate .claude/commands, and a torn config dir is worse than a
 # stale one.
@@ -3165,27 +2018,23 @@ cmd_open_v3() {
     name="$(container_name "$dir")"
     port="$(choose_port "$dir")"
 
-    # The image ref follows the Mac's Orca.app (image_tag), and the app
-    # updates itself: a plain open after an app update (1.4.219 -> .220,
-    # a real Mac, 2026-10-06) wanted claude-orca:latest-orca1.4.220, which
-    # only --update would have built -- so the old container was removed as
-    # a stranger's and `docker run` went off to pull the new tag from Docker
-    # Hub ("pull access denied for claude-orca"). A built folder whose image
-    # is missing builds it here, before anything is torn down; the build is
-    # a cache hit for every layer below the Orca one.
+    # A built folder whose image is missing (pruned, or the IMAGE_TAG file
+    # moved on) builds it here, before anything is torn down -- otherwise
+    # the old container would be removed as a stranger's and `docker run`
+    # would go off to pull the tag from Docker Hub ("pull access denied
+    # for claude-orca", a real Mac, 2026-10-06).
     if [ "$CTR_RUNTIME" != "local" ] && [ "$(image_source "$dir")" != "runtime" ] \
         && ! ctr image inspect "$(image_ref)" >/dev/null 2>&1; then
-        echo "  image $(image_ref) is not on this machine (the Orca app moved?) -- building it"
+        echo "  image $(image_ref) is not on this machine -- building it"
         acquire_image "$dir" "$(image_ref)" || return 1
     fi
 
     # Adopt a container only when it is this folder's (container_matches
     # says which of image, mounts and port is not). A stranger's is stopped
-    # and removed -- never its state volume, which is Orca's user-data dir
-    # and is keyed by the same name -- and the create path below builds
-    # this folder's own. Its run/ results go with it for the same reason
-    # cmd_update_v3 clears them: the pairing URL of a container that is
-    # gone opens nothing.
+    # and removed -- never its volumes, which are keyed by the same name --
+    # and the create path below builds this folder's own. Its run/ results
+    # go with it for the same reason cmd_update_v3 clears them: the sshd
+    # marker of a container that is gone proves nothing.
     state="$(container_state "$name")"
     if [ -n "$state" ] && ! container_matches "$name" "$dir" "$port"; then
         ctr stop "$name" >/dev/null 2>&1 || true
@@ -3250,9 +2099,8 @@ cmd_open_v3() {
             ;;
     esac
 
-    # What open waits for is sshd, not Orca's web URL: the Mac no longer
-    # talks to the Orca inside the container (it stays until C1 deletes it).
-    # wait_for_sshd_ready returns 3 after printing its own host-key message.
+    # What open waits for is sshd: it is the only way the Mac talks to the
+    # container. wait_for_sshd_ready returns 3 after printing its own host-key message.
     t0="$(date +%s)"
     wait_for_sshd_ready "$dir" "$name" || rc=$?
     t1="$(date +%s)"
@@ -3353,7 +2201,7 @@ cmd_pane_v3() {
 }
 
 cmd_register_v3() {
-    local dir="${1:-$PROJECT_SELF}" name port ui
+    local dir="${1:-$PROJECT_SELF}" name port
     [ -d "$dir" ] || { echo "Error: directory does not exist: $dir" >&2; return 1; }
     dir="$(cd "$dir" && pwd -P)"
     name="$(derive_project_name "$dir")"
@@ -3380,21 +2228,8 @@ JSON
 
     write_project_stub "$dir"
 
-    # Desktop or web, decided once. A config that already carries the key
-    # keeps it: the folder's own answer outlives the app being installed,
-    # moved or removed, and a re-register never quietly moves a working
-    # folder to the other UI.
-    if [ -z "$(json_get "$dir" '.ui')" ]; then
-        case "${CLAUDE_ORCA_UI:-}" in
-            desktop) ui="desktop" ;;
-            web)     ui="web" ;;
-            *)
-                ui="web"
-                if find_orca_app >/dev/null 2>&1; then ui="desktop"; fi
-                ;;
-        esac
-        persist_ui "$dir" "$ui"
-    fi
+    # An old folder's config may still carry a `ui` key from the old Orca
+    # days. It is ignored, not rewritten: a folder's own file is its own.
 
     port="$(choose_port "$dir")"
     persist_port "$dir" "$port"
@@ -3459,8 +2294,8 @@ doctor_row() {
 # the CLI, the service, the image, the container, the port and the URL the
 # entrypoint published. Exits 2 on any finding, so it is usable in a script.
 cmd_doctor_v3() {
-    local dir="$PROJECT_SELF" rc=0 ref name state port src vol app ver cli
-    local prov=0 st nm detail want="" imgver=""
+    local dir="$PROJECT_SELF" rc=0 ref name state port src
+    local prov=0 st nm detail
     # Whichever image THIS folder runs: a runtime-install folder has no
     # prebuilt image and never will, so asking after one would be a finding
     # about something it does not use.
@@ -3506,43 +2341,6 @@ cmd_doctor_v3() {
         fi
     fi
 
-    # The Mac half of the pair: the Orca.app this folder attaches to and
-    # the CLI that goes with it. Never a finding -- a folder on Orca Web
-    # needs neither, and a desktop folder whose app has gone still opens
-    # in the browser -- so both rows report and neither touches rc.
-    app="$(desktop_app)" || app=""
-    if [ -n "$app" ]; then
-        ver="$(orca_app_version "$app")"
-        doctor_row ok "orca app" "$app (${ver:-version unknown})"
-    elif [ "$(ui_of "$dir")" = "desktop" ]; then
-        doctor_row warn "orca app" "missing -- this folder is set to the desktop Orca: $ORCA_DOWNLOAD_URL"
-    else
-        doctor_row n/a "orca app" "missing -- this folder is on Orca Web, which needs no app"
-    fi
-
-    cli="$(orca_cli "$app")" || cli=""
-    if [ -n "$cli" ]; then
-        doctor_row ok "orca cli" "$cli"
-    else
-        doctor_row n/a "orca cli" "missing -- only the desktop Orca ships one"
-    fi
-
-    # The two versions that have to agree. They normally do by
-    # construction -- the image is built at the app's version and carries
-    # it in its tag -- and they come apart in one real way: the user
-    # upgraded Orca.app and this folder has not rebuilt yet. Never a
-    # finding: the folder still opens, on Orca Web if nothing else, and
-    # one rebuild fixes it. So a mismatch warns and leaves rc alone.
-    want="$(wanted_orca_version)"
-    imgver="$(image_orca_version)"
-    if [ "$src" = "runtime" ]; then
-        doctor_row n/a "orca versions" "app ${ver:-unknown} -- the runtime path installs orca ${want:-unknown} in the VM"
-    elif [ -n "$imgver" ] && [ -n "$want" ] && [ "$imgver" != "$want" ]; then
-        doctor_row warn "orca versions" "app ${ver:-$want}, image $imgver -- Orca refuses a protocol mismatch; ./claude-dev --update rebuilds the image at $want"
-    else
-        doctor_row ok "orca versions" "orca ${want:-unknown} -- the app and this folder's image agree"
-    fi
-
     # built or runtime -- which one it is says whether this folder is
     # running this template's image or installing its toolchain in the VM.
     if [ -n "$src" ]; then
@@ -3567,18 +2365,6 @@ cmd_doctor_v3() {
         doctor_row warn "container" "$name ($state) -- ./claude-dev starts it"
     fi
 
-    # Orca cannot keep its user-data-dir on the folder home (a Mac bind
-    # mount cannot chmod or link a unix socket), so it lives here; a
-    # missing volume is not a fault, just a folder that has not started.
-    if [ "$CTR_RUNTIME" != "local" ]; then
-        vol="$(state_volume "$name")"
-        if ctr volume inspect "$vol" >/dev/null 2>&1; then
-            doctor_row ok "Orca state" "$vol (docker volume, mounted at /home/agent/.config/orca)"
-        else
-            doctor_row warn "Orca state" "no volume $vol yet -- ./claude-dev creates it"
-        fi
-    fi
-
     port=""
     if [ -f "$dir/.claude-dev/run/port" ]; then
         port="$(head -1 "$dir/.claude-dev/run/port")"
@@ -3599,8 +2385,7 @@ cmd_doctor_v3() {
     fi
 
     # What `open` and `pane` actually use: sshd answering on the folder's
-    # port, the ControlMaster, and the folder's key being accepted. These
-    # replace the old `web url` row -- the Mac no longer talks to Orca.
+    # port, the ControlMaster, and the folder's key being accepted.
     doctor_ssh_rows "$dir" || rc=2
 
     # ... and one row per provisioning step (S5, claude-orca-dbu.5). The
@@ -3634,10 +2419,10 @@ PROVISION
 
 # ===== claude-dev verify ================================================
 #
-# The doctor answers "can this folder open at all" -- six rows about the
-# CLI, the daemon, the image, the container, the port and the URL. It says
+# The doctor answers "can this folder open at all" -- rows about the
+# CLI, the daemon, the image, the container, the port and sshd. It says
 # nothing about whether the folder is SET UP: the rulebook, the agents, the
-# hooks, the git identity, the Claude first-run keys, Orca's worktree base,
+# hooks, the git identity, the Claude first-run keys,
 # the beads database. All of that is seeded by code that logs a line and
 # moves on, and until now nothing read any of it back -- so a folder whose
 # seeding half failed looked exactly like one that worked, which is how
@@ -3655,7 +2440,6 @@ docker_image_of() {
 
 cmd_verify_v3() {
     local dir="${1:-$PROJECT_SELF}" name state rc=0 port st nm detail rows
-    local app="" cli="" data="" src="" running=""
     [ -d "$dir" ] || { echo "Error: directory does not exist: $dir" >&2; return 1; }
     dir="$(cd "$dir" && pwd -P)"
     if [ ! -f "$(orca_json "$dir")" ]; then
@@ -3688,50 +2472,6 @@ cmd_verify_v3() {
 
     # sshd / ssh master / ssh key auth, in place of the old `web url` row.
     doctor_ssh_rows "$dir" || rc=2
-
-    # The one row only the Mac can answer, and the guard for the one risk
-    # the desktop client adds (.claude/plans/desktop-orca.md S5,
-    # claude-orca-tgr): Orca's app can open LOCAL workspaces, which run
-    # agents on the Mac with no container around them, and 1.4.197 has no
-    # knob to disable them. Folder-scoped again, against the one installed
-    # app -- claude-orca-qhq's own profile (and its any-repo semantics) is
-    # gone. n/a only when there is no app to ask at all; otherwise this
-    # reads the live `repo list --json` while the app is running (the
-    # source the hand-off's own self-heal reads) or orca-data.json
-    # directly when it is not (the only way to ask with the process down)
-    # and says which source it read.
-    app="$(find_orca_app)" || app=""
-    if [ -z "$app" ]; then
-        doctor_row n/a "local repos" "no Orca.app on this host -- nothing here can open the folder outside the container"
-    else
-        cli="$(orca_cli "$app")" || cli=""
-        running=""
-        if [ -n "$cli" ] && orca_json_app_running "$("$cli" status --json 2>/dev/null || true)"; then
-            running=1
-        fi
-        if [ -n "$running" ]; then
-            src="repo list --json"
-            if orca_lists_local_repo "$("$cli" repo list --json 2>/dev/null || true)" "$dir"; then
-                doctor_row FAIL "local repos" "the Mac's own Orca tracks this folder as a LOCAL repo ($src) -- agents opened there run on the Mac, outside this container; remove it in Orca"
-                rc=2
-            else
-                doctor_row ok "local repos" "the Mac's own Orca does not track this folder locally ($src)"
-            fi
-        else
-            data="$(orca_user_data_dir "$dir" "$cli")"
-            if [ -n "$data" ]; then
-                src="$(orca_data_json_file "$data")"
-                if orca_data_json_lists_dir "$src" "$dir"; then
-                    doctor_row FAIL "local repos" "the Mac's own Orca tracks this folder as a LOCAL repo ($src) -- agents opened there run on the Mac, outside this container; remove it in Orca"
-                    rc=2
-                else
-                    doctor_row ok "local repos" "the Mac's own Orca does not track this folder locally ($src)"
-                fi
-            else
-                doctor_row ok "local repos" "$(orca_no_data_dir_message)"
-            fi
-        fi
-    fi
 
     # ... and everything the container can see for itself.
     rows=0
@@ -3834,9 +2574,9 @@ cmd_update_v3() {
     fi
 
     # Recreate rather than restart: a new image only takes effect in a new
-    # container, and everything that matters is in the mounted folder --
-    # or, for Orca's own user-data-dir, in the named volume, which is why
-    # this removes the container and never the volume.
+    # container, and everything that matters is in the mounted folder or
+    # the scratch volumes, which is why this removes the container and
+    # never those volumes.
     name="$(container_name "$dir")"
     state="$(container_state "$name")"
     if [ -n "$state" ]; then
@@ -3844,9 +2584,22 @@ cmd_update_v3() {
         ctr stop "$name" >/dev/null 2>&1 || true
         ctr rm "$name" >/dev/null 2>&1 || true
     fi
+    # Migration from the old Orca image (claude-orca-9bh.12): the old Orca
+    # state volume <container>-orca-state is mounted by nothing now, so it goes
+    # (one line, only when it was there -- a migrated folder prints nothing).
+    # The container is removed above, so docker no longer holds it in use.
+    if [ "$CTR_RUNTIME" != "local" ] && ctr volume inspect "$(state_volume "$name")" >/dev/null 2>&1; then
+        if ctr volume rm "$(state_volume "$name")" >/dev/null 2>&1; then
+            echo "  removed the old Orca state volume $(state_volume "$name")"
+        fi
+    fi
+    # A folder from before the ssh panes has no keys yet; sshd reads them at
+    # boot, so they are made before the new container starts. Idempotent and
+    # silent for a folder that has them.
+    ssh_ensure_keys "$dir" || return 1
     # The container that wrote run/ is gone, so its results go with it:
     # cmd_open_v3 below chooses the port again and the new container
-    # writes its own URL and logs.
+    # writes its own sshd.ready and logs.
     clear_run_results "$dir"
     cmd_open_v3 "$dir"
 }
@@ -3867,13 +2620,6 @@ cmd_teardown_v3() {
 
     project="$(derive_project_name "$dir")"
     name="$(container_name "$dir")"
-    # Before the container goes: the desktop app is holding a saved
-    # environment that points at a runtime which is about to stop
-    # existing, and an environment that answers nothing is worse than no
-    # environment at all.
-    if [ "$(ui_of "$dir")" = "desktop" ]; then
-        orca_env_forget "$dir"
-    fi
     # The folder's ssh ControlMaster is a process on the Mac, not in the
     # container: left alone it would outlive the folder it points at. The
     # keys, config and known_hosts under state/ssh go with .claude-dev below.
@@ -3883,12 +2629,12 @@ cmd_teardown_v3() {
     clip_listen_stop "$dir" log
     ctr stop "$name" >/dev/null 2>&1 || true
     ctr rm "$name" >/dev/null 2>&1 || true
-    # Orca's user-data-dir is the one piece of folder state that lives in a
-    # volume rather than in .claude-dev (see state_volume): teardown is
-    # what keeps "dies with the folder" true of it. A `docker rm` on the
-    # container never touches a NAMED volume, so this is not redundant.
+    # Legacy step: a folder from the old Orca days may still have
+    # the old <container>-orca-state volume (see state_volume); a `docker rm`
+    # never touches a NAMED volume, so teardown removes it by name. "No such
+    # volume" is the normal answer on a newer folder.
     ctr volume rm "$(state_volume "$name")" >/dev/null 2>&1 || true
-    # The scratch volumes (see state_volume) are named after the container
+    # The scratch volumes (see scratch_volume) are named after the container
     # too, so teardown names them the same way -- regenerable state, but
     # "dies with the folder" is still the promise.
     for pair in $SCRATCH_VOLUMES; do
@@ -3909,10 +2655,10 @@ cmd_teardown_v3() {
     remove_host_dir "$dir/.claude-dev" \
         || echo "Warning: $dir/.claude-dev is still there; remove it by hand once Docker has settled" >&2
     rm -f "$dir/claude-dev"
-    # Orca's on-disk residue (claude-orca-aeu): the linked worktrees under
-    # .orca-worktrees/ carry a .git FILE each, which `git add -A` stages as
-    # embedded-repo gitlinks and a push then rejects, and root .orca/ is
-    # Orca's drop state. Removing them through `git worktree remove` first
+    # The old Orca's on-disk residue (claude-orca-aeu): the linked worktrees
+    # under .orca-worktrees/ carry a .git FILE each, which `git add -A` stages
+    # as embedded-repo gitlinks and a push then rejects, and root .orca/ is
+    # the old Orca's drop state. Removing them through `git worktree remove` first
     # keeps the worktree metadata (.git/worktrees, the branch itself) sane;
     # prune clears the entries whose directory a user deleted by hand. A
     # folder that is not a git repo gets the plain rm only, silently.
@@ -3992,10 +2738,20 @@ cmd_teardown_v3() {
         echo "Removed $dir/.beads (--purge-beads)"
     fi
 
-    echo "Teardown complete for '$project' at $dir (container $name and its Orca state removed)"
+    echo "Teardown complete for '$project' at $dir (container $name and its volumes removed)"
     if [ -n "$snap" ]; then
         echo "Re-register this directory later to restore the snapshot."
     fi
+}
+
+# --how-to-run: the whole of it, now that the sandbox's door is a shell.
+print_how_to_run_v3() {
+    cat <<'HOWTO'
+  ./claude-dev            start this folder's sandbox and wait for its sshd
+  ./claude-dev pane       open a shell inside it (what a Ghostty tab runs)
+  ./claude-dev ghostty    set Ghostty up so every new tab lands in the sandbox
+  ./claude-dev --doctor   say what is wrong when one of those does not work
+HOWTO
 }
 
 cmd_help() {
@@ -4003,8 +2759,8 @@ cmd_help() {
 claude-dev -- claude_orca project launcher (one per folder)
 
 Usage:
-  claude-dev                    Open this folder's Orca (starts or creates
-                                the container as needed)
+  claude-dev                    Start this folder's container and wait for sshd
+                                (creates it as needed)
   claude-dev [register] [dir]   Register a project (default: this folder)
   claude-dev open               Same as no arguments
   claude-dev pane [dir]         A sandbox pane in this terminal (fast when one
@@ -4014,7 +2770,7 @@ Usage:
   claude-dev verify             Check this folder is set up the way the
                                 template promises: the boundary, the
                                 toolchain, beads, the rulebook, agents,
-                                hooks, git identity and Orca's own state
+                                hooks and git identity
   claude-dev logs               Follow the container's output
   claude-dev ghostty [--uninstall|--check]
                                 Route Ghostty panes into sandboxed folders
@@ -4022,7 +2778,7 @@ Usage:
                                 --uninstall gives the config back unchanged
   claude-dev key openrouter     Store this folder's OpenRouter key (not
                                 echoed) for the delegate routes
-  claude-dev --how-to-run       Print the URL and the two commands
+  claude-dev --how-to-run       Print how to start, open and set up the sandbox
   claude-dev --doctor           CLI, service, image, container, port, sshd, ssh
   claude-dev --update           Pull the template, rebuild the image, re-sync
                                 the config, recreate
@@ -4043,11 +2799,7 @@ case "${1:-}" in
     key)           shift; cmd_key_v3 "$@" || exit $?; exit 0 ;;
     ghostty)       shift; ghostty_main "$@" || exit $?; exit 0 ;;
     --how-to-run)
-        if [ "$(ui_of "$PROJECT_SELF")" = "desktop" ]; then
-            print_desktop_block_v3 "$PROJECT_SELF"
-        else
-            print_run_it_block_v3 "$PROJECT_SELF"
-        fi
+        print_how_to_run_v3
         exit 0 ;;
     --doctor)      cmd_doctor_v3 || exit $?; exit 0 ;;
     --update)      shift; cmd_update_v3 "${1:-$PROJECT_SELF}" || exit $?; exit 0 ;;

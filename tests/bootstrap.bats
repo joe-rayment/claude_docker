@@ -356,7 +356,7 @@ shadow_path_without() {
     run make_project_v3 "$PROJECT_DIR"
     [ "$status" -eq 0 ]
     [ -d "$ORCA_HOST/template/.git" ]
-    [ -s "$PROJECT_DIR/.claude-dev/run/orca-web-url.txt" ]
+    [ -s "$PROJECT_DIR/.claude-dev/run/port" ]
 }
 
 # v3 (claude-orca-qa2.2): the sandbox self-test and the shell-rc hook both
@@ -521,52 +521,37 @@ old_layout_fixture() {
     [ -d "$PROJECT_DIR/.claude-dev/template" ]
 }
 
-# --- desktop Orca, S2 (claude-orca-8uo.3) ---------------------------------
+# --- no Orca.app (claude-orca-9bh.12, C2) ------------------------------------
 #
-# A folder that means to run the desktop Orca needs the app to exist before
-# anything is installed, so the preflight asks after it the way it asks
-# after docker: Darwin only, before the first mkdir, and with the download
-# page named rather than a command the user cannot run. A folder that means
-# to stay on Orca Web says so with CLAUDE_ORCA_UI=web and is never asked.
-# Linux never looks at all -- there is no Orca.app to find.
-
-@test "bootstrap on Darwin stops with the download URL when no Orca.app is found" {
+# The panes are Ghostty over ssh now, so there is no app to attach to and
+# nothing for the preflight to ask after: Darwin used to stop here with the
+# Orca download page when Orca.app was missing, and CLAUDE_ORCA_APP /
+# CLAUDE_ORCA_UI chose between the app and Orca Web. Neither exists any more.
+# Guards:   bootstrap on a Mac with no Orca.app anywhere registers as usual
+#           and says nothing about Orca.app, its download page or Orca Web.
+# Fails if: the Orca.app gate (search, download URL, early exit) comes back.
+# Run:      bats -f 'needs no Orca.app' tests/bootstrap.bats
+@test "bootstrap on Darwin needs no Orca.app" {
     mac_env
-    # An explicit override that points nowhere is the answer on any host --
-    # including a developer's Mac with a real Orca.app in /Applications.
-    export CLAUDE_ORCA_APP="$BATS_TEST_TMPDIR/no-such-Orca.app"
-
-    run bash "$REPO_ROOT/bootstrap.sh" "$PROJECT_DIR"
-    [ "$status" -ne 0 ]
-    [[ "$output" == *"https://orca.dev/download"* ]]
-    [[ "$output" == *"Orca"* ]]
-
-    # The preflight stops before the first mkdir, exactly like the docker
-    # check: nothing is left behind to clean up or to confuse a re-run.
-    [ ! -e "$ORCA_HOST" ]
-}
-
-@test "bootstrap on Darwin with CLAUDE_ORCA_UI=web registers without the app" {
-    mac_env
-    export CLAUDE_ORCA_APP="$BATS_TEST_TMPDIR/no-such-Orca.app"
-    export CLAUDE_ORCA_UI=web
+    [ ! -e /Applications/Orca.app ] || skip "this host has a real Orca.app"
+    [ ! -e "$HOME/Applications/Orca.app" ] || skip "this host has a real Orca.app"
 
     run make_project_v3 "$PROJECT_DIR"
     [ "$status" -eq 0 ]
-    [[ "$output" != *"orca.dev/download"* ]]
     [ -d "$ORCA_HOST/template/.git" ]
-    [ "$(jq -r '.ui' "$PROJECT_DIR/.claude-dev/claude-orca.json")" = "web" ]
+    # `if`, not `!`: a bare `! cmd` never fails a bats case.
+    if printf '%s\n' "$output" | grep -qiE 'orca[.](app|dev)|orca web'; then return 1; fi
+    # And register still writes no ui key: there is no UI to choose.
+    [ "$(jq -r 'has("ui")' "$PROJECT_DIR/.claude-dev/claude-orca.json")" = "false" ]
 }
 
-@test "bootstrap on Linux registers ui web" {
+@test "bootstrap on Linux registers and writes no ui key" {
     export STUB_UNAME_S=Linux
     export STUB_UNAME_M=aarch64
-    # The fixture Mac's Orca.app is still on the environment; a Linux host
-    # has no desktop Orca to attach to whatever the override says.
     run make_project_v3 "$PROJECT_DIR"
     [ "$status" -eq 0 ]
-    [[ "$output" != *"orca.dev/download"* ]]
-    [ "$(jq -r '.ui' "$PROJECT_DIR/.claude-dev/claude-orca.json")" = "web" ]
+    if printf '%s\n' "$output" | grep -qiE 'orca[.](app|dev)|orca web'; then return 1; fi
+    [ "$(jq -r 'has("ui")' "$PROJECT_DIR/.claude-dev/claude-orca.json")" = "false" ]
 }
 
 # Ghostty (claude-orca-9bh.8): macOS only, never fatal. On a Mac without the

@@ -9,11 +9,11 @@
 # mounted, and open the pairing URL the entrypoint publishes. Nothing here
 # needs a Mac or a daemon: `docker`, `open`, `sw_vers` and `uname` are
 # stubbed by tests/helpers/setup.bash, and the `docker` stub stands in for
-# the entrypoint by writing run/orca-web-url.txt when it is asked to `run`.
+# the entrypoint by writing run/sshd.ready when it is asked to `run`.
 #
 # See .claude/plans/container-v3.md S5 and scripts/container/entrypoint.sh
-# (the env contract asserted in case 3: PROJECT_DIR, ORCA_PORT, HOST_UID,
-# GH_TOKEN in, run/orca-web-url.txt and run/port out).
+# (the env contract asserted in case 3: PROJECT_DIR, CLAUDE_ORCA_SSHD_PORT,
+# HOST_UID, GH_TOKEN in, run/sshd.ready and run/port out).
 
 load helpers/setup
 
@@ -169,7 +169,7 @@ path_without_docker() {
     [[ "$line" == *"-e CLAUDE_ORCA_TERMINAL_THEME=Snazzy"* ]]
 }
 
-@test "open runs the container with the project at /workspace/<name> and the home at /home/agent, the port published on 127.0.0.1, PROJECT_DIR/ORCA_PORT/HOST_UID/GH_TOKEN/BEADS_DIR in the environment, waits for run/sshd.ready and opens no URL" {
+@test "open runs the container with the project at /workspace/<name> and the home at /home/agent, the port published on 127.0.0.1, PROJECT_DIR/CLAUDE_ORCA_SSHD_PORT/HOST_UID/GH_TOKEN/BEADS_DIR in the environment and no ORCA_PORT, waits for run/sshd.ready and opens no URL" {
     mkdir -p "$PROJECT_DIR"
     primary="$(abspath "$PROJECT_DIR")"
     run make_project_v3 "$primary"
@@ -201,9 +201,9 @@ path_without_docker() {
     # found" meant on 2026-09-07. The folder's tracker is named outright.
     [[ "$line" == *"-e BEADS_DIR=$guest/.beads"* ]]
     [[ "$line" == *"-e CLAUDE_ORCA_ROOT=$guest"* ]]
-    # The published port is sshd's now; Orca itself listens on the next one.
+    # The published port is sshd's; nothing else listens on a second one.
     [[ "$line" == *"-e CLAUDE_ORCA_SSHD_PORT=$port"* ]]
-    [[ "$line" == *"-e ORCA_PORT=$((port + 1))"* ]]
+    [[ "$line" != *"ORCA_PORT="* ]]
     [[ "$line" == *"-e HOST_UID=$(id -u)"* ]]
     [[ "$line" == *"-e GH_TOKEN=$STUB_TOKEN"* ]]
     [[ "$line" == *"claude-orca:"* ]]
@@ -358,337 +358,26 @@ path_without_docker() {
     [[ "$output" == *"cp: cannot create the settings file"* ]]
 }
 
-
-# --- desktop Orca, S1 (claude-orca-8uo.2) --------------------------------
+# --- the old Orca "ui" key ----------------------------------------------
 #
-# A desktop Orca on the Mac attaches to the container's runtime with the
-# pairing URL `orca serve` minted. A folder can have it two ways, and the
-# launcher must take either: run/orca-pairing-url.txt, which the entrypoint
-# writes from serve's own `Pairing URL:` line, or -- for every folder still
-# on an image built before that change -- the `#pairing=` fragment of
-# run/orca-web-url.txt, which carries the same URL percent-encoded. A
-# change that can only arrive in a rebuilt image reaches nobody, so the
-# second path is not a fallback, it is the one that always works.
-
-# The launcher is a command-dispatching script, so a unit case lifts the
-# one function out of it with sed, the way tests/toolchain-cache.bats
-# drives try_build. A missing function fails loudly rather than looking
-# like the "no URL" return it is being asked about.
-run_pairing_url_of() {
-    local fns
-    fns="$(sed -n '/^pairing_url_of()/,/^}$/p' "$REPO_ROOT/scripts/launcher.sh")"
-    if [ -z "$fns" ]; then
-        echo "pairing_url_of is not defined in scripts/launcher.sh" >&2
-        return 99
-    fi
-    bash -c "set -uo pipefail
-$fns
-pairing_url_of \"\$@\"" _ "$@"
-}
-
-pairing_fixture() {
-    local dir="$1"
-    mkdir -p "$dir/.claude-dev/run"
-    rm -f "$dir/.claude-dev/run/orca-pairing-url.txt" \
-          "$dir/.claude-dev/run/orca-web-url.txt"
-}
-
-@test "pairing_url_of prefers run/orca-pairing-url.txt" {
-    local dir="$BATS_TEST_TMPDIR/pair1"
-    pairing_fixture "$dir"
-
-    # Both files present and disagreeing: the entrypoint's own file wins,
-    # because it is serve's verbatim line rather than something derived.
-    printf '%s\n' 'orca://pair?code=FROMTHEFILE' \
-        > "$dir/.claude-dev/run/orca-pairing-url.txt"
-    printf '%s\n' \
-        'http://127.0.0.1:5173/web-index.html#pairing=orca%3A%2F%2Fpair%3Fcode%3DFROMTHEFRAGMENT' \
-        > "$dir/.claude-dev/run/orca-web-url.txt"
-
-    run run_pairing_url_of "$dir"
-    [ "$status" -eq 0 ]
-    [ "$output" = "orca://pair?code=FROMTHEFILE" ]
-
-    # A pairing file that is not a pairing URL at all (a truncated write, a
-    # stale placeholder) is not trusted: the fragment still answers.
-    printf '%s\n' 'not a url' > "$dir/.claude-dev/run/orca-pairing-url.txt"
-    run run_pairing_url_of "$dir"
-    [ "$status" -eq 0 ]
-    [ "$output" = "orca://pair?code=FROMTHEFRAGMENT" ]
-}
-
-@test "pairing_url_of decodes the #pairing= fragment of run/orca-web-url.txt" {
-    local dir="$BATS_TEST_TMPDIR/pair2"
-    pairing_fixture "$dir"
-
-    # A real fragment: the whole URL percent-encoded, base64url payload and
-    # its `=` padding included (%3D), which is what makes a plain `tr` or a
-    # `${x//%2F//}` pass wrong and a proper decode necessary.
-    printf '%s\n' \
-        'http://127.0.0.1:5173/web-index.html#pairing=orca%3A%2F%2Fpair%3Fcode%3DeyJ2IjoyLCJzY29wZSI6InJ1bnRpbWUifQ%3D%3D' \
-        > "$dir/.claude-dev/run/orca-web-url.txt"
-
-    run run_pairing_url_of "$dir"
-    [ "$status" -eq 0 ]
-    [ "$output" = 'orca://pair?code=eyJ2IjoyLCJzY29wZSI6InJ1bnRpbWUifQ==' ]
-}
-
-@test "pairing_url_of fails with empty output when neither file yields an orca://pair URL" {
-    local dir="$BATS_TEST_TMPDIR/pair3"
-
-    # Nothing published yet.
-    pairing_fixture "$dir"
-    run run_pairing_url_of "$dir"
-    [ "$status" -eq 1 ]
-    [ -z "$output" ]
-
-    # A web URL with no fragment at all.
-    printf '%s\n' 'http://127.0.0.1:5173/web-index.html' \
-        > "$dir/.claude-dev/run/orca-web-url.txt"
-    run run_pairing_url_of "$dir"
-    [ "$status" -eq 1 ]
-    [ -z "$output" ]
-
-    # A fragment that decodes to something that is not a pairing URL.
-    printf '%s\n' \
-        'http://127.0.0.1:5173/web-index.html#pairing=http%3A%2F%2Fexample.invalid' \
-        > "$dir/.claude-dev/run/orca-web-url.txt"
-    run run_pairing_url_of "$dir"
-    [ "$status" -eq 1 ]
-    [ -z "$output" ]
-}
-
-# --- desktop Orca, S2 (claude-orca-8uo.3) --------------------------------
-#
-# Which of the two UIs a folder runs is a property OF THE FOLDER, decided
-# once at register and written into claude-orca.json as `ui`: desktop when
-# the Mac has an Orca.app and nothing said otherwise, web in every other
-# case. It is a decision, not a probe, so a re-register never revisits it
-# -- a folder that was set to web stays web even after the user installs
-# the app, and a desktop folder survives the app being moved. The doctor
-# reports what it can see of the app either way, and never turns a missing
-# desktop Orca into a failing exit code: Orca Web is a complete answer.
-
-# The uname stub answers only what a test pins, and make_project_v3 pins
-# Darwin for the bootstrap call alone -- so a case that drives the launcher
-# AFTER the install (the doctor) has to pin it for itself.
-as_mac() {
-    export STUB_UNAME_S=Darwin
-    export STUB_UNAME_M=arm64
-}
-
-@test "register writes ui desktop when the app is found" {
-    as_mac
-    make_project_v3 "$PROJECT_DIR" >/dev/null
-
-    [ "$(jq -r '.ui' "$PROJECT_DIR/.claude-dev/claude-orca.json")" = "desktop" ]
-
-    # The same folder re-registered is still desktop: the key is written
-    # once and read forever after.
-    run bash -c "cd '$PROJECT_DIR' && ./claude-dev register"
-    [ "$status" -eq 0 ]
-    [ "$(jq -r '.ui' "$PROJECT_DIR/.claude-dev/claude-orca.json")" = "desktop" ]
-}
-
-@test "register leaves an existing ui key alone" {
-    as_mac
+# Folders registered while Orca was the UI carry `"ui": "desktop"|"web"` in
+# claude-orca.json. Nothing reads it any more; register must neither pick a
+# new one nor rewrite (or drop) the one an old folder has.
+# Guards:   register writes no ui key and leaves an old folder's ui key untouched
+# Fails if: register picks or rewrites a ui key (the old desktop/web decision)
+# Run:      bats -f 'register ignores an existing ui key' tests/launcher-v3.bats
+@test "register ignores an existing ui key and writes none of its own" {
     make_project_v3 "$PROJECT_DIR" >/dev/null
     config="$PROJECT_DIR/.claude-dev/claude-orca.json"
 
-    # The counterfactual first, so "left alone" is not a property of a
-    # register that never writes the key at all: a config with no ui key
-    # (a folder carried over from before this template had one) gets the
-    # probe's answer written into it.
-    jq 'del(.ui)' "$config" > "$config.t" && mv "$config.t" "$config"
-    run bash -c "cd '$PROJECT_DIR' && ./claude-dev register"
-    [ "$status" -eq 0 ]
-    [ "$(jq -r '.ui' "$config")" = "desktop" ]
+    # A fresh register writes no ui key at all.
+    [ "$(jq 'has("ui")' "$config")" = "false" ]
 
-    # A folder deliberately pinned to Orca Web, on a Mac that has the app:
-    # the probe would say desktop, and the folder's own answer wins.
-    jq '.ui = "web"' "$config" > "$config.t" && mv "$config.t" "$config"
-    run bash -c "cd '$PROJECT_DIR' && ./claude-dev register"
-    [ "$status" -eq 0 ]
-    [ "$(jq -r '.ui' "$config")" = "web" ]
-
-    # And the other way: a desktop folder whose app has gone stays desktop
-    # rather than being quietly demoted behind the user's back.
+    # An old folder's key is left exactly as it was found, whatever it says.
     jq '.ui = "desktop"' "$config" > "$config.t" && mv "$config.t" "$config"
-    run bash -c "cd '$PROJECT_DIR' \
-        && CLAUDE_ORCA_APP='$BATS_TEST_TMPDIR/no-such-Orca.app' ./claude-dev register"
+    run bash -c "cd '$PROJECT_DIR' && ./claude-dev register"
     [ "$status" -eq 0 ]
     [ "$(jq -r '.ui' "$config")" = "desktop" ]
-}
-
-@test "doctor prints the orca app row with its version" {
-    as_mac
-    make_project_v3 "$PROJECT_DIR" >/dev/null
-    stub_sshd_up "$PROJECT_DIR"
-
-    run bash -c "cd '$PROJECT_DIR' && ./claude-dev --doctor"
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"orca app"* ]]
-    [[ "$output" == *"$CLAUDE_ORCA_APP (1.4.197)"* ]]
-    [[ "$output" == *"orca cli"* ]]
-    [[ "$output" == *"$CLAUDE_ORCA_APP/Contents/Resources/bin/orca"* ]]
-}
-
-@test "doctor prints the orca app row missing when there is no app" {
-    as_mac
-    # A folder that registered as web, on a Mac with no Orca.app: both rows
-    # still print, and neither is a finding -- Orca Web needs no app.
-    export CLAUDE_ORCA_UI=web
-    make_project_v3 "$PROJECT_DIR" >/dev/null
-    [ "$(jq -r '.ui' "$PROJECT_DIR/.claude-dev/claude-orca.json")" = "web" ]
-    stub_sshd_up "$PROJECT_DIR"
-
-    export CLAUDE_ORCA_APP="$BATS_TEST_TMPDIR/no-such-Orca.app"
-    run bash -c "cd '$PROJECT_DIR' && ./claude-dev --doctor"
-    [ "$status" -eq 0 ]
-    [[ "$output" =~ orca[[:space:]]app[[:space:]]+missing ]]
-}
-
-# --- desktop Orca, S3 (claude-orca-8uo.4) --------------------------------
-#
-# With `ui = desktop` the hand-off stops being a browser tab. The launcher
-# launches the Mac's own Orca.app, waits for its runtime to answer, saves
-# this folder's container as a named environment through the app's own
-# CLI, and prints the pane to pick it in. Three facts from the probe (bead
-# claude-orca-8uo.1) shape all of it: `orca status --json` exits 0 whether
-# the runtime is reachable or not, so the boolean in the JSON is the only
-# signal; a second `environment add` under a name that already exists is
-# refused outright, so the stale one goes first; and no `orca://` protocol
-# handler is registered, so the app is launched by bundle (`open -a`) and
-# paired through the CLI.
-#
-# The CLI is stubbed at the path orca_cli() resolves -- the app bundle's
-# own Contents/Resources/bin/orca -- and logs its argv, one line per call.
-
-DESKTOP_PAIR_URL='orca://pair?code=eyJ2IjoyLCJzY29wZSI6InJ1bnRpbWUifQ=='
-
-# A registered folder with its container up, on a Mac whose Orca.app has a
-# CLI that answers, and a pairing offer published the way an image that
-# carries S1 publishes it. Prints the project path; leaves both logs empty
-# so a case asserts about its own `./claude-dev open` and not about the
-# register that set the folder up.
-desktop_fixture() {
-    local primary
-    as_mac
-    write_stub_orca "$CLAUDE_ORCA_APP/Contents/Resources/bin/orca"
-    mkdir -p "$PROJECT_DIR"
-    primary="$(abspath "$PROJECT_DIR")"
-    make_project_v3 "$primary" >/dev/null
-    printf '%s\n' "$DESKTOP_PAIR_URL" \
-        > "$primary/.claude-dev/run/orca-pairing-url.txt"
-    : > "$ORCA_STUB_LOG"
-    : > "$OPEN_STUB_LOG"
-    printf '%s\n' "$primary"
-}
-
-# open no longer launches the Orca app (C2 deletes the dead code): deleted case "open with ui desktop launches the single installed app without -n, --args or a private profile"
-# open no longer launches the Orca app (C2 deletes the dead code): deleted case "open with ui desktop strips this folder's local project from orca-data.json while the app is not running"
-# open no longer launches the Orca app (C2 deletes the dead code): deleted case "open with ui desktop never quits Orca: a running app that holds this folder locally is attached anyway"
-# open no longer launches the Orca app (C2 deletes the dead code): deleted case "open with ui desktop attaches anyway when the launched app re-adds this folder locally"
-# open no longer launches the Orca app (C2 deletes the dead code): deleted case "open with ui desktop prints which entry matched when the store does not name this folder"
-# open no longer launches the Orca app (C2 deletes the dead code): deleted case "open with ui desktop launches the app anyway when the strip could not land, and says so"
-# open no longer launches the Orca app (C2 deletes the dead code): deleted case "open with ui desktop never edits a SQLite-era profile, and the leak it reports reads the profile's store"
-# open no longer launches the Orca app (C2 deletes the dead code): deleted case "desktop cli calls carry no ORCA_USER_DATA_PATH override"
-# open no longer launches the Orca app (C2 deletes the dead code): deleted case "open with ui desktop adds the environment with the decoded pairing URL and records its id"
-# open no longer launches the Orca app (C2 deletes the dead code): deleted case "open with ui desktop removes an existing environment of the same name before adding"
-# open no longer launches the Orca app (C2 deletes the dead code): deleted case "open with ui desktop also removes the environment saved under the old container name before adding"
-# open no longer launches the Orca app (C2 deletes the dead code): deleted case "open with ui desktop copies the pairing URL to the clipboard when environment add fails"
-# open no longer launches the Orca app (C2 deletes the dead code): deleted case "open with ui web opens the URL in the browser and never calls orca"
-
-@test "teardown removes the environment and leaves no profile dir behind" {
-    local primary name legacy
-    primary="$(desktop_fixture)"
-    name="remote-$(basename "$primary")"
-    # A profile left behind by claude-orca-qhq (4a1882c), before that
-    # decision was reversed.
-    legacy="$primary/.claude-dev/state/orca-profile"
-    mkdir -p "$legacy"
-    printf 'stale\n' > "$legacy/orca-data.json"
-
-    # open no longer saves the environment, so a folder an older launcher
-    # opened is faked by hand: the app holds one under this name and the
-    # folder remembers its id.
-    printf '%s\n' "$name" > "$ORCA_STUB_STATE/environments"
-    printf '{"id":"68b6f2e5-1111-2222-3333-444455556666","name":"%s"}\n' "$name" \
-        > "$primary/.claude-dev/run/orca-environment.json"
-    : > "$ORCA_STUB_LOG"
-
-    run bash -c "cd '$primary' && ./claude-dev --teardown"
-    [ "$status" -eq 0 ]
-
-    grep -qxF "environment rm --environment $name --json" "$ORCA_STUB_LOG"
-    # ... and the app no longer offers a runtime that does not exist.
-    ! grep -qxF "$name" "$ORCA_STUB_STATE/environments"
-    [ ! -e "$legacy" ]
-}
-
-@test "verify reads local repos from orca-data.json when the app is not running" {
-    local primary
-    as_mac
-    write_stub_orca "$CLAUDE_ORCA_APP/Contents/Resources/bin/orca"
-    primary="$(abspath "$PROJECT_DIR")"
-    make_project_v3 "$primary" >/dev/null
-    stub_sshd_up "$primary"
-
-    # The app is not running (the stub's default) -- the only way left to
-    # ask is the store it persists, not a CLI call.
-    mkdir -p "$ORCA_STUB_DATA_DIR"
-    printf '{"repos":[]}\n' > "$ORCA_STUB_DATA_DIR/orca-data.json"
-    run bash -c "cd '$primary' && ./claude-dev verify"
-    [ "$status" -eq 0 ]
-    grep -qF "orca-data.json" <<< "$output"
-    grep -qF "does not track" <<< "$output"
-
-    printf '{"repos":[{"path":"%s"}]}\n' "$primary" > "$ORCA_STUB_DATA_DIR/orca-data.json"
-    run bash -c "cd '$primary' && ./claude-dev verify"
-    [ "$status" -eq 2 ]
-    grep -qF "FAIL" <<< "$output"
-    grep -qF "orca-data.json" <<< "$output"
-    grep -qF "LOCAL repo" <<< "$output"
-}
-
-# --- desktop Orca, S4 (claude-orca-8uo.5) --------------------------------
-#
-# The image is built at the app's Orca version and carries it in its tag,
-# so the two normally agree by construction. They come apart in one real
-# way: the user upgrades Orca.app and this folder has not rebuilt yet --
-# the ref it now wants does not exist and the image on this machine is the
-# old one. Orca refuses a protocol mismatch outright, so the doctor says
-# so. A warning and not a finding: the folder still opens (on Orca Web if
-# nothing else), and one ./claude-dev --update fixes it.
-@test "doctor flags an app/image version mismatch" {
-    as_mac
-    export CLAUDE_ORCA_APP="$(make_fake_orca_app "$BATS_TEST_TMPDIR/Applications/Orca9.app" 9.9.9)"
-    make_project_v3 "$PROJECT_DIR" >/dev/null
-    stub_sshd_up "$PROJECT_DIR"
-
-    # What this machine actually holds under our repo: an image built at
-    # the older version, which is what the tag says.
-    printf '%s\n' "claude-orca latest-orca1.4.197 sha256:aaaaaaaaaaaa" \
-        > "$CONTAINER_STUB_STATE/images-list"
-
-    run bash -c "cd '$PROJECT_DIR' && ./claude-dev --doctor"
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"orca versions"* ]]
-    [[ "$output" == *"9.9.9"* ]]
-    [[ "$output" == *"1.4.197"* ]]
-    [[ "$output" =~ \[warn[[:space:]]*\][[:space:]]+orca[[:space:]]versions ]]
-    [[ "$output" == *"--update"* ]]
-
-    # The same folder once the rebuild has happened: one row, agreeing,
-    # and no warning -- so the row above is about the versions and not
-    # about having an app at all.
-    printf '%s\n' "claude-orca latest-orca9.9.9 sha256:bbbbbbbbbbbb" \
-        > "$CONTAINER_STUB_STATE/images-list"
-    run bash -c "cd '$PROJECT_DIR' && ./claude-dev --doctor"
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"orca versions"* ]]
-    [[ "$output" =~ \[ok[[:space:]]*\][[:space:]]+orca[[:space:]]versions ]]
-    [[ ! "$output" =~ \[warn[[:space:]]*\][[:space:]]+orca[[:space:]]versions ]]
 }
 
 # A container by the right name is not proof it is this folder's. A real
@@ -736,8 +425,9 @@ desktop_fixture() {
     [ "$stop_at" -lt "$rm_at" ]
     [ "$rm_at" -lt "$run_at" ]
 
-    # The state volume is Orca's own user-data dir and survives a
-    # recreate -- it is keyed by the same container name on purpose.
+    # A recreate removes the container only. The scratch volumes are keyed
+    # by the same container name on purpose and survive it; only --teardown
+    # (and --update's one-time cleanup of the old Orca state volume) rm one.
     ! grep -q "^volume rm" "$CONTAINER_STUB_LOG"
 
     # ...and the open still ends where it always does: sshd answers on the

@@ -6,10 +6,10 @@
 # get staged as mode-160000 gitlinks by a plain `git add -A`, which is what
 # broke a push to a fresh remote, and root .orca/ is Orca's drop state.
 # Teardown removes both; the beads snapshot and attachments/ stay (they are
-# documented recovery data, out of scope here). The seed ignores
-# .orca/ and .orca-worktrees/ while the folder lives, and teardown's unseed
-# removes exactly those seeded lines so a user's own .gitignore survives
-# byte for byte.
+# documented recovery data, out of scope here). The seed used to ignore
+# .orca/ and .orca-worktrees/ while the folder lived; it adds neither any
+# more, and teardown's unseed still removes exactly the lines the seed
+# wrote so a user's own .gitignore survives byte for byte.
 
 load helpers/setup
 
@@ -74,7 +74,7 @@ load helpers/setup
     [ -z "$(echo "$output" | grep -i 'fatal\|not a git repository' || true)" ]
 }
 
-@test "seed adds the .orca ignores under the marker and teardown's unseed restores the user's gitignore byte for byte" {
+@test "seed adds no .orca ignores, and teardown's unseed still restores the user's gitignore byte for byte" {
     mkdir -p "$PROJECT_DIR"
     printf 'node_modules/\n*.log\n' > "$PROJECT_DIR/.gitignore"
     make_project "$PROJECT_DIR"
@@ -82,8 +82,10 @@ load helpers/setup
     CLAUDE_ORCA_SKIP_BEADS=1 PROJECT_DIR="$PROJECT_DIR" \
         bash "$REPO_ROOT/scripts/container/seed-project.sh" >/dev/null
 
-    grep -qxF '.orca/' "$PROJECT_DIR/.gitignore"
-    grep -qxF '.orca-worktrees/' "$PROJECT_DIR/.gitignore"
+    # The template no longer ships Orca, so the seed no longer ignores its
+    # directories. The marker block is still there for the unseed to find.
+    run grep -xF -e '.orca/' -e '.orca-worktrees/' "$PROJECT_DIR/.gitignore"
+    [ "$status" -ne 0 ]
     grep -qxF '# claude_orca' "$PROJECT_DIR/.gitignore"
 
     cd "$PROJECT_DIR"

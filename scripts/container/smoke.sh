@@ -22,11 +22,14 @@
 # So nothing here may assume /opt/claude-orca exists or that the toolchain
 # is installed yet: it creates its own throwaway git project, puts the
 # checkout it was run from at <project>/.claude-dev/template (which is
-# exactly where the entrypoint looks when /opt/claude-orca is absent), runs
-# the real entrypoint against it -- setup.sh and all -- and only then
-# asserts that the pinned toolchain is on PATH and that Orca comes up
-# headless and serves Orca Web. Any failure prints the serve log and exits
-# non-zero, so a broken image never reaches the registry.
+# exactly where the entrypoint looks when /opt/claude-orca is absent), lays
+# throwaway ssh keys out the way the Mac side does (<project>/.claude-dev/
+# state/ssh), runs the real entrypoint against it -- setup.sh and all -- and
+# only then asserts that the pinned toolchain is on PATH and that the
+# container's sshd comes up and answers a real ssh login. There is no Orca
+# in the image any more: the container's way in is sshd, so that is what
+# "the image works" means. Any failure prints the sshd log and exits
+# non-zero, so a broken image is never trusted.
 #
 # bash 3.2 clean (scripts/lint-bash32.sh scans all of scripts/).
 
@@ -45,26 +48,32 @@ if [ -d /opt/claude-orca ]; then
 fi
 
 PROJECT_DIR="${CLAUDE_ORCA_SMOKE_PROJECT:-/tmp/claude-orca-smoke}"
-ORCA_PORT="${ORCA_PORT:-6768}"
-# On the prebuilt image the entrypoint's setup is a no-op and Orca serves in
+SSHD_PORT="${CLAUDE_ORCA_SSHD_PORT:-2222}"
+AGENT_USER="${CLAUDE_ORCA_AGENT_USER:-agent}"
+# On the prebuilt image the entrypoint's setup is a no-op and sshd answers in
 # seconds; on a base image the same wait covers a whole toolchain install.
 if [ "$PREBUILT" = "1" ]; then
-    TIMEOUT="${CLAUDE_ORCA_WEBURL_TIMEOUT:-120}"
+    TIMEOUT="${CLAUDE_ORCA_SMOKE_TIMEOUT:-120}"
 else
-    TIMEOUT="${CLAUDE_ORCA_WEBURL_TIMEOUT:-1800}"
+    TIMEOUT="${CLAUDE_ORCA_SMOKE_TIMEOUT:-1800}"
 fi
 
 RUN_DIR="$PROJECT_DIR/.claude-dev/run"
-URL_FILE="$RUN_DIR/orca-web-url.txt"
-SERVE_LOG="$RUN_DIR/orca-serve.log"
+SSH_STATE="$PROJECT_DIR/.claude-dev/state/ssh"
+READY_FILE="$RUN_DIR/sshd.ready"
+SSHD_LOG="$RUN_DIR/sshd.log"
+# The client side of the throwaway keys lives outside the project, so
+# nothing the Mac side owns is ever confused with it. Removed on exit.
+CLIENT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/cdev-smoke-ssh.XXXXXX")"
+trap 'rm -rf "$CLIENT_DIR"' EXIT
 
 failures=0
 pass() { printf 'ok   -- %s\n' "$*"; }
 fail() { printf 'FAIL -- %s\n' "$*" >&2; failures=$((failures + 1)); }
 
 dump_and_exit() {
-    printf '\n--- orca-serve.log (tail) ---\n' >&2
-    tail -60 "$SERVE_LOG" >&2 2>/dev/null || echo "(no serve log)" >&2
+    printf '\n--- sshd.log (tail) ---\n' >&2
+    tail -60 "$SSHD_LOG" >&2 2>/dev/null || echo "(no sshd log)" >&2
     exit 1
 }
 
@@ -88,11 +97,12 @@ check_version() {
 
 # --- enough of a system to build the fixture ----------------------------
 #
-# git is what makes the throwaway project a repo, and curl is what fetches
-# the served page at the end; the base image has neither. setup.sh's base
-# phase installs both (and zsh, which the user phase's useradd needs), so
-# run those two phases here rather than inventing a second install path.
-# On the prebuilt image both are already there and this is skipped.
+# git is what makes the throwaway project a repo, and ssh-keygen/ssh are what
+# make its keys and prove the login; the base image has none of them.
+# setup.sh's base phase installs them (git, openssh-server and its client,
+# and zsh, which the user phase's useradd needs), so run those two phases
+# here rather than inventing a second install path. On the prebuilt image
+# they are already there and this is skipped.
 
 if ! command -v git >/dev/null 2>&1; then
     printf 'no git yet: running setup.sh --phase base and --phase user first\n'
@@ -122,146 +132,124 @@ fi
 git init --quiet -b main "$PROJECT_DIR" >/dev/null 2>&1
 git -C "$PROJECT_DIR" -c user.email=smoke@example.com -c user.name=smoke \
     commit --quiet --allow-empty -m smoke >/dev/null 2>&1
-if id agent >/dev/null 2>&1; then
-    chown -R agent:agent "$PROJECT_DIR" 2>/dev/null || true
+
+# --- throwaway ssh keys, laid out the way the Mac side lays them out ----
+#
+# state/ssh/host_ed25519(.pub) is the container's host key and
+# state/ssh/authorized_keys the one client key allowed in; the entrypoint
+# starts no sshd until all three exist. The client key stays in CLIENT_DIR.
+# Made before the chown below so the agent user owns what sshd reads.
+
+if ! command -v ssh-keygen >/dev/null 2>&1; then
+    fail "no ssh-keygen on PATH (openssh-client is part of the base phase)"
+    exit 1
+fi
+mkdir -p "$SSH_STATE"
+chmod 700 "$SSH_STATE"
+ssh-keygen -q -t ed25519 -N '' -C smoke-host -f "$SSH_STATE/host_ed25519" \
+    || { fail "ssh-keygen could not make a host key"; exit 1; }
+ssh-keygen -q -t ed25519 -N '' -C smoke-client -f "$CLIENT_DIR/client_key" \
+    || { fail "ssh-keygen could not make a client key"; exit 1; }
+cp "$CLIENT_DIR/client_key.pub" "$SSH_STATE/authorized_keys"
+chmod 600 "$SSH_STATE/authorized_keys"
+
+if id "$AGENT_USER" >/dev/null 2>&1; then
+    chown -R "$AGENT_USER:$AGENT_USER" "$PROJECT_DIR" 2>/dev/null || true
 fi
 
 # --- run the real entrypoint --------------------------------------------
 
-printf 'starting the entrypoint against %s on port %s\n' "$PROJECT_DIR" "$ORCA_PORT"
-PROJECT_DIR="$PROJECT_DIR" ORCA_PORT="$ORCA_PORT" \
-    CLAUDE_ORCA_WEBURL_TIMEOUT="$TIMEOUT" \
+printf 'starting the entrypoint against %s, sshd on port %s\n' "$PROJECT_DIR" "$SSHD_PORT"
+PROJECT_DIR="$PROJECT_DIR" CLAUDE_ORCA_SSHD_PORT="$SSHD_PORT" \
     bash "$ENTRYPOINT" &
 EP_PID=$!
 
+# sshd.ready exists only while sshd answers (the entrypoint removes it first
+# on every boot), so its appearance is the signal; the entrypoint dying
+# first is the failure.
 waited=0
 while [ "$waited" -lt "$TIMEOUT" ]; do
-    [ -s "$URL_FILE" ] && break
+    [ -e "$READY_FILE" ] && break
     if ! kill -0 "$EP_PID" 2>/dev/null; then
-        fail "the entrypoint exited before writing $URL_FILE"
+        fail "the entrypoint exited before writing $READY_FILE"
         dump_and_exit
     fi
     sleep 1
     waited=$((waited + 1))
 done
 
-if [ ! -s "$URL_FILE" ]; then
-    fail "no $URL_FILE after ${TIMEOUT} s"
+if [ ! -e "$READY_FILE" ]; then
+    fail "no $READY_FILE after ${TIMEOUT} s"
     kill -TERM "$EP_PID" 2>/dev/null
     dump_and_exit
 fi
-pass "web url file written after ${waited} s"
+pass "sshd.ready written after ${waited} s"
 
 # --- the toolchain the image promises -----------------------------------
 #
 # Installed by the Dockerfile on the prebuilt image and by the entrypoint's
 # own setup.sh run on a base image -- either way it has to be here by the
-# time Orca is serving.
+# time sshd is answering.
 
 check_version "claude" claude --version
 check_version "bd" bd --version
-check_version "orca cli" "${ORCA_CLI:-/opt/orca/resources/bin/orca-ide}" --version
 
-# Orca serve refuses to start with no usable display server, and spawns a
-# virtual one of its own when the binary is installed -- so what matters
-# here is only that an X server exists. Reported by glob rather than by
-# name so a bare image says so up front instead of at the serve timeout.
-x_servers=""
-for x in /usr/bin/X?*; do
-    if [ -x "$x" ] && [ ! -d "$x" ]; then
-        x_servers="$x_servers $x"
-    fi
-done
-if [ -n "$x_servers" ]; then
-    pass "display server(s):$x_servers"
+sshd_bin="${CLAUDE_ORCA_SSHD_BIN:-$(command -v sshd 2>/dev/null || echo /usr/sbin/sshd)}"
+if [ -x "$sshd_bin" ]; then
+    pass "sshd binary: $sshd_bin"
 else
-    printf 'WARN -- no X display server under /usr/bin\n' >&2
+    fail "no executable sshd at $sshd_bin"
 fi
 
-if grep -q 'Orca server ready' "$SERVE_LOG"; then
-    pass "serve log says: Orca server ready"
+# The image carries no Orca now; a leftover payload would mean a stale layer
+# or a phase that crept back in.
+if [ -e /opt/orca ]; then
+    fail "/opt/orca exists -- the image should not carry Orca"
 else
-    fail "'Orca server ready' never appeared in $SERVE_LOG"
+    pass "no Orca payload in the image"
 fi
 
-web_url="$(cat "$URL_FILE")"
-case "$web_url" in
-    *web-index.html*) pass "url points at web-index.html" ;;
-    *) fail "url does not name web-index.html: $web_url" ;;
-esac
-case "$web_url" in
-    *'#pairing='*) pass "url carries a pairing offer" ;;
-    *) fail "url carries no pairing fragment: $web_url" ;;
-esac
+# --- a real ssh login ---------------------------------------------------
+#
+# The entrypoint runs sshd as the agent user when it can drop privileges
+# (root here), as whoever runs this otherwise -- AllowUsers names the same
+# one, so log in as that user. The host key is pinned from the .pub we made,
+# so the login also proves sshd is using the key staged in state/ssh. The
+# command goes through pane-entry (sshd's ForceCommand) into the agent's
+# shell, so an answer means the whole way in works, not just the port.
 
-port="$(cat "$RUN_DIR/port" 2>/dev/null)"
-if [ "$port" = "$ORCA_PORT" ]; then
-    pass "run/port is $port"
+if [ "$(id -u)" = "0" ] && id "$AGENT_USER" >/dev/null 2>&1; then
+    login_user="$AGENT_USER"
 else
-    fail "run/port is '$port', expected '$ORCA_PORT'"
+    login_user="$(id -un)"
 fi
+printf '[127.0.0.1]:%s %s\n' "$SSHD_PORT" \
+    "$(cut -d' ' -f1,2 "$SSH_STATE/host_ed25519.pub")" > "$CLIENT_DIR/known_hosts"
 
-# The entrypoint seeds Orca's own state before serve starts (v3 S4,
-# claude-orca-qa2.5): the per-repo worktree base path inside the folder,
-# the theme, the agent env. Orca keeps it per profile, so glob the profile
-# dir rather than naming `local-default` here.
-# The entrypoint drops to `agent` when it can, so look where IT put the
-# user-data dir, not where root's HOME points.
-agent_home=""
-if [ -n "${ORCA_USER_DATA_DIR:-}" ]; then
-    user_data_dir="$ORCA_USER_DATA_DIR"
-else
-    agent_home="$(getent passwd "${CLAUDE_ORCA_AGENT_USER:-agent}" 2>/dev/null | cut -d: -f6)"
-    [ -n "$agent_home" ] || agent_home="$HOME"
-    user_data_dir="$agent_home/.config/orca"
-fi
-if [ -z "$agent_home" ]; then
-    agent_home="$(getent passwd "${CLAUDE_ORCA_AGENT_USER:-agent}" 2>/dev/null | cut -d: -f6)"
-    [ -n "$agent_home" ] || agent_home="$HOME"
-fi
+smoke_ssh() {
+    ssh -F /dev/null -p "$SSHD_PORT" -i "$1" -o IdentitiesOnly=yes \
+        -o BatchMode=yes -o ConnectTimeout=10 \
+        -o UserKnownHostsFile="$CLIENT_DIR/known_hosts" \
+        -o GlobalKnownHostsFile=/dev/null -o StrictHostKeyChecking=yes \
+        "$login_user@127.0.0.1" "$2" 2>&1
+}
 
-seed_file=""
-for f in "$user_data_dir"/profiles/*/orca-data.json; do
-    if [ -f "$f" ]; then
-        seed_file="$f"
-        break
-    fi
-done
-if [ -n "$seed_file" ]; then
-    pass "orca state seeded: $seed_file"
-    # Where the worktree base lands depends on whether the launcher mounted
-    # the worktrees volume (claude-orca-1eh): on the volume when it is
-    # mounted, else the old in-folder default.
-    volume_worktrees=""
-    if mountpoint -q "$agent_home/worktrees" 2>/dev/null; then
-        volume_worktrees="$agent_home/worktrees"
-    fi
-    if [ -n "$volume_worktrees" ]; then
-        if grep -q "$volume_worktrees" "$seed_file"; then
-            pass "seeded worktree base path is on the worktrees volume"
-        else
-            fail "no $volume_worktrees in $seed_file"
-        fi
-    elif grep -q "$PROJECT_DIR/.orca-worktrees" "$seed_file"; then
-        pass "seeded worktree base path is inside the project"
-    else
-        fail "no $PROJECT_DIR/.orca-worktrees in $seed_file"
-    fi
+if ! command -v ssh >/dev/null 2>&1; then
+    fail "no ssh client on PATH"
 else
-    fail "no orca-data.json under $user_data_dir/profiles/"
-fi
+    out="$(smoke_ssh "$CLIENT_DIR/client_key" 'echo smoke-ssh-ok')"
+    case "$out" in
+        *smoke-ssh-ok*) pass "ssh login as $login_user answered through the pane shell" ;;
+        *) fail "ssh login as $login_user did not answer: $(printf '%s' "$out" | head -3)" ;;
+    esac
 
-origin="$(printf '%s' "$web_url" | sed -E 's#^(https?://[^/]+).*#\1#')"
-code="$(curl -s -o /tmp/smoke-body.html -w '%{http_code}' --max-time 30 "$origin/")"
-if [ "$code" = "200" ]; then
-    pass "GET $origin/ -> 200"
-else
-    fail "GET $origin/ -> $code"
-fi
-if grep -q 'Orca Web' /tmp/smoke-body.html 2>/dev/null; then
-    pass "the served page is Orca Web"
-else
-    fail "the served page does not contain 'Orca Web'"
+    # A key that is not in authorized_keys must be refused.
+    ssh-keygen -q -t ed25519 -N '' -C smoke-stranger -f "$CLIENT_DIR/stranger_key"
+    out="$(smoke_ssh "$CLIENT_DIR/stranger_key" 'echo smoke-ssh-ok')"
+    case "$out" in
+        *smoke-ssh-ok*) fail "ssh accepted a key that is not in authorized_keys" ;;
+        *) pass "ssh refuses a key that is not in authorized_keys" ;;
+    esac
 fi
 
 kill -TERM "$EP_PID" 2>/dev/null

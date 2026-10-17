@@ -90,10 +90,10 @@ lacks() {
     done
 }
 
-@test "the toolchain set is exactly the six tools that live under the cached paths" {
+@test "the toolchain set is exactly the five tools that live under the cached paths" {
     local toolchain
     toolchain="$(bash "$SETUP" --list toolchain | sort | tr '\n' ' ')"
-    [ "$toolchain" = "bats bd dolt helix opencode orca " ]
+    [ "$toolchain" = "bats bd dolt helix opencode " ]
 }
 
 @test "the Dockerfile bakes the apt half in one layer and each toolchain phase in its own" {
@@ -168,7 +168,10 @@ lacks() {
     line="$(grep '^run ' "$CONTAINER_STUB_LOG" | head -1)"
     [ -n "$line" ]
     contains "$line" "--volume $primary/.claude-dev/toolchain/usr-local:/usr/local"
-    contains "$line" "--volume $primary/.claude-dev/toolchain/opt-Orca:/opt/Orca"
+
+    # The old Orca install dir is not mounted any more.
+    run grep -qE -- "--volume [^ ]*toolchain[^ ]*:/opt/Orca" <<<"$line"
+    [ "$status" -ne 0 ]
 
     # Never /opt itself: that would shadow /opt/claude-orca, which IS the
     # image's copy of this template.
@@ -176,9 +179,10 @@ lacks() {
     [ "$status" -ne 0 ]
 
     # Made by the launcher, so docker does not create root-owned ones.
-    for d in usr-local opt-Orca; do
+    for d in usr-local; do
         [ -d "$primary/.claude-dev/toolchain/$d" ]
     done
+    [ ! -e "$primary/.claude-dev/toolchain/opt-Orca" ]
 }
 
 @test "the wait is chosen by which image the folder runs, and a cache cannot shorten it" {
@@ -191,11 +195,11 @@ lacks() {
     probe="$BATS_TEST_TMPDIR/timeout-probe.sh"
     mkdir -p "$BATS_TEST_TMPDIR/pulled/.claude-dev/run" \
              "$BATS_TEST_TMPDIR/runtime/.claude-dev/run" \
-             "$BATS_TEST_TMPDIR/runtime/.claude-dev/toolchain/opt-Orca"
+             "$BATS_TEST_TMPDIR/runtime/.claude-dev/toolchain/usr-local"
     printf 'pulled\n'  > "$BATS_TEST_TMPDIR/pulled/.claude-dev/run/image-source"
     printf 'runtime\n' > "$BATS_TEST_TMPDIR/runtime/.claude-dev/run/image-source"
     # A full cache on the runtime folder: it still installs apt every time.
-    printf '#!/bin/sh\n' > "$BATS_TEST_TMPDIR/runtime/.claude-dev/toolchain/opt-Orca/orca-ide"
+    printf '#!/bin/sh\n' > "$BATS_TEST_TMPDIR/runtime/.claude-dev/toolchain/usr-local/marker"
 
     {
         printf '%s\n' 'set -uo pipefail'
@@ -230,39 +234,6 @@ lacks() {
     contains "$body" "stat -c '%u' /opt/claude-orca"
 }
 
-@test "orca's already-present check is answerable from the cache alone" {
-    # /opt/orca and /usr/bin/orca-ide are symlinks OUTSIDE the cache: a
-    # recreated container has neither, even with the payload right there.
-    # Re-linking has to happen before the version check, or every recreate
-    # pays the full reinstall the cache exists to avoid.
-    local body
-    body="$(sed -n '/^phase_orca()/,/^}/p' "$SETUP" "${SETUP%/*}"/phases/*.sh)"
-    contains "$body" "orca_relink"
-
-    local relink_line check_line
-    relink_line="$(printf '%s\n' "$body" | grep -n 'orca_relink' | head -1 | cut -d: -f1)"
-    check_line="$(printf '%s\n' "$body" | grep -n 'stamp /opt/orca/VERSION' | head -1 | cut -d: -f1)"
-    [ -n "$relink_line" ]
-    [ -n "$check_line" ]
-    [ "$relink_line" -lt "$check_line" ]
-}
-
-@test "the orca payload is extracted, not apt-installed, so no dpkg state is required to own it" {
-    local body
-    body="$(sed -n '/^phase_orca()/,/^}/p' "$SETUP" "${SETUP%/*}"/phases/*.sh)"
-    contains "$body" "dpkg-deb -x"
-
-    # apt would register a package in a dpkg database that dies with the
-    # container, leaving the next start with an installed-but-unknown Orca.
-    run grep -qE 'apt-get install .*orca\.deb' <<<"$body"
-    [ "$status" -ne 0 ]
-
-    # And the hand-listed dependency set is checked against the .deb's own
-    # Depends, so the list cannot drift silently.
-    contains "$body" "dpkg-deb --field"
-    contains "$body" "ORCA_PACKAGES"
-}
-
 @test "opencode installs into the cached prefix rather than the image's node_modules" {
     run grep -qE '^NPM_PREFIX=' "$SETUP"
     [ "$status" -eq 0 ]
@@ -291,10 +262,9 @@ lacks() {
     run make_project_v3 "$primary"
     [ "$status" -eq 0 ]
 
-    # A cache with Orca in it: the "nothing left to install" flag.
-    mkdir -p "$primary/.claude-dev/toolchain/opt-Orca"
-    printf '#!/bin/sh\n' > "$primary/.claude-dev/toolchain/opt-Orca/orca-ide"
-    chmod +x "$primary/.claude-dev/toolchain/opt-Orca/orca-ide"
+    # A full cache: something already installed under the mounted /usr/local.
+    mkdir -p "$primary/.claude-dev/toolchain/usr-local"
+    printf '#!/bin/sh\n' > "$primary/.claude-dev/toolchain/usr-local/marker"
     printf 'runtime\n' > "$primary/.claude-dev/run/image-source"
 
     # ... and a container that comes up but never gets sshd listening, so the wait
@@ -320,7 +290,7 @@ lacks() {
     local body
     body="$(sed -n '/HOST_UID/,/^fi$/p' "${BATS_TEST_DIRNAME}/../scripts/container/entrypoint.sh")"
     contains "$body" "mountpoint -q"
-    contains "$body" "/opt/Orca"
+    contains "$body" "/usr/local"
     contains "$body" "chown_agent_tree"
 }
 
