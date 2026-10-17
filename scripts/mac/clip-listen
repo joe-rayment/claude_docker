@@ -1,0 +1,163 @@
+#!/bin/bash
+# claude-dev clip-listen v1
+#
+# clip-listen -- the listening half of the clipboard bridge (claude-orca-9bh.9).
+# Binds a unix socket on the Mac and serves one clip-serve per connection
+# behind `nc -lU`; the container reaches it through the SSH session's
+# RemoteForward. Runs in the foreground; the launcher backgrounds it.
+#
+# Usage: clip-listen <sock> <ssh-cfg> <host>
+#   sock     the unix socket to listen on (its directory is created 0700 when
+#            it did not exist); <sock minus .sock>.pid and .log sit beside it
+#   ssh-cfg  the ssh config of the session's ControlMaster
+#   host     the host alias in that config
+#
+# Watchdog: every CLAUDE_ORCA_CLIP_WATCH_S seconds (default 60) it asks the
+# session `ssh -F <ssh-cfg> -O check <host>`; once that fails -- the session
+# is gone -- it tears the listener down and exits, so nothing is left bound
+# to the Mac clipboard after the terminal closes.
+#
+# Seams: CLAUDE_ORCA_CLIP_SERVE (the per-connection program; default the
+# clip-serve next to this script), CLAUDE_ORCA_CLIP_WATCH_S.
+#
+# Exit codes: 0 stopped (session gone, or signalled) or already running for
+# this socket; 1 cannot start (no nc, no clip-serve, bad directory); 2 usage.
+# bash 3.2 and stock macOS tools only.
+
+set -u
+
+_resolve_script_path() {
+    local src="${BASH_SOURCE[0]}" link dir
+    while [ -L "$src" ]; do
+        link="$(readlink "$src")"
+        case "$link" in
+            /*) src="$link" ;;
+            *)  dir="$(case "$src" in (*/*) cd "${src%/*}/" ;; esac && pwd)"; src="$dir/$link" ;;
+        esac
+    done
+    echo "$src"
+}
+SCRIPT_DIR="$(_s="$(_resolve_script_path)"; case "$_s" in (*/*) cd "${_s%/*}/" ;; esac && pwd)"
+
+note() { printf '%s clip-listen: %s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "$*" >&2; }
+die() {
+    note "$*"
+    exit 1
+}
+
+case "${1:-}" in
+    --help | -h)
+        sed -n '4,22p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+        exit 0
+        ;;
+esac
+if [ "$#" -ne 3 ] || [ -z "$1" ] || [ -z "$2" ] || [ -z "$3" ]; then
+    printf 'Usage: clip-listen <sock> <ssh-cfg> <host>\n' >&2
+    exit 2
+fi
+sock=$1
+cfg=$2
+host=$3
+
+SERVE=${CLAUDE_ORCA_CLIP_SERVE:-$SCRIPT_DIR/clip-serve}
+WATCH_S=${CLAUDE_ORCA_CLIP_WATCH_S:-60}
+base=${sock%.sock}
+pidfile=$base.pid
+log=$base.log
+case "$sock" in
+    */*) dir=${sock%/*} ;;
+    *) dir=. ;;
+esac
+fifo=$dir/.clip-$$.fifo
+
+umask 077
+
+# Already serving this socket? Then this call is a no-op. A pidfile whose pid
+# is alive but is not a clip-listen (a recycled pid after a reboot) is stale.
+if [ -f "$pidfile" ]; then
+    old=$(cat "$pidfile" 2>/dev/null)
+    case "$old" in
+        '' | *[!0-9]*) ;;
+        *)
+            if kill -0 "$old" 2>/dev/null; then
+                case "$(ps -p "$old" -o args= 2>/dev/null)" in
+                    *clip-listen*) exit 0 ;;
+                esac
+            fi
+            ;;
+    esac
+fi
+
+command -v nc >/dev/null 2>&1 || die "no nc on PATH"
+[ -x "$SERVE" ] || die "no executable clip-serve at $SERVE"
+if [ ! -d "$dir" ]; then
+    mkdir -p "$dir" && chmod 700 "$dir" || die "cannot create $dir"
+fi
+
+# From here the log is our stdout and stderr (clip-serve's per-request lines
+# land in it too); keep it from growing without bound.
+if [ -f "$log" ] && [ "$(wc -c <"$log" | tr -d ' ')" -gt 1048576 ]; then
+    : >"$log"
+fi
+exec </dev/null >>"$log" 2>&1
+printf '%s\n' "$$" >"$pidfile" || die "cannot write $pidfile"
+
+sleeper=
+loop=
+cleaned=
+cleanup() {
+    [ -n "$cleaned" ] && return 0
+    cleaned=1
+    [ -n "$sleeper" ] && kill "$sleeper" 2>/dev/null
+    if [ -n "$loop" ]; then
+        # set -m made the loop its own process group: one signal reaches the
+        # subshell, nc and the running clip-serve.
+        kill -TERM -- "-$loop" 2>/dev/null
+        wait "$loop" 2>/dev/null
+    fi
+    rm -f "$sock" "$fifo" "$pidfile"
+    note "stopped"
+}
+trap 'exit 0' TERM INT HUP
+trap cleanup EXIT
+
+set -m
+note "listening on $sock (watching $host every ${WATCH_S}s)"
+{
+    fails=0
+    while :; do
+        rm -f "$sock" "$fifo"
+        if ! mkfifo -m 600 "$fifo"; then
+            sleep 1
+            continue
+        fi
+        t0=$SECONDS
+        nc -lU "$sock" <"$fifo" | "$SERVE" >"$fifo"
+        rc=${PIPESTATUS[0]}
+        # A bind that keeps failing must not spin; a served connection never
+        # slows the next one.
+        if [ "$rc" -ne 0 ] && [ $((SECONDS - t0)) -lt 1 ]; then
+            fails=$((fails + 1))
+            [ "$fails" -ge 3 ] && sleep 1
+        else
+            fails=0
+        fi
+    done
+} &
+loop=$!
+
+while :; do
+    sleep "$WATCH_S" &
+    sleeper=$!
+    wait "$sleeper"
+    sleeper=
+    kill -0 "$loop" 2>/dev/null || {
+        note "listener loop died"
+        break
+    }
+    ssh -F "$cfg" -O check "$host" >/dev/null 2>&1 || {
+        note "ssh session gone"
+        break
+    }
+done
+exit 0
