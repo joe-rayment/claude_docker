@@ -317,8 +317,66 @@ def system_prompt(rows, cols):
         % (n, cols))
 
 
+# What the model is sent (a measured 32 KB digest of 16 sources was ~12k prompt tokens;
+# the page only needs the gist). The digest itself stays whole for everyone else.
+COMPACT_BYTES = 20000
+_CD_PREFIX = re.compile(r"^(\d\d:\d\d ran: )cd \S+; ?")
+_WT_PREFIX = re.compile(r"\.claude/worktrees/agent-[0-9a-zA-Z]+/")
+
+
+def _cut(text, limit):
+    text = text if isinstance(text, str) else ""
+    return text if len(text) <= limit else text[:limit - 1].rstrip() + "\u2026"
+
+
+def _compact_event(ev):
+    ev = _WT_PREFIX.sub("", _CD_PREFIX.sub(r"\1", ev if isinstance(ev, str) else ""))
+    return _cut(ev, 110)
+
+
+def _compact_source(src, n_events):
+    running = src.get("state") == "running"
+    out = {k: src.get(k) for k in ("id", "kind", "title", "state", "started", "last") if k in src}
+    out["task"] = _cut(src.get("task"), 240 if running else 120)
+    evs = src.get("events") if isinstance(src.get("events"), list) else []
+    out["events"] = [_compact_event(e) for e in evs[-n_events:]] if n_events else []
+    if src.get("final"):
+        out["final"] = _cut(src.get("final"), 250)
+    return out
+
+
+def _json_size(obj):
+    return len(json.dumps(obj, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+
+
+def compact_digest(digest, budget=COMPACT_BYTES):
+    """A smaller copy of the digest for the model: no model names, no worktree path noise,
+    short task/event/final text. Running sources keep their last 6 events, finished ones
+    their last 2. Still over `budget` bytes: the oldest finished sources go first, then
+    every source is cut to its last 3 events. Running sources are never dropped."""
+    sources = [s for s in (digest.get("sources") or []) if isinstance(s, dict)]
+    out = {k: v for k, v in digest.items() if k not in ("sources", "model")}
+
+    def build(srcs, run_n, done_n):
+        out["sources"] = [_compact_source(s, run_n if s.get("state") == "running" else done_n)
+                          for s in srcs]
+        return out
+
+    build(sources, 6, 2)
+    kept = list(sources)
+    while _json_size(out) > budget:
+        done = [s for s in kept if s.get("state") != "running"]
+        if not done:
+            break
+        kept.remove(min(done, key=lambda s: str(s.get("last") or "")))
+        build(kept, 6, 2)
+    if _json_size(out) > budget:
+        build(kept, 3, 3)
+    return out
+
+
 def user_message(prev_page, digest, token):
-    keep = {k: v for k, v in digest.items() if k not in ("fingerprint", "episode", "root")}
+    keep = {k: v for k, v in compact_digest(digest).items() if k not in ("fingerprint", "episode", "root")}
     body = json.dumps(redact_obj(keep, (token,)), ensure_ascii=False, separators=(",", ":"))
     prev = redact_text(prev_page, (token,)).strip() if prev_page else ""
     return "Previous page:\n%s\n\nDigest (JSON):\n%s" % (prev or "(none)", body)

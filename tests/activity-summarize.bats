@@ -325,3 +325,43 @@ time.sleep(60)' "$ACT/summarize.lock" >"$BATS_TEST_TMPDIR/held.out" 2>&1 3>&- &
   [ "$status" -eq 2 ]
   [ ! -e "$ACT/page.md" ]
 }
+
+# Guards:   the model is sent a compact digest, not the whole 32 KB one, and loses nothing a running source needs
+# Fails if: user_message sends the raw digest again (message over 22000 bytes), drops a running source's title or last event, or leaves the model name / worktree path noise in
+# Run:      bats -f 'compact digest' tests/activity-summarize.bats
+@test "a 32 KB digest of 16 sources reaches the model as a compact digest that still holds every running title and last event" {
+  start_guard
+  guard_config '{"reply":"Working."}'
+  python3 - "$BATS_TEST_TMPDIR/big.json" <<'PY'
+import json, sys
+wt = "/workspace/folder/.claude/worktrees/agent-%02dabcdef"
+srcs = []
+for i in range(16):
+    running = i < 10
+    events = ["10:%02d ran: cd %s; make step %d && tail -n 40 /var/log/long-output-%d.txt and more words to fill the line out" % (j, wt % i, j, j) for j in range(9)]
+    events.append("10:59 edited .claude/worktrees/agent-%02dabcdef/scripts/last-marker-%d.py" % (i, i))
+    srcs.append({"id": "agent-%02d" % i, "kind": "executor", "title": "title-marker-%d" % i, "model": "claude-secret-model-name",
+                 "started": "2026-10-17T10:00:%02dZ" % i, "last": "2026-10-17T10:59:%02dZ" % i,
+                 "state": "running" if running else "done", "task": "do the long job number %d. " % i + "details " * 30,
+                 "events": events, "final": None if running else "finished item %d. " % i + "result words " * 20})
+digest = {"generated": "2026-10-17T11:00:00Z", "root": "/x", "episode": "ep1", "fingerprint": "fpbig",
+          "request": {"session": "s1", "text": "build the panel", "at": "2026-10-17T10:00:00Z"},
+          "sources": srcs, "omitted": 0}
+json.dump(digest, open(sys.argv[1], "w"))
+print("raw digest bytes:", len(json.dumps(digest)))
+PY
+  [ "$(wc -c < "$BATS_TEST_TMPDIR/big.json")" -gt 30000 ] && [ "$(wc -c < "$BATS_TEST_TMPDIR/big.json")" -le 34000 ]
+  run python3 -I "$SUMMARIZE" --digest "$BATS_TEST_TMPDIR/big.json"
+  [ "$output" = "updated" ]
+  python3 - "$G/requests.jsonl" <<'PY'
+import json, sys
+body = [json.loads(l) for l in open(sys.argv[1])][-1]["body"]
+msg = body["messages"][1]["content"]
+assert len(msg.encode("utf-8")) <= 22000, len(msg.encode("utf-8"))
+for i in range(10):
+    assert "title-marker-%d\"" % i in msg, ("running title missing", i)
+    assert "scripts/last-marker-%d.py" % i in msg, ("running last event missing", i)
+assert "claude-secret-model-name" not in msg
+assert "ran: cd " not in msg
+PY
+}
