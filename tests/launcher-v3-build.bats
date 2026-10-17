@@ -232,9 +232,8 @@ weburl_timeout '$primary'"
     # a folder that once ran that way keeps the directory. It must not
     # move the answer either way.
     cache_full() {
-        mkdir -p "$primary/.claude-dev/toolchain/opt-Orca"
-        printf '#!/bin/sh\n' > "$primary/.claude-dev/toolchain/opt-Orca/orca-ide"
-        chmod +x "$primary/.claude-dev/toolchain/opt-Orca/orca-ide"
+        mkdir -p "$primary/.claude-dev/toolchain/usr-local"
+        printf '#!/bin/sh\n' > "$primary/.claude-dev/toolchain/usr-local/marker"
     }
     cache_empty() { rm -rf "$primary/.claude-dev/toolchain"; }
 
@@ -311,15 +310,14 @@ wait_for_sshd_ready '$quiet' 2>&1 >/dev/null"
 # The image used to be built at the Mac's Orca.app version and carry it in
 # its tag, because Orca refused a protocol mismatch. No Orca is installed in
 # the image any more, so the build takes no version argument and the tag is
-# exactly what the IMAGE_TAG file says -- an Orca.app on the Mac, old or new,
-# changes nothing about either.
+# exactly what the IMAGE_TAG file says -- no desktop app is read at all.
 
 # Guards:   the build passes no ORCA_VERSION build arg and tags the image with
-#           the IMAGE_TAG file's value alone, even with an Orca.app on the Mac
-# Fails if: the launcher reads an installed app and folds its version into the
-#           tag or into a --build-arg again
+#           the IMAGE_TAG file's value alone -- no app is read at all
+# Fails if: the launcher goes looking for an installed app again and folds its
+#           version into the tag or into a --build-arg
 # Run:      bats -f 'build passes no ORCA_VERSION' tests/launcher-v3-build.bats
-@test "build passes no ORCA_VERSION build arg and tags the image with the IMAGE_TAG file alone, whatever app is installed" {
+@test "build passes no ORCA_VERSION build arg and tags the image with the IMAGE_TAG file alone" {
     mkdir -p "$PROJECT_DIR"
     primary="$(abspath "$PROJECT_DIR")"
     run make_project_v3 "$primary"

@@ -142,7 +142,7 @@ LIST
 
     run_dir="$primary/.claude-dev/run"
     mkdir -p "$run_dir" "$primary/.claude-dev/state"
-    printf 'http://127.0.0.1:1/web-index.html#pairing=STALE\n' > "$run_dir/orca-web-url.txt"
+    printf 'http://127.0.0.1:1/web-index.html#pairing=STALE\n' > "$run_dir/orca-web-url.txt"   # an old Orca result
     printf 'STALE\n' > "$run_dir/orca-serve.log"
     printf 'STALE\n' > "$run_dir/setup.log"
     printf '99999\n' > "$run_dir/port"
@@ -156,7 +156,7 @@ LIST
     # Results: the previous container's, and gone with it.
     [ ! -f "$run_dir/orca-serve.log" ]
     [ ! -f "$run_dir/setup.log" ]
-    ! grep -q STALE "$run_dir/orca-web-url.txt"
+    [ ! -e "$run_dir/orca-web-url.txt" ]   # an old Orca result: cleared too
     [ "$(cat "$run_dir/port")" = "$(jq -r '.port' "$json")" ]
 
     # Authority, config and home: untouched.

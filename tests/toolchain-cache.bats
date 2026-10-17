@@ -168,7 +168,10 @@ lacks() {
     line="$(grep '^run ' "$CONTAINER_STUB_LOG" | head -1)"
     [ -n "$line" ]
     contains "$line" "--volume $primary/.claude-dev/toolchain/usr-local:/usr/local"
-    contains "$line" "--volume $primary/.claude-dev/toolchain/opt-Orca:/opt/Orca"
+
+    # The old Orca install dir is not mounted any more.
+    run grep -qE -- "--volume [^ ]*toolchain[^ ]*:/opt/Orca" <<<"$line"
+    [ "$status" -ne 0 ]
 
     # Never /opt itself: that would shadow /opt/claude-orca, which IS the
     # image's copy of this template.
@@ -176,9 +179,10 @@ lacks() {
     [ "$status" -ne 0 ]
 
     # Made by the launcher, so docker does not create root-owned ones.
-    for d in usr-local opt-Orca; do
+    for d in usr-local; do
         [ -d "$primary/.claude-dev/toolchain/$d" ]
     done
+    [ ! -e "$primary/.claude-dev/toolchain/opt-Orca" ]
 }
 
 @test "the wait is chosen by which image the folder runs, and a cache cannot shorten it" {
@@ -191,11 +195,11 @@ lacks() {
     probe="$BATS_TEST_TMPDIR/timeout-probe.sh"
     mkdir -p "$BATS_TEST_TMPDIR/pulled/.claude-dev/run" \
              "$BATS_TEST_TMPDIR/runtime/.claude-dev/run" \
-             "$BATS_TEST_TMPDIR/runtime/.claude-dev/toolchain/opt-Orca"
+             "$BATS_TEST_TMPDIR/runtime/.claude-dev/toolchain/usr-local"
     printf 'pulled\n'  > "$BATS_TEST_TMPDIR/pulled/.claude-dev/run/image-source"
     printf 'runtime\n' > "$BATS_TEST_TMPDIR/runtime/.claude-dev/run/image-source"
     # A full cache on the runtime folder: it still installs apt every time.
-    printf '#!/bin/sh\n' > "$BATS_TEST_TMPDIR/runtime/.claude-dev/toolchain/opt-Orca/orca-ide"
+    printf '#!/bin/sh\n' > "$BATS_TEST_TMPDIR/runtime/.claude-dev/toolchain/usr-local/marker"
 
     {
         printf '%s\n' 'set -uo pipefail'
@@ -258,10 +262,9 @@ lacks() {
     run make_project_v3 "$primary"
     [ "$status" -eq 0 ]
 
-    # A cache with Orca in it: the "nothing left to install" flag.
-    mkdir -p "$primary/.claude-dev/toolchain/opt-Orca"
-    printf '#!/bin/sh\n' > "$primary/.claude-dev/toolchain/opt-Orca/orca-ide"
-    chmod +x "$primary/.claude-dev/toolchain/opt-Orca/orca-ide"
+    # A full cache: something already installed under the mounted /usr/local.
+    mkdir -p "$primary/.claude-dev/toolchain/usr-local"
+    printf '#!/bin/sh\n' > "$primary/.claude-dev/toolchain/usr-local/marker"
     printf 'runtime\n' > "$primary/.claude-dev/run/image-source"
 
     # ... and a container that comes up but never gets sshd listening, so the wait
@@ -287,7 +290,7 @@ lacks() {
     local body
     body="$(sed -n '/HOST_UID/,/^fi$/p' "${BATS_TEST_DIRNAME}/../scripts/container/entrypoint.sh")"
     contains "$body" "mountpoint -q"
-    contains "$body" "/opt/Orca"
+    contains "$body" "/usr/local"
     contains "$body" "chown_agent_tree"
 }
 

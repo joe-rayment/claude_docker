@@ -1513,15 +1513,15 @@ apply_cpu_cap() {
 # The runtime path is the exception and the reason this still exists. A
 # folder whose image could not be built runs plain ubuntu:24.04, where
 # there is no baked anything; setup.sh installs the payload at first start
-# into <project>/.claude-dev/toolchain, mounted here over the three paths
-# those tools live at, so at least the recreate after it is fast.
+# into <project>/.claude-dev/toolchain, mounted here over the path those
+# tools live at, so at least the recreate after it is fast.
 #
 # One mount per path, never /opt itself: /opt also holds /opt/claude-orca,
 # which IS the image's copy of this template.
 #
-# opt-Orca:/opt/Orca is the old Orca's install dir: nothing installs there
-# any more, the mount stays only until toolchain-cache.bats is re-pointed.
-TOOLCHAIN_MOUNTS="usr-local:/usr/local opt-Orca:/opt/Orca"
+# There is no opt-Orca:/opt/Orca mount any more: nothing installs Orca there.
+# An old opt-Orca directory on a Mac is left alone -- no removal code.
+TOOLCHAIN_MOUNTS="usr-local:/usr/local"
 
 container_dns() {
     local dns=""

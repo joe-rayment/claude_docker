@@ -356,7 +356,7 @@ shadow_path_without() {
     run make_project_v3 "$PROJECT_DIR"
     [ "$status" -eq 0 ]
     [ -d "$ORCA_HOST/template/.git" ]
-    [ -s "$PROJECT_DIR/.claude-dev/run/orca-web-url.txt" ]
+    [ -s "$PROJECT_DIR/.claude-dev/run/port" ]
 }
 
 # v3 (claude-orca-qa2.2): the sandbox self-test and the shell-rc hook both
@@ -533,9 +533,6 @@ old_layout_fixture() {
 # Run:      bats -f 'needs no Orca.app' tests/bootstrap.bats
 @test "bootstrap on Darwin needs no Orca.app" {
     mac_env
-    # The shared fixture may still export an Orca.app override; this case is
-    # about a Mac that has none, so nothing may point at one.
-    unset CLAUDE_ORCA_APP CLAUDE_ORCA_UI
     [ ! -e /Applications/Orca.app ] || skip "this host has a real Orca.app"
     [ ! -e "$HOME/Applications/Orca.app" ] || skip "this host has a real Orca.app"
 
