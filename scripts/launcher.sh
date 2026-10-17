@@ -960,10 +960,16 @@ ssh_ensure_keys() {
 # it. The ControlPath is under the Mac user's home, not the folder: a unix
 # socket path must stay under ~100 bytes and %C keeps it short and unique.
 ssh_write_config() {
-    local dir="$1" port="$2" sd alias cm tmp
+    local dir="$1" port="$2" sd alias cm cmp tmp
     sd="$(ssh_state_dir "$dir")"
     alias="$(ssh_host_alias "$dir")"
     cm="$HOME/.local/state/claude-dev"
+    # The config names the directory made just above as a literal path, not
+    # `~`: ssh resolves `~` through the passwd entry, which is $HOME on a Mac
+    # but not wherever HOME is set to something else (a fixture, sudo -E),
+    # and the master would then fail to bind in a directory nobody made.
+    # `%` is ssh's own escape in ControlPath, so a literal one is doubled.
+    cmp="$(printf '%s' "$cm" | sed 's/%/%%/g')"
     if ! mkdir -p "$sd" "$cm" || ! chmod 700 "$cm"; then
         echo "Error: cannot create $cm for the ssh control sockets" >&2
         return 1
@@ -984,7 +990,7 @@ ssh_write_config() {
         printf '  HostKeyAlias %s\n' "$alias"
         printf '  StrictHostKeyChecking yes\n'
         printf '  ControlMaster auto\n'
-        printf '  ControlPath ~/.local/state/claude-dev/cm-%%C\n'
+        printf '  ControlPath "%s/cm-%%C"\n' "$cmp"
         printf '  ControlPersist 30m\n'
         printf '  ServerAliveInterval 30\n'
         printf '  ForwardAgent no\n'
