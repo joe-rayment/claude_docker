@@ -68,14 +68,15 @@ no client config can undo it.
 
 With an OpenRouter key present (the env var, or
 `.claude-dev/home/.openrouter.key` from `claude-dev key openrouter`), a plain
-`/tier <top>` derives the worker as **orca + opencode +
-`openrouter/~z-ai/glm-latest`**: Fable orchestrates, the newest GLM
+`/tier <top>` derives the worker as **headless + opencode +
+`openrouter/~z-ai/glm-latest`** (a background `opencode` run, not an
+in-process sub-agent): Fable orchestrates, the newest GLM
 executes, and the guard decides who serves it. Recon stays a Claude Haiku
 subagent and the checker inherits the session model. Without a key the
 worker is the Claude rung as before. `/tier worker claude:<model>` and the
 explicit 2- or 3-argument pins are explicit requests for a Claude model and
 are never overridden by the key. `/tier` (tier-prime) shows the bound
-worker as `orca:opencode:openrouter/~z-ai/glm-latest`.
+worker as `headless:opencode:openrouter/~z-ai/glm-latest`.
 
 ## The OpenAI subscription path (2026-10-02)
 
