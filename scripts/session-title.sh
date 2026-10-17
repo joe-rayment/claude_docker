@@ -100,7 +100,9 @@ printf '%s' "$input" | jq -c --arg project "$project" --arg rec "$rec" '
        else ((.prompt // "") | tostring | split("\n") | map(clean)
              | map(select(length > 0)) | (.[0] // "") | cut(50))
        end) as $task
-      | (if $task == "" then $p else $p + ": " + $task end | cut(80)) as $title
+      | (80 - ($p | length) - 2) as $room
+      | (if $task == "" or $room < 1 then $p | cut(80)
+         else $p + ": " + ($task | cut($room)) end) as $title
       | {hookSpecificOutput: {hookEventName: "UserPromptSubmit", sessionTitle: $title}}
     end'
 

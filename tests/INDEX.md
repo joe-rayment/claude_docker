@@ -17,7 +17,7 @@ and names what changed. If everything behaves, it stays **green** (passes).
 
 - A **test case** is one check (one `@test "…"` block).
 - A **test file** (`tests/<name>.bats`) groups the cases for one script or feature.
-- The **suite** is all of them: 105 files, 1,459 cases.
+- The **suite** is all of them: 106 files, 1,474 cases.
 
 ### What bats is
 
@@ -121,7 +121,7 @@ Those checks are run by hand:
 
 ## Part 2 — the map
 
-105 files, 1,459 cases: 87 files check behavior only, 14 mix behavior with
+106 files, 1,474 cases: 87 files check behavior only, 15 mix behavior with
 a few config checks, and 4 are config checks only. **Speed** is from
 `run-tests.sh`'s timing: `slow` files are skipped by the everyday run.
 
@@ -219,6 +219,7 @@ too, once Orca was removed from the project.
 | `seed-project.bats` | 16 | fast | `seed-project.sh` seeds a fresh project's .gitignore block, attachments/ and beads snapshot exactly once, never overwrites user edits, adds no Orca lines and no orca.yaml (one an earlier template seeded, or the user's own, is left byte-identical, even as a symlink), and never writes through a symlink. | behavior | — |
 | `session-cost.bats` | 5 | fast | `session-cost.py` computes the exact per-session and per-turn token/byte/word counts from a transcript, used to measure token-diet changes, without ever printing transcript content. | behavior | — |
 | `session-end-audit.bats` | 6 | fast | `session-end-audit.sh` (SessionEnd hook) logs how many files are dirty when a session ends, stays silent on a clean tree, and fails open on bad input. | behavior | — |
+| `session-title.bats` | 15 | fast | `session-title.sh` (UserPromptSubmit hook) makes every session's title start with the project (`<project>: <task>`), prefixing an ai-title or the prompt, staying silent when already prefixed, keeping the title one clean line of at most 80 chars, and `.zshrc` exports the same name as the Remote Control session prefix. | mixed | 1 wiring check: hook entry in `claude-settings.json` and the `bin/session-title` symlink |
 | `setup-check-uid.bats` | 3 | fast | `setup.sh --check`'s agent-user row compares against the container's real running uid (HOST_UID), not a hardcoded 1000, so Mac machines don't get a false FAIL. | behavior | — |
 | `start-professor.bats` | 5 | fast | `start-professor.sh` execs `claude --agent professor`, strips CLAUDECODE first, and only cd's to the project root when one can actually be resolved. | behavior | — |
 | `startup-menu.bats` | 12 | fast | `startup-menu` offers beads, then GitHub, then Claude Code in a new folder's first pane, after that boot's provisioning finishes and only when the folder is new, and later panes print one identity line and never fail the shell. | behavior | — |
