@@ -12,7 +12,8 @@
 # in anyone's shell rc. Everything else happens inside the VM.
 #
 # Usage:
-#   claude-dev                    Open this folder's Orca in a browser
+#   claude-dev                    Start this folder's container and wait for sshd
+#   claude-dev pane [dir]         A sandbox pane in this terminal
 #   claude-dev [register] [dir]   Register a project (default: current dir)
 #   claude-dev stop|shell|logs    Stop it / a shell inside it / its output
 #   claude-dev verify             Check the folder is set up as promised
@@ -63,7 +64,7 @@ PROJECT_SELF="$(dirname "$HOST_DIR")"
 # WHERE THE PROJECT LIVES INSIDE THE CONTAINER.
 #
 # /workspace/<name>, not the folder's own Mac path. Mounting it at the Mac
-# path was deliberate once -- "every path Orca stores and every path an
+# path was deliberate once -- "every path a tool stores and every path an
 # agent prints means the same thing on both sides" -- and the price of it
 # was that the container spells out its owner's home directory and folder
 # tree at every prompt. `pwd` answered /Users/<them>/Documents/<project>
@@ -72,9 +73,8 @@ PROJECT_SELF="$(dirname "$HOST_DIR")"
 # scaffolding Docker creates so the mount can sit at that path; the only
 # host paths inside are the project and the folder's own home.)
 #
-# Nothing inside needs the two to agree: the entrypoint, seed-orca-state,
-# `bd init`, the Claude trust seed and `orca repo add` all take the path
-# from PROJECT_DIR. The Mac path still rides in as
+# Nothing inside needs the two to agree: the entrypoint, `bd init` and
+# the Claude trust seed all take the path from PROJECT_DIR. The Mac path still rides in as
 # CLAUDE_ORCA_HOST_PROJECT_DIR, for messages that name a file a person has
 # to open on the Mac.
 guest_project_dir() { printf '/workspace/%s\n' "$(derive_project_name "$1")"; }
@@ -193,6 +193,8 @@ gitignore_unseed() {
 
     local tmp
     tmp="$(mktemp "${file}.XXXXXX")"
+    # seeded() still lists the old Orca's patterns (Orca.app/, .orca/,
+    # .orca-worktrees/, orca.yaml): folders seeded in those days carry them.
     awk -v marker="$GITIGNORE_MARKER" '
         function seeded(l) {
             return l == ".claude-dev/" || l == ".claude-dev-snapshots/" || \
@@ -277,8 +279,7 @@ IMAGE_REPO="${CLAUDE_ORCA_IMAGE_REPO:-claude-orca}"
 
 # The tag lives in one file at the template root, so a folder that only
 # ever runs `claude-dev --update` moves to the new image with the rebuild.
-# Nothing else is folded in: the image carries no Orca, so there is no
-# second version the tag has to follow.
+# Nothing else is folded in: that file is the whole answer.
 image_tag() {
     local f tag=""
     for f in "$TEMPLATE_ROOT/IMAGE_TAG" "$HOST_DIR/template/IMAGE_TAG"; do
@@ -401,7 +402,7 @@ ctr_daemon_start() {
 # capability set (CapEff 0000000000000000, no CAP_SYS_ADMIN in the bounding
 # set), so mount and unshare fail even for root and docker, podman and a
 # private dockerd all die the same way. With this backend the launcher, the
-# entrypoint and Orca can be exercised together for real.
+# entrypoint and sshd can be exercised together for real.
 #
 # There is NO BOUNDARY here, and this does not pretend otherwise: --volume,
 # -p, --cpus, --memory and --dns are parsed off the argv and ignored,
@@ -421,7 +422,7 @@ ctr_local_dir() {
 }
 
 # The recorded PROCESS GROUP id, not a bare pid: the entrypoint spawns
-# Orca, which spawns more, and stop has to be able to signal the whole tree
+# sshd, which spawns a session per login, and stop has to signal the whole tree
 # at once rather than trust one process to pass a signal down.
 ctr_local_pid() {
     local f
@@ -445,8 +446,8 @@ ctr_local_state() {
 }
 
 # Starts (or restarts) the entrypoint for a recorded container. The child
-# inherits this shell's environment -- DISPLAY above all, which is what
-# Orca needs -- and the recorded -e values are layered on top of it.
+# inherits this shell's environment, and the recorded -e values are
+# layered on top of it.
 ctr_local_spawn() {
     local name="$1" d proj entry log line waited
     d="$(ctr_local_dir)"
@@ -461,8 +462,8 @@ ctr_local_spawn() {
         [ -n "$line" ] || continue
         set -- "$@" "$line"
     done < "$d/$name.env"
-    # The folder's own home is HOME here, so Orca's user-data dir lands
-    # inside the project exactly as it does under /home/agent in the VM.
+    # The folder's own home is HOME here, so ~ lands inside the project
+    # exactly as /home/agent does in the VM.
     # No privilege drop: there is no agent user on this side to drop to.
     #
     # And the folder's REAL path everywhere the docker argv spells the
@@ -543,7 +544,7 @@ ctr_local_run() {
 }
 
 # TERM the whole process group -- the entrypoint has its own trap for
-# taking Orca down with it, and signalling the group catches whatever the
+# taking sshd down with it, and signalling the group catches whatever the
 # trap does not. KILL only when the group will not go.
 ctr_local_stop() {
     local name="$1" pgid waited=0
@@ -836,8 +837,8 @@ prune_old_refs() {
         [ "${rt##*:}" = "$ntag" ] && continue
         [ "${rt##*:}" = "<none>" ] && continue
         id="${id#sha256:}"
-        # Exact lines -- claude-orca:latest is a PREFIX of every
-        # claude-orca:latest-orca<v>, so a substring match here would
+        # Exact lines -- claude-orca:latest is a PREFIX of every older
+        # claude-orca:latest-<suffix> tag, so a substring match here would
         # spare an image its container moved off long ago.
         if printf '%s\n' "$used" | grep -Fxq -e "$rt" -e "sha256:$id" \
                 -e "${id:0:12}"; then
@@ -1051,14 +1052,7 @@ cmd_key_v3() {
     echo "That file is /home/agent/.openrouter.key inside the container; the entrypoint reads it there next time you run ./claude-dev."
 }
 
-# --- the desktop Orca on the Mac (S2, claude-orca-8uo.3) -----------------
-#
-# A folder runs one of two UIs: Orca Web in the browser, or the Orca.app on
-# the Mac attached to the container's runtime. Which one is decided once,
-# at register, and the three functions below are everything the decision
-# and the doctor need to know about the app.
-
-ORCA_DOWNLOAD_URL="https://orca.dev/download"
+# --- reading the folder's config ------------------------------------------
 
 # One scalar out of claude-orca.json, empty when absent, null or unreadable.
 json_get() {
@@ -1184,10 +1178,10 @@ container_state() {
     printf '\n'
 }
 
-# The entrypoint writes <project>/.claude-dev/run/orca-web-url.txt (0600 --
-# the fragment carries a pairing code) once Orca is serving. That file is
-# the handshake between the two halves: everything before it is the Mac
-# starting a VM, everything after is a browser talking to Orca.
+# The entrypoint writes <project>/.claude-dev/run/sshd.ready once sshd is
+# accepting connections. That file is the handshake between the two halves:
+# everything before it is the Mac starting a VM, everything after is a pane
+# talking to sshd.
 # How long to wait for that handshake, and the one question that decides
 # it: is this start going to INSTALL something? The image answers it. A
 # folder running this template's image has the whole toolchain the
@@ -1422,10 +1416,10 @@ doctor_ssh_rows() {
 
 # --- the old Orca state volume (legacy) ------------------------------------
 #
-# Before the Orca-free image, a folder's container mounted a docker volume
-# named <container>-orca-state at /home/agent/.config/orca, because the old
-# Orca put its unix sockets there and a macOS bind mount cannot chmod or
-# link them. Nothing mounts it any more. The name is kept for exactly two
+# In the old Orca days a folder's container mounted a docker volume named
+# <container>-orca-state at /home/agent/.config/orca, because the old Orca
+# put its unix sockets there and a macOS bind mount cannot chmod or link
+# them. Nothing mounts it any more. The name is kept for exactly two
 # callers: teardown, and --update, which removes the leftover volume of a
 # folder that predates this. Both ignore "no such volume".
 state_volume() { printf '%s-orca-state\n' "$1"; }
@@ -1524,6 +1518,9 @@ apply_cpu_cap() {
 #
 # One mount per path, never /opt itself: /opt also holds /opt/claude-orca,
 # which IS the image's copy of this template.
+#
+# opt-Orca:/opt/Orca is the old Orca's install dir: nothing installs there
+# any more, the mount stays only until toolchain-cache.bats is re-pointed.
 TOOLCHAIN_MOUNTS="usr-local:/usr/local opt-Orca:/opt/Orca"
 
 container_dns() {
@@ -2117,7 +2114,7 @@ JSON
 
     write_project_stub "$dir"
 
-    # An old folder's config may still carry a `ui` key from the Orca
+    # An old folder's config may still carry a `ui` key from the old Orca
     # days. It is ignored, not rewritten: a folder's own file is its own.
 
     port="$(choose_port "$dir")"
@@ -2307,10 +2304,10 @@ PROVISION
 
 # ===== claude-dev verify ================================================
 #
-# The doctor answers "can this folder open at all" -- six rows about the
-# CLI, the daemon, the image, the container, the port and the URL. It says
+# The doctor answers "can this folder open at all" -- rows about the
+# CLI, the daemon, the image, the container, the port and sshd. It says
 # nothing about whether the folder is SET UP: the rulebook, the agents, the
-# hooks, the git identity, the Claude first-run keys, Orca's worktree base,
+# hooks, the git identity, the Claude first-run keys,
 # the beads database. All of that is seeded by code that logs a line and
 # moves on, and until now nothing read any of it back -- so a folder whose
 # seeding half failed looked exactly like one that worked, which is how
@@ -2472,8 +2469,8 @@ cmd_update_v3() {
         ctr stop "$name" >/dev/null 2>&1 || true
         ctr rm "$name" >/dev/null 2>&1 || true
     fi
-    # Migration from the Orca image (claude-orca-9bh.12): the old
-    # <container>-orca-state volume is mounted by nothing now, so it goes
+    # Migration from the old Orca image (claude-orca-9bh.12): the old Orca
+    # state volume <container>-orca-state is mounted by nothing now, so it goes
     # (one line, only when it was there -- a migrated folder prints nothing).
     # The container is removed above, so docker no longer holds it in use.
     if [ "$CTR_RUNTIME" != "local" ] && ctr volume inspect "$(state_volume "$name")" >/dev/null 2>&1; then
@@ -2516,7 +2513,7 @@ cmd_teardown_v3() {
     fi
     ctr stop "$name" >/dev/null 2>&1 || true
     ctr rm "$name" >/dev/null 2>&1 || true
-    # Legacy step: a folder from before the Orca-free image may still have
+    # Legacy step: a folder from the old Orca days may still have
     # the old <container>-orca-state volume (see state_volume); a `docker rm`
     # never touches a NAMED volume, so teardown removes it by name. "No such
     # volume" is the normal answer on a newer folder.
@@ -2542,10 +2539,10 @@ cmd_teardown_v3() {
     remove_host_dir "$dir/.claude-dev" \
         || echo "Warning: $dir/.claude-dev is still there; remove it by hand once Docker has settled" >&2
     rm -f "$dir/claude-dev"
-    # Orca's on-disk residue (claude-orca-aeu): the linked worktrees under
-    # .orca-worktrees/ carry a .git FILE each, which `git add -A` stages as
-    # embedded-repo gitlinks and a push then rejects, and root .orca/ is
-    # Orca's drop state. Removing them through `git worktree remove` first
+    # The old Orca's on-disk residue (claude-orca-aeu): the linked worktrees
+    # under .orca-worktrees/ carry a .git FILE each, which `git add -A` stages
+    # as embedded-repo gitlinks and a push then rejects, and root .orca/ is
+    # the old Orca's drop state. Removing them through `git worktree remove` first
     # keeps the worktree metadata (.git/worktrees, the branch itself) sane;
     # prune clears the entries whose directory a user deleted by hand. A
     # folder that is not a git repo gets the plain rm only, silently.
@@ -2625,7 +2622,7 @@ cmd_teardown_v3() {
         echo "Removed $dir/.beads (--purge-beads)"
     fi
 
-    echo "Teardown complete for '$project' at $dir (container $name and its Orca state removed)"
+    echo "Teardown complete for '$project' at $dir (container $name and its volumes removed)"
     if [ -n "$snap" ]; then
         echo "Re-register this directory later to restore the snapshot."
     fi
@@ -2646,8 +2643,8 @@ cmd_help() {
 claude-dev -- claude_orca project launcher (one per folder)
 
 Usage:
-  claude-dev                    Open this folder's Orca (starts or creates
-                                the container as needed)
+  claude-dev                    Start this folder's container and wait for sshd
+                                (creates it as needed)
   claude-dev [register] [dir]   Register a project (default: this folder)
   claude-dev open               Same as no arguments
   claude-dev pane [dir]         A sandbox pane in this terminal (fast when one
@@ -2657,7 +2654,7 @@ Usage:
   claude-dev verify             Check this folder is set up the way the
                                 template promises: the boundary, the
                                 toolchain, beads, the rulebook, agents,
-                                hooks, git identity and Orca's own state
+                                hooks and git identity
   claude-dev logs               Follow the container's output
   claude-dev ghostty [--uninstall|--check]
                                 Route Ghostty panes into sandboxed folders
