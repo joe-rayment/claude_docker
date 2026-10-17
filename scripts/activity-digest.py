@@ -14,7 +14,7 @@ network, read-only. P2 (activity-summarize.py) turns the digest into prose.
   --text   the same facts as a plain page, a headline per source.
   --root   the folder (default: CLAUDE_ORCA_ROOT, else PROJECT_DIR, else the
            git top level of the cwd, else the cwd).
-  --claude-dir  Claude's config dir (default: CLAUDE_CONFIG_DIR, else ~/.claude).
+  --claude-dir  Claude's config dir (default: CLAUDE_CONFIG_DIR, else .claude under HOME).
   --now    pretend it is this ISO time (tests); also parses every file instead of
            skipping the ones whose mtime is long past.
 
@@ -775,14 +775,14 @@ def main(argv=None):
     g.add_argument("--json", action="store_true", help="one JSON object (default)")
     g.add_argument("--text", action="store_true", help="a plain page, a headline per source")
     ap.add_argument("--root", help="the folder (default: CLAUDE_ORCA_ROOT, PROJECT_DIR, git top level, cwd)")
-    ap.add_argument("--claude-dir", help="Claude's config dir (default: CLAUDE_CONFIG_DIR, ~/.claude)")
+    ap.add_argument("--claude-dir", help="Claude's config dir (default: CLAUDE_CONFIG_DIR, else .claude under HOME)")
     ap.add_argument("--now", help="pretend it is this ISO time (tests)")
     a = ap.parse_args(argv)
     now = parse_ts(a.now) if a.now else dt.datetime.now(dt.timezone.utc)
     if now is None:
         ap.error("--now: not an ISO time: %r" % a.now)
     root = os.path.abspath(a.root or default_root())
-    cdir = a.claude_dir or os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
+    cdir = a.claude_dir or os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(os.path.expanduser("~"), ".claude")
     request, sources = collect(root, cdir, now, a.now is None)
     fp = hashlib.sha1(json.dumps([[s["id"], s["last"], s["state"]] for s in sources]).encode()).hexdigest()[:16]
     ep = "none"
