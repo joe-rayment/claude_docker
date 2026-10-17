@@ -9,6 +9,9 @@
 # go quiet, types `pwd; echo PANE-OK-$$; exit`, and prints what the terminal
 # showed with the escape sequences stripped. Exit status: 0 when the command
 # exited by itself after `exit`, 3 when it had to be killed.
+# Env: E2E_PANE_LINE replaces the typed line (default the one above),
+# E2E_PANE_WAIT is how many seconds to read after typing it (default 8; the
+# read ends early when the pane exits).
 import os, pty, sys, time, select, re, signal, fcntl, termios, struct
 
 argv = sys.argv[1:]
@@ -69,8 +72,9 @@ def wait_quiet(limit, quiet):
 
 alive = wait_quiet(60, 3)
 if alive:
-    os.write(fd, b'pwd; echo PANE-OK-$$; exit\r')
-    pump(8)
+    line = os.environ.get('E2E_PANE_LINE') or 'pwd; echo PANE-OK-$$; exit'
+    os.write(fd, line.encode() + b'\r')
+    pump(float(os.environ.get('E2E_PANE_WAIT') or 8))
 
 # Let the command end on its own after `exit`, else kill it.
 status = 3

@@ -35,7 +35,10 @@ REPO_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd -P)"
 
 # Read at file level, before setup() points HOME at the fixture.
 E2E_OPENSSH="${E2E_OPENSSH:-$HOME/.cache/claude-orca-test/openssh}"
+E2E_NC="${E2E_NC:-$HOME/.cache/claude-orca-test/netcat/bin/nc.openbsd}"
 E2E_PTY_DRIVER="$(cd "$(dirname "$BATS_TEST_FILENAME")" && pwd -P)/e2e-pty-pane.py"
+
+E2E_CLIP_PNG="$(cd "$(dirname "$BATS_TEST_FILENAME")" && pwd -P)/fixtures/clipboard/red-8x8.png"
 
 # The launcher's own wait for sshd is bounded; this is the outer belt.
 E2E_TIMEOUT=240
