@@ -210,3 +210,26 @@ sys.exit(0 if all(0.09 <= g < 0.6 for g in gaps) else 1)' "$LOG"
   [ "$status" -eq 0 ]
   [ "$(requests)" -eq 0 ]
 }
+
+@test "xclip: bin/xclip is a symlink to the shim, and a pane's interactive zsh finds it before /usr/bin/xclip" {
+  # bin/xclip is the name on PATH; it must resolve to the executable script
+  [ -L "$ROOT/bin/xclip" ]
+  [ "$(readlink -f "$ROOT/bin/xclip")" = "$(readlink -f "$XCLIP")" ]
+  [ -x "$ROOT/bin/xclip" ]
+  # the folder a pane runs in, as a fixture: its own HOME, its own .zshrc copy
+  # (config-sync copies config/.zshrc there) and a template clone whose bin/ is
+  # this repo's bin/
+  local fx="$BATS_TEST_TMPDIR/pane"
+  case "$fx" in "$BATS_TEST_TMPDIR"/pane) ;; *) return 1 ;; esac
+  mkdir -p "$fx/.claude-dev/home" "$fx/.claude-dev/template"
+  ln -s "$ROOT/bin" "$fx/.claude-dev/template/bin"
+  cp "$ROOT/config/.zshrc" "$fx/.claude-dev/home/.zshrc"
+  # /usr/bin/xclip is the competitor: the image installs the real one
+  [ -x /usr/bin/xclip ]
+  run env -i PATH=/usr/local/bin:/usr/bin:/bin HOME="$fx/.claude-dev/home" \
+    PROJECT_DIR="$fx" CLAUDE_ORCA_HOST_DIR="$fx/none" \
+    /usr/bin/zsh -ic 'command -v xclip' 2>/dev/null </dev/null
+  [ "$status" -eq 0 ]
+  [ "${lines[${#lines[@]}-1]}" = "$fx/.claude-dev/template/bin/xclip" ]
+  [ "$(readlink -f "$fx/.claude-dev/template/bin/xclip")" = "$(readlink -f "$XCLIP")" ]
+}
