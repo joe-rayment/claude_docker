@@ -478,7 +478,6 @@ ctr_local_spawn() {
         "CLAUDE_ORCA_ROOT=$proj" \
         "BEADS_DIR=$proj/.beads" \
         "CLAUDE_ORCA_SETUP=$proj/.claude-dev/template/scripts/container/setup.sh" \
-        "ORCA_BIN=${CLAUDE_ORCA_ORCA_BIN:-/opt/Orca/orca-ide}" \
         CLAUDE_ORCA_SKIP_SETUP=1 \
         CLAUDE_ORCA_SKIP_BEADS=1 \
         CLAUDE_ORCA_ENTRYPOINT_NO_PRIVDROP=1
@@ -853,9 +852,11 @@ PRUNE
 }
 
 # run/ holds RESULTS (CLAUDE.md: state/ holds authority), and every one of
-# them belongs to the container that wrote it: the pairing URL most of all
-# -- opening a previous session's URL is opening nothing. So a folder that
-# is about to get a new container starts from none of them. state/,
+# them belongs to the container that wrote it: sshd.ready and port most of
+# all -- trusting a previous container's marker is waiting on nothing. So a
+# folder that is about to get a new container starts from none of them.
+# orca-web-url.txt and orca-serve.log are the old Orca's results: no
+# container writes them now, but an old folder still carries them. state/,
 # claude-orca.json, the home, .beads and run/image-source are authority or
 # input and are never touched here.
 clear_run_results() {
@@ -1419,85 +1420,30 @@ doctor_ssh_rows() {
     return "$rc"
 }
 
-# --- the desktop hand-off (S3, claude-orca-8uo.4) -------------------------
+# --- the old Orca state volume (legacy) ------------------------------------
 #
-# With ui = desktop the client is the Mac's own Orca.app and this folder's
-# container is its runtime, attached over Orca's own pairing protocol
-# (.claude/plans/desktop-orca.md). Nothing about the boundary moves: every
-# agent, shell and tool call still runs inside the container. Three facts
-# from the probe against 1.4.197 (bead claude-orca-8uo.1) shape every line
-# below:
-#
-#   * `orca status --json` EXITS 0 whether the runtime is reachable or
-#     not. The boolean in the JSON is the only signal there is.
-#   * a second `environment add` under a name that already exists is
-#     refused outright ("A server named ... already exists."), and a
-#     recreated container mints a fresh offer -- so the saved one is
-#     removed first, every time.
-#   * the app registers no `orca://` protocol handler, so it is launched
-#     by bundle (`open -a`) and paired through its CLI.
-#
-# All of it is best effort. The container is up and serving either way and
-# Orca Web is a complete client, so a hand-off that cannot even start (no
-# app, no CLI, no pairing offer, a runtime that never answers) says why on
-# stderr and falls back to the browser rather than failing the open.
-
-# --- one installed Orca.app, never a second one (claude-orca-tgr) --------
-#
-# Orca.app can open LOCAL workspaces (agents run on the Mac, no container
-# around them) and 1.4.197 has no knob to refuse them. claude-orca-qhq's
-# answer was a private per-folder profile, which opens a SECOND instance
-# of the app -- there must be exactly one Orca, the installed one, no
-# exception. So this enforces the invariant on THAT app instead: this
-# folder is never a local project there, self-healing (quit, strip,
-# relaunch) when it finds out otherwise.
-
-# `container run -d`. The project is mounted at its own absolute path, so
-# every path Orca stores and every path an agent prints means the same
-# thing on both sides; the folder-local home becomes /home/agent, so
-# credentials and Orca state live and die with the folder.
-#
-# ... with ONE exception, and it is the reason a Mac could not boot a
-# folder at all. Orca's --user-data-dir is where it puts its own unix
-# domain sockets: the headless RPC socket it chmods on startup, and the
-# daemon socket it publishes with link(2). A macOS bind mount is not a
-# Linux filesystem -- Docker Desktop hands it through virtiofs, where a
-# socket can be created and then neither chmod'd nor hard-linked:
-#
-#   chmod('<udd>/o-7563-9c89.sock')            -> EINVAL
-#   link('<udd>/.pce...' -> 'daemon-v36.sock') -> ENOENT
-#
-# Orca takes the first as an unhandled rejection and the second as a fatal
-# daemon start, so it never prints a Web client URL and the entrypoint
-# gives up on it (verified on this Mac against orca-ide 1.4.197: the same
-# image, the same mounts, a user-data-dir on the folder home publishes no
-# URL, one on a real Linux filesystem is ready in two seconds). On Linux
-# the same bind mount is an ordinary directory where all of this works, so
-# the ubuntu-latest e2e stays green; and the macOS CI job runs Docker under
-# colima, whose sshfs mount refuses setup.sh's chown outright ("Permission
-# denied" on every path in the home, run 34122589713) -- it dies one step
-# before Orca and has never reached this.
-#
-# So Orca's user-data-dir gets a docker volume -- a real Linux filesystem
-# at the path Orca already expects. It is named after the container and
-# removed by teardown, so the state still dies with the folder; what it
-# no longer does is sit in the folder where the Mac can see it.
+# Before the Orca-free image, a folder's container mounted a docker volume
+# named <container>-orca-state at /home/agent/.config/orca, because the old
+# Orca put its unix sockets there and a macOS bind mount cannot chmod or
+# link them. Nothing mounts it any more. The name is kept for exactly two
+# callers: teardown, and --update, which removes the leftover volume of a
+# folder that predates this. Both ignore "no such volume".
 state_volume() { printf '%s-orca-state\n' "$1"; }
 
 # --- the scratch volumes (claude-orca-7uy) --------------------------------
 #
-# The other write-heavy, regenerable agent state gets the same treatment
-# as Orca's user-data-dir, because file-creating work on the bind-mount
-# share is what the Docker VM pays for (measured in claude-orca-19o: 3000
+# Write-heavy, regenerable agent state lives on docker volumes rather than
+# the bind-mount share, because file-creating work on the share is what the
+# Docker VM pays for (measured in claude-orca-19o: 3000
 # small files create/stat/rm = 901 ms and 61,129 VM interrupts on the
 # share vs 59 ms and 330 on a docker volume; a full checkout 842 ms /
 # 55,654 vs 283 ms / 10,848). Caches, opencode's session data and the
-# worktrees Orca links live on four more per-container volumes -- named
-# after the container like the state volume, so teardown can remove them
+# agents' git worktrees live on four per-container volumes -- named
+# after the container, so teardown can remove them
 # without a record, and the container half (claude-orca-1eh) migrates the
 # shadowed copies onto them. The project folder itself and the rest of
 # /home/agent STAY bind mounts: the user must keep seeing the folder the
-# template was started in, on the Mac and in Orca. The guest paths are the
+# template was started in, on the Mac. The guest paths are the
 # one interface with the container: they ride in as CLAUDE_ORCA_VOLUME_DIRS.
 SCRATCH_VOLUMES="cache:/home/agent/.cache npm:/home/agent/.npm opencode:/home/agent/.local/share/opencode worktrees:/home/agent/worktrees"
 scratch_volume() { printf '%s-%s\n' "$1" "$2"; }        # <container name> <suffix>
@@ -1608,29 +1554,22 @@ folder_image_ref() {
 }
 
 container_create() {
-    local dir="$1" name="$2" port="$3" ref src token cpus memory mount theme dns guest
+    local dir="$1" name="$2" port="$3" ref src token cpus memory mount terminal_theme dns guest
     guest="$(guest_project_dir "$dir")"
     src="$(image_source "$dir")"
     ref="$(folder_image_ref "$dir")"
     token="$(gh auth token 2>/dev/null || true)"
-    # claude-orca.json's `theme` picks the Orca theme the entrypoint seeds
-    # on a folder's first run (dark|light|system); the project name is the
-    # beads prefix it inits with.
-    theme="$(json_get "$dir" '.theme')"
-    [ -n "$theme" ] || theme="dark"
-    # ... and `terminalTheme` picks the terminal PALETTE by name -- an Orca
-    # builtin, "Homebrew" (green on black) by default. It reaches the folder
-    # twice over on purpose: the entrypoint seeds the name for Orca's own
-    # renderer, and the shipped .zshrc paints the same colours with OSC
-    # escapes, which is the half that does not need the browser to have been
-    # seeded or the image to have been rebuilt.
+    # claude-orca.json's `terminalTheme` picks the terminal PALETTE by name,
+    # "Homebrew" (green on black) by default. The shipped .zshrc paints it
+    # with OSC escapes, so it needs no image rebuild to take effect; the
+    # project name below is the beads prefix the folder inits with.
     terminal_theme="$(json_get "$dir" '.terminalTheme')"
     [ -n "$terminal_theme" ] || terminal_theme="Homebrew"
     mkdir -p "$dir/.claude-dev/run" "$dir/.claude-dev/home"
-    # Never open a stale pairing URL from a previous container. (An
-    # update, which is where a container is deliberately replaced, clears
-    # the rest of the previous one's results too -- clear_run_results.)
-    rm -f "$dir/.claude-dev/run/orca-web-url.txt" "$dir/.claude-dev/run/sshd.ready"
+    # Never trust a previous container's "sshd is up" marker. (An update,
+    # which is where a container is deliberately replaced, clears the rest
+    # of the previous one's results too -- clear_run_results.)
+    rm -f "$dir/.claude-dev/run/sshd.ready"
 
     # The toolchain cache, made before the run so docker mounts real
     # directories rather than creating root-owned ones of its own -- and
@@ -1641,17 +1580,14 @@ container_create() {
         done
     fi
 
-    # The two bind mounts stay first, then the state volume and the four
-    # scratch ones -- these lines and SCRATCH_VOLUMES (see state_volume)
-    # say the same thing, in the same order.
+    # The two bind mounts stay first, then the four scratch volumes --
+    # these lines and SCRATCH_VOLUMES say the same thing, in the same order.
     #
     # The published port is sshd's (CLAUDE_ORCA_SSHD_PORT, the port the
-    # Mac's ssh config names). Orca still runs inside until it is removed,
-    # one port up and NOT published: the Mac no longer talks to it.
+    # Mac's ssh config names): the only way in, and the one thing to publish.
     set -- run -d --name "$name" \
         --volume "$dir:$guest" \
         --volume "$dir/.claude-dev/home:/home/agent" \
-        --volume "$(state_volume "$name"):/home/agent/.config/orca" \
         --volume "$(scratch_volume "$name" cache):/home/agent/.cache" \
         --volume "$(scratch_volume "$name" npm):/home/agent/.npm" \
         --volume "$(scratch_volume "$name" opencode):/home/agent/.local/share/opencode" \
@@ -1663,10 +1599,8 @@ container_create() {
         -e "CLAUDE_ORCA_ROOT=$guest" \
         -e "BEADS_DIR=$guest/.beads" \
         -e "CLAUDE_ORCA_SSHD_PORT=$port" \
-        -e "ORCA_PORT=$((port + 1))" \
         -e "HOST_UID=$(id -u)" \
         -e "GH_TOKEN=$token" \
-        -e "CLAUDE_ORCA_THEME=$theme" \
         -e "CLAUDE_ORCA_TERMINAL_THEME=$terminal_theme" \
         -e "CLAUDE_ORCA_PROJECT_NAME=$(derive_project_name "$dir")" \
         -e "CLAUDE_ORCA_GIT_NAME=$(git_identity_name)" \
@@ -1773,17 +1707,17 @@ docker_host_path() {
 # older generation of this template used the same one, and bootstrap moves
 # that generation's .claude-dev aside without touching what it left
 # running -- so a fresh bootstrap of a second folder found a container by
-# the right name, reused it, and paired the Mac's Orca.app to a runtime
-# holding someone else's mounts: the project appeared in the sidebar and
-# was empty, no shell, no agents (a real Mac, 2026-09-13).
+# the right name, reused it, and handed the Mac a runtime holding someone
+# else's mounts: the project appeared empty, no shell, no agents (a real
+# Mac, 2026-09-13).
 #
 # So reuse is conditional on the five things that decide WHICH runtime the
-# app is about to be handed: the image, the project mount, the home mount,
+# Mac is about to be handed: the image, the project mount, the home mount,
 # the published port and the sshd port in its env. Returns 0 when all five
 # are this folder's, and
 # otherwise prints one line naming the FIRST mismatch and returns 1.
-# It never looks at the state volume -- that is Orca's own user-data dir,
-# it survives a recreate on purpose, and it is keyed by container name.
+# It never looks at volumes: they are keyed by container name and survive
+# a recreate on purpose.
 container_matches() {
     local name="$1" dir="$2" port="$3" guest want have want_id have_id have_port have_ssh mounts m found="" facts
     # CTR_RUNTIME=local runs the entrypoint as a host process: no image, no
@@ -1930,8 +1864,8 @@ MOUNTS
 # and when it did not, this is the repair. That makes the config path
 # independent of the image's age, which is the whole point.
 #
-# It runs AFTER the web URL is published, on purpose. The entrypoint syncs
-# before it starts `orca-ide --serve`, so waiting on the URL is what keeps
+# It runs AFTER sshd is ready, on purpose. The entrypoint syncs config
+# before it starts sshd, so waiting on sshd.ready is what keeps
 # two syncs from racing over the same config dir -- both of them `rm -rf`
 # and repopulate .claude/commands, and a torn config dir is worse than a
 # stale one.
@@ -1973,27 +1907,23 @@ cmd_open_v3() {
     name="$(container_name "$dir")"
     port="$(choose_port "$dir")"
 
-    # The image ref follows the Mac's Orca.app (image_tag), and the app
-    # updates itself: a plain open after an app update (1.4.219 -> .220,
-    # a real Mac, 2026-10-06) wanted claude-orca:latest-orca1.4.220, which
-    # only --update would have built -- so the old container was removed as
-    # a stranger's and `docker run` went off to pull the new tag from Docker
-    # Hub ("pull access denied for claude-orca"). A built folder whose image
-    # is missing builds it here, before anything is torn down; the build is
-    # a cache hit for every layer below the Orca one.
+    # A built folder whose image is missing (pruned, or the IMAGE_TAG file
+    # moved on) builds it here, before anything is torn down -- otherwise
+    # the old container would be removed as a stranger's and `docker run`
+    # would go off to pull the tag from Docker Hub ("pull access denied
+    # for claude-orca", a real Mac, 2026-10-06).
     if [ "$CTR_RUNTIME" != "local" ] && [ "$(image_source "$dir")" != "runtime" ] \
         && ! ctr image inspect "$(image_ref)" >/dev/null 2>&1; then
-        echo "  image $(image_ref) is not on this machine (the Orca app moved?) -- building it"
+        echo "  image $(image_ref) is not on this machine -- building it"
         acquire_image "$dir" "$(image_ref)" || return 1
     fi
 
     # Adopt a container only when it is this folder's (container_matches
     # says which of image, mounts and port is not). A stranger's is stopped
-    # and removed -- never its state volume, which is Orca's user-data dir
-    # and is keyed by the same name -- and the create path below builds
-    # this folder's own. Its run/ results go with it for the same reason
-    # cmd_update_v3 clears them: the pairing URL of a container that is
-    # gone opens nothing.
+    # and removed -- never its volumes, which are keyed by the same name --
+    # and the create path below builds this folder's own. Its run/ results
+    # go with it for the same reason cmd_update_v3 clears them: the sshd
+    # marker of a container that is gone proves nothing.
     state="$(container_state "$name")"
     if [ -n "$state" ] && ! container_matches "$name" "$dir" "$port"; then
         ctr stop "$name" >/dev/null 2>&1 || true
@@ -2058,9 +1988,8 @@ cmd_open_v3() {
             ;;
     esac
 
-    # What open waits for is sshd, not Orca's web URL: the Mac no longer
-    # talks to the Orca inside the container (it stays until C1 deletes it).
-    # wait_for_sshd_ready returns 3 after printing its own host-key message.
+    # What open waits for is sshd: it is the only way the Mac talks to the
+    # container. wait_for_sshd_ready returns 3 after printing its own host-key message.
     t0="$(date +%s)"
     wait_for_sshd_ready "$dir" "$name" || rc=$?
     t1="$(date +%s)"
@@ -2253,7 +2182,7 @@ doctor_row() {
 # the CLI, the service, the image, the container, the port and the URL the
 # entrypoint published. Exits 2 on any finding, so it is usable in a script.
 cmd_doctor_v3() {
-    local dir="$PROJECT_SELF" rc=0 ref name state port src vol
+    local dir="$PROJECT_SELF" rc=0 ref name state port src
     local prov=0 st nm detail
     # Whichever image THIS folder runs: a runtime-install folder has no
     # prebuilt image and never will, so asking after one would be a finding
@@ -2324,18 +2253,6 @@ cmd_doctor_v3() {
         doctor_row warn "container" "$name ($state) -- ./claude-dev starts it"
     fi
 
-    # Orca cannot keep its user-data-dir on the folder home (a Mac bind
-    # mount cannot chmod or link a unix socket), so it lives here; a
-    # missing volume is not a fault, just a folder that has not started.
-    if [ "$CTR_RUNTIME" != "local" ]; then
-        vol="$(state_volume "$name")"
-        if ctr volume inspect "$vol" >/dev/null 2>&1; then
-            doctor_row ok "Orca state" "$vol (docker volume, mounted at /home/agent/.config/orca)"
-        else
-            doctor_row warn "Orca state" "no volume $vol yet -- ./claude-dev creates it"
-        fi
-    fi
-
     port=""
     if [ -f "$dir/.claude-dev/run/port" ]; then
         port="$(head -1 "$dir/.claude-dev/run/port")"
@@ -2356,8 +2273,7 @@ cmd_doctor_v3() {
     fi
 
     # What `open` and `pane` actually use: sshd answering on the folder's
-    # port, the ControlMaster, and the folder's key being accepted. These
-    # replace the old `web url` row -- the Mac no longer talks to Orca.
+    # port, the ControlMaster, and the folder's key being accepted.
     doctor_ssh_rows "$dir" || rc=2
 
     # ... and one row per provisioning step (S5, claude-orca-dbu.5). The
@@ -2546,9 +2462,9 @@ cmd_update_v3() {
     fi
 
     # Recreate rather than restart: a new image only takes effect in a new
-    # container, and everything that matters is in the mounted folder --
-    # or, for Orca's own user-data-dir, in the named volume, which is why
-    # this removes the container and never the volume.
+    # container, and everything that matters is in the mounted folder or
+    # the scratch volumes, which is why this removes the container and
+    # never those volumes.
     name="$(container_name "$dir")"
     state="$(container_state "$name")"
     if [ -n "$state" ]; then
@@ -2556,9 +2472,22 @@ cmd_update_v3() {
         ctr stop "$name" >/dev/null 2>&1 || true
         ctr rm "$name" >/dev/null 2>&1 || true
     fi
+    # Migration from the Orca image (claude-orca-9bh.12): the old
+    # <container>-orca-state volume is mounted by nothing now, so it goes
+    # (one line, only when it was there -- a migrated folder prints nothing).
+    # The container is removed above, so docker no longer holds it in use.
+    if [ "$CTR_RUNTIME" != "local" ] && ctr volume inspect "$(state_volume "$name")" >/dev/null 2>&1; then
+        if ctr volume rm "$(state_volume "$name")" >/dev/null 2>&1; then
+            echo "  removed the old Orca state volume $(state_volume "$name")"
+        fi
+    fi
+    # A folder from before the ssh panes has no keys yet; sshd reads them at
+    # boot, so they are made before the new container starts. Idempotent and
+    # silent for a folder that has them.
+    ssh_ensure_keys "$dir" || return 1
     # The container that wrote run/ is gone, so its results go with it:
     # cmd_open_v3 below chooses the port again and the new container
-    # writes its own URL and logs.
+    # writes its own sshd.ready and logs.
     clear_run_results "$dir"
     cmd_open_v3 "$dir"
 }
@@ -2587,12 +2516,12 @@ cmd_teardown_v3() {
     fi
     ctr stop "$name" >/dev/null 2>&1 || true
     ctr rm "$name" >/dev/null 2>&1 || true
-    # Orca's user-data-dir is the one piece of folder state that lives in a
-    # volume rather than in .claude-dev (see state_volume): teardown is
-    # what keeps "dies with the folder" true of it. A `docker rm` on the
-    # container never touches a NAMED volume, so this is not redundant.
+    # Legacy step: a folder from before the Orca-free image may still have
+    # the old <container>-orca-state volume (see state_volume); a `docker rm`
+    # never touches a NAMED volume, so teardown removes it by name. "No such
+    # volume" is the normal answer on a newer folder.
     ctr volume rm "$(state_volume "$name")" >/dev/null 2>&1 || true
-    # The scratch volumes (see state_volume) are named after the container
+    # The scratch volumes (see scratch_volume) are named after the container
     # too, so teardown names them the same way -- regenerable state, but
     # "dies with the folder" is still the promise.
     for pair in $SCRATCH_VOLUMES; do
