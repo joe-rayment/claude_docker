@@ -355,7 +355,9 @@ wait_for_sshd_ready '$quiet' 2>&1 >/dev/null"
     [[ "$first" == *"--tag claude-orca:latest"* ]]
 
     # The template moves to a new image tag; the Mac's apps do not matter.
-    printf 'ssh9\n' > "$primary/.claude-dev/template/IMAGE_TAG"
+    printf 'ssh9\n' > "$TEMPLATE_SRC/IMAGE_TAG"
+    git -C "$TEMPLATE_SRC" -c user.email=test@example.com -c user.name=test \
+        commit --quiet -am "new image tag"
     : > "$CONTAINER_STUB_LOG"
     run bash -c "cd '$primary' && ./claude-dev --update"
     [ "$status" -eq 0 ]
