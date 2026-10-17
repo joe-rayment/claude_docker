@@ -320,8 +320,6 @@ wait_for_sshd_ready '$quiet' 2>&1 >/dev/null"
 #           tag or into a --build-arg again
 # Run:      bats -f 'build passes no ORCA_VERSION' tests/launcher-v3-build.bats
 @test "build passes no ORCA_VERSION build arg and tags the image with the IMAGE_TAG file alone, whatever app is installed" {
-    export CLAUDE_ORCA_APP="$(make_fake_orca_app "$BATS_TEST_TMPDIR/Applications/Orca9.app" 9.9.9)"
-
     mkdir -p "$PROJECT_DIR"
     primary="$(abspath "$PROJECT_DIR")"
     run make_project_v3 "$primary"
