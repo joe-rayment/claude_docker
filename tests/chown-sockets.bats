@@ -1,9 +1,9 @@
 #!/usr/bin/env bats
 #
 # The folder home is a bind mount, and chown on a unix domain socket over
-# that mount returns EINVAL. Orca leaves sockets in ~/.config/orca between
-# boots, so `chown -R agent:agent /home/agent` in setup.sh's phase_user
-# died on one -- seen on a real Mac run:
+# that mount returns EINVAL. The Orca this template once ran left sockets in
+# ~/.config/orca between boots, so `chown -R agent:agent /home/agent` in
+# setup.sh's phase_user died on one -- seen on a real Mac run:
 #
 #   chown: changing ownership of '/home/agent/.config/orca/o-7563-9c89.sock': Invalid argument
 #
@@ -28,7 +28,7 @@ SETUP_SH="$REPO_ROOT/scripts/container/setup.sh"
 ENTRYPOINT="$REPO_ROOT/scripts/container/entrypoint.sh"
 
 # AF_UNIX paths cap at ~108 bytes, so the fixture lives under a short
-# /tmp prefix (same reason as tests/container-entrypoint-seed.bats).
+# /tmp prefix (same reason as tests/helpers/entrypoint-boot.bash).
 setup() {
     TMP="$(mktemp -d /tmp/co-chown-XXXXXX)"
     export TMP
@@ -41,7 +41,7 @@ teardown() {
 }
 
 # A home-shaped tree: a regular file, a subdirectory with a file in it,
-# and a real unix domain socket where Orca puts its own.
+# and a real unix domain socket where the old Orca put its own.
 make_home() {
     local home="$1"
     mkdir -p "$home/.config/orca" "$home/.claude"

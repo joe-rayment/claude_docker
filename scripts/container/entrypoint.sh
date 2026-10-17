@@ -1,46 +1,42 @@
 #!/usr/bin/env bash
 #
 # entrypoint.sh -- PID 1's payload inside the claude_orca Linux VM (v3 S1,
-# claude-orca-qa2.1; see .claude/plans/container-v3.md S3-S4). Runs under
-# tini as root, brings Orca up headless in serve mode as the `agent` user,
-# and publishes the pairing URL the Mac side opens in a browser.
+# claude-orca-qa2.1; see .claude/plans/container-v3.md S3-S4; Orca left it
+# in claude-orca-9bh.11 -- the plan is .claude/plans/ghostty.md). Runs under
+# tini as root and brings the container's sshd up as the `agent` user: the
+# Mac's Ghostty reaches the folder over ssh and nothing else listens.
 #
 # Sequence: resolve the project -> install the toolchain (root) -> re-map
 # and drop to `agent` -> start the OpenRouter guard, which takes sole
-# custody of the real key -> seed Orca's own state (worktree base path,
-# theme, agent env) -> start `--serve` with its output in
-# <project>/.claude-dev/run/orca-serve.log -> wait for the "Web client
-# URL:" line -> write run/orca-web-url.txt (0600, it carries the pairing
-# code) and run/port -> run scripts/container/provision-run.sh -> wait on
-# the serve process, which is what keeps the container alive.
+# custody of the real key -> start the sshd SUPERVISOR (sshd-lib.sh's
+# restart loop, logging to <project>/.claude-dev/run/sshd.log) and publish
+# run/port -> run scripts/container/provision-run.sh -> wait on the
+# supervisor, which is what keeps the container alive.
+#
+# The supervisor RETRIES, never dies: no authorized key yet, no sshd binary,
+# an unwritable runtime dir, a checkout without sshd-lib.sh -- every refusal
+# is logged (the first try, then once a minute) and tried again every five
+# seconds, so PID 1 stays up, `docker exec` keeps working and `provision
+# status` can name the fault. The moment the missing thing appears (the Mac
+# side writes the keys), sshd comes up on the next try. SIGTERM/SIGINT stop
+# sshd and exit 143.
 #
 # Everything that is about THIS FOLDER rather than about the image is in
 # that provision-run.sh step and not in here (claude-orca-dbu.4): the
-# config sync, the seeds, the tracker, the repo registration, the guard
-# check. They are the steps most likely to fail, and in front of serve
-# they were in front of the only thing that could report a failure -- no
-# Orca, no terminal, no Claude Code, just a folder that did not come up.
-# Each one now writes run/provision/<step>.log and .status, none is fatal,
-# and the next start re-runs all of them. They run on the
-# Orca-cannot-start path too, right before the die, because that is the
-# folder that most needs its config and a readable status.
+# config sync, the seeds, the tracker, the guard check. They are the steps
+# most likely to fail, and in front of sshd they were in front of the only
+# thing that could report a failure. Each one now writes
+# run/provision/<step>.log and .status, none is fatal, and the next start
+# re-runs all of them.
 #
 # Environment:
 #   PROJECT_DIR   required; the bind-mounted project, same absolute path
 #                 as on the Mac.
-#   ORCA_PORT     serve port (default 6768); mirrored to run/port.
-#   ORCA_BIN      the Orca Linux binary (default /opt/orca/orca-ide).
-#   ORCA_CLI      the Orca CLI (default: the one bundled next to ORCA_BIN,
-#                 else the one serve installs into the agent's
-#                 ~/.local/bin, else `orca`/`orca-ide` on PATH).
+#   CLAUDE_ORCA_SSHD_PORT     sshd's port (default 2222); mirrored to
+#                 run/port.
 #   HOST_UID      the Mac uid owning the bind mount; `agent` is re-mapped
 #                 to it so files written inside look right outside.
 #   GH_TOKEN      passed through to the agent environment untouched.
-#   CLAUDE_ORCA_TERMINAL_THEME  name of an Orca terminal palette; the
-#                             template default is Homebrew (green on black)
-#   CLAUDE_ORCA_THEME         dark|light|system for the seeded Orca
-#                 settings (default dark); the Mac side passes
-#                 claude-orca.json's `theme` through.
 #   CLAUDE_ORCA_PROJECT_NAME  the beads prefix for `bd init` (default:
 #                 the project folder's basename).
 #   CLAUDE_ORCA_SKIP_BEADS=1  do not `bd init` the project folder.
@@ -58,14 +54,16 @@
 #   CLAUDE_ORCA_DNS_PROBE_HOST  the name whose resolution decides whether
 #                 DNS works (default ports.ubuntu.com).
 #   OPENROUTER_API_KEY        the REAL OpenRouter key, if the folder has
-#                 one. It goes to the in-VM guard and nowhere else: Orca
-#                 (and so every terminal) gets the guard's token in this
-#                 variable instead, plus OPENROUTER_BASE_URL.
+#                 one. It goes to the in-VM guard and nowhere else: sshd
+#                 (and so every ssh session) gets the guard's token in
+#                 this variable instead, plus OPENROUTER_BASE_URL.
 #   CLAUDE_ORCA_GUARD_PORT    loopback port for the guard (4141).
 #   CLAUDE_ORCA_GUARD_SCRIPT  the guard (default: the one next to this
 #                 script).
 #   CLAUDE_ORCA_GUARD_TIMEOUT seconds to wait for it to listen (30).
-#   CLAUDE_ORCA_WEBURL_TIMEOUT        seconds to wait for serve (120).
+#   CLAUDE_ORCA_SSHD_BIN      the sshd to run (default /usr/sbin/sshd).
+#   CLAUDE_ORCA_RUNTIME_DIR   where sshd's run-time files go (default
+#                 /run/cdev; tests point it at a fixture).
 #   CLAUDE_ORCA_ENTRYPOINT_NO_PRIVDROP=1   skip usermod/setpriv (tests,
 #                 and any run that is already unprivileged).
 #   CLAUDE_ORCA_MANAGED_SETTINGS      where Claude Code's administrator
@@ -79,20 +77,20 @@
 set -uo pipefail
 
 # Elapsed seconds on every line: the entrypoint's own steps (setup, the
-# privilege drop, config-sync, the seeds, serve) are the other half of a
+# privilege drop, config-sync, the seeds, sshd) are the other half of a
 # first start's timeline (recovery plan step 0.2).
 log()  { printf '[entrypoint +%ss] %s\n' "$SECONDS" "$*"; }
 warn() { printf '[entrypoint +%ss] %s\n' "$SECONDS" "$*" >&2; }
 die()  { printf '[entrypoint +%ss] %s\n' "$SECONDS" "$*" >&2; exit 1; }
 
 # Recursive chown for the agent, minus the unix sockets. `chown -R` over
-# the bind-mounted folder home returns EINVAL on a socket -- Orca leaves
-# its own in .config/orca between boots -- and once it hits one the rest
+# the bind-mounted folder home returns EINVAL on a socket -- an agent
+# socket or a leftover ssh ControlPath one -- and once it hits one the rest
 # of the tree keeps the wrong owner while the error goes to /dev/null.
 # Skipping sockets is what makes the chown actually complete, and -h is
-# what keeps a dangling symlink (Orca's SingletonLock and SingletonCookie
-# outlive the container that made them) from being followed to a target
-# that is not there. Best effort, like every chown on this side: never
+# what keeps a dangling symlink (a lock or cookie link outlives the
+# container that made it) from being followed to a target that is not
+# there. Best effort, like every chown on this side: never
 # fatal, and the sockets themselves are left alone because something may
 # still be using them.
 chown_agent_tree() {
@@ -140,7 +138,7 @@ chown_volume_dirs() {
 }
 
 # A command given to the container runtime (after tini's `--`) wins over
-# starting Orca: that is how CI runs smoke.sh in the built image, and how
+# starting sshd: that is how CI runs smoke.sh in the built image, and how
 # a person gets a shell in it without a running server.
 if [ "$#" -gt 0 ]; then
     exec "$@"
@@ -153,16 +151,10 @@ PROJECT_DIR="${PROJECT_DIR:-}"
 [ -d "$PROJECT_DIR" ] || die "PROJECT_DIR is not a directory: $PROJECT_DIR"
 PROJECT_DIR="$(cd "$PROJECT_DIR" && pwd -P)"
 
-ORCA_PORT="${ORCA_PORT:-6768}"
-ORCA_BIN="${ORCA_BIN:-/opt/orca/orca-ide}"
-WEBURL_TIMEOUT="${CLAUDE_ORCA_WEBURL_TIMEOUT:-120}"
 AGENT_USER="${CLAUDE_ORCA_AGENT_USER:-agent}"
 HOST_DIR="${CLAUDE_ORCA_HOST_DIR:-/opt/claude-orca-host}"
 
 RUN_DIR="$PROJECT_DIR/.claude-dev/run"
-SERVE_LOG="$RUN_DIR/orca-serve.log"
-URL_FILE="$RUN_DIR/orca-web-url.txt"
-PAIRING_FILE="$RUN_DIR/orca-pairing-url.txt"
 PORT_FILE="$RUN_DIR/port"
 SETUP_LOG="$RUN_DIR/setup.log"
 PROVISION_DIR="$RUN_DIR/provision"
@@ -287,7 +279,7 @@ else
         # a verification pass -- every phase already present -- so a
         # non-zero exit says something is wrong with the IMAGE, not that
         # there is nothing to run. Dying here would take the container
-        # with it and leave nobody to report the problem: no Orca, no
+        # with it and leave nobody to report the problem: no sshd, no
         # terminal, no Claude Code. Record it, say so loudly, carry on.
         warn "setup.sh failed (exit $setup_status) -- see $SETUP_LOG"
         warn "continuing anyway: the VM comes up so the failure can be"
@@ -344,7 +336,7 @@ if [ -n "$MANAGED_SETTINGS" ] || [ "$(id -u)" = "0" ]; then
     fi
 fi
 
-# --- who we run Orca as -------------------------------------------------
+# --- who we run sshd as -------------------------------------------------
 #
 # Under tini we start as root: re-map `agent` to the Mac uid that owns the
 # bind mount (so writes from inside look right from outside), then drop.
@@ -380,7 +372,7 @@ if [ "${CLAUDE_ORCA_ENTRYPOINT_NO_PRIVDROP:-0}" != "1" ] && [ "$(id -u)" = "0" ]
         # every write to the calling user -- which is exactly why it had to
         # be caught on Linux. Handing the cache to the host uid is what
         # keeps "the state dies with the folder" true on both.
-        for toolchain_mount in /usr/local /opt/Orca; do
+        for toolchain_mount in /usr/local; do
             if mountpoint -q "$toolchain_mount" 2>/dev/null; then
                 chown_agent_tree "$toolchain_mount"
             fi
@@ -415,7 +407,7 @@ if declare -F cdev_sshd_loop >/dev/null 2>&1; then
     fi
 fi
 
-# Every child Orca process goes through one of these: the only place that
+# Every child process goes through one of these: the only place that
 # knows whether to drop privileges, and the only place HOME is pinned.
 run_as_agent() {
     if [ "$PRIVDROP" = "1" ]; then
@@ -427,9 +419,9 @@ run_as_agent() {
 }
 
 # The backgrounded variant. `&` on a function call forks a subshell, so
-# without an explicit exec $! would be that subshell rather than Orca --
-# and the TERM trap would signal a shell instead of the server. setpriv
-# and env both exec too, so the pid survives the whole chain.
+# without an explicit exec $! would be that subshell rather than the real
+# process -- and the TERM trap would signal a shell instead of the real one.
+# setpriv and env both exec too, so the pid survives the whole chain.
 agent_exec() {
     if [ "$PRIVDROP" = "1" ]; then
         exec setpriv --reuid="$AGENT_UID" --regid="$AGENT_GID" --init-groups -- \
@@ -440,9 +432,6 @@ agent_exec() {
 }
 
 export GH_TOKEN="${GH_TOKEN:-}"
-USER_DATA_DIR="${ORCA_USER_DATA_DIR:-$AGENT_HOME/.config/orca}"
-mkdir -p "$USER_DATA_DIR"
-[ "$PRIVDROP" = "1" ] && chown_agent_tree "$USER_DATA_DIR"
 
 # The scratch volumes are the agent's to write into, from the first boot
 # that has them (claude-orca-1eh). Root phase: the agent could not chown a
@@ -454,17 +443,17 @@ fi
 # --- early config sync (claude-orca-0jn) --------------------------------
 #
 # (a) WHY: settings.json's statusLine key is written only by config-sync,
-# and config-sync used to run exclusively from provision.d, AFTER the web
-# URL is published and the Mac side's browser opens. Claude Code reads
+# and config-sync used to run exclusively from provision.d, AFTER sshd
+# is up and the Mac side's terminal pane has connected. Claude Code reads
 # statusLine once, at process start, and never catches up mid-session -- so
 # a session opened against a first-ever boot could read a settings.json
 # that did not exist yet, or existed without statusLine, and would carry
-# that gap for its entire life. Running the sync once here, before serve
+# that gap for its entire life. Running the sync once here, before sshd
 # is even started, closes that window.
 #
 # (b) WHY NOT FATAL: provision.d/20-config-sync (checksum-gated, so this
 # is a no-op on its second call within the same boot) still runs on the
-# normal schedule after the URL, and is still the retry path. A failure
+# normal schedule after sshd is up, and is still the retry path. A failure
 # here changes nothing about claude-orca-dbu.4's anti-silent-failure
 # property -- no exit, no die, and the folder still gets a logged,
 # retried attempt exactly as before this existed. It is a pure improvement
@@ -473,7 +462,7 @@ fi
 # (c) WHY TIMED: this is local file I/O against a template that is already
 # on disk -- near-instant in the success case -- so it is bounded rather
 # than trusted, the same way every other step here is: a hang must not
-# delay serve past a bounded window, whatever caused it.
+# delay sshd past a bounded window, whatever caused it.
 #
 # The three-way fallback is copied verbatim from provision.d/20-config-sync
 # (do not let the two drift): the folder's own template clone wins when it
@@ -489,7 +478,7 @@ elif [ -d "$HOST_DIR/template/config" ]; then
 fi
 
 if [ -z "$early_sync_host" ]; then
-    warn "early config sync: no template config found (looked in $PROJECT_DIR/.claude-dev/template, $TEMPLATE_ROOT, $HOST_DIR); skipping -- provision.d/20-config-sync will retry after the URL"
+    warn "early config sync: no template config found (looked in $PROJECT_DIR/.claude-dev/template, $TEMPLATE_ROOT, $HOST_DIR); skipping -- provision.d/20-config-sync will retry once sshd is up"
 else
     early_sync_timeout="${CLAUDE_ORCA_EARLY_SYNC_TIMEOUT:-30}"
     if command -v timeout >/dev/null 2>&1; then
@@ -503,15 +492,15 @@ else
     if [ "$early_sync_rc" = "0" ]; then
         log "early config sync from $early_sync_host/template/config: ok"
     else
-        warn "early config sync from $early_sync_host/template/config failed (exit $early_sync_rc); provision.d/20-config-sync will retry after the URL"
+        warn "early config sync from $early_sync_host/template/config failed (exit $early_sync_rc); provision.d/20-config-sync will retry once sshd is up"
     fi
 fi
 
 # --- what used to be here (claude-orca-dbu.4) ---------------------------
 #
 # The config sync, the git identity, the Claude Code first-run seed and the
-# project seed (.gitignore, attachments/, orca.yaml, the beads snapshot,
-# `bd init`) all ran on this line, between the privilege drop and Orca.
+# project seed (.gitignore, attachments/, the beads snapshot, `bd init`)
+# all ran on this line, between the privilege drop and sshd.
 # Every one of them is about THIS FOLDER rather than about the image, and
 # every one of them is a way for a folder to fail to start in silence.
 # They are provision.d steps now -- see run_provision below, and
@@ -525,10 +514,9 @@ fi
 # (scripts/container/openrouter-guard.py + config/provider-policy.json,
 # claude-orca-qa2.20) holds the real OPENROUTER_API_KEY alone and forces
 # provider.only/allow_fallbacks=false/data_collection=deny onto every
-# completion request. It therefore starts HERE, before Orca and before the
-# state seed that publishes its token, and what Orca -- and so every
-# terminal Orca spawns -- inherits is the token and the guard's loopback
-# base URL, never the key.
+# completion request. It therefore starts HERE, before sshd, and what sshd
+# -- and so every ssh session it opens -- inherits is the token and the
+# guard's loopback base URL, never the key.
 #
 # Fail closed on the KEY, not on the boot: a guard that will not start
 # leaves the VM without OpenRouter rather than with an unpoliced key in
@@ -569,9 +557,10 @@ sys.exit(0 if s.connect_ex(('127.0.0.1', $GUARD_PORT)) == 0 else 1)" \
         >/dev/null 2>&1
 }
 
-# Stable across restarts: the token is seeded into Orca's per-agent env,
-# which is written once, so a fresh random token on every start would leave
-# that seed pointing at a credential the guard no longer accepts.
+# Stable across restarts: a session that outlives one start (a tmux pane, a
+# long-running agent) keeps the token it was given, so a fresh random token
+# on every start would leave it pointing at a credential the guard no
+# longer accepts.
 # Mode 600 before a byte is in it, and the agent's, because the agent is who
 # reads it. Same uid as every terminal here, so the permission bits are not
 # what makes this safer than an environment variable -- the unlink is.
@@ -677,21 +666,29 @@ if [ -n "$OPENROUTER_REAL_KEY" ]; then
         export OPENROUTER_BASE_URL="$GUARD_BASE_URL"
         log "OpenRouter guard listening on $GUARD_BASE_URL (pid $GUARD_PID, log: $GUARD_LOG); agents get its token, never the key"
     else
-        warn "the OpenRouter guard did not start -- the real OPENROUTER_API_KEY is NOT being passed to Orca (see $GUARD_LOG). Agents have no OpenRouter access this run; that is deliberate, because an unpoliced key in a terminal is exactly what the guard exists to prevent."
+        warn "the OpenRouter guard did not start -- the real OPENROUTER_API_KEY is NOT being passed to sshd (see $GUARD_LOG). Agents have no OpenRouter access this run; that is deliberate, because an unpoliced key in a terminal is exactly what the guard exists to prevent."
     fi
 else
     log "no OPENROUTER_API_KEY; not starting the OpenRouter guard"
 fi
 
-# --- the container's sshd (claude-orca-9bh.6) ---------------------------
+# --- the container's sshd (claude-orca-9bh.6, .11) ----------------------
 #
-# Beside Orca, never instead of it, and never fatal: every refusal below is
-# one line in run/sshd.log (or the boot log) and a return 0. It runs after
-# the guard block on purpose -- the env snapshot ssh panes inherit must hold
-# the guard's token, never the real OpenRouter key (the library also drops
-# any value that looks like one). sshd.ready is the Mac side's signal; it
+# sshd is the one long-running child of this script, and PID 1 never dies
+# for lack of it: start_sshd forks a SUPERVISOR that tries to bring sshd up
+# and, on ANY refusal, logs the reason (the first try, then once a minute)
+# and tries again five seconds later. The refusals are: sshd-lib.sh absent,
+# no host/authorized keys in state/ssh yet (the Mac side writes them on its
+# next ./claude-dev), an unwritable runtime dir, no sshd binary, files that
+# cannot be staged. The block runs after the guard block on purpose -- the
+# env snapshot ssh panes inherit is taken when sshd STARTS, so it holds the
+# guard's token, never the real OpenRouter key (the library also drops any
+# value that looks like one). sshd.ready is the Mac side's signal; it
 # exists only while sshd answers, so it is removed first on every boot.
 
+# Stops the restart loop sshd runs under: the supervisor's own child when
+# called inside the supervisor, the supervisor itself when called by the
+# main shell. Waits at most 2 s, so the whole teardown stays under 5 s.
 stop_sshd_loop() {
     local pid="${SSHD_LOOP_PID:-}" i
     [ -n "$pid" ] || return 0
@@ -704,31 +701,28 @@ stop_sshd_loop() {
     return 0
 }
 
-start_sshd() {
+# One attempt. Returns 0 with the restart loop running in the background
+# (SSHD_LOOP_PID is its pid), or 1 with the reason in SSHD_REFUSAL.
+try_start_sshd() {
     local sshlog="$RUN_DIR/sshd.log" ssh_state="$PROJECT_DIR/.claude-dev/state/ssh"
     local rt="$SSHD_RUNTIME_DIR" port="${CLAUDE_ORCA_SSHD_PORT:-2222}" bin allow fpr k
-    rm -f "$RUN_DIR/sshd.ready"
-    : > "$sshlog"
-    [ "$PRIVDROP" = "1" ] && chown "$AGENT_UID:$AGENT_GID" "$sshlog" 2>/dev/null
     if ! declare -F cdev_sshd_loop >/dev/null 2>&1; then
-        log "sshd-lib.sh is not in $SCRIPT_DIR; not starting sshd"
-        return 0
+        SSHD_REFUSAL="sshd-lib.sh is not in $SCRIPT_DIR; sshd cannot start"
+        return 1
     fi
     if [ ! -s "$ssh_state/host_ed25519" ] || [ ! -s "$ssh_state/host_ed25519.pub" ] \
         || [ ! -s "$ssh_state/authorized_keys" ]; then
-        echo "no ssh keys in state/ssh yet -- the Mac side creates them on the next ./claude-dev" >> "$sshlog"
-        return 0
+        SSHD_REFUSAL="no ssh keys in state/ssh yet -- the Mac side creates them on the next ./claude-dev"
+        return 1
     fi
     bin="${CLAUDE_ORCA_SSHD_BIN:-$(command -v sshd || echo /usr/sbin/sshd)}"
     if [ ! -d "$rt/ssh" ] || [ ! -w "$rt/ssh" ]; then
-        log "sshd runtime dir $rt/ssh is not writable; not starting sshd"
-        echo "sshd runtime dir $rt/ssh is not writable; sshd not started" >> "$sshlog"
-        return 0
+        SSHD_REFUSAL="sshd runtime dir $rt/ssh is not writable; sshd not started"
+        return 1
     fi
     if [ ! -x "$bin" ]; then
-        log "no executable sshd at $bin; not starting sshd"
-        echo "no executable sshd at $bin; sshd not started" >> "$sshlog"
-        return 0
+        SSHD_REFUSAL="no executable sshd at $bin; sshd not started"
+        return 1
     fi
     if [ "$PRIVDROP" = "1" ]; then allow="$AGENT_USER"; else allow="$(id -un)"; fi
     (
@@ -739,8 +733,8 @@ start_sshd() {
             && cdev_sshd_config "$rt" "$PROJECT_DIR" "$port" "$allow" \
                 "$SCRIPT_DIR/pane-entry" > "$rt/sshd_config"
     ) 2>>"$sshlog" || {
-        log "could not stage the sshd files under $rt; not starting sshd (see $sshlog)"
-        return 0
+        SSHD_REFUSAL="could not stage the sshd files under $rt (see $sshlog)"
+        return 1
     }
     for k in ssh/host_ed25519 ssh/host_ed25519.pub env sshd_config; do
         chmod 600 "$rt/$k" 2>/dev/null
@@ -748,8 +742,8 @@ start_sshd() {
     done
     fpr="$(cdev_host_key_fpr "$rt/ssh/host_ed25519.pub")"
     if [ -z "$fpr" ]; then
-        log "could not fingerprint the ssh host key; not starting sshd"
-        return 0
+        SSHD_REFUSAL="could not fingerprint the ssh host key; sshd not started"
+        return 1
     fi
     if [ "$PRIVDROP" = "1" ]; then
         cdev_sshd_loop "$bin" "$rt/sshd_config" "$sshlog" "$RUN_DIR/sshd.ready" "$port" "$fpr" agent_exec &
@@ -757,35 +751,104 @@ start_sshd() {
         cdev_sshd_loop "$bin" "$rt/sshd_config" "$sshlog" "$RUN_DIR/sshd.ready" "$port" "$fpr" &
     fi
     SSHD_LOOP_PID=$!
-    # An early die must not orphan sshd (the TERM/INT trap below covers the
-    # signal paths; this covers every plain `exit`).
-    trap stop_sshd_loop EXIT
-    log "sshd restart loop started (pid $SSHD_LOOP_PID, port $port, log: $sshlog)"
     return 0
 }
 
+# The supervisor body, run in a background subshell by start_sshd. TERM/INT
+# stop the sleeper and the restart loop, then exit 0.
+sshd_supervisor() {
+    local sshlog="$RUN_DIR/sshd.log" tries=0 rc sleeper=""
+    trap '[ -n "$sleeper" ] && kill "$sleeper" 2>/dev/null; stop_sshd_loop; exit 0' TERM INT
+    while :; do
+        if try_start_sshd; then
+            tries=0
+            log "sshd restart loop started (pid $SSHD_LOOP_PID, port ${CLAUDE_ORCA_SSHD_PORT:-2222}, log: $sshlog)"
+            rc=0; wait "$SSHD_LOOP_PID" || rc=$?
+            SSHD_LOOP_PID=""
+            rm -f "$RUN_DIR/sshd.ready"
+            echo "sshd-supervisor: the restart loop exited rc=$rc; starting it again" >> "$sshlog"
+        else
+            # The first refusal and then one a minute (every 12th try at 5 s).
+            if [ $((tries % 12)) -eq 0 ]; then
+                echo "$SSHD_REFUSAL" >> "$sshlog"
+                log "$SSHD_REFUSAL; trying again every 5 s"
+            fi
+            tries=$((tries + 1))
+        fi
+        sleep 5 &
+        sleeper=$!
+        wait "$sleeper" 2>/dev/null
+        sleeper=""
+    done
+}
+
+SSHD_REFUSAL=""
+start_sshd() {
+    local sshlog="$RUN_DIR/sshd.log"
+    rm -f "$RUN_DIR/sshd.ready"
+    : > "$sshlog"
+    [ "$PRIVDROP" = "1" ] && chown "$AGENT_UID:$AGENT_GID" "$sshlog" 2>/dev/null
+    sshd_supervisor &
+    SSHD_LOOP_PID=$!
+    log "sshd supervisor started (pid $SSHD_LOOP_PID)"
+}
+
+# The provisioning job (run_provision below) and everything it started. A
+# step's curl or sleep is a grandchild, `timeout` moves its child into a
+# group of its own, and on this box there is no pid namespace to reap them
+# when PID 1 goes -- so the whole tree is walked and signalled, not a
+# process group. The job is frozen (SIGSTOP) as it is walked, so it cannot
+# start the next step while the list is being made; then TERM to all of
+# them, and KILL for whatever is still there 1.5 s later.
+PROVISION_PID=""
+provision_tree() {  # provision_tree <pid>: freezes and prints <pid> and its descendants
+    local c
+    kill -STOP "$1" 2>/dev/null || return 0
+    echo "$1"
+    for c in $(pgrep -P "$1" 2>/dev/null); do
+        provision_tree "$c"
+    done
+}
+stop_provision() {
+    local pid="${PROVISION_PID:-}" tree p i alive
+    [ -n "$pid" ] || return 0
+    PROVISION_PID=""
+    tree="$(provision_tree "$pid")"
+    [ -n "$tree" ] || return 0
+    for p in $tree; do kill -TERM "$p" 2>/dev/null; kill -CONT "$p" 2>/dev/null; done
+    for i in 1 2 3 4 5 6 7 8 9 10; do
+        alive=0
+        for p in $tree; do kill -0 "$p" 2>/dev/null && alive=1; done
+        [ "$alive" = "0" ] && break
+        sleep 0.15
+    done
+    for p in $tree; do kill -KILL "$p" 2>/dev/null; done
+    wait "$pid" 2>/dev/null
+    rm -f "$PROVISION_KEY_FILE" 2>/dev/null
+    log "provisioning stopped"
+    return 0
+}
+
+# SIGTERM (docker stop) and SIGINT: take provisioning down (it may be
+# mid-step), then sshd, then the guard, and leave with the conventional
+# 143. The EXIT trap covers every plain exit.
+stop_all() {
+    stop_provision
+    stop_sshd_loop
+    [ -n "${GUARD_PID:-}" ] && kill -TERM "$GUARD_PID" 2>/dev/null
+    return 0
+}
+trap 'stop_all; exit 143' TERM INT
+trap 'stop_provision; stop_sshd_loop' EXIT
+
 start_sshd
 
-# --- seed Orca's own state, once (claude-orca-qa2.5) --------------------
-#
-# Before serve starts, so Orca reads it rather than racing it: the
-# project's worktree base path inside the folder, the theme, and the
-# agent env. Never fatal -- an unseeded Orca still works, it just needs
-# the settings pane.
-
-if run_as_agent bash "$SCRIPT_DIR/seed-orca-state.sh" \
-        --user-data-dir "$USER_DATA_DIR" \
-        --project "$PROJECT_DIR" \
-        --theme "${CLAUDE_ORCA_THEME:-}" \
-        --terminal-theme "${CLAUDE_ORCA_TERMINAL_THEME:-}" \
-        --openrouter-token "${OPENROUTER_API_KEY:-}" \
-        --openrouter-base-url "${OPENROUTER_BASE_URL:-}"; then
-    :
-else
-    warn "seeding Orca state failed (continuing)"
-fi
+# What the Mac side and the doctor read to know which port to dial. The
+# launcher deletes run/port before every start, so it is written now, not
+# when sshd happens to come up.
+printf '%s\n' "${CLAUDE_ORCA_SSHD_PORT:-2222}" > "$PORT_FILE"
 if [ "$PRIVDROP" = "1" ]; then
-    chown_agent_tree "$USER_DATA_DIR"
+    chown "$AGENT_UID:$AGENT_GID" "$PORT_FILE" 2>/dev/null
 fi
 
 # --- provisioning this folder (claude-orca-dbu.4) -----------------------
@@ -793,16 +856,20 @@ fi
 # Everything project-shaped, from scripts/container/provision-run.sh: one
 # numbered, idempotent step per thing a folder needs, each with its own
 # log and status under run/provision, none of them fatal. It is called on
-# exactly two paths -- after the web URL is published, and right before
-# every exit that means Orca could not be served -- and it runs once
-# either way. beads is one of those steps now (50-seed-project);
-# CLAUDE_ORCA_SKIP_BEADS is still honoured, by that script.
+# one path -- right after the sshd supervisor is started (sshd is up or
+# retrying) -- and it runs once. beads is one of those steps now
+# (50-seed-project); CLAUDE_ORCA_SKIP_BEADS is still honoured, by that
+# script.
 #
-# It runs in the FOREGROUND, and that costs nothing a person can see: the
-# URL is already written, Orca is already serving, and the browser the Mac
-# side opens is already usable. Every step is bounded by
-# CLAUDE_ORCA_PROVISION_TIMEOUT, so the `wait` below is never more than a
-# few minutes away even when a step hangs.
+# It runs as a background job that this shell `wait`s on. Not in the
+# foreground: bash defers a trap until the foreground command returns, so a
+# TERM during a slow step (a curl, an apt) would wait out the step -- 18.9 s
+# measured against the 10 s docker stop allows. `wait` is interrupted by
+# the trap at once, and the trap (stop_all) takes the job and its whole
+# process tree down before exiting 143. Waiting costs nothing a person can
+# see: the supervisor is already running, so a person can ssh in the moment
+# sshd answers. Every step is bounded by CLAUDE_ORCA_PROVISION_TIMEOUT, so
+# the `wait` is never more than a few minutes away even when a step hangs.
 
 PROVISION_RAN=0
 run_provision() {
@@ -838,266 +905,40 @@ run_provision() {
         && write_key_file "$PROVISION_KEY_FILE" "$OPENROUTER_REAL_KEY"; then
         provision_key_arg="CLAUDE_ORCA_OPENROUTER_KEY_FILE=$PROVISION_KEY_FILE"
     fi
-    run_as_agent env PROJECT_DIR="$PROJECT_DIR" \
+    # agent_exec, not run_as_agent: `&` on a function forks a subshell, and
+    # $! must be the runner itself for stop_provision to walk its tree.
+    agent_exec env PROJECT_DIR="$PROJECT_DIR" \
         TEMPLATE_ROOT="$TEMPLATE_ROOT" \
-        ORCA_BIN="$ORCA_BIN" \
-        ORCA_USER_DATA_DIR="$USER_DATA_DIR" \
         ${provision_key_arg:+"$provision_key_arg"} \
-        bash "$provision_runner"
+        bash "$provision_runner" &
+    PROVISION_PID=$!
+    # A trap that exits (TERM/INT -> 143) never comes back here; one that
+    # returned would interrupt this wait with a status above 128, hence the
+    # loop while the job is still alive.
+    local prc=0
+    while :; do
+        wait "$PROVISION_PID"; prc=$?
+        kill -0 "$PROVISION_PID" 2>/dev/null || break
+    done
+    PROVISION_PID=""
+    [ "$prc" = "0" ] || warn "provisioning ended with status $prc (not fatal)"
     # The runner unlinks it the moment it has read it; this is the case
     # where it never ran at all.
     rm -f "$PROVISION_KEY_FILE"
     return 0
 }
 
-# --- start Orca serve ---------------------------------------------------
-
-# Nothing to serve is still fatal -- but the folder gets provisioned
-# first. A container that cannot start Orca is exactly the one whose
-# config, seeds and status someone is about to go looking for.
-if [ ! -x "$ORCA_BIN" ]; then
-    run_provision
-    die "ORCA_BIN is not executable: $ORCA_BIN"
-fi
-
-: > "$SERVE_LOG"
-[ "$PRIVDROP" = "1" ] && chown "$AGENT_UID:$AGENT_GID" "$SERVE_LOG" 2>/dev/null
-
-# Orca spawns its OWN Xvfb when it cannot find a display. The lock and
-# socket that leaves behind live in the container's writable layer, which
-# a `docker restart` keeps -- so a restarted folder can find :99 already
-# claimed by a server that is not there any more. Seen on 2026-09-08: one
-# restart in three died with "Missing X server or $DISPLAY" and a
-# segfault, and this process exiting takes the whole container with it.
-#
-# What actually blocks the restarted display is the LOCK, not the socket
-# path -- Xvfb unlinks a leftover socket itself before binding. And
-# because the restart keeps the writable layer, the lock can name a PID
-# that has since been REUSED by a process that is no X server at all; a
-# server whose PID is still the X server it names comes up fine. So this
-# removes only the locks whose PID is no longer an X server (Xvfb, Xorg,
-# X or Xwayland under /proc), each together with its socket file, and
-# never the .X11-unix directory itself: wherever this runs, something
-# else may hold a live display there -- this dev box's own Orca does, and
-# on a Mac running the suite it is XQuartz's -- and rm -rf'ing that
-# directory and every lock took the box's own displays down on
-# 2026-10-03 (claude-orca-owb).
-clear_stale_display() {
-    local x11_tmp="${CLAUDE_ORCA_X11_TMP:-/tmp}" lock pid n comm
-    # Without /proc (a Mac running the suite) there is no way to tell a
-    # live server from a stale lock, and every lock would read as stale --
-    # XQuartz's included. The container always has /proc.
-    [ -d /proc/self ] || return 0
-    for lock in "$x11_tmp"/.X[0-9]*-lock; do
-        [ -f "$lock" ] || continue
-        # The PID is what the lock carries, blank-padded; anything that
-        # does not reduce to digits was not written by an X server.
-        pid="$(tr -d '[:space:]' <"$lock" 2>/dev/null)" || pid=""
-        comm=""
-        case "$pid" in
-            '' | *[!0-9]*) ;;
-            *) comm="$(cat "/proc/$pid/comm" 2>/dev/null)" || comm="" ;;
-        esac
-        case "$comm" in
-            Xvfb | Xorg | X | Xwayland) continue ;;
-        esac
-        n="${lock#"$x11_tmp"/.X}"
-        n="${n%-lock}"
-        rm -f "$lock" "$x11_tmp/.X11-unix/X$n" 2>/dev/null || true
-    done
-}
-
-start_orca_serve() {
-    clear_stale_display
-    agent_exec "$ORCA_BIN" \
-        --no-sandbox \
-        --disable-gpu \
-        --user-data-dir="$USER_DATA_DIR" \
-        --serve \
-        --port "$ORCA_PORT" \
-        --project-root "$PROJECT_DIR" \
-        >>"$SERVE_LOG" 2>&1 &
-    SERVE_PID=$!
-}
-
-# On a pre-URL failure the serve log is the only witness -- but pointing at
-# it means a `docker logs` on the Mac and a file inside a dead container
-# (claude-orca-cey), so print its last words here, where `docker logs`
-# already shows them. The pairing fragment and the code query value are
-# credentials; the tail is printed only after they are replaced.
-print_serve_log_tail() {
-    [ -s "$SERVE_LOG" ] || return 0
-    printf 'last lines of %s:\n' "$SERVE_LOG" >&2
-    tail -30 "$SERVE_LOG" \
-        | sed -E -e 's/#pairing=[^[:space:]]*/#pairing=<redacted>/g' \
-                 -e 's/([?&])code=[^&[:space:]]*/\1code=<redacted>/g' \
-                 -e 's/^/  /' >&2
-}
-
-# --- profile-state rollback (claude-orca-cey) ---------------------------
-#
-# Orca >= 1.4.219 keeps a profile's state in SQLite
-# (profiles/<id>/profile-state.db) and treats orca-data.json as its own
-# export; when the JSON export disagrees with the db, serve refuses to
-# start ("cannot safely choose a profile-state authority") and the folder
-# is bricked. Why SQLite is the right authority to keep here: inside this
-# container the only writer of that JSON besides Orca itself was this
-# repo's own seed -- which no longer touches a SQLite-era profile at all
-# -- so a disagreement on an existing folder was written by an earlier
-# boot of that seed, and the SQLite copy is the one holding what the user
-# actually did. `profile state rollback --current-sqlite` keeps the SQLite
-# copy and archives both, so the next serve regenerates the export to
-# match; the retry that follows then starts on fixed state.
-#
-# The CLI runs the way every agent command here does, as the agent with
-# the serve user-data dir; ELECTRON_DISABLE_SANDBOX is what the CLI needs
-# where serve gets --no-sandbox. Once per boot, and only when the serve
-# log actually names the refusal -- any other early exit is Orca's own
-# business and is not touched.
-resolve_orca_cli() {
-    if [ -n "${ORCA_CLI:-}" ] && [ -x "$ORCA_CLI" ]; then
-        printf '%s\n' "$ORCA_CLI"
-        return 0
-    fi
-    local candidate found
-    for candidate in \
-        "$(dirname "$ORCA_BIN")/resources/bin/orca-ide" \
-        "${AGENT_HOME:-/home/agent}/.local/bin/orca-ide" \
-        "${AGENT_HOME:-/home/agent}/.local/bin/orca"
-    do
-        [ -x "$candidate" ] && { printf '%s\n' "$candidate"; return 0; }
-    done
-    for candidate in orca orca-ide; do
-        found="$(command -v "$candidate" 2>/dev/null || true)"
-        [ -n "$found" ] && { printf '%s\n' "$found"; return 0; }
-    done
-    return 1
-}
-
-# The rollback answers --json; jq reads it when it is here, a plain
-# substring stands in when it is not.
-profile_state_rollback_said_ok() {
-    if command -v jq >/dev/null 2>&1; then
-        printf '%s\n' "$1" | jq -e '.ok == true' >/dev/null 2>&1
-    else
-        printf '%s\n' "$1" | grep -Eq '"ok"[[:space:]]*:[[:space:]]*true'
-    fi
-}
-
-maybe_rollback_profile_state() {
-    [ -s "$SERVE_LOG" ] || return 0
-    grep -q 'cannot safely choose a profile-state authority' "$SERVE_LOG" 2>/dev/null || return 0
-    [ "${PROFILE_STATE_ROLLBACK_RAN:-0}" = "0" ] || return 0
-    PROFILE_STATE_ROLLBACK_RAN=1
-    local cli out
-    cli="$(resolve_orca_cli || true)"
-    if [ -z "$cli" ]; then
-        warn "profile state: serve refused over its orca-data.json export, but no Orca CLI found to roll it back (set ORCA_CLI)"
-        return 0
-    fi
-    log "serve refused to start over a profile-state disagreement; rolling back to SQLite ($cli profile state rollback --current-sqlite)"
-    out="$(run_as_agent env ELECTRON_DISABLE_SANDBOX=1 \
-              ORCA_USER_DATA_PATH="$USER_DATA_DIR" \
-              "$cli" profile state rollback --current-sqlite --json 2>&1)" || true
-    if profile_state_rollback_said_ok "$out"; then
-        log "profile state: JSON and SQLite disagreed; kept SQLite (orca profile state rollback --current-sqlite; Orca archived both copies)"
-    else
-        warn "profile state rollback did not succeed: ${out:-<no output from $cli>}"
-    fi
-}
-
-log "starting Orca serve on port $ORCA_PORT (log: $SERVE_LOG)"
-start_orca_serve
-
-stop_serve() {
-    kill -TERM "$SERVE_PID" 2>/dev/null
-    [ -n "${GUARD_PID:-}" ] && kill -TERM "$GUARD_PID" 2>/dev/null
-    stop_sshd_loop
-}
-trap 'stop_serve; exit 143' TERM INT
-
-# --- wait for the Web client URL ----------------------------------------
-
-web_url=""
-waited=0
-while [ "$waited" -lt "$WEBURL_TIMEOUT" ]; do
-    web_url="$(sed -n 's/^.*Web client URL:[[:space:]]*\(http[^[:space:]]*\).*$/\1/p' \
-        "$SERVE_LOG" 2>/dev/null | tail -1)"
-    [ -n "$web_url" ] && break
-    if ! kill -0 "$SERVE_PID" 2>/dev/null; then
-        wait "$SERVE_PID"
-        # Before the retry, so the retry is the attempt that starts on
-        # fixed state -- but only when the log names the refusal, and
-        # only once per boot (see the rollback block above).
-        maybe_rollback_profile_state
-        # One retry, once. Orca's own start is not perfectly reliable --
-        # the display race above is one way it dies within a second of
-        # being asked -- and a folder that will not open until a person
-        # types the command again is a folder that looks broken. A second
-        # failure is real and is reported as one.
-        if [ "${SERVE_RETRIED:-0}" = "0" ]; then
-            SERVE_RETRIED=1
-            warn "orca serve exited before announcing a Web client URL; clearing its display state and trying once more"
-            printf '\n--- retry after an early exit ---\n' >> "$SERVE_LOG"
-            start_orca_serve
-            waited=0
-            continue
-        fi
-        warn "orca serve exited before announcing a Web client URL, twice -- see $SERVE_LOG"
-        print_serve_log_tail
-        run_provision
-        exit 1
-    fi
-    sleep 1
-    waited=$((waited + 1))
-done
-
-if [ -z "$web_url" ]; then
-    stop_serve
-    warn "orca serve did not become ready within ${WEBURL_TIMEOUT} s -- see $SERVE_LOG"
-    print_serve_log_tail
-    run_provision
-    exit 1
-fi
-
-# The pairing code in that fragment is a credential: owner-only, and the
-# mode is set before the URL lands in it.
-: > "$URL_FILE"
-chmod 600 "$URL_FILE"
-printf '%s\n' "$web_url" > "$URL_FILE"
-printf '%s\n' "$ORCA_PORT" > "$PORT_FILE"
-if [ "$PRIVDROP" = "1" ]; then
-    chown "$AGENT_UID:$AGENT_GID" "$URL_FILE" "$PORT_FILE" 2>/dev/null
-fi
-log "Orca web URL written to $URL_FILE"
-
-# The other line serve announces, on the heels of the first: the pairing
-# URL a desktop Orca on the Mac uses to attach to THIS container's
-# runtime. Same credential, same 0600, same owner. An Orca that announces
-# no pairing line is not a failure and does not stop the start -- the Mac
-# side carries the same URL percent-encoded in the web URL's fragment and
-# decodes it there, which is the path every folder already on an older
-# image takes.
-pairing_url="$(sed -n 's|^.*Pairing URL:[[:space:]]*\(orca://pair[^[:space:]]*\).*$|\1|p' \
-    "$SERVE_LOG" 2>/dev/null | tail -1)"
-if [ -n "$pairing_url" ]; then
-    : > "$PAIRING_FILE"
-    chmod 600 "$PAIRING_FILE"
-    printf '%s\n' "$pairing_url" > "$PAIRING_FILE"
-    if [ "$PRIVDROP" = "1" ]; then
-        chown "$AGENT_UID:$AGENT_GID" "$PAIRING_FILE" 2>/dev/null
-    fi
-    log "Orca pairing URL written to $PAIRING_FILE"
-fi
-
 # --- everything about this folder, now that it can be watched -----------
 
 run_provision
 
-# --- the container lives as long as Orca serves -------------------------
+# --- the container lives as long as sshd is supervised ------------------
+#
+# The supervisor only ends on SIGTERM/SIGINT (the trap above exits 143
+# first); if it is ever gone anyway, so is the reason to keep PID 1.
 
-log "Orca is serving; waiting on pid $SERVE_PID"
-wait "$SERVE_PID"
+log "waiting on the sshd supervisor (pid $SSHD_LOOP_PID)"
+wait "$SSHD_LOOP_PID"
 status=$?
-log "orca serve exited with status $status"
+log "the sshd supervisor exited with status $status"
 exit "$status"

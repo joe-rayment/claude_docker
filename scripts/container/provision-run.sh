@@ -1,29 +1,31 @@
 #!/usr/bin/env bash
 #
 # provision-run.sh -- the project-shaped half of a folder's start
-# (claude-orca-dbu.4), run AFTER `orca-ide --serve` has published its URL.
+# (claude-orca-dbu.4), run AFTER the entrypoint has started sshd's
+# supervisor and published run/port.
 #
 # WHY THIS IS NOT IN THE ENTRYPOINT ANY MORE. The steps a folder needs --
-# verify the toolchain, sync the instructions, seed the tracker, register
-# the project, check the guard -- are exactly the steps most likely to
-# fail: a network hiccup, a half-written config, a bad token. Every one of
-# them used to run in front of the only thing that could have reported the
-# failure. A folder whose config sync died had no Orca, no terminal and no
-# Claude Code to say so; it just did not come up. So the boot now gets to
-# the served URL first, and everything about THIS FOLDER happens after,
-# where a person can watch it and an agent can read it.
+# verify the toolchain, sync the instructions, seed the tracker, check the
+# guard -- are exactly the steps most likely to fail: a network hiccup, a
+# half-written config, a bad token. Every one of them used to run in front
+# of the only thing that could have reported the failure. A folder whose
+# config sync died had no way in and no Claude Code to say so; it just did
+# not come up. So the boot now gets sshd listening first, and everything
+# about THIS FOLDER happens after, where a person can ssh in and watch it
+# and an agent can read it.
 #
-# What stays in front of serve, deliberately:
+# What stays in front of sshd, deliberately:
 #
-#   * setup.sh itself, which needs root and installs the Orca binary the
-#     serve step is about to exec (its own status is run/provision/
-#     setup.status, written by the entrypoint);
-#   * the OpenRouter guard's START. Orca's process environment is fixed at
-#     exec, and the fail-closed rule -- the guard's token and base URL
-#     reach Orca only when the guard actually came up -- is therefore a
-#     decision that has to be made before serve, not after. The guard's
-#     step here (70-openrouter-guard) verifies it is answering and
-#     restarts it if it is not, which is the part that can safely wait.
+#   * setup.sh itself, which needs root and installs the toolchain the
+#     steps below use (its own status is run/provision/setup.status,
+#     written by the entrypoint);
+#   * the OpenRouter guard's START. sshd's process environment is fixed at
+#     exec -- every ssh session inherits it -- and the fail-closed rule is
+#     that the guard's token and base URL reach sshd only when the guard
+#     actually came up. That is a decision that has to be made before
+#     sshd starts, not after. The guard's step here (70-openrouter-guard)
+#     verifies it is answering and restarts it if it is not, which is the
+#     part that can safely wait.
 #
 # Usage: provision-run.sh [<step> ...]   (no arguments: every step)
 #

@@ -5,7 +5,7 @@
 # Everything that is about THIS FOLDER rather than about the image comes out
 # of the blocking path and becomes a numbered, idempotent step under
 # scripts/container/provision.d/, run by scripts/container/provision-run.sh
-# after `orca-ide --serve` has published its URL.
+# after the sshd supervisor has been started and run/port written.
 #
 # The ordering constraint that made this necessary: the steps a folder needs
 # are exactly the steps most likely to fail (a network hiccup, a half-written
@@ -17,12 +17,12 @@
 #     status -- idempotence, asserted per step, because a folder is started
 #     many times and the second start re-runs everything the first one did;
 #   * a step that exits non-zero leaves its status file non-zero and does not
-#     stop later steps or the Orca process;
-#   * the web URL is written BEFORE the first step runs.
+#     stop later steps or sshd;
+#   * sshd is started (run/port written) BEFORE the first step runs.
 #
 # This box cannot run containers, so the entrypoint is exercised NATIVELY
-# with a stub Orca that speaks serve's URL line, exactly as
-# tests/container-entrypoint.bats does.
+# with no sshd keys staged (the supervisor retries, which is all these
+# cases need of it), as tests/container-entrypoint-sshd.bats does.
 
 REPO_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)"
 ENTRYPOINT="$REPO_ROOT/scripts/container/entrypoint.sh"
@@ -51,26 +51,6 @@ make_project() {
     git init --quiet -b main "$dir" >/dev/null 2>&1
     git -C "$dir" -c user.email=test@example.com -c user.name=test \
         commit --quiet --allow-empty -m init >/dev/null 2>&1
-}
-
-# A stub Orca that records its own pid, speaks serve's URL line and stays
-# up. That pid is what "does not stop the Orca process" is asserted against.
-write_serving_orca() {
-    local path="$1"
-    mkdir -p "$(dirname "$path")"
-    cat > "$path" <<'STUB'
-#!/usr/bin/env bash
-echo $$ > "$TMP/orca.pid"
-port=""
-prev=""
-for arg in "$@"; do
-    [ "$prev" = "--port" ] && port="$arg"
-    prev="$arg"
-done
-echo "Web client URL: http://127.0.0.1:${port}/web-index.html#pairing=x"
-exec sleep 300
-STUB
-    chmod +x "$path"
 }
 
 start_entrypoint_bg() {
@@ -115,6 +95,9 @@ setup() {
     export TMP
     export EP_PGID_FILE="$TMP/ep.pgid"
     export EP_SCRIPT="$ENTRYPOINT"
+    # sshd's runtime dir: short (unix sockets), never /run/cdev.
+    RT="$(mktemp -d /tmp/cdev-pv-XXXXXX)"
+    export RT
 }
 
 teardown() {
@@ -123,6 +106,7 @@ teardown() {
     # entrypoint's process group, so they get their own kill -- only the
     # pids this test recorded, never a peer's.
     [ -n "${GUARD_PIDS:-}" ] && kill -KILL $GUARD_PIDS 2>/dev/null
+    [ -n "${RT:-}" ] && rm -rf "$RT"
     [ -n "${TMP:-}" ] && rm -rf "$TMP"
     return 0
 }
@@ -212,28 +196,31 @@ write_step() {  # write_step <name> <body...>
     chmod +x "$TMP/steps/$name"
 }
 
-# The entrypoint, booted against a stub Orca that serves, with this test's
-# own steps directory in place of the real one.
+# The entrypoint, booted natively with this test's own steps directory in
+# place of the real one. No sshd keys are staged, so the supervisor logs its
+# refusal and retries -- which still means "sshd was started".
 export_provision_test_env() {  # export_provision_test_env <project> <port>
     export HOME="$TMP/home"
     export PROJECT_DIR="$1"
-    export ORCA_PORT="$2"
-    export ORCA_BIN="$TMP/bin/orca-ide"
-    export ORCA_CLI=/bin/true
+    export CLAUDE_ORCA_SSHD_PORT="$2"
+    export CLAUDE_ORCA_RUNTIME_DIR="$RT"
+    unset CLAUDE_ORCA_SSHD_BIN
     export CLAUDE_ORCA_ENTRYPOINT_NO_PRIVDROP=1
     export CLAUDE_ORCA_SKIP_SETUP=1
     export CLAUDE_ORCA_SKIP_BEADS=1
-    export CLAUDE_ORCA_WEBURL_TIMEOUT=30
+    export CLAUDE_ORCA_SKIP_PROVISION=0
     export CLAUDE_ORCA_PROVISION_STEPS="$TMP/steps"
 }
 
-@test "a step that exits non-zero leaves its status file non-zero and does not stop later steps or the Orca process" {
+# Guards:   a provisioning step that fails (exit 3) leaves its own code in its status file, does not stop the steps after it, and does not take the sshd supervisor down with it
+# Fails if: a failing step aborts the runner or the entrypoint, flattens the exit code, or kills the supervisor (sshd is what a person ssh-es in through)
+# Run:      bats -f 'does not stop later steps or sshd' tests/provision.bats
+@test "a step that exits non-zero leaves its status file non-zero and does not stop later steps or sshd" {
     [ -x "$ENTRYPOINT" ]
 
-    local proj="$TMP/project" pdir port
+    local proj="$TMP/project" pdir port sup
     make_project "$proj"
     mkdir -p "$TMP/home" "$TMP/bin"
-    write_serving_orca "$TMP/bin/orca-ide"
     port="$(free_port)"
     pdir="$proj/.claude-dev/run/provision"
 
@@ -243,7 +230,7 @@ export_provision_test_env() {  # export_provision_test_env <project> <port>
 
     export_provision_test_env "$proj" "$port"
     start_entrypoint_bg
-    wait_for_file "$proj/.claude-dev/run/orca-web-url.txt" 40 || { dump_entrypoint; false; }
+    wait_for_file "$proj/.claude-dev/run/port" 40 || { dump_entrypoint; false; }
     wait_for_file "$pdir/30-last.status" 40 || { dump_entrypoint; false; }
 
     # The failure is on disk, readable by a human and by an agent, and it is
@@ -256,38 +243,50 @@ export_provision_test_env() {  # export_provision_test_env <project> <port>
     [ -f "$TMP/ran.30" ]
     [ "$(tr -d '[:space:]' < "$pdir/30-last.status")" = "0" ]
 
-    # The Orca process is the one thing a provisioning step must never take
-    # with it: this is the process the whole container's life is tied to.
-    [ -s "$TMP/orca.pid" ]
-    kill -0 "$(cat "$TMP/orca.pid")"
+    # sshd is the one thing a provisioning step must never take with it: it
+    # is the process the whole container's life is tied to. Its supervisor
+    # (the pid the entrypoint logged) is alive, and PID 1 got past
+    # provisioning to waiting on it.
+    for _ in $(seq 1 50); do
+        grep -qF 'waiting on the sshd supervisor' "$TMP/entrypoint.out" && break
+        sleep 0.2
+    done
+    grep -qF 'waiting on the sshd supervisor' "$TMP/entrypoint.out" || { dump_entrypoint; false; }
+    sup="$(sed -n 's/.*sshd supervisor started (pid \([0-9]*\)).*/\1/p' "$TMP/entrypoint.out" | head -1)"
+    [ -n "$sup" ]
+    kill -0 "$sup"
 }
 
-@test "the web URL is written BEFORE the first step runs" {
+# Guards:   sshd is started and run/port (the file the Mac side dials) is written before provisioning begins, so a person can ssh in while the steps run. The old assertion was about Orca's web URL; sshd has no URL, so the port file is the equivalent handshake
+# Fails if: provision-run.sh is started before start_sshd and the run/port write, so a step sees no port file or no "sshd supervisor started" line yet
+# Run:      bats -f 'sshd is started' tests/provision.bats
+@test "sshd is started (run/port written) BEFORE the first step runs" {
     [ -x "$ENTRYPOINT" ]
 
     local proj="$TMP/project" port
     make_project "$proj"
     mkdir -p "$TMP/home" "$TMP/bin"
-    write_serving_orca "$TMP/bin/orca-ide"
     port="$(free_port)"
 
-    # The probe reads the handshake file the Mac side waits on. Anything
-    # other than the published URL means provisioning got in front of the
-    # one thing that lets a person open the folder.
+    # The probe reads the port file the Mac side waits on and the entrypoint
+    # log's sshd line. Anything missing means provisioning got in front of
+    # the one thing that lets a person reach the folder.
     write_step 10-probe \
-        'if [ -s "$PROJECT_DIR/.claude-dev/run/orca-web-url.txt" ]; then' \
-        '    printf "url:%s\n" "$(cat "$PROJECT_DIR/.claude-dev/run/orca-web-url.txt")" > "$TMP/probe.out"' \
+        'if [ -s "$PROJECT_DIR/.claude-dev/run/port" ]; then' \
+        '    printf "port:%s\n" "$(cat "$PROJECT_DIR/.claude-dev/run/port")" > "$TMP/probe.out"' \
         'else' \
-        '    printf "url:MISSING\n" > "$TMP/probe.out"' \
-        'fi'
+        '    printf "port:MISSING\n" > "$TMP/probe.out"' \
+        'fi' \
+        'grep -qF "sshd supervisor started" "$TMP/entrypoint.out" && echo started > "$TMP/probe.sshd"'
 
     export_provision_test_env "$proj" "$port"
     start_entrypoint_bg
     wait_for_file "$TMP/probe.out" 40 || { dump_entrypoint; false; }
+    wait_for_file "$TMP/probe.sshd" 5 || { dump_entrypoint; false; }
 
     run cat "$TMP/probe.out"
     [ "$status" -eq 0 ]
-    [ "$output" = "url:http://127.0.0.1:${port}/web-index.html#pairing=x" ]
+    [ "$output" = "port:${port}" ]
 }
 
 # --- what the steps leave behind for a person to read --------------------
@@ -320,30 +319,34 @@ export_provision_test_env() {  # export_provision_test_env <project> <port>
     [ "$output" = "1" ]
 }
 
-@test "a folder whose Orca cannot start is still provisioned, right before the die" {
+# Guards:   a folder whose sshd cannot start (no keys staged yet) is still provisioned: the steps run, their status is readable, and PID 1 keeps waiting instead of dying
+# Fails if: provisioning is skipped or the entrypoint exits when sshd has no keys, so the folder that most needs its status has none
+# Run:      bats -f 'whose sshd cannot start' tests/provision.bats
+@test "a folder whose sshd cannot start is still provisioned and the entrypoint keeps waiting" {
     [ -x "$ENTRYPOINT" ]
 
-    local proj="$TMP/project" pdir
+    local proj="$TMP/project" pdir port
     make_project "$proj"
     mkdir -p "$TMP/home" "$TMP/bin"
     pdir="$proj/.claude-dev/run/provision"
+    port="$(free_port)"
 
     write_step 10-anyway 'echo "provisioned anyway"'
 
-    # No Orca to serve, so no URL will ever be written -- and that is
+    # No keys under state/ssh, so sshd refuses to start -- and that is
     # exactly the folder that most needs its config, its seeds and a
     # readable status, because someone has to work out what went wrong.
-    run env HOME="$TMP/home" PROJECT_DIR="$proj" \
-        ORCA_BIN="$TMP/bin/no-such-orca" CLAUDE_ORCA_SKIP_SETUP=1 \
-        CLAUDE_ORCA_SKIP_BEADS=1 CLAUDE_ORCA_ENTRYPOINT_NO_PRIVDROP=1 \
-        CLAUDE_ORCA_PROVISION_STEPS="$TMP/steps" \
-        bash "$ENTRYPOINT"
-    [ "$status" -ne 0 ]
-    [[ "$output" == *"ORCA_BIN is not executable"* ]]
+    export_provision_test_env "$proj" "$port"
+    start_entrypoint_bg
+    wait_for_file "$pdir/10-anyway.status" 40 || { dump_entrypoint; false; }
 
     [ "$(tr -d '[:space:]' < "$pdir/10-anyway.status")" = "0" ]
     grep -qF 'provisioned anyway' "$pdir/10-anyway.log"
-    [ ! -f "$proj/.claude-dev/run/orca-web-url.txt" ]
+    wait_for_file "$proj/.claude-dev/run/sshd.log" 10
+    grep -qF 'no ssh keys' "$proj/.claude-dev/run/sshd.log"
+    [ ! -e "$proj/.claude-dev/run/sshd.ready" ]
+    # ep.pgid holds the entrypoint's own pid (the bash that exec'd it)
+    kill -0 "$(cat "$TMP/ep.pgid")"
 }
 
 @test "a step that hangs is bounded by CLAUDE_ORCA_PROVISION_TIMEOUT and the steps after it still run" {
