@@ -1,12 +1,7 @@
 #!/usr/bin/env bats
-#
-# claude-orca-vm1: 'orca skills install --local' (provision.d/75-orca-skills)
-# writes .agents/skills/orchestration/, the .claude/skills/orchestration
-# symlink and skills-lock.json into the PROJECT root, so the seeded
-# .gitignore has to carry those three exact paths -- and teardown has to
-# un-seed exactly what the seed wrote. The ignore is exact
-# (.claude/skills/orchestration, never .claude/skills/): a user's own
-# project skills must stay visible to git.
+# Guards:   seed_gitignore (scripts/container/seed-project.sh:50-78) still writes the three leftover skills ignores (.agents/skills/orchestration/, .claude/skills/orchestration, skills-lock.json) exactly and never .claude/skills/, a folder seeded earlier gains exactly the missing lines, git still shows a user's own .claude/skills/<name>, and teardown un-seeds byte for byte (provision.d has no 75 step any more; these ignores are what an older folder's leftovers need)
+# Fails if: seed_gitignore ignores the whole .claude/skills/ directory, drops or misspells one of the three lines, rewrites lines a folder already has, or teardown leaves the seeded lines behind
+# Run:      bats tests/seed-gitignore-orca-skills.bats
 #
 # Assertions are `[ ]` and functions, never a bare `[[ ]]` (run-tests.sh).
 
