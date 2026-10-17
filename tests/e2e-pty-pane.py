@@ -75,6 +75,12 @@ if alive:
     line = os.environ.get('E2E_PANE_LINE') or 'pwd; echo PANE-OK-$$; exit'
     os.write(fd, line.encode() + b'\r')
     pump(float(os.environ.get('E2E_PANE_WAIT') or 8))
+    # Optional second keystroke batch (escapes like \x16 are decoded), then
+    # a further read: for a program that must be up before it is poked.
+    then = os.environ.get('E2E_PANE_THEN')
+    if then:
+        os.write(fd, then.encode().decode('unicode_escape').encode('latin-1'))
+        pump(float(os.environ.get('E2E_PANE_THEN_WAIT') or 8))
 
 # Let the command end on its own after `exit`, else kill it.
 status = 3
