@@ -160,6 +160,15 @@ if [ -n "$CLAUDE_PROJECT_NAME" ]; then
     export RPROMPT="%F{blue}[${CLAUDE_PROJECT_NAME}]%f"
 fi
 
+# Remote Control names its sessions after this prefix (else the container's
+# hostname, a docker id) -- the same project name scripts/session-title.sh
+# puts at the front of every session title (claude-orca-gcm).
+_cdev_rc_name=${CLAUDE_ORCA_PROJECT_NAME:-${PROJECT_DIR:t}}
+if [[ -n $_cdev_rc_name ]]; then
+    export CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX=$_cdev_rc_name
+fi
+unset _cdev_rc_name
+
 # Ghostty ssh panes (scripts/container/pane-entry sets CDEV_PANE=1) -- tell the
 # terminal where the shell is, so a new tab opens in the same folder, and keep
 # the tab title honest. Both hooks go on precmd, so they run at every prompt
