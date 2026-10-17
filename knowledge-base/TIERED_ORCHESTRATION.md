@@ -109,18 +109,23 @@ orchestrator talks to; the model decides who does the thinking.
 
 | backend    | what runs                                    | models                                                                 | who uses it |
 |------------|----------------------------------------------|------------------------------------------------------------------------|-------------|
-| `orca`     | a supervised Orca worker terminal, in its own worktree | `claude:<alias\|id>` · `openrouter:<vendor/model>` (through `opencode`) · `codex:<id>` · `gemini:<id>` | worker (executor) slices |
+| `headless` | a detached `worker-run` process started by `dispatch <bead>`, in its own git worktree | `claude:<alias\|id>` · `openrouter:<vendor/model>` (through `opencode`) · `codex:<id>` · `gemini:<id>` | worker (executor) slices |
 | `subagent` | the in-process Claude Code Agent tool        | Anthropic ids only                                                       | recon, checkers, and the worker fallback |
 
-Defaults: the **worker backend is `orca`** whenever the Orca runtime answers
-`orca-ide status --json` with `.runtime.reachable`, `subagent` otherwise; the
-**worker vendor** is decided by the OpenRouter key — with one present (the
+(Until 2026-10 the first row was `orca`, a supervised Orca worker terminal;
+a `tier.json` that still says `orca` is read as `subagent` for a Claude
+agent and `headless` for any other, and is never written back.)
+
+Defaults: nothing probes for a runtime any more — a role is `headless` when
+bound so by name (`/tier worker openrouter:…`, `claude:…`, `headless`) or,
+for the worker, when the folder holds an OpenRouter key; the **worker
+vendor** is decided by that key — with one present (the
 file `claude-dev key openrouter` writes) the derived worker is `opencode` on
 `openrouter/~z-ai/glm-latest`, the default GLM executor; without one it is
-`claude:<derived worker rung>`. **Recon = `subagent` haiku** and **checker = `subagent`
+the derived worker rung, in-process (`subagent` + `claude`). **Recon = `subagent` haiku** and **checker = `subagent`
 at the derived checker rung** (the top capped at opus), both in-process on
 purpose — recon is cheap and read-only, and a checker never grades a claim
-from below the worker that made it. An **orca-backed recon** (the hybrid
+from below the worker that made it. A **headless recon** (the hybrid
 presets' `luna@high`, or `/tier recon openrouter:<model>`) is asked with
 `recon "<question>"` instead of a spawn — a headless, read-only
 `opencode run` on the recon model in the project's working tree: no bead,
@@ -130,7 +135,7 @@ no worktree, the answer on stdout, the cost in the delegate ledger.
 the in-process fallback. `/tier worker openrouter:qwen/qwen3-coder`,
 `/tier worker claude:sonnet` or `/tier worker subagent` rebinds the worker
 seat, and **`/tier recon openrouter` puts recon on the flash-class rung**
-(`openrouter/~z-ai/glm-flash-latest` run by `opencode` on the orca backend) —
+(`openrouter/~z-ai/glm-flash-latest` run by `opencode` on the headless backend) —
 the bare `openrouter` spec takes the role's own OpenRouter default, so the
 same word means the full-size GLM for the worker and the flash sibling for
 recon. The matching delegate routes are `glm-flash` and `deepseek-flash`,
@@ -150,7 +155,7 @@ refreshes its own tokens, and requests go straight to OpenAI (the residency
 story is in [DATA_RESIDENCY.md](DATA_RESIDENCY.md)).
 
 **Grammar.** `/tier worker openai:<family|id>` (or `recon …`) binds the
-subscription: backend orca, agent opencode, model `openai/...`. A bare
+subscription: backend headless, agent opencode, model `openai/...`. A bare
 `openai` binds the role's default — the newest balanced **GPT Terra**
 executes (`openai/~gpt-terra-latest`), the newest efficient **GPT Luna**
 recons (`openai/~gpt-luna-latest`). The distinction rule: **no `openai:`
@@ -173,19 +178,18 @@ re-bind — but OpenAI publishes no redirect of its own, so the resolution
 happens at launch against the live catalogue rather than server-side per
 request. `openai:gpt-5.6-luna` pins one exact id.
 
-**Sign-in and readiness.** `/tier auth openai` opens a focused Orca tab
-running `scripts/openai-auth.sh` — opencode's headless device login
+**Sign-in and readiness.** `/tier auth openai` prints the one line that runs
+`scripts/openai-auth.sh` — run it in a pane of its own (sign-in is
+interactive, so it cannot run inside the tool call): opencode's headless device login
 (`opencode auth login --provider openai --method "ChatGPT Pro/Plus
 (headless)"`); opencode prints a one-time code that is entered in a browser.
 The helper reports success only when the auth store actually reads as signed
 in, then lists what the subscription serves. Readiness (`tier_openai_ready`)
 is that auth store carrying an `openai` entry with a non-empty refresh token
 (or an API key). An unsigned folder still *saves* an `openai:`/`openai/`
-binding; what refuses to run is the launch — `orca-dispatch` dies with
+binding; what refuses to run is the launch — `dispatch` dies with
 "run /tier auth openai" (exit 2), and `recon` takes the same exit-3 "spawn a
-scout" fallback it takes when the OpenRouter guard is down. If the Orca
-runtime is unreachable, `tier-set auth openai` still exits 0 and prints the
-helper's path to run by hand instead.
+scout" fallback it takes when the OpenRouter guard is down.
 
 **What the subscription serves.** `/tier models openai` lists the families
 with each one's newest-resolved pin and every bindable id (from
@@ -202,98 +206,92 @@ refresh tokens, so one of the two can fail its refresh and needs
 
 ### The dispatch loop
 
-One bead, one worker, one receipt:
+One bead, one worker, one receipt. Until 2026-10 this ran through Orca
+(`orca-dispatch`, `orca-wait`, `orca-reply`, worker terminals); it is now a
+plain detached process plus files under `.claude-dev/run/`:
 
 ```
-orca-dispatch <bead-id>            # Task from the bead + WORKER RULES, worker started,
-                                   #   and its spooler for this Run if none is live
-orca-wait [--until <s>]            # reader: print+consume inbox.jsonl; --until
-                                   #   blocks <=s s in the background for new lines
-orca-reply <msg_id> "<answer>"     # unblocks a worker that asked instead of guessing
-orca-workers                       # worker-list ⋈ task-list --brief, one table
+dispatch <bead-id> [--worker|--checker] [--agent claude|opencode] [--model <id>]
+         [--worktree new|main|path:<dir>]   # spec from the bead + WORKER RULES, worker started
+workers wait [--until <s>]         # reader: print+consume orchestration/inbox.jsonl;
+                                   #   --until blocks <=s s (exit 4 on silence)
+workers reply <job> "<answer>"     # resumes a worker that asked instead of guessing
+workers list                       # one row per job: bead, agent:model, state, elapsed
+workers tail <job> | workers stop <job>
 verifier                           # fresh context, against the bead's own contract
 ```
 
-- **`orca-dispatch`** ensures ONE Run per coordinator session, composes the
-  Task spec from `bd show` (title, description, acceptance contract, the
-  `WORKER RULES` block), starts the worker for the bound agent —
-  `claude`/`codex`/`gemini` via `worker-start --agent … --model …`,
-  `openrouter` by creating an `opencode --model openrouter/<m>` terminal and
-  adopting it with `worker-start --terminal`, `bash` as a context-only
-  dispatch — records the task and dispatch ids on the bead, and prints one
-  JSON receipt.
-- **`orca-wait`** splits the mailbox so the orchestrator never runs the poll
-  loop in its own turns (claude-orca-mg8). `orca-dispatch` starts one
-  detached spooler per Run (`orca-wait --spool`, pid file
-  `run/orchestration/spool.pid`): it runs the old rolling `check --wait`,
-  appends every receipt to `run/orchestration/inbox.jsonl`, does the
-  release/bead-note/stall work itself, and exits once no dispatch is live.
-  Bare `orca-wait` prints and consumes the unread lines (cursor in
-  `inbox.cursor`); `orca-wait --until <s>` blocks at most `s` seconds for
-  the file to grow — run it in the background so a worker message wakes you
-  through a task notification. A `worker_done` is appended to its bead and
-  the worker terminal released (`worker-release`) unless `--keep` was given
-  to the spooler; a `question` or `escalation` lands in the inbox for you to
-  answer. The whole batch is acked only after every message is processed, so
-  a crash mid-batch replays rather than loses.
+- **`dispatch`** reads the bead (`bd show`), composes the spec (title,
+  description, acceptance contract, the `WORKER RULES` block), fills agent,
+  model and effort from the role's binding in `tier.json` unless a flag names
+  them, makes the worktree (`new` = `~/worktrees/<bead>` on branch
+  `work/<bead>` cut from main; an existing one is reused), writes
+  `run/workers/<job>/{spec.md,job.json}`, starts `worker-run` on it detached
+  and prints one JSON receipt line on stdout. It returns at once.
+- **`worker-run`** runs ONE turn: it waits for a free slot (at most
+  `maxWorkers` turns at once, default 3), runs `claude -p` or `opencode run`
+  in the worktree, writes `receipt.json` (session, tokens, usd, changed
+  files, final message), sets `job.json` to `done`, `question` (the final
+  message ends with a `QUESTION:` line) or `failed`, notes `WORKER_DONE` on the
+  bead and appends one line to `run/orchestration/inbox.jsonl`.
+- **`workers wait`** keeps the poll loop out of the orchestrator's turns:
+  bare, it prints and consumes the unread inbox lines (cursor in
+  `inbox.cursor`); `--until <s>` blocks at most `s` seconds — run it in the
+  background so a worker message wakes you through a task notification. A
+  running job whose log has not grown for 600 s gets one `stalled` line.
+  A `question` lands in the inbox for you to answer with `workers reply`.
 - **A `worker_done` is a claim, not a verdict.** The bead closes after a
   `verifier` run against the pre-registered contract, never on the worker's
   own say-so.
 
 ### WORKER RULES — what every dispatched worker is told
 
-`orca-dispatch` appends the same block to every Task spec, which is why a
-worker on a foreign vendor's model still behaves like one of ours: do not
-delegate or start further workers; do not close the bead and never write a
-`VERIFIED` line; verify by running the real thing and report the command and
-output; on a contract, commit the test RED first (`RED-AT`) then the
-implementation (`GREEN-AT`) and never edit a FROZEN file; ask with
-`orchestration ask` rather than guess; report exactly once with
-`send --type worker_done … --outcome succeeded|failed`.
+`dispatch` appends the same block to every spec, which is why a worker on a
+foreign vendor's model still behaves like one of ours: do not delegate or
+start further workers; work only in the given worktree; do not close the bead
+and never write a `VERIFIED` line; verify by running the real thing and
+report the command and output; on a contract, commit the test RED first
+(`RED-AT`) then the implementation (`GREEN-AT`) and never edit a FROZEN file;
+report once, in the final message; when blocked on a decision that is not
+the worker's, end that message with one `QUESTION:` line.
 
 ### Parallel by default
 
 The bias is "everything independent runs at once", not "one slice at a time".
 
-- **Waves.** `orca-run --epic <id> [--epic …] [--max-parallel N]` reads an
-  epic's children from bd, mirrors their dependency edges into Orca Tasks
-  (`task-create --deps`), dispatches every ready task in one wave through
-  `orca-dispatch`, then loops `orca-wait` → release → dispatch the newly
-  ready set, printing one status table per wave. Only beads that FREEZE the
-  same file, or name the same files in their descriptions, are serialized.
-- **One worktree per epic.** The first worker of an epic starts with
-  `--worktree new-top-level --name <epic>`; later workers of the same epic
-  reuse that exact worktree id. Epics therefore run side by side in separate
-  checkouts, as separate worktree cards in Orca. When an epic's last task
-  settles, `orca-run` sends `merge_ready` with the branch name and prints
-  `EPIC READY <epic>` — the merge itself stays with the orchestrator, after
-  the verifier.
-- **Epic coordinators.** `seed-orca-state.sh` sets `nestedWorkerMaxDepth`
-  to 2, so the orchestrator may dispatch a bead whose spec is "coordinate
-  epic X with `orca-run`" and let that coordinator run its own wave loop.
-  The top session then supervises coordinators, not slices. Depth stops at
-  2: a coordinator's own workers are leaves.
+- **Waves.** `dispatch --epic <id> [--agent …] [--model …]` (the runner is
+  `scripts/dispatch-epic.sh`) takes an epic's open children from bd and
+  dispatches every ready one in one wave: a child is ready when each of its
+  `blocks` blockers has settled done in this run (or is closed in bd). A
+  failed blocker never clears its dependents (`EPIC BLOCKED`). Children
+  that name the same file in their text are serialised. It polls each job's
+  `job.json`, prints one event line per change and ends with `EPIC READY
+  <epic> <branch>`, `EPIC BLOCKED` or `EPIC STALLED`.
+- **One worktree per epic.** All slices of an epic share one worktree
+  (`~/worktrees/<epic>` on `work/<epic>`), so epics run side by side in
+  separate checkouts. The merge stays with the orchestrator, after the
+  verifier.
 - **Recon fans out freely** — several `scout` spawns in one message
   (subagent backend) or several `recon "<question>"` calls with
-  run_in_background (orca backend); no worktree, no Run either way.
+  run_in_background (headless backend); no worktree either way.
 
-All five live in `bin/` and are exercised by `tests/orca-run.bats` and
-`tests/orca-dispatch.bats` against a real `orca-ide --serve`.
+The pieces are exercised by `tests/workers-dispatch.bats`,
+`tests/workers-run.bats`, `tests/workers-cli.bats` and
+`tests/dispatch-epic.bats`, with a stand-in for the agent binary.
 
-### Fallback — an unreachable runtime, and the explicit-model rule
+### Fallback — when the headless backend cannot run, and the explicit-model rule
 
-Running outside Orca still works. With `.runtime.reachable` false (or an
-explicit `--backend subagent`), `orca-dispatch` writes the equivalent
-Agent-tool executor spec to stdout and **exits 3** — nothing is dispatched
-and the orchestrator falls back to the in-process `executor` knowingly,
-never silently. `recon` does the same — exit 3 with "spawn a scout" when
-the recon role is not orca+opencode or the guard token is missing.
+`recon` exits **3** with "spawn a scout" when the recon role is not
+headless+opencode or the guard token is missing, and `dispatch` dies with a
+message (exit 2) when a binding cannot run (an unsigned OpenAI binding, say);
+nothing is started and the orchestrator falls back to the in-process
+`executor` or `scout` knowingly, never silently.
 
 That fallback spawn must carry **an explicit `model`**. `tier-gate` never
 blocks a spawn; what it injects depends on the worker's binding. Under a
-`subagent` backend, or an `orca` backend whose agent is `claude`, it injects
+`subagent` backend, or a `headless` backend whose agent is `claude`, it injects
 the bound model (or the rung derived from the top when that model cannot be
-ranked) and adds a "prefer orca-dispatch" note. Under a **non-Claude worker
+ranked) and adds a "prefer `dispatch <bead>`" note. Under a **non-Claude worker
 backend** — `opencode` on OpenRouter, `codex`, `gemini` — there is no model
 the Agent tool would accept, so the hook only *notes* the backend and injects
 nothing: the spawn would run on the orchestrator's own expensive model. So
@@ -305,22 +303,22 @@ path.
 
 ### A mixed Run, worked
 
-Two slices of one epic, two vendors, one coordinator:
+Two slices of one epic, two vendors:
 
 ```
 /tier fable                                  # top fable; worker derives per the key (GLM) or rung
 /tier worker claude:sonnet                   # rebind the worker seat: Claude Code on the sonnet rung
-orca-dispatch epic-42.a                      # worker 1: claude:sonnet in the epic worktree
+dispatch epic-42.a --worktree path:~/worktrees/epic-42    # worker 1: claude:sonnet
 /tier worker openrouter:qwen/qwen3-coder     # rebind again: opencode on OpenRouter
-orca-dispatch epic-42.b                      # worker 2: same Run, same worktree family
-orca-workers                                 # both rows, both agents
-orca-wait                                    # (reader) worker_done from b; a question from a
-orca-reply <msg_id> "yes — keep the old flag name"
-orca-wait                                    # (reader) worker_done from a
+dispatch epic-42.b --worktree path:~/worktrees/epic-42    # worker 2: opencode
+workers list                                 # both rows, both agents
+workers wait                                 # (reader) worker_done from b; a question from a
+workers reply epic-42.a "yes — keep the old flag name"
+workers wait                                 # (reader) worker_done from a
 ```
 
 Both workers were given the same `WORKER RULES` and the same contract text,
-report through the same `worker_done` channel, and are checked by the same
+report through the same inbox, and are checked by the same
 `inherit`-model verifier. The vendor is a per-slice choice, not a protocol
 change. Spawns are unnamed: a named spawn arrives as a wrapped teammate
 notice and wakes the orchestrator for nothing; the task notification
@@ -355,30 +353,30 @@ claude-orca-qa2.12 that file carries a **backend, agent and model per role**:
   "worker": "openrouter/qwen/qwen3-coder",     // v1 mirror of roles.worker.model
   "recon":  "haiku",                          // v1 mirror of roles.recon.model
   "roles": {
-    "worker":  {"backend":"orca","agent":"opencode","model":"openrouter/qwen/qwen3-coder","pinned":true},
+    "worker":  {"backend":"headless","agent":"opencode","model":"openrouter/qwen/qwen3-coder","pinned":true},
     "recon":   {"backend":"subagent","agent":"claude","model":"haiku","pinned":false},
     "checker": {"backend":"subagent","agent":"claude","model":"inherit","pinned":false} },
   "pinned": false, "overdrive": false, "updated": "2026-09-06T00:00:00Z" }
 ```
 
-- **backend** — `orca` (a supervised Orca worker terminal, started by
-  `orca-dispatch`) or `subagent` (the in-process Agent tool).
+- **backend** — `headless` (a detached `worker-run` process started by
+  `dispatch <bead>`) or `subagent` (the in-process Agent tool).
   **agent** — `claude` · `opencode` (OpenRouter models) · `codex` · `gemini`.
 - **A v1 file reads as v2** with `backend: subagent`, `agent: claude` and the
   model taken from the v1 `.worker`/`.recon` key (checker: `inherit` — a v1
   file predates the derived checker rung). The
   reader is `tier_role`/`tier_role_field` in `scripts/lib/tier-roles.sh`;
   no script parses the file's shape by hand.
-- **Grammar:** `/tier worker openrouter:<vendor/model>` → orca + opencode;
-  `/tier worker claude:<alias>` → orca + claude; `/tier worker subagent` →
+- **Grammar:** `/tier worker openrouter:<vendor/model>` → headless + opencode;
+  `/tier worker claude:<alias>` → headless + claude; `/tier worker subagent` →
   subagent on the derived model; the same specs work for `recon` and
   `checker`. A spec that names a model sets that role's own `pinned`, which
   stops `tier-reconcile` re-deriving its model; backend and agent are always
   preserved by the reconciler. A 1-arg `/tier <top>` rebinds all three roles
-  to the defaults — worker `orca`+`claude` when `orca-ide status --json`
-  reports `.runtime.reachable` within 2s (probed once per bind, never
-  cached), else `subagent`; recon `subagent`; checker `subagent` at the
-  derived checker rung (`inherit` only when the top is off-ladder). The bare
+  to the defaults — nothing probes for a runtime: worker `subagent`+`claude`
+  on the derived worker rung, or `headless`+`opencode` on the GLM rung when
+  the folder holds an OpenRouter key; recon `subagent`; checker `subagent` at
+  the derived checker rung (`inherit` only when the top is off-ladder). The bare
   `/tier <role> openrouter` spec — no model named — binds that role's own
   OpenRouter default: `/tier recon openrouter` is the flash rung.
 - **tier-prime** prints a second line, `[tier] backends: worker=… recon=…
@@ -387,8 +385,13 @@ claude-orca-qa2.12 that file carries a **backend, agent and model per role**:
   unchanged.
 - **tier-gate** is unchanged for a `subagent` role: a generic/executor spawn
   with no `model` still gets the worker tier injected as a family alias. For
-  an `orca` role it does **not** inject and does **not** block — it adds one
-  line saying the backend is orca and that `orca-dispatch` is preferred.
+  a `headless` role bound to a Claude agent it injects that role's own model
+  (or the derived rung) and adds one line saying the backend is headless and
+  that `dispatch <bead>` is preferred; for a non-Claude agent (opencode,
+  codex, gemini — no model the Agent tool would accept) it **denies** the
+  model-less spawn, the reason naming `dispatch <bead>` (or `recon
+  "<question>"`). An explicit `model` on the call is the deliberate
+  in-process fallback and is never touched.
 
 **Purge policy (both tier-set and tier-reconcile).** The six
 `ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL(_NAME)` vars and
@@ -483,7 +486,7 @@ a new release needs no change here; the day the table said `claude-fable-5`
 while `/model` said `claude-fable-5-1` is why. The alias is what gets
 **written**, and every consumer ranks it rather than comparing ids:
 `tier-gate` injects it into the Agent tool's `model` (whose accepted values
-are exactly these aliases), an orca-backed worker gets it as `claude --model
+are exactly these aliases), a headless-backed worker gets it as `claude --model
 <alias>`, and `cost-mirror` prices from the concrete id the transcript
 records, never from tier.json. A full family id (incl. dated/variant) maps
 to its rung and keeps its exact value on top; anything else is off-ladder.

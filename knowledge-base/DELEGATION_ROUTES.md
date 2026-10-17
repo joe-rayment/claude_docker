@@ -85,7 +85,7 @@ re-bind — the OpenRouter twin of Claude Code's `fable`/`opus`/`sonnet`.
 The OpenAI (ChatGPT) subscription is deliberately **not** a delegate route:
 the shipped routes stay OpenRouter/ollama/codex/gemini, and the subscription
 is reached through `/tier` instead — an `openai:…` worker binding rides
-`orca-dispatch`, and a recon question runs through `recon "<question>"` —
+`dispatch`, and a recon question runs through `recon "<question>"` —
 because `delegate.sh` runs each job under its own scrubbed `HOME`, which has
 no opencode sign-in in it (the ChatGPT credential lives in opencode's auth
 store under the session's own home). See
@@ -106,8 +106,9 @@ unlinks once read — never argv, never an inherited env var. The guard is
 the only process in the VM that holds the real key; it pins every
 completion request to US/Canada/Europe providers
 (`config/provider-policy.json`) regardless of what the client asked for.
-Orca and every terminal it spawns — including delegate workers — get a
-random guard token and the guard's loopback base URL as
+`sshd` and so every session and pane it opens — including delegate
+workers and `dispatch`ed headless workers — get a random guard token and
+the guard's loopback base URL as
 `OPENROUTER_API_KEY`/`OPENROUTER_BASE_URL` instead. No key file (and
 nothing already exported) means the guard never starts and there is no
 OpenRouter surface for that folder.
@@ -266,6 +267,6 @@ actual/at-top/saved columns.
 loud, nonzero failure happens inside `delegate run`, for the chosen route
 only.
 
-Interactive Codex, Gemini and OpenCode sessions you open in Orca are a
+Interactive Codex, Gemini and OpenCode sessions you open in a pane are a
 different path: they are sandboxed by the shell hook like any other terminal
 (see [SANDBOX.md](SANDBOX.md)) and share the project's beads database.
