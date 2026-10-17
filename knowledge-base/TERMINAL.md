@@ -89,11 +89,42 @@ Ghostty's own defaults do the work; claude-dev binds nothing.
 | A Mac shell | cmd+n (a new **window** starts in your home folder) |
 | Paste a screenshot into Claude Code | ctrl+v |
 | Watch a worker | split with cmd+d, then `workers tail <bead>` |
+| See what Claude Code is doing | split with cmd+d, then `activity` (below) |
 
 A split lands in the same subfolder because the shell reports its location
 to Ghostty (OSC 7, from a `precmd` hook in the shipped `.zshrc` that runs
 only in sandbox panes). The first pane of a brand-new folder also runs the
 startup menu (beads, GitHub, Claude Code); later panes get one identity line.
+
+## The activity panel
+
+`activity`, typed in any sandbox pane, takes over that pane with one page of
+plain English about what Claude Code and its executors are doing: the request
+in hand, which workers are running, what changed. It is per folder (it reads
+this folder's `.claude-dev/run`), so a split of a sandbox pane shows that
+folder's page. Put it beside your work with cmd+d, then type `activity` in the
+new pane.
+
+- **The page is a summary, written by a cheap model through the guard**, and
+  only while a panel is open: no panel, no model calls. `"activity": false` in
+  `claude-orca.json` turns the model off; the footer then says "turned off in
+  claude-orca.json" in place of the model name.
+- **It refreshes about once a minute**, and sooner when a new request starts
+  or an executor joins or leaves. When a new request starts the page clears
+  and begins again, so it never mixes two requests.
+- **No scrolling.** The page is cut to fit the pane and ends in `...` when
+  there was more; make the pane taller to see more. The last line says how old
+  the page is and which model wrote it.
+- **`q` (or ctrl-c) quits** and gives the pane back as it was.
+- **Logs**, for "why did it not update": `.claude-dev/run/activity/panel.log`
+  has one line per refresh saying why it ran (first run, cadence, new request,
+  which workers joined or left); `calls.log` in the same folder has one line
+  per model call.
+
+There is no dedicated key. A Ghostty keybind chain (`new_split:right`, then
+`text:activity\r`) was measured on Ghostty 1.3.1 and types into the pane the
+key was pressed in, not the new split, which would submit "activity" as a
+message to Claude Code. Use cmd+d and type the word.
 
 ## Images and the clipboard
 

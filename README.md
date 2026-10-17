@@ -69,6 +69,13 @@ honours `"route": false` in `claude-orca.json`. `./claude-dev ghostty --check`
 asks Ghostty whether the include applies; `--uninstall` gives your config back
 byte for byte.
 
+**What is Claude doing?** Type `activity` in any sandbox pane for one
+plain-English page of what Claude Code and its executors are doing right now,
+written by a cheap model through the guard, and only while the panel is open.
+`"activity": false` in `claude-orca.json` turns the model off. Open it beside
+your work with Ghostty's own split (cmd+d), then type `activity` in the new
+pane; `q` quits.
+
 **How to tell where you are.** A sandbox pane has `/workspace/<name>` as its
 path. If the container cannot come up, the pane falls back to a Mac shell and
 says so loudly: `== Mac shell -- NOT sandboxed ==`.
@@ -118,9 +125,6 @@ them is about *this* folder:
 ./claude-dev --update         # update the template, rebuild the image, recreate
 ./claude-dev --teardown       # snapshot beads, remove this folder's install
 ```
-
-Inside a pane, `activity` opens a one-page, plain-English panel of what Claude
-Code and its executors are doing, written by a cheap model; `q` quits.
 
 `--doctor` says whether the folder can open; `verify` says whether it is set
 up (the boundary, the toolchain pins, beads, the rulebook, the hooks, the git
