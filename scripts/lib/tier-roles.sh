@@ -215,7 +215,7 @@ tier_openrouter_guard_token_file() {
 # False (1) otherwise.
 #   CLAUDE_ORCA_GUARD_PORT   the guard's loopback port (default 4141 -- the
 #                            same knob entrypoint.sh's guard startup and
-#                            orca-orch.sh's orca_opencode_command use)
+#                            workers.sh's workers_opencode_command use)
 tier_openrouter_ready() {
     [ -n "${OPENROUTER_API_KEY:-}" ] && return 0
     local f port

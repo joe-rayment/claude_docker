@@ -3,7 +3,7 @@ usr_local_dir="/usr/local"
 export PATH="$HOME/.local/bin:$HOME/bin:$usr_local_dir/bin:$PATH"
 
 # The template's own CLIs. The rulebook tells the agent to type `lane`,
-# `tier-set`, `orca-dispatch`, `bd-guard` and the rest by name, and the
+# `tier-set`, `dispatch`, `bd-guard` and the rest by name, and the
 # hooks already run them by absolute path from here -- without this the
 # names resolve to nothing and the first line of every session fails.
 # The folder's clone wins; the image's copy is the fallback for a folder

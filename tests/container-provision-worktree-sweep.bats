@@ -4,7 +4,7 @@
 #
 # scripts/container/provision.d/65-worktree-sweep removes the noise Orca
 # would otherwise show forever: every git worktree this project ever grew
-# (orca-run.sh, delegate.sh, by-hand executors) but nothing ever removed.
+# (dispatch --epic, delegate.sh, by-hand executors) but nothing ever removed.
 # For every worktree other than the main one:
 #
 #   * directory gone           -> `git worktree prune`, logged "pruned".

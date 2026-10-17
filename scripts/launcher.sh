@@ -18,7 +18,7 @@
 #   claude-dev verify             Check the folder is set up as promised
 #   claude-dev key openrouter     Store this folder's OpenRouter key
 #   claude-dev --how-to-run       Print the URL and the two commands
-#   claude-dev --doctor           CLI, service, image, container, port, web url
+#   claude-dev --doctor           CLI, service, image, container, port, sshd, ssh
 #   claude-dev --update           Pull the template, rebuild the image, re-sync
 #                                 the config, recreate
 #   claude-dev --teardown         Snapshot beads, remove this folder's install
@@ -50,6 +50,9 @@ resolve_script_path() {
 
 SCRIPT_PATH="$(resolve_script_path)"
 SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
+# `claude-dev ghostty` and the Ghostty rows of doctor/verify (functions only).
+# shellcheck source=mac/ghostty-install.sh
+. "$SCRIPT_DIR/mac/ghostty-install.sh"
 TEMPLATE_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 HOST_DIR="$(dirname "$TEMPLATE_ROOT")"
 # The folder this launcher belongs to: <project>/.claude-dev/template ->
@@ -1424,6 +1427,149 @@ wait_for_sshd_ready() {
 ssh_host_key_fingerprint() {
     "${CLAUDE_ORCA_SSH_KEYGEN:-ssh-keygen}" -lf "$(ssh_state_dir "$1")/host_ed25519.pub" 2>/dev/null \
         | awk 'NR == 1 { print $2 }' || true
+}
+
+# Ghostty's terminfo entry, pushed into the container once per Ghostty
+# version (claude-orca-9bh.7): the image has no xterm-ghostty, and without it
+# a pane's pane-entry falls back to xterm-256color (still works, loses a few
+# Ghostty-only capabilities). Only when this terminal IS xterm-ghostty and
+# the Mac's infocmp can print the entry; run/terminfo.stamp holds the
+# TERM_PROGRAM_VERSION already pushed. One warning line on failure, never
+# fatal, and no stamp then, so the next open tries again.
+ssh_push_terminfo() {
+    local dir="$1" stamp ver entry cfg alias
+    [ "${TERM:-}" = "xterm-ghostty" ] || return 0
+    command -v infocmp >/dev/null 2>&1 || return 0
+    entry="$(infocmp -x xterm-ghostty 2>/dev/null)" || return 0
+    [ -n "$entry" ] || return 0
+    ver="${TERM_PROGRAM_VERSION:-}"
+    stamp="$dir/.claude-dev/run/terminfo.stamp"
+    if [ -f "$stamp" ] && [ "$(head -1 "$stamp")" = "$ver" ]; then
+        return 0
+    fi
+    cfg="$(ssh_state_dir "$dir")/config"
+    alias="$(ssh_host_alias "$dir")"
+    if printf '%s\n' "$entry" \
+        | "${CLAUDE_ORCA_SSH:-ssh}" -F "$cfg" -o BatchMode=yes "$alias" 'tic -x -o ~/.terminfo - ' >/dev/null 2>&1; then
+        mkdir -p "$dir/.claude-dev/run" && printf '%s\n' "$ver" > "$stamp"
+    else
+        echo "  terminfo: could not install xterm-ghostty in the sandbox (continuing; panes use xterm-256color)" >&2
+    fi
+    return 0
+}
+
+# True when stdin and stdout are both terminals (CLAUDE_ORCA_PANE_FORCE_TTY=1
+# says they are, for tests).
+pane_has_terminal() {
+    [ -n "${CLAUDE_ORCA_PANE_FORCE_TTY:-}" ] || { [ -t 0 ] && [ -t 1 ]; }
+}
+
+# Turns THIS terminal into a sandbox pane: `exec ssh -F config -tt alias`.
+# $2 is the directory the pane should start in (default $PWD), sent as
+# CDEV_CWD relative to the project (empty at the root or outside it --
+# pane-entry then lands in the project root); $3 names the path taken, for
+# run/pane.log ("slow" when open/pane did the whole bring-up, "fast" when the
+# master connection was already up). ssh honours only the FIRST -o SetEnv,
+# so every variable rides in one option; a value with a space is wrapped in
+# double quotes inside it, and empty variables are left out. Without a
+# terminal on stdin and stdout (a script, a bats case) it does not exec: it
+# says how to get a pane and returns 0. CLAUDE_ORCA_PANE_FORCE_TTY=1 is the
+# test seam that treats both as terminals.
+pane_exec() {
+    local dir="$1" cwd="${2:-$PWD}" mode="${3:-slow}" rel="" real cfg alias log setenv="" pair
+    if ! pane_has_terminal; then
+        echo "ready: run ./claude-dev pane in a terminal"
+        return 0
+    fi
+    real="$(cd "$cwd" 2>/dev/null && pwd -P)" || real="$cwd"
+    case "$real" in
+        "$dir") rel="" ;;
+        "$dir"/*) rel="${real#"$dir"/}" ;;
+        *) rel="" ;;
+    esac
+    case "$rel" in *'"'* | *'\'*)
+        echo "  pane: '$rel' has a quote or backslash ssh cannot carry; starting at the project root" >&2
+        rel="" ;;
+    esac
+    cfg="$(ssh_state_dir "$dir")/config"
+    alias="$(ssh_host_alias "$dir")"
+    for pair in "CDEV_CWD=$rel" "TERM_PROGRAM=${TERM_PROGRAM:-}" \
+        "TERM_PROGRAM_VERSION=${TERM_PROGRAM_VERSION:-}" "COLORTERM=${COLORTERM:-}"; do
+        case "$pair" in *=) continue ;; esac
+        case "$pair" in
+            *' '*) pair="${pair%%=*}=\"${pair#*=}\"" ;;
+        esac
+        setenv="${setenv:+$setenv }$pair"
+    done
+    log="$dir/.claude-dev/run/pane.log"
+    mkdir -p "$dir/.claude-dev/run" 2>/dev/null \
+        && printf '%s %s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$mode" "$rel" >> "$log" 2>/dev/null || true
+    if [ -n "$setenv" ]; then
+        exec "${CLAUDE_ORCA_SSH:-ssh}" -F "$cfg" -tt -o "SetEnv=$setenv" "$alias"
+    fi
+    exec "${CLAUDE_ORCA_SSH:-ssh}" -F "$cfg" -tt "$alias"
+}
+
+# Three doctor/verify rows about the ssh path to the folder's container, in
+# the order a failure is easiest to read:
+#   sshd         run/sshd.ready names a port, and that port answers an
+#                SSH-2.0 banner (read over bash's /dev/tcp, no client);
+#   ssh master   the folder's ControlMaster connection (-O check). A pane
+#                starts one on demand, so down is n/a, never a finding, and
+#                it is asked BEFORE key auth because the key-auth probe
+#                below starts a master of its own;
+#   ssh key auth `ssh -F config -o BatchMode=yes <alias> true` exits 0 --
+#                the folder's key is accepted. Skipped (n/a) when sshd is
+#                not answering, since it could only repeat that finding.
+# Returns 2 when a row is a finding (missing or FAIL), else 0.
+doctor_ssh_rows() {
+    local dir="$1" ready cfg alias sshd_port="" banner="" rc=0 sshd_ok="" krc=0
+    ready="$dir/.claude-dev/run/sshd.ready"
+    cfg="$(ssh_state_dir "$dir")/config"
+    alias="$(ssh_host_alias "$dir")"
+    if [ ! -s "$ready" ]; then
+        doctor_row missing "sshd" "not ready -- no $ready; ./claude-dev starts it"
+        rc=2
+    else
+        sshd_port="$(sed -n 's/^port=//p' "$ready" | head -1)"
+        case "$sshd_port" in
+            '' | *[!0-9]*) sshd_port="" ;;
+        esac
+        if [ -n "$sshd_port" ]; then
+            banner="$( (
+                exec 3<>"/dev/tcp/127.0.0.1/$sshd_port" || exit 1
+                IFS= read -r -t 3 -u 3 line || true
+                printf '%s' "${line:-}"
+            ) 2>/dev/null | tr -d '\r' || true)"
+        fi
+        case "$banner" in
+            SSH-2.0-*)
+                doctor_row ok "sshd" "port $sshd_port answers $banner"
+                sshd_ok=1
+                ;;
+            *)
+                doctor_row FAIL "sshd" "${sshd_port:+port $sshd_port }gave no SSH banner -- ./claude-dev logs, $dir/.claude-dev/run/sshd.log"
+                rc=2
+                ;;
+        esac
+    fi
+    if "${CLAUDE_ORCA_SSH:-ssh}" -F "$cfg" -O check "$alias" >/dev/null 2>&1; then
+        doctor_row ok "ssh master" "up -- panes reuse one connection"
+    else
+        doctor_row n/a "ssh master" "not running -- the next pane starts it"
+    fi
+    if [ -z "$sshd_ok" ]; then
+        doctor_row n/a "ssh key auth" "skipped -- sshd is not answering"
+    else
+        "${CLAUDE_ORCA_SSH:-ssh}" -F "$cfg" -o BatchMode=yes -o ConnectTimeout=10 "$alias" true >/dev/null 2>&1 || krc=$?
+        if [ "$krc" -eq 0 ]; then
+            doctor_row ok "ssh key auth" "$alias accepts this folder's key"
+        else
+            doctor_row FAIL "ssh key auth" "ssh -F $cfg $alias true exited $krc -- the container may predate this folder's key; ./claude-dev --update"
+            rc=2
+        fi
+    fi
+    return "$rc"
 }
 
 # The pairing URL Orca minted for this container -- what a desktop Orca on
@@ -2891,7 +3037,9 @@ resync_config() {
 }
 
 cmd_open_v3() {
-    local dir="${1:-$PROJECT_SELF}" name port was state url rc=0 t0 t1
+    local dir="${1:-$PROJECT_SELF}" name port was state rc=0 t0 t1
+    # An older Ghostty install is re-applied here (one line, never fatal).
+    ghostty_refresh_if_stale || true
     [ -d "$dir" ] || { echo "Error: directory does not exist: $dir" >&2; return 1; }
     dir="$(cd "$dir" && pwd -P)"
     if [ ! -f "$(orca_json "$dir")" ]; then
@@ -2988,21 +3136,26 @@ cmd_open_v3() {
             ;;
     esac
 
+    # What open waits for is sshd, not Orca's web URL: the Mac no longer
+    # talks to the Orca inside the container (it stays until C1 deletes it).
+    # wait_for_sshd_ready returns 3 after printing its own host-key message.
     t0="$(date +%s)"
-    url="$(wait_for_web_url "$dir" "$name")" || rc=$?
+    wait_for_sshd_ready "$dir" "$name" || rc=$?
     t1="$(date +%s)"
-    if [ "$rc" -ne 0 ]; then
+    if [ "$rc" -eq 3 ]; then
+        return 1
+    elif [ "$rc" -ne 0 ]; then
         {
             if [ "$rc" -eq 2 ]; then
-                echo "Error: the container $name exited during startup before Orca published a web URL."
+                echo "Error: the container $name exited during startup before sshd was ready."
             else
-                echo "Error: Orca did not publish a web URL within $(weburl_timeout "$dir")s."
+                echo "Error: sshd did not come up within $(weburl_timeout "$dir")s."
             fi
             echo "  Look at what it printed:  ./claude-dev logs"
             if [ "$(image_source "$dir")" = "runtime" ]; then
                 echo "  Toolchain install log:    $dir/.claude-dev/run/setup.log"
             fi
-            echo "  Serve log:                $dir/.claude-dev/run/orca-serve.log"
+            echo "  sshd log:                 $dir/.claude-dev/run/sshd.log"
             if [ "$rc" -eq 2 ]; then
                 echo "  The VM is not running; ./claude-dev starts it again, and ./claude-dev logs shows why it stopped."
             else
@@ -3016,34 +3169,73 @@ cmd_open_v3() {
                 echo "Last lines of the toolchain install:"
                 tail -15 "$dir/.claude-dev/run/setup.log" | sed 's/^/  /'
             fi
-            # Orca's own output is the other half of the diagnosis, and a
-            # container that died is in no state to show it (claude-orca-cey):
-            # the pairing fragment and code query value are credentials, so
-            # the tail is printed only after they are replaced.
-            if [ -s "$dir/.claude-dev/run/orca-serve.log" ]; then
+            # sshd's own output is the other half of the diagnosis, and a
+            # container that died is in no state to show it (claude-orca-cey).
+            # It carries no credentials, so it is shown as written.
+            if [ -s "$dir/.claude-dev/run/sshd.log" ]; then
                 echo ""
-                echo "Last lines of Orca's serve log:"
-                tail -20 "$dir/.claude-dev/run/orca-serve.log" \
-                    | sed -E -e 's/#pairing=[^[:space:]]*/#pairing=<redacted>/g' \
-                             -e 's/([?&])code=[^&[:space:]]*/\1code=<redacted>/g' \
-                             -e 's/^/  /'
+                echo "Last lines of sshd's log:"
+                tail -20 "$dir/.claude-dev/run/sshd.log" | sed 's/^/  /'
             fi
         } >&2
         return 1
     fi
 
     # The one number a person actually wants after typing ./claude-dev.
-    echo "Orca is up ($((t1 - t0))s)"
+    echo "sshd is up ($((t1 - t0))s)"
     resync_config "$dir" "$name"
-    # A desktop folder hands the runtime to the Mac's own Orca.app; a web
-    # folder (and a desktop one whose hand-off could not start) opens the
-    # browser, which is the same runtime through a different client.
-    if [ "$(ui_of "$dir")" = "desktop" ] && orca_hand_off "$dir"; then
-        print_desktop_block_v3 "$dir"
-    else
-        open_url "$url"
-        print_run_it_block_v3 "$dir" "$url"
+    ssh_push_terminfo "$dir"
+    if [ "${TERM_PROGRAM:-}" != "ghostty" ] && pane_has_terminal; then
+        echo "  tip: ./claude-dev ghostty sets up Ghostty, the terminal these panes are made for"
     fi
+    # The terminal that typed ./claude-dev becomes the pane (or, without a
+    # terminal, is told how to get one). `pane` hands its directory in
+    # PANE_CWD; an `open` pane starts where it was typed.
+    pane_exec "$dir" "${PANE_CWD:-$PWD}" slow
+}
+
+# `claude-dev pane [dir]`: make THIS terminal a sandbox pane for the folder
+# that contains dir (default $PWD) -- what Ghostty's new tabs and splits run.
+# Fast path: the folder's ssh master connection answers `-O check`, so the
+# pane is one `exec ssh` and not a single docker call (ctr_init is NOT run:
+# the ssh_* helpers and derive_project_name never touch docker). Otherwise it
+# is `open` (start the container, wait for sshd, push terminfo) ending in the
+# same pane_exec. Whatever goes wrong -- no folder above dir, not registered,
+# the sandbox would not come up -- the reason goes to stderr and the terminal
+# becomes a Mac login shell under a banner that says it is NOT sandboxed, so
+# a new tab is never a dead one. Exit codes: whatever the shell exits with
+# (it is exec'd); 0 when there is no terminal and the pane was only announced.
+cmd_pane_v3() {
+    local start d="" cand cfg alias reason="" rc
+    start="$(cd "${1:-$PWD}" 2>/dev/null && pwd -P)" || start=""
+    if [ -z "$start" ]; then
+        reason="the directory ${1:-$PWD} does not exist"
+    else
+        cand="$start"
+        while :; do
+            if [ -f "$(orca_json "$cand")" ]; then d="$cand"; break; fi
+            [ "$cand" = "/" ] && break
+            cand="$(dirname "$cand")"
+        done
+        [ -n "$d" ] || reason="$start is not inside a claude-dev folder"
+    fi
+    if [ -z "$reason" ]; then
+        cfg="$(ssh_state_dir "$d")/config"
+        alias="$(ssh_host_alias "$d")"
+        if "${CLAUDE_ORCA_SSH:-ssh}" -F "$cfg" -O check "$alias" >/dev/null 2>&1; then
+            pane_exec "$d" "$start" fast
+            return $?
+        fi
+        rc=0
+        PANE_CWD="$start" cmd_open_v3 "$d" || rc=$?
+        [ "$rc" -eq 0 ] && return 0
+        reason="the sandbox for $d would not come up (see above)"
+    fi
+    {
+        echo "claude-dev pane: $reason"
+        echo "== Mac shell -- NOT sandboxed =="
+    } >&2
+    exec "${SHELL:-/bin/zsh}" -l
 }
 
 cmd_register_v3() {
@@ -3152,7 +3344,7 @@ doctor_row() {
 # the CLI, the service, the image, the container, the port and the URL the
 # entrypoint published. Exits 2 on any finding, so it is usable in a script.
 cmd_doctor_v3() {
-    local dir="$PROJECT_SELF" rc=0 ref name state port url_file src vol app ver cli
+    local dir="$PROJECT_SELF" rc=0 ref name state port src vol app ver cli
     local prov=0 st nm detail want="" imgver=""
     # Whichever image THIS folder runs: a runtime-install folder has no
     # prebuilt image and never will, so asking after one would be a finding
@@ -3291,15 +3483,10 @@ cmd_doctor_v3() {
         doctor_row n/a "openrouter key" "absent -- optional: ./claude-dev key openrouter"
     fi
 
-    # The URL itself is a credential (the fragment carries the pairing
-    # code), so the doctor names the file, never its contents.
-    url_file="$dir/.claude-dev/run/orca-web-url.txt"
-    if [ -s "$url_file" ]; then
-        doctor_row ok "web url" "published -- $url_file"
-    else
-        doctor_row missing "web url" "not published yet -- $url_file"
-        rc=2
-    fi
+    # What `open` and `pane` actually use: sshd answering on the folder's
+    # port, the ControlMaster, and the folder's key being accepted. These
+    # replace the old `web url` row -- the Mac no longer talks to Orca.
+    doctor_ssh_rows "$dir" || rc=2
 
     # ... and one row per provisioning step (S5, claude-orca-dbu.5). The
     # steps run inside the container and write their status there; the
@@ -3326,6 +3513,7 @@ PROVISION
         [ "$prov" -eq 0 ] && doctor_row warn "provisioning" "no step statuses yet -- ./claude-dev logs, or ./claude-dev --update"
     fi
 
+    ghostty_doctor_rows || rc=2
     return "$rc"
 }
 
@@ -3351,7 +3539,7 @@ docker_image_of() {
 }
 
 cmd_verify_v3() {
-    local dir="${1:-$PROJECT_SELF}" name state rc=0 url_file port st nm detail rows
+    local dir="${1:-$PROJECT_SELF}" name state rc=0 port st nm detail rows
     local app="" cli="" data="" src="" running=""
     [ -d "$dir" ] || { echo "Error: directory does not exist: $dir" >&2; return 1; }
     dir="$(cd "$dir" && pwd -P)"
@@ -3383,13 +3571,8 @@ cmd_verify_v3() {
         rc=2
     fi
 
-    url_file="$dir/.claude-dev/run/orca-web-url.txt"
-    if [ -s "$url_file" ]; then
-        doctor_row ok "web url" "published -- $url_file"
-    else
-        doctor_row missing "web url" "not published -- $url_file"
-        rc=2
-    fi
+    # sshd / ssh master / ssh key auth, in place of the old `web url` row.
+    doctor_ssh_rows "$dir" || rc=2
 
     # The one row only the Mac can answer, and the guard for the one risk
     # the desktop client adds (.claude/plans/desktop-orca.md S5,
@@ -3459,6 +3642,7 @@ VERIFY
         rc=2
     fi
 
+    ghostty_doctor_rows || rc=2
     if [ "$rc" -eq 0 ]; then
         echo "Everything this folder promises is there."
     else
@@ -3574,6 +3758,12 @@ cmd_teardown_v3() {
     # environment at all.
     if [ "$(ui_of "$dir")" = "desktop" ]; then
         orca_env_forget "$dir"
+    fi
+    # The folder's ssh ControlMaster is a process on the Mac, not in the
+    # container: left alone it would outlive the folder it points at. The
+    # keys, config and known_hosts under state/ssh go with .claude-dev below.
+    if [ -f "$(ssh_state_dir "$dir")/config" ]; then
+        "${CLAUDE_ORCA_SSH:-ssh}" -F "$(ssh_state_dir "$dir")/config" -O exit "$(ssh_host_alias "$dir")" >/dev/null 2>&1 || true
     fi
     ctr stop "$name" >/dev/null 2>&1 || true
     ctr rm "$name" >/dev/null 2>&1 || true
@@ -3701,6 +3891,8 @@ Usage:
                                 the container as needed)
   claude-dev [register] [dir]   Register a project (default: this folder)
   claude-dev open               Same as no arguments
+  claude-dev pane [dir]         A sandbox pane in this terminal (fast when one
+                                is already up)
   claude-dev stop               Stop this folder's container
   claude-dev shell              A login shell inside the container
   claude-dev verify             Check this folder is set up the way the
@@ -3708,10 +3900,14 @@ Usage:
                                 toolchain, beads, the rulebook, agents,
                                 hooks, git identity and Orca's own state
   claude-dev logs               Follow the container's output
+  claude-dev ghostty [--uninstall|--check]
+                                Route Ghostty panes into sandboxed folders
+                                (one include line in your Ghostty config);
+                                --uninstall gives the config back unchanged
   claude-dev key openrouter     Store this folder's OpenRouter key (not
                                 echoed) for the delegate routes
   claude-dev --how-to-run       Print the URL and the two commands
-  claude-dev --doctor           CLI, service, image, container, port, web url
+  claude-dev --doctor           CLI, service, image, container, port, sshd, ssh
   claude-dev --update           Pull the template, rebuild the image, re-sync
                                 the config, recreate
   claude-dev --teardown [--purge-beads]
@@ -3723,11 +3919,13 @@ HELP
 case "${1:-}" in
     register)      shift; cmd_register_v3 "${1:-$PROJECT_SELF}" || exit $?; exit 0 ;;
     open)          shift; cmd_open_v3 "${1:-$PROJECT_SELF}" || exit $?; exit 0 ;;
+    pane)          shift; cmd_pane_v3 "${1:-}"; exit $? ;;
     stop)          shift; cmd_stop_v3 "${1:-$PROJECT_SELF}" || exit $?; exit 0 ;;
     shell)         shift; cmd_shell_v3 "${1:-$PROJECT_SELF}" || exit $?; exit 0 ;;
     verify)        shift; cmd_verify_v3 "${1:-$PROJECT_SELF}" || exit $?; exit 0 ;;
     logs)          shift; cmd_logs_v3 "${1:-$PROJECT_SELF}" || exit $?; exit 0 ;;
     key)           shift; cmd_key_v3 "$@" || exit $?; exit 0 ;;
+    ghostty)       shift; ghostty_main "$@" || exit $?; exit 0 ;;
     --how-to-run)
         if [ "$(ui_of "$PROJECT_SELF")" = "desktop" ]; then
             print_desktop_block_v3 "$PROJECT_SELF"

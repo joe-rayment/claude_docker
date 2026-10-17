@@ -652,6 +652,9 @@ case "$cmd" in
         done
         {
             printf 'image=%s\n' "$img"
+            # Where the entrypoint stand-in writes run/*, for `start` to
+            # find again when it restarts this container.
+            printf 'proj=%s\n' "$proj"
             if [ -f "$state/image-id" ]; then
                 printf 'imageid=%s\n' "$(cat "$state/image-id")"
             fi
@@ -699,7 +702,21 @@ case "$cmd" in
         exit 0 ;;
     start)
         [ -f "$state/containers/$1" ] || exit 1
-        echo running > "$state/containers/$1"; exit 0 ;;
+        echo running > "$state/containers/$1"
+        # A restarted container's entrypoint runs again and writes its
+        # run/sshd.ready afresh (the launcher removed the old one first).
+        # CLAUDE_ORCA_TEST_NO_SSHD: it never does.
+        proj="$(sed -n 's/^proj=//p' "$state/containers/$1.meta" 2>/dev/null | head -1)"
+        sshport="$(sed -n 's/^port=//p' "$state/containers/$1.meta" 2>/dev/null | head -1)"
+        sshport="${sshport%%:*}"
+        if [ -n "$proj" ] && [ -n "$sshport" ] && [ -z "${CLAUDE_ORCA_TEST_NO_SSHD:-}" ] \
+            && [ -f "$proj/.claude-dev/state/ssh/host_ed25519.pub" ]; then
+            mkdir -p "$proj/.claude-dev/run"
+            fp="$("${CLAUDE_ORCA_SSH_KEYGEN:-ssh-keygen}" -lf "$proj/.claude-dev/state/ssh/host_ed25519.pub" | awk 'NR == 1 { print $2 }')"
+            printf 'port=%s\nhost_key_sha256=%s\n' "$sshport" "$fp" \
+                > "$proj/.claude-dev/run/sshd.ready"
+        fi
+        exit 0 ;;
     stop)
         [ -f "$state/containers/$1" ] || exit 1
         echo exited > "$state/containers/$1"; exit 0 ;;
@@ -1568,6 +1585,57 @@ make_project_v3() {
 # one thing now that there is only one bootstrap.
 make_project() {
     make_project_v3 "$@" >/dev/null
+}
+
+# A stand-in for the container's sshd, for cases that need `--doctor` or
+# `verify` to find a healthy folder: the docker stub writes run/sshd.ready
+# but nothing listens on its port, so the doctor's sshd row (a real TCP
+# connect and an SSH-2.0 banner read) would say FAIL. This starts a python3
+# listener that greets with "SSH-2.0-stub" on a free port, points the
+# folder's run/sshd.ready at it (the host key line is kept), and sets
+# CLAUDE_ORCA_SSH to a client that accepts every key, so the key-auth row is
+# ok too. The listener ends when this test's tmp dir goes away.
+stub_sshd_up() {
+    local dir="$1" ready alive portf n=0 p
+    ready="$dir/.claude-dev/run/sshd.ready"
+    alive="$BATS_TEST_TMPDIR/sshd-listener.alive"
+    portf="$BATS_TEST_TMPDIR/sshd-listener.port"
+    : > "$alive"
+    rm -f "$portf"
+    python3 -I -c '
+import os, socket, sys, time
+portf, alive = sys.argv[1], sys.argv[2]
+srv = socket.socket()
+srv.bind(("127.0.0.1", 0))
+srv.listen(8)
+srv.settimeout(0.5)
+tmp = portf + ".tmp"
+open(tmp, "w").write(str(srv.getsockname()[1]))
+os.rename(tmp, portf)
+end = time.time() + 600
+while time.time() < end and os.path.exists(alive):
+    try:
+        c, _ = srv.accept()
+    except socket.timeout:
+        continue
+    try:
+        c.sendall(b"SSH-2.0-stub\r\n")
+    finally:
+        c.close()
+' "$portf" "$alive" </dev/null >/dev/null 2>&1 3>&- &
+    disown 2>/dev/null || true
+    while [ ! -s "$portf" ] && [ "$n" -lt 50 ]; do sleep 0.1; n=$((n + 1)); done
+    p="$(cat "$portf")"
+    [ -n "$p" ]
+    mkdir -p "$dir/.claude-dev/run"
+    if [ -s "$ready" ]; then
+        sed -i.bak "s/^port=.*/port=$p/" "$ready" && rm -f "$ready.bak"
+    else
+        printf 'port=%s\n' "$p" > "$ready"
+    fi
+    export CLAUDE_ORCA_SSH="$BATS_TEST_TMPDIR/ssh-accepts-all"
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$CLAUDE_ORCA_SSH"
+    chmod +x "$CLAUDE_ORCA_SSH"
 }
 
 # Adds a linked worktree as a sibling of $1 (Orca's default layout:

@@ -2,7 +2,7 @@
 #
 # dispatch.sh -- hand ONE bead to ONE headless worker, with no Orca in the
 # loop (claude-orca-9bh.1; plan .claude/plans/ghostty.md "Workers without
-# Orca"). The orca-dispatch of the Ghostty world: it makes a worktree and a
+# Orca"). It makes a worktree and a
 # job directory, starts scripts/worker-run.sh on the job detached, and
 # returns at once with a receipt; the result arrives later as a line in
 # orchestration/inbox.jsonl.
@@ -46,8 +46,8 @@ SCRIPT_DIR="$(_s="$(_resolve_script_path)"; case "$_s" in (*/*) cd "${_s%/*}/" ;
 . "$SCRIPT_DIR/lib/paths.sh"
 # shellcheck source=lib/tier-roles.sh
 . "$SCRIPT_DIR/lib/tier-roles.sh"
-# shellcheck source=lib/orca-orch.sh
-. "$SCRIPT_DIR/lib/orca-orch.sh"
+# shellcheck source=lib/workers.sh
+. "$SCRIPT_DIR/lib/workers.sh"
 # shellcheck source=lib/frozen-hook.sh
 . "$SCRIPT_DIR/lib/frozen-hook.sh"
 
