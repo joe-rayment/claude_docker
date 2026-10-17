@@ -122,7 +122,7 @@ for the worker, when the folder holds an OpenRouter key; the **worker
 vendor** is decided by that key — with one present (the
 file `claude-dev key openrouter` writes) the derived worker is `opencode` on
 `openrouter/~z-ai/glm-latest`, the default GLM executor; without one it is
-`claude:<derived worker rung>`. **Recon = `subagent` haiku** and **checker = `subagent`
+the derived worker rung, in-process (`subagent` + `claude`). **Recon = `subagent` haiku** and **checker = `subagent`
 at the derived checker rung** (the top capped at opus), both in-process on
 purpose — recon is cheap and read-only, and a checker never grades a claim
 from below the worker that made it. A **headless recon** (the hybrid
@@ -353,30 +353,30 @@ claude-orca-qa2.12 that file carries a **backend, agent and model per role**:
   "worker": "openrouter/qwen/qwen3-coder",     // v1 mirror of roles.worker.model
   "recon":  "haiku",                          // v1 mirror of roles.recon.model
   "roles": {
-    "worker":  {"backend":"orca","agent":"opencode","model":"openrouter/qwen/qwen3-coder","pinned":true},
+    "worker":  {"backend":"headless","agent":"opencode","model":"openrouter/qwen/qwen3-coder","pinned":true},
     "recon":   {"backend":"subagent","agent":"claude","model":"haiku","pinned":false},
     "checker": {"backend":"subagent","agent":"claude","model":"inherit","pinned":false} },
   "pinned": false, "overdrive": false, "updated": "2026-09-06T00:00:00Z" }
 ```
 
-- **backend** — `orca` (a supervised Orca worker terminal, started by
-  `orca-dispatch`) or `subagent` (the in-process Agent tool).
+- **backend** — `headless` (a detached `worker-run` process started by
+  `dispatch <bead>`) or `subagent` (the in-process Agent tool).
   **agent** — `claude` · `opencode` (OpenRouter models) · `codex` · `gemini`.
 - **A v1 file reads as v2** with `backend: subagent`, `agent: claude` and the
   model taken from the v1 `.worker`/`.recon` key (checker: `inherit` — a v1
   file predates the derived checker rung). The
   reader is `tier_role`/`tier_role_field` in `scripts/lib/tier-roles.sh`;
   no script parses the file's shape by hand.
-- **Grammar:** `/tier worker openrouter:<vendor/model>` → orca + opencode;
-  `/tier worker claude:<alias>` → orca + claude; `/tier worker subagent` →
+- **Grammar:** `/tier worker openrouter:<vendor/model>` → headless + opencode;
+  `/tier worker claude:<alias>` → headless + claude; `/tier worker subagent` →
   subagent on the derived model; the same specs work for `recon` and
   `checker`. A spec that names a model sets that role's own `pinned`, which
   stops `tier-reconcile` re-deriving its model; backend and agent are always
   preserved by the reconciler. A 1-arg `/tier <top>` rebinds all three roles
-  to the defaults — worker `orca`+`claude` when `orca-ide status --json`
-  reports `.runtime.reachable` within 2s (probed once per bind, never
-  cached), else `subagent`; recon `subagent`; checker `subagent` at the
-  derived checker rung (`inherit` only when the top is off-ladder). The bare
+  to the defaults — nothing probes for a runtime: worker `subagent`+`claude`
+  on the derived worker rung, or `headless`+`opencode` on the GLM rung when
+  the folder holds an OpenRouter key; recon `subagent`; checker `subagent` at
+  the derived checker rung (`inherit` only when the top is off-ladder). The bare
   `/tier <role> openrouter` spec — no model named — binds that role's own
   OpenRouter default: `/tier recon openrouter` is the flash rung.
 - **tier-prime** prints a second line, `[tier] backends: worker=… recon=…
@@ -385,8 +385,13 @@ claude-orca-qa2.12 that file carries a **backend, agent and model per role**:
   unchanged.
 - **tier-gate** is unchanged for a `subagent` role: a generic/executor spawn
   with no `model` still gets the worker tier injected as a family alias. For
-  an `orca` role it does **not** inject and does **not** block — it adds one
-  line saying the backend is orca and that `orca-dispatch` is preferred.
+  a `headless` role bound to a Claude agent it injects that role's own model
+  (or the derived rung) and adds one line saying the backend is headless and
+  that `dispatch <bead>` is preferred; for a non-Claude agent (opencode,
+  codex, gemini — no model the Agent tool would accept) it **denies** the
+  model-less spawn, the reason naming `dispatch <bead>` (or `recon
+  "<question>"`). An explicit `model` on the call is the deliberate
+  in-process fallback and is never touched.
 
 **Purge policy (both tier-set and tier-reconcile).** The six
 `ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL(_NAME)` vars and
@@ -481,7 +486,7 @@ a new release needs no change here; the day the table said `claude-fable-5`
 while `/model` said `claude-fable-5-1` is why. The alias is what gets
 **written**, and every consumer ranks it rather than comparing ids:
 `tier-gate` injects it into the Agent tool's `model` (whose accepted values
-are exactly these aliases), an orca-backed worker gets it as `claude --model
+are exactly these aliases), a headless-backed worker gets it as `claude --model
 <alias>`, and `cost-mirror` prices from the concrete id the transcript
 records, never from tier.json. A full family id (incl. dated/variant) maps
 to its rung and keeps its exact value on top; anything else is off-ladder.
