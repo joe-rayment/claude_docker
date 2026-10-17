@@ -1,0 +1,6 @@
+{"type":"system","subtype":"init","session_id":"s-run1","model":"sonnet"}
+{"type":"assistant","message":{"model":"sonnet","role":"assistant","content":[{"type":"text","text":"Reading the launcher first."},{"type":"tool_use","id":"w1","name":"Read","input":{"file_path":"scripts/launcher.sh"}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"w1","content":"#!/bin/bash"}]}}
+{"type":"assistant","message":{"model":"sonnet","role":"assistant","content":[{"type":"tool_use","id":"w2","name":"Edit","input":{"file_path":"scripts/launcher.sh","old_string":"a","new_string":"b"}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"w2","content":"edited"}]}}
+{"type":"assistant","message":{"model":"sonnet","role":"assistant","content":[{"type":"tool_use","id":"w3","name":"Bash","input":{"command":"bats tests/launcher-ssh.bats"}}]}}
