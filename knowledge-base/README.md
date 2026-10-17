@@ -10,7 +10,7 @@ the details. Start with [../README.md](../README.md) for setup and daily use.
 | Page | Read it when |
 |---|---|
 | [SANDBOX.md](SANDBOX.md) | You need the trust boundary: what the container VM can see, what crosses it on purpose, and how `--doctor` checks it. Also: the bash 3.2 rule the Mac-side scripts obey. |
-| [ORCA_INTEGRATION.md](ORCA_INTEGRATION.md) | Orca never opened in the browser, status dots or sub-agent rows stopped moving, the session-history panel is empty, or worktrees land somewhere unexpected. |
+| [TERMINAL.md](TERMINAL.md) | A Ghostty pane will not open or opens in the wrong place, the fast-or-slow pane choice surprises you, splits or keys do nothing, pasting an image fails (the clipboard bridge), or ssh to the container is refused. |
 | [CONFIG_SYNC.md](CONFIG_SYNC.md) | A hook, agent, command or skill is missing or stale in a project; you want a local override that survives; you want to know where `/tier` state actually lives. |
 | [TEARDOWN_RECOVERY.md](TEARDOWN_RECOVERY.md) | Before `claude-dev --teardown`, and when restoring beads from a snapshot afterwards. |
 
