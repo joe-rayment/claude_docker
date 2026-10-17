@@ -279,25 +279,26 @@ EOF
     E2E_CLIP_USED=1
 }
 
-# e2e_clip_pane_script -- what the pane runs: the shim's three answers with
-# an image on the pasteboard, then with text. Paths are baked in (the local
+# e2e_clip_pane_script -- what the pane runs: plain `xclip` (found through the
+# pane's own PATH, which is what the test then asserts is the template's shim)
+# giving its three answers with an image on the pasteboard, then with text.
+# Paths are baked in (the local
 # runtime shares the filesystem), so the heredoc is unquoted; the \$ ones are
 # the pane's own. The DONE marker is arithmetic so the typed command line
 # cannot satisfy a match on its output.
 e2e_clip_pane_script() {
-    local shim="$E2E_PROJECT/.claude-dev/template/bin/xclip"
     cat > "$E2E_ROOT/pane-clip.sh" <<EOF
 echo "XCLIP-WHICH=\$(command -v xclip)"
 echo "PATH-HEAD=\${PATH%%:*}"
-echo "TARGETS-PNG=[\$($shim -selection clipboard -t TARGETS -o)]"
-$shim -selection clipboard -t image/png -o | cmp - "$E2E_CLIP_PNG"
+echo "TARGETS-PNG=[\$(xclip -selection clipboard -t TARGETS -o)]"
+xclip -selection clipboard -t image/png -o | cmp - "$E2E_CLIP_PNG"
 echo "CMP-RC=\$?"
 echo "DONE1-\$((6*7))"
 echo text > "$E2E_ROOT/clip.mode"
-echo "TARGETS-TEXT=[\$($shim -selection clipboard -t TARGETS -o)]"
-OUT="\$($shim -selection clipboard -o)"
+echo "TARGETS-TEXT=[\$(xclip -selection clipboard -t TARGETS -o)]"
+OUT="\$(xclip -selection clipboard -o)"
 echo "TEXTREAD-RC=\$? OUT=[\$OUT]"
-$shim -selection clipboard -t image/png -o >/dev/null
+xclip -selection clipboard -t image/png -o >/dev/null
 echo "PNGREAD-AFTER-RC=\$?"
 echo "DONE2-\$((6*7))"
 EOF
@@ -321,6 +322,9 @@ EOF
     # The marker lines are computed (6*7), so the typed command line, which
     # the terminal echoes, can never be mistaken for the output.
     printf '%s\n' "$output" | grep -qx -- 'DONE1-42'
+    # Plain `xclip` in the pane is the template's shim, not /usr/bin/xclip:
+    # pane-entry puts the template bin on PATH for every pane.
+    printf '%s\n' "$output" | grep -qxF -- "XCLIP-WHICH=$E2E_PROJECT/.claude-dev/template/bin/xclip"
     printf '%s\n' "$output" | grep -qx -- 'DONE2-42'
 
     # Image on the pasteboard: TARGETS names it, the PNG is byte for byte.
