@@ -89,10 +89,17 @@ def iso(dt):
 
 
 def parse_iso(text):
+    if not isinstance(text, str):
+        return None
     try:
         return datetime.strptime(text, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-    except (TypeError, ValueError):
+    except ValueError:
+        pass
+    try:  # fractional seconds or an explicit offset, as another script may write them
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
         return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
 def redact_text(text, extra=()):
@@ -384,4 +391,141 @@ def failure_reason(res, timeout):
     return "the summary model sent back nothing usable"
 
 
-# __CONTINUE__
+# --- one run ----------------------------------------------------------------------
+
+def env_int(name, default):
+    try:
+        return max(1, int(os.environ.get(name, "")))
+    except ValueError:
+        return default
+
+
+def fallback_page(digest, from_p1, why, root, rows, cols, token):
+    """The deterministic page: P1's own --text when the digest came from P1, else
+    rendered here from the digest we were given."""
+    text = ""
+    if digest is None:
+        text = "Could not read what Claude Code is doing right now.\n(%s)" % why
+    elif from_p1:
+        script = os.environ.get("CLAUDE_ORCA_ACTIVITY_DIGEST") or os.path.join(SCRIPT_DIR, "activity-digest.py")
+        try:
+            out = subprocess.run([sys.executable, script, "--text", "--root", root],
+                                 capture_output=True, text=True, timeout=60)
+            text = out.stdout if out.returncode == 0 else ""
+        except (OSError, subprocess.SubprocessError):
+            text = ""
+    if digest is not None and not text.strip():
+        text = render_text(digest)
+    page = shape_page(redact_text(text, (token,)), rows, cols)
+    return page or "Nothing to show yet.\n"
+
+
+def decide(args, root, actdir, config, digest, why, meta, in_backoff, token):
+    """(kind, page, fields): kind is updated|fallback; fields feed meta.json."""
+    from_p1 = not args.digest
+    fields = {"model": None, "reason": None, "usage": None, "backoff_until": None}
+    reason = None
+    model = pick_model(config, root)
+    base = (os.environ.get("CLAUDE_ORCA_ACTIVITY_URL") or os.environ.get("OPENROUTER_BASE_URL")
+            or DEFAULT_URL)
+    host = urllib.parse.urlparse(base).hostname
+    sources = (digest or {}).get("sources")
+    if config.get("activity") is False:
+        reason = "turned off in claude-orca.json"
+    elif digest is None:
+        reason = why
+    elif not sources and not digest.get("request"):
+        reason = "nothing to summarize yet"
+    elif in_backoff and not args.force:
+        reason = meta.get("reason") or "the summary service failed a moment ago; trying again soon"
+        fields["backoff_until"] = meta.get("backoff_until")
+    elif not model:
+        reason = "no summary model is configured"
+    elif not token:
+        reason = "no guard token is available for the summary model"
+    elif host not in LOOPBACK:
+        reason = "the summary service address is not a local guard; the token is not sent elsewhere"
+    if reason is None:
+        timeout = env_int("CLAUDE_ORCA_ACTIVITY_TIMEOUT_S", 45)
+        prev = ""
+        if meta.get("source") == "model" and meta.get("episode") == digest.get("episode"):
+            try:
+                with open(os.path.join(actdir, "page.md"), encoding="utf-8") as fh:
+                    prev = fh.read()
+            except OSError:
+                prev = ""
+        res = call_model(base, token, model, system_prompt(args.rows, args.cols),
+                         user_message(prev, digest, token), timeout)
+        log_call(actdir, model, res)
+        page = shape_page(redact_text(res["text"], (token,)), args.rows, args.cols) if not res["error"] else ""
+        if page:
+            fields.update(model=res["model"] or model, usage=res["usage"])
+            return "updated", page, fields
+        reason = failure_reason(res, timeout) if res["error"] else failure_reason({"error": "empty"}, timeout)
+        wait = env_int("CLAUDE_ORCA_ACTIVITY_BACKOFF_S", 300)
+        fields["backoff_until"] = iso(now_utc() + timedelta(seconds=wait))
+    fields["reason"] = reason
+    return "fallback", fallback_page(digest, from_p1, why, root, args.rows, args.cols, token), fields
+
+
+def run(args, root, actdir):
+    rundir = os.path.join(root, ".claude-dev", "run")
+    config = read_json(os.path.join(root, ".claude-dev", "claude-orca.json")) or {}
+    digest, from_p1, why = load_digest(args.digest, root)
+    meta = read_json(os.path.join(actdir, "meta.json")) or {}
+    until = parse_iso(meta.get("backoff_until"))
+    in_backoff = bool(until and now_utc() < until)
+    fp = digest.get("fingerprint") if digest else None
+    same = (fp is not None and fp == meta.get("fingerprint")
+            and meta.get("rows") == args.rows and meta.get("cols") == args.cols
+            and os.path.exists(os.path.join(actdir, "page.md")))
+    if same and not args.force and (meta.get("source") == "model" or in_backoff):
+        return "unchanged"
+    token = pick_token(rundir)
+    kind, page, fields = decide(args, root, actdir, config, digest, why, meta, in_backoff, token)
+    out = {"updated": iso(now_utc()), "episode": digest.get("episode") if digest else None,
+           "fingerprint": fp, "model": fields["model"],
+           "source": "model" if kind == "updated" else "fallback",
+           "reason": fields["reason"], "usage": fields["usage"],
+           "rows": args.rows, "cols": args.cols, "backoff_until": fields["backoff_until"]}
+    atomic_write(os.path.join(actdir, "page.md"), page)
+    atomic_write(os.path.join(actdir, "meta.json"), json.dumps(out, indent=2) + "\n")
+    return kind
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(
+        prog="activity-summarize.py",
+        description="Write the activity panel's one-page status (page.md + meta.json).")
+    ap.add_argument("--rows", type=int, default=24, help="terminal rows; the page is at most rows-2 lines")
+    ap.add_argument("--cols", type=int, default=80, help="terminal columns; lines are at most this long")
+    ap.add_argument("--root", help="project folder (default: CLAUDE_ORCA_ROOT, PROJECT_DIR, git top level)")
+    ap.add_argument("--digest", metavar="FILE", help="read this digest JSON instead of running the digest script")
+    ap.add_argument("--force", action="store_true", help="summarize even if nothing changed")
+    args = ap.parse_args(argv)
+    if args.rows < 4 or args.cols < 20:
+        die("--rows must be at least 4 and --cols at least 20")
+    root = resolve_root(args.root)
+    if not root:
+        die("cannot tell which folder to read: pass --root, or set CLAUDE_ORCA_ROOT / PROJECT_DIR")
+    actdir = os.path.join(root, ".claude-dev", "run", "activity")
+    try:
+        os.makedirs(actdir, exist_ok=True)
+        lock = open(os.path.join(actdir, "summarize.lock"), "a")
+    except OSError as exc:
+        die("cannot use %s: %s" % (actdir, exc.strerror), 1)
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        print("busy")
+        return 0
+    try:
+        word = run(args, root, actdir)
+    except OSError as exc:
+        die("cannot write under %s: %s" % (actdir, exc.strerror), 1)
+    print(word)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
