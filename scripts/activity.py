@@ -61,6 +61,7 @@ SEP = " · "
 DIM, RESET = "\x1b[2m", "\x1b[0m"
 MAX_PAGE_BYTES = 65536
 _CTRL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+_ESC_TEXT = re.compile(r"\x1b\[[0-9;:?<>=]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?")
 _BULLET = re.compile(r"([-*•]|\d+[.)])\s")
 
 
@@ -136,6 +137,7 @@ def wrap_page(text, cols):
     """The page as screen lines: control bytes dropped, blank lines kept."""
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     lines = []
+    text = _ESC_TEXT.sub("", text)
     for raw in _CTRL.sub("", text).split("\n"):
         lines.extend(wrap_line(raw, cols))
     while lines and lines[-1] == "":
@@ -175,27 +177,25 @@ def age(secs):
 
 def build_footer(meta, page_mtime, note, now, cols):
     """'updated 40 s ago . <model|reason|note> . q quits', cut to cols."""
-    head = []
     stamp = parse_iso(meta.get("updated")) if meta.get("updated") else None
     if stamp is None:
         stamp = page_mtime
-    if stamp is not None:
-        head.append("updated %s ago" % age(now - stamp))
+    when = "updated %s ago" % age(now - stamp) if stamp is not None else ""
     detail = note
     if not detail and meta.get("source") == "fallback":
         detail = meta.get("reason") or "no summary"
     if not detail and meta.get("model"):
         detail = str(meta["model"])
-    if detail:
-        head.append(" ".join(_CTRL.sub(" ", str(detail)).split()))
+    detail = " ".join(_CTRL.sub(" ", str(detail)).split()) if detail else ""
     tail = "q quits"
-    head = SEP.join(head)
-    if not head:
-        return cut(tail, cols)
-    if dwidth(head + SEP + tail) <= cols:
-        return head + SEP + tail
+    # Narrow window: shed the age first (the reason / model says more), then
+    # cut what is left with an ellipsis; "q quits" is always the last word.
+    for head in (SEP.join(p for p in (when, detail) if p), detail, when):
+        if head and dwidth(head + SEP + tail) <= cols:
+            return head + SEP + tail
+    head = detail or when
     room = cols - dwidth(SEP + tail)
-    if room < 2:
+    if not head or room < 2:
         return cut(tail, cols)
     return cut(head, room - 1).rstrip() + ELLIPSIS + SEP + tail
 
