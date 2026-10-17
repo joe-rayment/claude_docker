@@ -3,8 +3,8 @@
 # mac-e2e.sh -- the whole product, on the platform it is for, with a clock.
 #
 # WHY THIS EXISTS. Everything else in tests/ drives stubs: helpers/setup.bash
-# puts a fake `docker`, `open`, `gh` and `uname` on PATH, so the 752-case
-# bats suite proves the launcher's LOGIC and nothing about a Mac. There is
+# puts a fake `docker`, `open`, `gh` and `uname` on PATH, so the
+# bats suite (tests/*.bats) proves the launcher's LOGIC and nothing about a Mac. There is
 # no CI in this repo any more (.github/workflows/image.yml, the one job
 # that ever drove a real daemon on macOS, via colima, is gone -- it never
 # passed anyway), so nothing runs this suite, stubbed or not, without a
@@ -44,7 +44,10 @@
 # proves the launcher's argv and nothing about a real login. They check
 # run/sshd.ready and run/port, then `ssh -F state/ssh/config <alias> pwd`
 # with the host key verified (and refused when it is not known), then the
-# doctor's sshd / ssh master / ssh key auth rows. Section 5b plants an old
+# doctor's sshd / ssh master / ssh key auth rows. One more row runs
+# `./claude-dev pane` itself under macOS `script -q /dev/null` (a pty, as a
+# terminal tab gives it) and expects the in-container /workspace/<name> from
+# a typed `pwd`. Section 5b plants an old
 # <container>-orca-state volume (what a folder from before the ssh panes
 # left behind) and checks that `./claude-dev --update` removes it.
 #
@@ -367,6 +370,41 @@ c_ssh_master() {
     "$SSH_BIN" -F "$SSH_CFG" -o BatchMode=yes -o ConnectTimeout=15 "$SSH_ALIAS" true || return 1
     "$SSH_BIN" -F "$SSH_CFG" -O check "$SSH_ALIAS" 2>&1
 }
+# The pane itself, the way a terminal tab runs it. `./claude-dev pane` ends in
+# `exec ssh -tt <alias>`, so it needs a terminal: macOS `script -q /dev/null`
+# supplies a pty, and a delayed writer types `pwd` then `exit` into it (the
+# delay lets the login finish; the pty queues anything typed early). Only the
+# in-container path on a line of its own counts -- the prompt may print the
+# path too -- and the "NOT sandboxed" banner (a Mac shell, which the pane falls
+# back to when it cannot reach the container) fails the row outright. A
+# watchdog stands in for `timeout`, which a stock Mac does not have.
+c_pane_pwd() {
+    local out_file pid i
+    out_file="$LOG_DIR/mac-e2e-$STAMP.pane.txt"
+    : > "$out_file"
+    ( sleep 3; printf 'pwd\r'; sleep 2; printf 'exit\r'; sleep 1 ) \
+        | ( cd "$PROJECT" && script -q /dev/null ./claude-dev pane ) > "$out_file" 2>&1 &
+    pid=$!
+    i=0
+    while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 90 ]; do
+        sleep 1
+        i=$((i + 1))
+    done
+    if kill -0 "$pid" 2>/dev/null; then
+        kill "$pid" 2>/dev/null
+        echo "the pane was still running after 90 s (output in $out_file)"
+        return 1
+    fi
+    wait "$pid" 2>/dev/null
+    tr -d '\r' < "$out_file" > "$out_file.clean"
+    if grep -q 'NOT sandboxed' "$out_file.clean"; then
+        echo "the pane fell back to a Mac shell (NOT sandboxed)"
+        return 1
+    fi
+    grep -qx -- "$GUEST_DIR" "$out_file.clean" \
+        || { echo "pane pwd: no line '$GUEST_DIR' in $out_file"; return 1; }
+    printf '%s (a real pane, on a pty)\n' "$GUEST_DIR"
+}
 # A doctor row by name, from the one doctor run in $DOCTOR_OUT. Only the
 # [ok] form passes: n/a (master not running) and FAIL both fail here.
 doctor_row_ok() {
@@ -565,6 +603,7 @@ note "ssh: a real login with the folder's key, host key verified"
 check_detail "ssh: pwd prints the project path"              c_ssh_pwd
 check_detail "ssh: an unknown host key is refused"           c_ssh_refuses_unknown
 check_detail "ssh: the folder's ControlMaster comes up"      c_ssh_master
+check_detail "pane: a real pane lands in the project"        c_pane_pwd
 # The doctor, once, after the master is up so "ssh master" can read ok.
 ( cd "$PROJECT" && ./claude-dev --doctor ) > "$DOCTOR_OUT" 2>&1
 cat "$DOCTOR_OUT" >> "$RUN_LOG"
