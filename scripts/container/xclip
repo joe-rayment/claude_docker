@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+# xclip -- a stand-in for the real xclip that reads the Mac clipboard's IMAGE
+# (and only the image) through the clipboard bridge.
+#
+# Claude Code on Linux pastes an image with exactly two calls:
+#     xclip -selection clipboard -t TARGETS -o     (is there an image?)
+#     xclip -selection clipboard -t image/png -o   (give me the bytes)
+# ssh forwards a unix socket (RemoteForward) from the Mac's clip-listen to
+# $CLAUDE_ORCA_CLIP_SOCK in this container, and this script is a tiny HTTP
+# client for it.  No DISPLAY is needed; the real /usr/bin/xclip stays the
+# fallback only where this script is not first on PATH.
+#
+#   -o -t TARGETS     GET  /targets  -> "image/png\n" on stdout, exit 0
+#   -o -t image/png   GET  /png      -> the PNG bytes on stdout, exit 0
+#   -o  (anything else: no -t, or another target = TEXT)
+#                     exit 1 at once, NO request -- text never crosses Mac -> container
+#   -i / -in          POST /copy with stdin (or the file arguments), Mac pbcopy
+#   -version          prints a version line (never reads stdin)
+# Flags xclip has and the bridge does not use (-selection, -display, -loops,
+# -quiet, -silent, -verbose, -filter, ...) are accepted and ignored.  Without
+# -o/-i xclip reads stdin, so this does too.
+#
+# A request is tried up to 3 times, 0.1 s apart, but only when the connection
+# itself failed: between two connections the Mac listener re-arms, and a client
+# that lands in that gap sees a refused or empty connection.  Any HTTP answer
+# is final (204 / 404 / 413 -> exit 1 with no output).  A missing socket (no
+# bridge in this session) exits 1 at once, quietly.
+#
+# Env seams:
+#   CLAUDE_ORCA_CLIP_SOCK     the forwarded socket (default /tmp/cdev-clip.sock)
+#   CLAUDE_ORCA_CLIP_TIMEOUT  seconds one request may take (default 30)
+#   CLAUDE_ORCA_CLIP_DEBUG    1 = let curl's error text through on stderr
+# Exit: 0 served / copied, 1 anything else (nothing is ever printed on failure).
+
+set -u
+
+SOCK=${CLAUDE_ORCA_CLIP_SOCK:-/tmp/cdev-clip.sock}
+MAX_COPY=1048576      # the Mac side refuses a larger POST /copy
+
+mode=in
+target=""
+files=()
+while [ "$#" -gt 0 ]; do
+  case $1 in
+    -o|-out) mode=out ;;
+    -i|-in) mode=in ;;
+    -t|-target) target=${2-}; shift ;;
+    -sel|-selec|-select|-selection|-d|-display|-l|-loops|-wait) shift ;;
+    -version|--version) printf 'xclip version 0.13 (claude-orca clipboard bridge)\n' >&2; exit 0 ;;
+    -h|-help|--help) printf 'usage: xclip [-i|-o] [-selection clipboard] [-t TARGETS|image/png]\n' >&2; exit 0 ;;
+    --) shift; files+=("$@"); break ;;
+    -?*) ;;
+    *) files+=("$1") ;;
+  esac
+  shift
+done
+
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/xclip.XXXXXX") || exit 1
+trap 'rm -rf "$tmp"' EXIT
+
+# bridge_call METHOD ROUTE [BODY_FILE]: the answer's body lands in $tmp/out.
+# Returns 0 only on a success status (GET 200, POST 200/204).
+bridge_call() {
+  local method=$1 route=$2 data=${3-} try=1 code
+  local args=(-sS --fail --connect-timeout 2 --max-time "${CLAUDE_ORCA_CLIP_TIMEOUT:-30}"
+              --unix-socket "$SOCK" -o "$tmp/out" -w '%{http_code}')
+  if [ "$method" = POST ]; then
+    args+=(-X POST -H 'Expect:' -H 'Content-Type: application/octet-stream' --data-binary "@$data")
+  fi
+  while :; do
+    code=$(curl "${args[@]}" "http://clip$route" 2>"$tmp/err")
+    case $code in
+      200) return 0 ;;
+      204) [ "$method" = POST ]; return ;;
+      000|"") ;;                         # no HTTP answer at all: the listener re-arming
+      *) break ;;                       # a real answer (404, 413, ...) is final
+    esac
+    [ "$try" -ge 3 ] && break
+    try=$((try + 1))
+    sleep 0.1
+  done
+  if [ "${CLAUDE_ORCA_CLIP_DEBUG:-}" = 1 ] && [ -s "$tmp/err" ]; then cat "$tmp/err" >&2; fi
+  return 1
+}
+
+[ -S "$SOCK" ] || exit 1
+
+if [ "$mode" = out ]; then
+  case $target in
+    TARGETS) route=/targets ;;
+    image/png) route=/png ;;
+    *) exit 1 ;;
+  esac
+  bridge_call GET "$route" || exit 1
+  cat "$tmp/out"
+  exit
+fi
+
+# mode in: text only -- an image target must never reach pbcopy as bytes.
+case $target in
+  ""|UTF8_STRING|STRING|TEXT|text/*) ;;
+  *) exit 1 ;;
+esac
+if [ "${#files[@]}" -gt 0 ]; then
+  cat -- "${files[@]}" 2>/dev/null | head -c $((MAX_COPY + 1)) >"$tmp/in" || true
+else
+  head -c $((MAX_COPY + 1)) >"$tmp/in" || true
+fi
+[ "$(wc -c <"$tmp/in")" -le "$MAX_COPY" ] || exit 1
+bridge_call POST /copy "$tmp/in" || exit 1
+exit 0
