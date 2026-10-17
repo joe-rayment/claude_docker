@@ -152,3 +152,59 @@ calls_of() { grep -c "^$1 " "$CALLS" || true; }
     [[ "$output" == *"Initialize beads"* ]]
     [ ! -e "$lock" ]
 }
+
+# Guards:   the menu waits while this boot's provisioning is running (so beads/GitHub are asked after 55-git-init), says so, and asks once it is done
+# Fails if: the menu asks before the running marker disappears, or prints no "Finishing"/"setup finished" lines
+# Run:      bats -f 'waits for a running provision' tests/startup-menu.bats
+@test "the menu waits for a running provision to finish before asking anything" {
+    local pd="$P/.claude-dev/run/provision"
+    mkdir -p "$pd"
+    sleep 60 &
+    SLEEPER=$!
+    printf '%s 15-claude-on-path\n' "$SLEEPER" >"$pd/running"
+    printf '#!/bin/sh\necho "bd $*" >> "%s"\nif [ -e "%s" ]; then echo "bd-saw-running" >> "%s"; fi\nexit 0\n' "$CALLS" "$pd/running" "$CALLS" >"$STUBS/bd"
+    chmod +x "$STUBS/bd"
+    ( sleep 2; rm -f "$pd/running" ) &
+    run bash -c "printf 'y\nn\n2\n' | bash '$MENU'"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Finishing this sandbox's setup: 15-claude-on-path"* ]]
+    [[ "$output" == *"✓ setup finished"* ]]
+    grep -q '^bd init --prefix demo$' "$CALLS"
+    ! grep -q 'bd-saw-running' "$CALLS"
+}
+
+# Guards:   a stale running marker (its runner died) neither stalls nor clutters the menu
+# Fails if: a dead pid is treated as live, so the menu waits or prints the Finishing/finished lines
+# Run:      bats -f 'dead pid' tests/startup-menu.bats
+@test "a running marker naming a dead pid is ignored: no waiting lines, the menu proceeds" {
+    local pd="$P/.claude-dev/run/provision"
+    mkdir -p "$pd"
+    sleep 0 & local dead=$!
+    wait "$dead"
+    printf '%s 55-git-init\n' "$dead" >"$pd/running"
+    run bash -c "printf 'y\nn\n2\n' | bash '$MENU'"
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"Finishing"* ]]
+    [[ "$output" != *"setup finished"* ]]
+    [[ "$output" == *"Initialize beads"* ]]
+}
+
+# Guards:   a setup that never finishes cannot hold the menu forever: after CLAUDE_ORCA_STARTUP_WAIT seconds it says so and asks anyway
+# Fails if: the timeout is ignored (the menu hangs) or the beads question is never asked
+# Run:      bats -f 'still running' tests/startup-menu.bats
+@test "a provision that never finishes: after CLAUDE_ORCA_STARTUP_WAIT the menu says so and asks anyway" {
+    local pd="$P/.claude-dev/run/provision"
+    mkdir -p "$pd"
+    sleep 60 &
+    SLEEPER=$!
+    printf '%s 70-openrouter-guard\n' "$SLEEPER" >"$pd/running"
+    CLAUDE_ORCA_STARTUP_WAIT=1 run bash -c "printf 'n\nn\n2\n' | bash '$MENU'"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Setup is still running (provision status shows it); asking anyway."* ]]
+    [[ "$output" == *"Initialize beads"* ]]
+}
+
+teardown() {
+    [ -n "${SLEEPER:-}" ] && kill "$SLEEPER" 2>/dev/null
+    return 0
+}

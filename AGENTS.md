@@ -246,13 +246,16 @@ config-sync owns those files.
 ## Definition of done for host-side changes
 
 A change to `bootstrap.sh`, `scripts/launcher.sh`, the `Dockerfile`, or
-anything under `scripts/container/` is done only when `tests/mac-e2e.sh`
-has been run on a Mac against that
-change, and its summary table is pasted into the commit message or the
-bead. A green bats suite is not evidence for the Mac path: the suite
-stubs `docker`, `open`, `gh` and `uname`, so it proves the launcher's
-logic and nothing about a Mac. If no Mac is available, the change is
-UNVERIFIED and the commit subject has to say so.
+anything under `scripts/container/` is done only when it has run for real
+and what it printed is in the commit message or the bead: `tests/mac-e2e.sh`
+on a Mac, or on this box the local runtime (`CLAUDE_ORCA_RUNTIME=local`, as
+in `tests/e2e-local.bats`: the real launcher, entrypoint, provisioning, sshd
+and ssh) driven through the user's own steps on a pty -- a brand-new folder,
+`register` as `bootstrap.sh` runs it, then `./claude-dev`. A green bats
+suite is not evidence for that path: the suite stubs `docker`, `open`, `gh`
+and `uname`, so it proves the launcher's logic and nothing more. A change
+neither path can run is redesigned until one can; "UNVERIFIED on a Mac" is
+never a finish.
 
 Two things follow from that, and both were learned the expensive way in
 the first week of September 2026:

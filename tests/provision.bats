@@ -747,3 +747,23 @@ wait_tcp_closed() {  # wait_tcp_closed <port>
     [ "$status" -eq 0 ]
     [[ "$output" == *"nothing to guard"* ]]
 }
+
+# Guards:   while a step runs, run/provision/running holds "<runner pid> <step name>" (the startup menu waits on it), and it is gone once the runner exits
+# Fails if: provision-run.sh never writes the file, writes the wrong step name, or leaves it behind after exiting
+# Run:      bats -f 'running marker' tests/provision.bats
+@test "provision-run keeps a running marker naming the current step, and removes it on exit" {
+    local proj="$TMP/project" pdir
+    make_project "$proj"
+    mkdir -p "$TMP/home"
+    pdir="$proj/.claude-dev/run/provision"
+
+    write_step 10-peek \
+        "cp \"$pdir/running\" \"$TMP/seen\""
+
+    env HOME="$TMP/home" PROJECT_DIR="$proj" \
+        CLAUDE_ORCA_PROVISION_STEPS="$TMP/steps" bash "$PROVISION_RUN"
+
+    [ -f "$TMP/seen" ]
+    grep -Eq '^[0-9]+ 10-peek$' "$TMP/seen"
+    [ ! -e "$pdir/running" ]
+}

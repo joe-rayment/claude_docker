@@ -106,6 +106,38 @@ else
     printf 'The folder is %s here.\n' "$PROJECT_DIR"
 fi
 
+# Wait for this boot's provisioning (provision-run.sh keeps run/provision/running
+# as "<pid> <step>" while it works): a first pane opens seconds after sshd, and
+# asking before 55-git-init's commit would record "no commits yet" forever.
+pid_alive() {
+    [ -d "/proc/$1" ] && return 0
+    kill -0 "$1" 2>/dev/null && return 0
+    # kill -0 on a root-owned / other-user pid fails with EPERM but it is alive
+    ps -p "$1" >/dev/null 2>&1
+}
+wait_for_provision() {
+    local rf="$run/provision/running" pid step last="" waited=0 limit="${CLAUDE_ORCA_STARTUP_WAIT:-600}" any=0
+    while [ -e "$rf" ]; do
+        read -r pid step 2>/dev/null <"$rf" || true
+        case "$pid" in "" | *[!0-9]*) break ;; esac
+        pid_alive "$pid" || break
+        any=1
+        if [ "$step" != "$last" ]; then
+            printf "Finishing this sandbox's setup: %s (Ctrl-C for the shell now)\n" "$step"
+            last="$step"
+        fi
+        if [ "$waited" -ge "$limit" ]; then
+            printf 'Setup is still running (provision status shows it); asking anyway.\n'
+            return 0
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+    [ "$any" = 1 ] && printf '✓ setup finished\n'
+    return 0
+}
+wait_for_provision
+
 # Step 1/2: beads
 printf '\n[1/2] Beads\n'
 if [ -e "$PROJECT_DIR/.beads" ]; then

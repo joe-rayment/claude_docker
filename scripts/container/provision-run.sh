@@ -168,9 +168,19 @@ else
     log "provisioning $PROJECT_DIR from $STEPS_DIR"
 fi
 
+# run/provision/running: one line, "<this runner's pid> <step name>", there
+# while a step runs and gone when the runner exits by any path. The first-pane
+# startup-menu reads it to wait for this boot's provisioning before it asks
+# its questions (an answer given before 55-git-init's first commit is recorded
+# forever). Written to a temp file and mv'd, so a reader never sees half a line.
+RUNNING_FILE="$PROVISION_DIR/running"
+trap 'rm -f "$RUNNING_FILE" "$RUNNING_FILE.$$" 2>/dev/null' EXIT
+
 ran=0
 for step in ${@+"$@"}; do
     name="$(basename "$step")"
+    printf '%s %s\n' "$$" "$name" > "$RUNNING_FILE.$$" 2>/dev/null \
+        && mv -f "$RUNNING_FILE.$$" "$RUNNING_FILE" 2>/dev/null
     step_log="$PROVISION_DIR/$name.log"
     step_status="$PROVISION_DIR/$name.status"
     : > "$step_log" 2>/dev/null
