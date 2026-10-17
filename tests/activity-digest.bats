@@ -165,3 +165,90 @@ append() { printf '%s\n' "$2" >>"$1"; }   # append one JSON line to a fixture co
   digest_json
   [ "$(jq -r .fingerprint "$J")" != "$fp" ]
 }
+
+@test "redaction: no key, token or Bearer secret reaches --json or --text, even ones typed in later" {
+  append "$SDIR/main-0001/subagents/agent-aaaa1111.jsonl" '{"type":"assistant","message":{"role":"assistant","model":"m","content":[{"type":"text","text":"Trying Authorization: Bearer abcdefghij0123456789ABCDEFGHIJ with ghp_abcdefghijklmnop0123456789 and OPENROUTER_API_KEY=hunter2hunter2"}]},"timestamp":"2026-10-17T13:02:20Z","isSidechain":true,"agentId":"aaaa1111"}'
+  digest_json
+  cp "$J" "$BATS_TEST_TMPDIR/json.out"
+  run python3 -I "$SCRIPT" --text --root "$ROOT" --claude-dir "$CDIR" --now "$NOW"
+  [ "$status" -eq 0 ]
+  printf '%s\n' "$output" >"$BATS_TEST_TMPDIR/text.out"
+  # the fixtures really do carry the secrets, so this is not a vacuous pass
+  [ "$(grep -rc '0123456789abcdef' "$SDIR" "$WDIR" | awk -F: '{n += $NF} END {print n}')" -ge 4 ]
+  for f in json.out text.out; do
+    [ "$(grep -c '0123456789abcdef' "$BATS_TEST_TMPDIR/$f" || true)" -eq 0 ]
+    [ "$(grep -c 'sk-or' "$BATS_TEST_TMPDIR/$f" || true)" -eq 0 ]
+    [ "$(grep -c 'ghp_' "$BATS_TEST_TMPDIR/$f" || true)" -eq 0 ]
+    [ "$(grep -c 'hunter2' "$BATS_TEST_TMPDIR/$f" || true)" -eq 0 ]
+    [ "$(grep -Ec 'Bearer +[A-Za-z0-9]' "$BATS_TEST_TMPDIR/$f" || true)" -eq 0 ]
+  done
+  # and the request still reads as a sentence with the key blanked
+  [ "$(jq -r .request.text "$BATS_TEST_TMPDIR/json.out" | grep -c 'The mirror key is \[redacted\] so keep it out')" -eq 1 ]
+}
+
+@test "cap: a small CLAUDE_ORCA_ACTIVITY_MAX_BYTES drops old events and old sources, keeps newest events, stays valid JSON" {
+  digest_json
+  jq -c '[.sources[] | {id, e: .events[-1]}]' "$J" >"$BATS_TEST_TMPDIR/full-last.json"
+  [ "$(jq -r .omitted "$J")" -eq 0 ]
+  CLAUDE_ORCA_ACTIVITY_MAX_BYTES=3000 digest_json
+  [ "$(wc -c <"$J")" -le 3100 ]
+  [ "$(jq -r .omitted "$J")" -gt 0 ]
+  [ "$(jq '.sources | length' "$J")" -ge 3 ]
+  # running sources are never the ones dropped, and each keeps its newest event
+  [ "$(field agent-aaaa1111 state)" = running ]
+  for id in $(ids); do
+    want=$(jq -r --arg id "$id" '.[] | select(.id == $id) | .e' "$BATS_TEST_TMPDIR/full-last.json")
+    [ "$(field "$id" 'events[-1]')" = "$want" ]
+  done
+}
+
+@test "--text: a request line, then one line per source that names its title" {
+  run python3 -I "$SCRIPT" --text --root "$ROOT" --claude-dir "$CDIR" --now "$NOW"
+  [ "$status" -eq 0 ]
+  printf '%s\n' "$output" >"$BATS_TEST_TMPDIR/text.out"
+  digest_json
+  [ "$(wc -l <"$BATS_TEST_TMPDIR/text.out")" -eq 7 ]
+  [ "$(head -n 1 "$BATS_TEST_TMPDIR/text.out" | cut -c1-30)" = "Latest request: Add a retry to" ]
+  for id in $(ids); do
+    title=$(field "$id" title)
+    [ "$(grep -cF "$title" "$BATS_TEST_TMPDIR/text.out")" -eq 1 ]
+  done
+}
+
+@test "an empty folder (no Claude dir, no workers) prints an empty digest and exits 0" {
+  EMPTY="$BATS_TEST_TMPDIR/empty"
+  mkdir -p "$EMPTY"
+  case "$EMPTY" in "$BATS_TEST_TMPDIR"/*) ;; *) return 1 ;; esac
+  run python3 -I "$SCRIPT" --json --root "$EMPTY" --claude-dir "$BATS_TEST_TMPDIR/no-claude" --now "$NOW"
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s' "$output" | jq -c .sources)" = "[]" ]
+  [ "$(printf '%s' "$output" | jq -r .episode)" = none ]
+  run python3 -I "$SCRIPT" --text --root "$EMPTY" --claude-dir "$BATS_TEST_TMPDIR/no-claude" --now "$NOW"
+  [ "$status" -eq 0 ]
+}
+
+@test "bad arguments exit 2: an unknown flag, a junk --now, --json with --text" {
+  run python3 -I "$SCRIPT" --bogus
+  [ "$status" -eq 2 ]
+  run python3 -I "$SCRIPT" --now junk --root "$ROOT" --claude-dir "$CDIR"
+  [ "$status" -eq 2 ]
+  run python3 -I "$SCRIPT" --json --text --root "$ROOT" --claude-dir "$CDIR"
+  [ "$status" -eq 2 ]
+}
+
+@test "an opencode worker (epoch-ms timestamps, text and tool_use parts) is read as a running worker" {
+  oc="$WDIR/job-oc1"
+  mkdir -p "$oc"
+  printf '{"job":"job-oc1","bead":"claude-orca-xyz.4","agent":"opencode","model":"x","state":"running","pid":%s,"started":"2026-10-17T13:01:00Z"}\n' "$$" >"$oc/job.json"
+  printf '# Slice X4: add the --quiet flag\n\nObjective: silence the progress lines.\n' >"$oc/spec.md"
+  {
+    printf '{"type":"text","timestamp":1792242120000,"part":{"text":"Checking the flags."}}\n'
+    printf '{"type":"tool_use","timestamp":1792242125000,"part":{"tool":"bash","callID":"c1","state":{"status":"completed","input":{"command":"bats tests/quiet.bats"},"output":"ok"}}}\n'
+  } >"$oc/log.jsonl"
+  touch -d '2026-10-17 13:02:25 UTC' "$oc/log.jsonl"
+  digest_json
+  [ "$(field worker:job-oc1 state)" = running ]
+  [ "$(field worker:job-oc1 kind)" = worker ]
+  [ "$(field worker:job-oc1 'events[0]')" = "13:02 said: Checking the flags." ]
+  [ "$(field worker:job-oc1 'events[1]')" = "13:02 ran: bats tests/quiet.bats" ]
+}
