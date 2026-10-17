@@ -24,25 +24,28 @@ load helpers/setup
 ENTRYPOINT="$REPO_ROOT/scripts/container/entrypoint.sh"
 SETUP_SH="$REPO_ROOT/scripts/container/setup.sh"
 
-# A project skeleton the entrypoint can run against without Orca: it does
-# the pre-Orca work, dies at "ORCA_BIN is not executable", and what it did
-# to the resolv.conf it was pointed at is the evidence.
-make_ep_project() {
-    local dir="$1"
-    mkdir -p "$dir/.claude-dev/run" "$dir/.claude-dev/home"
-    git init --quiet -b main "$dir" >/dev/null 2>&1
-    git -C "$dir" -c user.email=test@example.com -c user.name=test \
-        commit --quiet --allow-empty -m init >/dev/null 2>&1
+# The entrypoint never exits by itself -- PID 1 waits on the sshd supervisor
+# -- so the two cases that read what it did to a resolv.conf boot it with
+# run_entrypoint_once (tests/helpers/entrypoint-boot.bash): it waits for the
+# "waiting on the sshd supervisor" line, which is printed after ensure_dns
+# has run, sends TERM as `docker stop` would, and leaves everything the
+# entrypoint printed in $output and its exit status in $ep_status.
+#
+# That helper also defines setup(), teardown() and make_project(), which
+# would replace helpers/setup's for the launcher cases below, so only the
+# cases that boot the entrypoint pull it in (bats runs each case in its own
+# process, so the override ends with the case).
+boot_fixture() {
+    load helpers/entrypoint-boot
+    setup
 }
 
 run_entrypoint_dns() {
     # $1 = project, $2 = resolv.conf, $3 = probe host
-    run env HOME="$1/.claude-dev/home" PROJECT_DIR="$1" \
-        ORCA_BIN="$BATS_TEST_TMPDIR/no-such-orca" \
+    run_entrypoint_once HOME="$1/.claude-dev/home" PROJECT_DIR="$1" \
         CLAUDE_ORCA_SKIP_SETUP=1 CLAUDE_ORCA_SKIP_BEADS=1 \
         CLAUDE_ORCA_ENTRYPOINT_NO_PRIVDROP=1 \
-        CLAUDE_ORCA_RESOLV_CONF="$2" CLAUDE_ORCA_DNS_PROBE_HOST="$3" \
-        bash "$ENTRYPOINT"
+        CLAUDE_ORCA_RESOLV_CONF="$2" CLAUDE_ORCA_DNS_PROBE_HOST="$3"
 }
 
 # The entrypoint's dispatch runs on source, so the DNS functions are lifted
@@ -54,6 +57,14 @@ lift_dns_fns() {
 }
 
 @test "the entrypoint repairs a resolv.conf that cannot resolve" {
+    # Guards:   a start whose DNS probe fails says so, names the host, and
+    #           (non-root) leaves resolv.conf alone; the root-only repair
+    #           prepends the fallback nameserver once, keeps the old lines,
+    #           leaves no temp file, and is not applied twice.
+    # Fails if: the probe failure goes unreported, a non-root start rewrites
+    #           resolv.conf, the repair drops the original lines or runs
+    #           twice, or the entrypoint stops reaching its steady state.
+    # Run:      bats -f 'repairs a resolv.conf that cannot resolve' tests/first-start-dns.bats
     [ -x "$ENTRYPOINT" ]
 
     # Half of this case is what a NON-root run is told: the entrypoint
@@ -63,17 +74,19 @@ lift_dns_fns() {
     # behaviour rather than failing honestly.
     need_nonroot "the entrypoint's refusal to rewrite resolv.conf"
 
-    proj="$BATS_TEST_TMPDIR/ep"
-    make_ep_project "$proj"
-    resolv="$BATS_TEST_TMPDIR/resolv.conf"
+    boot_fixture
+    proj="$TMP/ep"
+    make_project "$proj"
+    resolv="$TMP/resolv.conf"
     printf 'nameserver 192.0.2.1\nsearch example.invalid\n' > "$resolv"
     cp "$resolv" "$BATS_TEST_TMPDIR/resolv.before"
 
     # Not root here: the probe fails, the entrypoint says so and names the
-    # host, but it does not touch the file -- and it carries on to Orca.
+    # host, but it does not touch the file -- and it carries on to its
+    # steady state (TERM from the helper is what ends it).
     run_entrypoint_dns "$proj" "$resolv" "no-such-host.invalid"
-    [ "$status" -ne 0 ]
-    [[ "$output" == *"ORCA_BIN is not executable"* ]]
+    [ "$ep_status" = "143" ]
+    [[ "$output" == *"waiting on the sshd supervisor"* ]]
     [[ "$output" == *"cannot resolve no-such-host.invalid"* ]]
     [[ "$output" == *"only root may repair $resolv"* ]]
     cmp -s "$resolv" "$BATS_TEST_TMPDIR/resolv.before"
@@ -117,14 +130,21 @@ ensure_dns"
 }
 
 @test "a resolv.conf that already resolves is left alone" {
-    proj="$BATS_TEST_TMPDIR/ep"
-    make_ep_project "$proj"
-    resolv="$BATS_TEST_TMPDIR/resolv.conf"
+    # Guards:   when the DNS probe succeeds, the entrypoint neither reports
+    #           a resolution problem nor touches resolv.conf.
+    # Fails if: the repair runs (or complains) on a name that resolves, or
+    #           the file's bytes change.
+    # Run:      bats -f 'already resolves is left alone' tests/first-start-dns.bats
+    boot_fixture
+    proj="$TMP/ep"
+    make_project "$proj"
+    resolv="$TMP/resolv.conf"
     printf 'nameserver 192.0.2.1\n' > "$resolv"
     cp "$resolv" "$BATS_TEST_TMPDIR/resolv.before"
 
     run_entrypoint_dns "$proj" "$resolv" "localhost"
-    [[ "$output" == *"ORCA_BIN is not executable"* ]]
+    [ "$ep_status" = "143" ]
+    [[ "$output" == *"waiting on the sshd supervisor"* ]]
     [[ "$output" != *"cannot resolve"* ]]
     [[ "$output" != *"nameserver"* ]]
     cmp -s "$resolv" "$BATS_TEST_TMPDIR/resolv.before"
