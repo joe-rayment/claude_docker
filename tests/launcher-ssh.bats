@@ -107,13 +107,13 @@ run_wait_for_sshd_ready() {
     [ ! -e "$HOME/.ssh" ]
 }
 
-@test "docker run publishes sshd on the folder's port and moves Orca to the next one" {
+@test "docker run publishes sshd on the folder's port and passes no second (Orca) port" {
     open_folder "$PROJECT_DIR"
 
     line="$(ctr_line "run ")"
     [ -n "$line" ]
     [[ "$line" == *"-e CLAUDE_ORCA_SSHD_PORT=$port "* ]]
-    [[ "$line" == *"-e ORCA_PORT=$((port + 1)) "* ]]
+    [[ "$line" != *"ORCA_PORT="* ]]
     # One published port, on loopback only, and it is sshd's: the web UI is
     # reached through the pane's ssh, not a second host port.
     [ "$(printf '%s\n' "$line" | grep -o ' -p [^ ]*' | wc -l | tr -d ' ')" = "1" ]

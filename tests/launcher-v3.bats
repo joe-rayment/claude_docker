@@ -9,11 +9,11 @@
 # mounted, and open the pairing URL the entrypoint publishes. Nothing here
 # needs a Mac or a daemon: `docker`, `open`, `sw_vers` and `uname` are
 # stubbed by tests/helpers/setup.bash, and the `docker` stub stands in for
-# the entrypoint by writing run/orca-web-url.txt when it is asked to `run`.
+# the entrypoint by writing run/sshd.ready when it is asked to `run`.
 #
 # See .claude/plans/container-v3.md S5 and scripts/container/entrypoint.sh
-# (the env contract asserted in case 3: PROJECT_DIR, ORCA_PORT, HOST_UID,
-# GH_TOKEN in, run/orca-web-url.txt and run/port out).
+# (the env contract asserted in case 3: PROJECT_DIR, CLAUDE_ORCA_SSHD_PORT,
+# HOST_UID, GH_TOKEN in, run/sshd.ready and run/port out).
 
 load helpers/setup
 
@@ -169,7 +169,7 @@ path_without_docker() {
     [[ "$line" == *"-e CLAUDE_ORCA_TERMINAL_THEME=Snazzy"* ]]
 }
 
-@test "open runs the container with the project at /workspace/<name> and the home at /home/agent, the port published on 127.0.0.1, PROJECT_DIR/ORCA_PORT/HOST_UID/GH_TOKEN/BEADS_DIR in the environment, waits for run/sshd.ready and opens no URL" {
+@test "open runs the container with the project at /workspace/<name> and the home at /home/agent, the port published on 127.0.0.1, PROJECT_DIR/CLAUDE_ORCA_SSHD_PORT/HOST_UID/GH_TOKEN/BEADS_DIR in the environment and no ORCA_PORT, waits for run/sshd.ready and opens no URL" {
     mkdir -p "$PROJECT_DIR"
     primary="$(abspath "$PROJECT_DIR")"
     run make_project_v3 "$primary"
@@ -201,9 +201,9 @@ path_without_docker() {
     # found" meant on 2026-09-07. The folder's tracker is named outright.
     [[ "$line" == *"-e BEADS_DIR=$guest/.beads"* ]]
     [[ "$line" == *"-e CLAUDE_ORCA_ROOT=$guest"* ]]
-    # The published port is sshd's now; Orca itself listens on the next one.
+    # The published port is sshd's; nothing else listens on a second one.
     [[ "$line" == *"-e CLAUDE_ORCA_SSHD_PORT=$port"* ]]
-    [[ "$line" == *"-e ORCA_PORT=$((port + 1))"* ]]
+    [[ "$line" != *"ORCA_PORT="* ]]
     [[ "$line" == *"-e HOST_UID=$(id -u)"* ]]
     [[ "$line" == *"-e GH_TOKEN=$STUB_TOKEN"* ]]
     [[ "$line" == *"claude-orca:"* ]]
@@ -425,8 +425,9 @@ path_without_docker() {
     [ "$stop_at" -lt "$rm_at" ]
     [ "$rm_at" -lt "$run_at" ]
 
-    # The state volume is Orca's own user-data dir and survives a
-    # recreate -- it is keyed by the same container name on purpose.
+    # A recreate removes the container only. The scratch volumes are keyed
+    # by the same container name on purpose and survive it; only --teardown
+    # (and --update's one-time cleanup of the old Orca state volume) rm one.
     ! grep -q "^volume rm" "$CONTAINER_STUB_LOG"
 
     # ...and the open still ends where it always does: sshd answers on the

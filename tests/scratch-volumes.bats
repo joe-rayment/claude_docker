@@ -27,8 +27,9 @@ ctr_line() {
     grep "^$1" "$CONTAINER_STUB_LOG" | head -1
 }
 
-# Assertions as FUNCTIONS, never as a bare `[[ ... ]]` -- see
-# tests/orca-state-volume.bats for why (bash 3.2 errexit).
+# Assertions as FUNCTIONS, never as a bare `[[ ... ]]`: under bash 3.2 a
+# failing bare `[[ ... ]]` that is not the last command does not stop the
+# test (errexit ignores it), so it would pass for the wrong reason.
 contains() {
     case "$1" in
         *"$2"*) return 0 ;;
@@ -171,7 +172,7 @@ before() {
     [ "$(grep -c '^run ' "$CONTAINER_STUB_LOG" || true)" -eq 0 ]
 }
 
-@test "teardown removes the state volume and every scratch volume" {
+@test "teardown removes every scratch volume and the old Orca state volume an older folder may still have" {
     mkdir -p "$PROJECT_DIR"
     local primary name
     primary="$(abspath "$PROJECT_DIR")"
@@ -183,8 +184,9 @@ before() {
     run bash -c "cd '$primary' && ./claude-dev --teardown"
     [ "$status" -eq 0 ]
 
-    # Five volumes, one rm each: the state volume plus the four scratch
-    # ones, so the state still dies with the folder.
+    # Five volumes, one rm each: the four scratch ones plus the legacy
+    # <ctr>-orca-state a pre-ssh folder may still carry (rm of a volume that
+    # was never made is harmless), so nothing outlives the folder.
     [ "$(grep -c '^volume rm ' "$CONTAINER_STUB_LOG" || true)" -eq 5 ]
     log_contains "^volume rm $name-orca-state\$"
     log_contains "^volume rm $name-cache\$"
