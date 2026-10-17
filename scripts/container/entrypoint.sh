@@ -420,7 +420,7 @@ run_as_agent() {
 
 # The backgrounded variant. `&` on a function call forks a subshell, so
 # without an explicit exec $! would be that subshell rather than the real
-# process -- and the TERM trap would signal a shell instead of the server.
+# process -- and the TERM trap would signal a shell instead of the real one.
 # setpriv and env both exec too, so the pid survives the whole chain.
 agent_exec() {
     if [ "$PRIVDROP" = "1" ]; then
@@ -500,7 +500,7 @@ fi
 #
 # The config sync, the git identity, the Claude Code first-run seed and the
 # project seed (.gitignore, attachments/, the beads snapshot, `bd init`)
-# all ran on this line, between the privilege drop and the server.
+# all ran on this line, between the privilege drop and sshd.
 # Every one of them is about THIS FOLDER rather than about the image, and
 # every one of them is a way for a folder to fail to start in silence.
 # They are provision.d steps now -- see run_provision below, and
