@@ -546,7 +546,7 @@ old_layout_fixture() {
     [ ! -e "$ORCA_HOST" ]
 }
 
-@test "bootstrap on Darwin with CLAUDE_ORCA_UI=web registers without the app" {
+@test "bootstrap on Darwin with CLAUDE_ORCA_UI=web registers without the app and writes no ui key" {
     mac_env
     export CLAUDE_ORCA_APP="$BATS_TEST_TMPDIR/no-such-Orca.app"
     export CLAUDE_ORCA_UI=web
@@ -555,10 +555,11 @@ old_layout_fixture() {
     [ "$status" -eq 0 ]
     [[ "$output" != *"orca.dev/download"* ]]
     [ -d "$ORCA_HOST/template/.git" ]
-    [ "$(jq -r '.ui' "$PROJECT_DIR/.claude-dev/claude-orca.json")" = "web" ]
+    # The launcher no longer picks a UI: register writes no ui key.
+    [ "$(jq -r 'has("ui")' "$PROJECT_DIR/.claude-dev/claude-orca.json")" = "false" ]
 }
 
-@test "bootstrap on Linux registers ui web" {
+@test "bootstrap on Linux registers and writes no ui key" {
     export STUB_UNAME_S=Linux
     export STUB_UNAME_M=aarch64
     # The fixture Mac's Orca.app is still on the environment; a Linux host
@@ -566,7 +567,7 @@ old_layout_fixture() {
     run make_project_v3 "$PROJECT_DIR"
     [ "$status" -eq 0 ]
     [[ "$output" != *"orca.dev/download"* ]]
-    [ "$(jq -r '.ui' "$PROJECT_DIR/.claude-dev/claude-orca.json")" = "web" ]
+    [ "$(jq -r 'has("ui")' "$PROJECT_DIR/.claude-dev/claude-orca.json")" = "false" ]
 }
 
 # Ghostty (claude-orca-9bh.8): macOS only, never fatal. On a Mac without the

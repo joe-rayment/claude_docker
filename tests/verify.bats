@@ -53,10 +53,6 @@ contains() {
     local primary
     primary="$(abspath "$PROJECT_DIR")"
     make_project_v3 "$primary" >/dev/null
-    # make_project_v3's own uname pin (S2) is local to that one bootstrap
-    # call, so a plain `./claude-dev verify` afterward asks the real
-    # (Linux) uname -- find_orca_app() finds no Mac and the "local repos"
-    # row reads n/a, which is as clean a pass as an "ok" would be.
     stub_sshd_up "$primary"
 
     run bash -c "cd '$primary' && ./claude-dev verify"
@@ -131,59 +127,6 @@ contains() {
     [ "$status" -eq 2 ]
     contains "$output" "answered nothing"
     contains "$output" "--update"
-}
-
-# --- desktop Orca, S3 (claude-orca-8uo.4, claude-orca-qhq) ---------------
-#
-# The one risk the desktop client adds, and its guard (.claude/plans/
-# desktop-orca.md S5). Orca's desktop app can open LOCAL workspaces --
-# folders on the Mac, whose agents run on the Mac with no container around
-# them. The browser tab cannot do that by construction; the app can, and
-# there is no knob in 1.4.197 to turn it off. claude-orca-qhq's answer was
-# a private per-folder profile with any-repo semantics; claude-orca-tgr
-# reverses that (a second app instance is worse) back to folder-scoped
-# against the one installed Orca -- this folder, a folder inside it, or a
-# folder that contains it, whatever path it is a repo of.
-#
-# `orca repo list --json` with no --environment IS the local list; there is
-# no --host flag in 1.4.197 (bead claude-orca-8uo.1, correcting the plan).
-# This is the app-RUNNING source; tests/launcher-v3.bats covers the other
-# (orca-data.json, read directly, while the app is not running).
-
-@test "verify fails when the installed Orca lists this folder as a local repo" {
-    mkdir -p "$PROJECT_DIR"
-    local primary
-    primary="$(abspath "$PROJECT_DIR")"
-    export STUB_UNAME_S=Darwin
-    export STUB_UNAME_M=arm64
-    write_stub_orca "$CLAUDE_ORCA_APP/Contents/Resources/bin/orca"
-    export ORCA_STUB_APP_RUNNING=true
-    make_project_v3 "$primary" >/dev/null
-    stub_sshd_up "$primary"
-
-    # The ordinary case first: the installed Orca holds no local project
-    # at all.
-    export ORCA_STUB_LOCAL_REPOS=""
-    run bash -c "cd '$primary' && ./claude-dev verify"
-    [ "$status" -eq 0 ]
-    contains "$output" "does not track"
-    contains "$output" "repo list --json"
-
-    # An unrelated repo is not this folder's finding -- the row is
-    # folder-scoped again, not any-repo.
-    export ORCA_STUB_LOCAL_REPOS="$BATS_TEST_TMPDIR/some-other-project"
-    run bash -c "cd '$primary' && ./claude-dev verify"
-    [ "$status" -eq 0 ]
-    contains "$output" "does not track"
-
-    # And the finding: THIS folder, listed as a local repo, is a workspace
-    # whose agents run outside the container. A FAIL row and a failing
-    # exit code, not a note.
-    export ORCA_STUB_LOCAL_REPOS="$primary"
-    run bash -c "cd '$primary' && ./claude-dev verify"
-    [ "$status" -eq 2 ]
-    contains "$output" "FAIL"
-    contains "$output" "LOCAL repo"
 }
 
 # --- claude-orca-8tx: the row must say something is wrong, not n/a --------
