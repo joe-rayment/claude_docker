@@ -6,22 +6,43 @@ One destructive command, and the snapshot mechanism that makes it safe.
 
 The install **is** the folder now, so teardown removes it whole:
 
-- The folder's container, stopped and removed first — everything that
-  matters lives in the mounted folder, never in the container.
+- The folder's ssh master connection on the Mac (`ssh -O exit`). It is a
+  process, not a file, so it would otherwise outlive the folder it points at.
+  The clipboard listener (the small server behind the paste bridge) is
+  stopped too.
+- The folder's container, stopped and removed, plus its scratch volumes
+  (`.cache`, `.npm`, `.local/share/opencode`, `worktrees`) — everything
+  that matters lives in the mounted folder, never in the container.
 - `<project>/.claude-dev/` — the template clone, `bin/`, the agent `home`,
-  `state/`, `run/`, `claude-orca.json`, delegate job dirs.
+  `state/`, `run/`, `claude-orca.json`, delegate job dirs. `state/ssh` is
+  the part that holds the folder's identity: the key pair that logs in to
+  the container's sshd, its `known_hosts`, and the ssh config the Ghostty
+  panes use. There is no other state volume; the folder is its own
+  authority.
 - `<project>/claude-dev` — the launcher stub in the project root.
 - The marker-delimited block in `~/.zprofile`, `~/.zshrc` and
   `~/.bash_profile`, if a folder upgraded from v2 still carries one. v3
   installs no shell hook; teardown only cleans up after the old one.
-- Orca's own on-disk state: its linked worktrees under
-  `<project>/.orca-worktrees/` and its `<project>/.orca/` drops.
+- Leftovers from the old browser-based setup, if the folder ever had them:
+  `<project>/.orca-worktrees/` (removed through `git worktree remove`
+  first, so git's own bookkeeping stays sane) and `<project>/.orca/`, plus
+  a volume named `<container>-orca-state`.
 - The lines `claude-dev register` seeded into `.gitignore`, and nothing
   else in that file. Your own patterns come back byte-identical, marker
   block included.
+- The folder's `.git`, but only if claude-orca created it: it is the
+  repository's top level, has exactly one root commit, and that commit's
+  subject starts with `claude_orca: seed commit`. Anything else keeps its
+  `.git`, and teardown prints one line saying why.
 
 Your code, your git history and `.beads/` are untouched. `--purge-beads`
 removes `.beads/` as well, and says so.
+
+`./claude-dev --update` is the gentler sibling: it recreates the container
+from the current image and keeps the folder, the keys and the scratch
+volumes. It also creates the ssh keys if the folder predates the ssh panes,
+and removes an old `<container>-orca-state` volume if one is still lying
+around (it prints a line when it does).
 
 Before deleting anything, teardown takes a **beads snapshot**:
 
@@ -72,6 +93,8 @@ that pair (notably: if `bd init` refuses with "already initialized", remove
   `.claude/.credentials.json`. **You log in again after a teardown.** That
   is deliberate: the credential file is the whole credential store, and it
   is meant to live and die with the folder.
+- The ssh keys in `.claude-dev/state/ssh`. A re-run of the bootstrap makes
+  a fresh pair; nothing outside the folder trusted the old one.
 - `settings.local.json`. It lives in the agent home, so a teardown takes
   your local overrides with it. Keep anything you care about in the
   template's `config/` instead, where it is version-controlled.
@@ -91,4 +114,6 @@ cd <project> && bd init --prefix <p> --quiet --non-interactive && bd import
 
 And to leave no trace at all, after that: delete
 `<project>/.claude-dev-snapshots/`, and remove the folder's container if the
-launcher never got to it (`container rm claude-orca-<project-slug>`).
+launcher never got to it (`docker rm -f claude-orca-<project-slug>`). A
+leftover ssh master needs no action: it closes itself 30 minutes after its
+last pane (`ControlPersist 30m`).
