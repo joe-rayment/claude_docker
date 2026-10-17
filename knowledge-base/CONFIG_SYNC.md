@@ -20,8 +20,9 @@ repo config/                    -->  <project>/.claude-dev/home/.claude/
 opencode's own config, not Claude Code's, and `~/.config/opencode` is where
 opencode looks for it. It carries the OpenRouter provider with
 `{env:OPENROUTER_API_KEY}` — never a key — and no `model`, because the model
-is chosen per worker on argv. `seed-orca-state.sh` points Orca's
-`agentDefaultEnv.opencode.OPENCODE_CONFIG` at its path inside the VM.
+is chosen per worker on argv. Its `baseURL` names the local OpenRouter
+guard (`127.0.0.1`), and provision step `70-openrouter-guard` reads it to
+tell whether opencode is already pointed at that guard.
 
 Invocation: `config-sync --project <primary checkout> --host
 <project>/.claude-dev`. The source is always `$HOST/template/config` — the
@@ -70,14 +71,18 @@ ignored (the base file stands) rather than failing the sync.
 Everything else — `agents/`, `commands/`, `skills/` — is a full mirror:
 removed in the template means removed in the project.
 
-## Orca's own entries
+## Leftovers from the old setup
 
-With `HOME` redirected into the folder, `settings.json` is also the file
-Orca's hook installer writes. Each sync reads the previous file first and
-re-attaches every Orca-managed hook entry it finds (identified by a hook
-command mentioning `/.orca/agent-hooks/`) plus Orca's half of the statusline
-chain. Nothing Orca wrote is invented or dropped by the sync — see
-[ORCA_INTEGRATION.md](ORCA_INTEGRATION.md).
+A folder first set up before the Ghostty panes (when a browser app ran the
+sessions) may have a `settings.json` in which that app had written its own
+hook entries and a statusline command, all pointing at a script under
+`/.orca/agent-hooks/`. Nothing writes those entries any more, so the sync
+does not keep them: `settings.json` is exactly the rendered template (plus
+`settings.local.json`). It also re-renders a `settings.json` that still
+contains that path even when the template has not changed, which is how an
+existing folder loses the old entries on its next start. The old
+`.orca-statusline-*` chain files in the config dir are deleted the same way.
+For how sessions run now, see [TERMINAL.md](TERMINAL.md).
 
 ## Tier state
 
