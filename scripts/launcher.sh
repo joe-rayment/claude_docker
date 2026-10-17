@@ -897,9 +897,10 @@ ssh_host_alias() { printf 'claude-dev-%s\n' "$(derive_project_name "$1")"; }
 # rewrites authorized_keys and known_hosts from them on every call -- cheap,
 # and it heals a file somebody deleted. `restrict` turns off agent, X11 and
 # tcp forwarding for this key; pty and port-forwarding give back what a pane
-# and the later unix-socket RemoteForward need (sshd_config still denies tcp
-# forwarding). known_hosts is keyed by the alias, so there is no trust-on-
-# first-use prompt. Done BEFORE the container starts: sshd reads the host
+# and the clipboard bridge's unix-socket RemoteForward need (sshd-lib.sh's
+# sshd_config says `AllowTcpForwarding remote` + `PermitListen none`, so a
+# -R of a tcp port is still refused). known_hosts is keyed by the alias, so
+# there is no trust-on-first-use prompt. Done BEFORE the container starts: sshd reads the host
 # key and authorized_keys at boot.
 ssh_ensure_keys() {
     local dir="$1" sd name alias keygen which key pub type blob rest tmp
