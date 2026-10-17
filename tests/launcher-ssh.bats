@@ -101,8 +101,11 @@ run_wait_for_sshd_ready() {
     grep -qxF '  ControlPath ~/.local/state/claude-dev/cm-%C' "$cfg"
     [ -d "$HOME/.local/state/claude-dev" ]
     [ "$(file_mode "$HOME/.local/state/claude-dev")" = "700" ]
-    # The marker the remote-forward slice (B4) edits at.
-    grep -qxF '  # B4: RemoteForward goes here' "$cfg"
+    # The clipboard bridge's forward (claude-orca-9bh.9): the container's
+    # fixed socket back to the Mac listener under the home, no
+    # ExitOnForwardFailure.
+    grep -qxF "  RemoteForward /tmp/cdev-clip.sock \"$HOME/.local/state/claude-dev/clip-my-project.sock\"" "$cfg"
+    ! grep -q ExitOnForwardFailure "$cfg"
 
     [ ! -e "$HOME/.ssh" ]
 }
