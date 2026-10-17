@@ -793,15 +793,53 @@ start_sshd() {
     log "sshd supervisor started (pid $SSHD_LOOP_PID)"
 }
 
-# SIGTERM (docker stop) and SIGINT: take sshd down, then the guard, and
-# leave with the conventional 143. The EXIT trap covers every plain exit.
+# The provisioning job (run_provision below) and everything it started. A
+# step's curl or sleep is a grandchild, `timeout` moves its child into a
+# group of its own, and on this box there is no pid namespace to reap them
+# when PID 1 goes -- so the whole tree is walked and signalled, not a
+# process group. The job is frozen (SIGSTOP) as it is walked, so it cannot
+# start the next step while the list is being made; then TERM to all of
+# them, and KILL for whatever is still there 1.5 s later.
+PROVISION_PID=""
+provision_tree() {  # provision_tree <pid>: freezes and prints <pid> and its descendants
+    local c
+    kill -STOP "$1" 2>/dev/null || return 0
+    echo "$1"
+    for c in $(pgrep -P "$1" 2>/dev/null); do
+        provision_tree "$c"
+    done
+}
+stop_provision() {
+    local pid="${PROVISION_PID:-}" tree p i alive
+    [ -n "$pid" ] || return 0
+    PROVISION_PID=""
+    tree="$(provision_tree "$pid")"
+    [ -n "$tree" ] || return 0
+    for p in $tree; do kill -TERM "$p" 2>/dev/null; kill -CONT "$p" 2>/dev/null; done
+    for i in 1 2 3 4 5 6 7 8 9 10; do
+        alive=0
+        for p in $tree; do kill -0 "$p" 2>/dev/null && alive=1; done
+        [ "$alive" = "0" ] && break
+        sleep 0.15
+    done
+    for p in $tree; do kill -KILL "$p" 2>/dev/null; done
+    wait "$pid" 2>/dev/null
+    rm -f "$PROVISION_KEY_FILE" 2>/dev/null
+    log "provisioning stopped"
+    return 0
+}
+
+# SIGTERM (docker stop) and SIGINT: take provisioning down (it may be
+# mid-step), then sshd, then the guard, and leave with the conventional
+# 143. The EXIT trap covers every plain exit.
 stop_all() {
+    stop_provision
     stop_sshd_loop
     [ -n "${GUARD_PID:-}" ] && kill -TERM "$GUARD_PID" 2>/dev/null
     return 0
 }
 trap 'stop_all; exit 143' TERM INT
-trap stop_sshd_loop EXIT
+trap 'stop_provision; stop_sshd_loop' EXIT
 
 start_sshd
 
@@ -823,11 +861,15 @@ fi
 # (50-seed-project); CLAUDE_ORCA_SKIP_BEADS is still honoured, by that
 # script.
 #
-# It runs in the FOREGROUND, and that costs nothing a person can see: the
-# supervisor is already running, so a person can ssh in the moment sshd
-# answers. Every step is bounded by
-# CLAUDE_ORCA_PROVISION_TIMEOUT, so the `wait` below is never more than a
-# few minutes away even when a step hangs.
+# It runs as a background job that this shell `wait`s on. Not in the
+# foreground: bash defers a trap until the foreground command returns, so a
+# TERM during a slow step (a curl, an apt) would wait out the step -- 18.9 s
+# measured against the 10 s docker stop allows. `wait` is interrupted by
+# the trap at once, and the trap (stop_all) takes the job and its whole
+# process tree down before exiting 143. Waiting costs nothing a person can
+# see: the supervisor is already running, so a person can ssh in the moment
+# sshd answers. Every step is bounded by CLAUDE_ORCA_PROVISION_TIMEOUT, so
+# the `wait` is never more than a few minutes away even when a step hangs.
 
 PROVISION_RAN=0
 run_provision() {
@@ -863,10 +905,23 @@ run_provision() {
         && write_key_file "$PROVISION_KEY_FILE" "$OPENROUTER_REAL_KEY"; then
         provision_key_arg="CLAUDE_ORCA_OPENROUTER_KEY_FILE=$PROVISION_KEY_FILE"
     fi
-    run_as_agent env PROJECT_DIR="$PROJECT_DIR" \
+    # agent_exec, not run_as_agent: `&` on a function forks a subshell, and
+    # $! must be the runner itself for stop_provision to walk its tree.
+    agent_exec env PROJECT_DIR="$PROJECT_DIR" \
         TEMPLATE_ROOT="$TEMPLATE_ROOT" \
         ${provision_key_arg:+"$provision_key_arg"} \
-        bash "$provision_runner"
+        bash "$provision_runner" &
+    PROVISION_PID=$!
+    # A trap that exits (TERM/INT -> 143) never comes back here; one that
+    # returned would interrupt this wait with a status above 128, hence the
+    # loop while the job is still alive.
+    local prc=0
+    while :; do
+        wait "$PROVISION_PID"; prc=$?
+        kill -0 "$PROVISION_PID" 2>/dev/null || break
+    done
+    PROVISION_PID=""
+    [ "$prc" = "0" ] || warn "provisioning ended with status $prc (not fatal)"
     # The runner unlinks it the moment it has read it; this is the case
     # where it never ran at all.
     rm -f "$PROVISION_KEY_FILE"

@@ -288,3 +288,51 @@ write_sshd_wrap() {  # write_sshd_wrap <path>
     run ! pgrep -f -- "$RT/sshd_config"
     [ ! -e "$run_dir/sshd.ready" ]
 }
+
+# Guards:   docker stop during a slow provisioning step: PID 1 leaves with 143 in under 5 s (docker SIGKILLs at 10 s) and the step, its child and the runner's tee are all gone -- nothing of the boot outlives PID 1 -- while sshd was started and run/port written BEFORE the step began
+# Fails if: provisioning runs in the foreground again (the TERM trap waits out the 60 s step, measured at 18.9 s before the fix), stop_provision signals only the runner so the step's sleep or tee survives, a later step starts after the TERM, or run/port is only written after provisioning
+# Run:      bats -f 'TERM during a slow provisioning step' tests/container-entrypoint-sshd.bats
+@test "TERM during a slow provisioning step exits 143 in under 5 s and leaves none of the step's processes" {
+    local proj="$TMP/project" run_dir steps="$TMP/steps" t0 elapsed i p
+    make_project "$proj"
+    run_dir="$proj/.claude-dev/run"
+    export_ep_env "$proj"
+    export CLAUDE_ORCA_SKIP_PROVISION=0 CLAUDE_ORCA_PROVISION_STEPS="$steps"
+    export CLAUDE_ORCA_PROVISION_TIMEOUT=120
+
+    # step 1 announces itself, then sleeps in a CHILD (a curl would be one);
+    # step 2 must never start once PID 1 has been told to stop
+    mkdir -p "$steps"
+    printf '#!/bin/bash\necho $$ > "%s/step.pid"\nsleep 60 &\necho $! > "%s/sleep.pid"\nwait\n' \
+        "$TMP" "$TMP" > "$steps/10-slow"
+    printf '#!/bin/bash\ntouch "%s/after.marker"\n' "$TMP" > "$steps/20-after"
+    chmod +x "$steps/10-slow" "$steps/20-after"
+
+    boot_ep
+    wait_for_file "$TMP/sleep.pid" 30
+    # the ordering contract: the port is already published, sshd already started
+    [ -s "$run_dir/port" ]
+    grep -qF 'sshd supervisor started' "$TMP/entrypoint.out"
+    ! grep -qF 'waiting on the sshd supervisor' "$TMP/entrypoint.out"
+    pgrep -f -- "$TMP/steps/10-slow" >/dev/null
+
+    t0="$(date +%s.%N)"
+    kill -TERM "$(cat "$TMP/ep.pid")"
+    for i in $(seq 1 100); do
+        [ -s "$TMP/ep.rc" ] && break
+        sleep 0.1
+    done
+    elapsed="$(awk -v a="$t0" -v b="$(date +%s.%N)" 'BEGIN { printf "%.2f", b - a }')"
+    echo "# TERM during provisioning to exit: ${elapsed}s" >&3
+    [ -s "$TMP/ep.rc" ]
+    [ "$(cat "$TMP/ep.rc")" = "143" ]
+    awk -v e="$elapsed" 'BEGIN { exit !(e < 5) }'
+
+    # nothing of the boot is left: the step, its sleep, the tee (its command
+    # line names the fixture), and -- by after.marker below -- the runner
+    for p in "$(cat "$TMP/step.pid")" "$(cat "$TMP/sleep.pid")"; do
+        run ! kill -0 "$p"
+    done
+    run ! pgrep -f -- "$TMP"
+    [ ! -e "$TMP/after.marker" ]
+}
