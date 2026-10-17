@@ -1,11 +1,12 @@
 #!/usr/bin/env bats
 #
-# The one end-to-end case in this repo: the REAL launcher starts the REAL
-# entrypoint, which starts the REAL Orca, and the URL it publishes is
-# fetched over HTTP and checked for Orca's own markup. No stubs are loaded
-# here at all -- helpers/setup.bash is deliberately NOT sourced, because
-# everything it puts on PATH (docker, open, gh, uname) is the opposite of
-# what this case is for.
+# Guards:   the REAL launcher, run the way bootstrap.sh runs it, brings a folder up on the local runtime -- the real entrypoint starts a real sshd, the launcher writes the ssh config and keys, and a real ssh (and `claude-dev pane`) gets in, lands in the folder's project path, and verifies the host key
+# Fails if: register stops reaching "sshd is up", run/sshd.ready is not written, the ssh config the launcher wrote does not let `ssh <alias>` in with the host key verified, the doctor's sshd / ssh master / ssh key auth rows go red, `claude-dev pane` does not give a shell in the project, or `claude-dev stop` leaves a process of this run behind
+# Run:      bats tests/e2e-local.bats
+#
+# The one end-to-end case in this repo. No stubs are loaded here at all --
+# helpers/setup.bash is deliberately NOT sourced, because everything it puts
+# on PATH (docker, open, gh, uname) is the opposite of what this case is for.
 #
 # Why it can run at all: a container cannot be started on this box. Its
 # capability set is empty (CapEff 0000000000000000, no CAP_SYS_ADMIN in the
@@ -13,41 +14,70 @@
 # and a private dockerd all die the same way. CLAUDE_ORCA_RUNTIME=local is
 # the launcher's second backend: it runs the same entrypoint, with the same
 # environment contract, as an ordinary host process. Everything above the
-# runtime boundary -- the launcher's argv, the entrypoint, config-sync, the
-# Orca seed, serve, the pairing URL, the web server -- is the same code the
+# runtime boundary -- the launcher's argv, the entrypoint, the ssh key and
+# config files, sshd, the ControlMaster, the pane -- is the same code the
 # container path runs.
 #
-# Two environment facts this case works around, both real constraints and
-# neither a weakening of what it asserts:
-#   * Orca's IPC socket lives under the folder's own home, and a unix
-#     socket path is capped at ~108 bytes -- so the project goes in a SHORT
-#     directory of its own rather than under $BATS_TEST_TMPDIR.
-#   * Orca needs an X display. This case starts its own Xvfb on a display
-#     it has proved is free, and kills only that one. Peers on this box run
-#     their own Orca runtimes on their own displays; nothing here may touch
-#     them, which is why teardown greps for this test's own user-data dir
-#     and never for a bare "orca-ide".
+# Environment facts this case works around, none of them a weakening of
+# what it asserts:
+#   * A unix socket path is capped at ~108 bytes and the launcher's
+#     ControlPath is $HOME/.local/state/claude-dev/cm-%C, so HOME and the
+#     project go in a SHORT directory of their own (/tmp/cdev-e2e-XXXXXX)
+#     rather than under $BATS_TEST_TMPDIR.
+#   * The ssh tools are not on PATH on this box. Real OpenSSH 9.6 binaries
+#     are extracted (no root) under ~/.cache/claude-orca-test/openssh and
+#     run through three one-line wrappers that only add LD_LIBRARY_PATH.
+#     A box with ssh, ssh-keygen and sshd on PATH needs no extraction.
+#   * Peers on this box run their own sessions, so teardown matches only
+#     processes whose argv carries THIS run's directory, never a bare name.
 
 REPO_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd -P)"
 
-# Orca needs a few seconds to serve; the launcher's own wait is bounded by
-# CLAUDE_ORCA_WEBURL_TIMEOUT below and this is the outer belt.
+# Read at file level, before setup() points HOME at the fixture.
+E2E_OPENSSH="${E2E_OPENSSH:-$HOME/.cache/claude-orca-test/openssh}"
+E2E_PTY_DRIVER="$(cd "$(dirname "$BATS_TEST_FILENAME")" && pwd -P)/e2e-pty-pane.py"
+
+# The launcher's own wait for sshd is bounded; this is the outer belt.
 E2E_TIMEOUT=240
 
+# e2e_wrap <name> <real binary> -- a wrapper that adds the extracted libs.
+e2e_wrap() {
+    local lib="" d
+    for d in "$E2E_OPENSSH"/usr/lib/*-linux-gnu; do
+        [ -d "$d" ] && lib="$d"
+    done
+    printf '#!/bin/sh\nLD_LIBRARY_PATH="%s${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"\nexport LD_LIBRARY_PATH\nexec "%s" "$@"\n' \
+        "$lib" "$2" > "$E2E_BIN/$1"
+    chmod +x "$E2E_BIN/$1"
+}
+
+# The three ssh tools: the extracted ones when present, else the box's own.
+e2e_ssh_tools() {
+    local t real
+    mkdir -p "$E2E_BIN"
+    for t in ssh ssh-keygen sshd; do
+        real="$E2E_OPENSSH/usr/bin/$t"
+        [ "$t" = sshd ] && real="$E2E_OPENSSH/usr/sbin/sshd"
+        if [ -x "$real" ]; then
+            e2e_wrap "$t" "$real"
+        elif command -v "$t" >/dev/null 2>&1; then
+            e2e_wrap "$t" "$(command -v "$t")"
+        else
+            return 1
+        fi
+    done
+}
+
 setup() {
-    # A box without these cannot run this case at all: skip and name it,
-    # the way the other real-Orca cases do, rather than fail in setup.
-    command -v Xvfb >/dev/null 2>&1 || skip "no Xvfb on this box"
-    command -v curl >/dev/null 2>&1 || skip "no curl on this box"
-    [ -x "${CLAUDE_ORCA_ORCA_BIN:-/opt/Orca/orca-ide}" ] \
-        || skip "no Orca binary at ${CLAUDE_ORCA_ORCA_BIN:-/opt/Orca/orca-ide}"
+    command -v python3 >/dev/null 2>&1 || skip "no python3 on this box"
 
     # A short path, for the unix-socket limit, and unique, so teardown can
     # match this run's processes and only this run's.
-    E2E_ROOT="$(mktemp -d /tmp/orca-e2e-XXXXXX)"
+    E2E_ROOT="$(mktemp -d /tmp/cdev-e2e-XXXXXX)"
     E2E_PROJECT="$E2E_ROOT/p"
-    E2E_USER_DATA="$E2E_PROJECT/.claude-dev/home/.config/orca"
-    mkdir -p "$E2E_PROJECT/.claude-dev/template"
+    E2E_BIN="$E2E_ROOT/bin"
+    e2e_ssh_tools || skip "no OpenSSH: neither $E2E_OPENSSH nor ssh/ssh-keygen/sshd on PATH"
+    mkdir -p "$E2E_PROJECT/.claude-dev/template" "$E2E_ROOT/tmp" "$E2E_ROOT/rt"
 
     git -C "$E2E_PROJECT" init --quiet -b main
     git -C "$E2E_PROJECT" -c user.email=e2e@example.com -c user.name=e2e \
@@ -60,91 +90,139 @@ setup() {
         | tar -xf - -C "$E2E_PROJECT/.claude-dev/template"
     "$E2E_PROJECT/.claude-dev/template/scripts/link-bin.sh" "$E2E_PROJECT/.claude-dev"
 
-    e2e_start_xvfb
+    # Every launcher and ssh call below inherits this environment. HOME,
+    # PROJECT_DIR, CLAUDE_ORCA_ROOT and BEADS_DIR all point at the fixture:
+    # the shell this runs in carries the real project's values, and a stray
+    # one would make the run touch the real tracker or the real tree.
+    export HOME="$E2E_ROOT"
+    export PROJECT_DIR="$E2E_PROJECT" CLAUDE_ORCA_ROOT="$E2E_PROJECT"
+    export BEADS_DIR="$E2E_PROJECT/.beads" TMPDIR="$E2E_ROOT/tmp"
+    unset BEADS_ACTOR CLAUDE_ORCA_IMAGE CLAUDE_ORCA_PROJECT_NAME CLAUDE_ORCA_HOST_PROJECT_DIR
+    export PATH="$E2E_BIN:$PATH"
+    export CLAUDE_ORCA_RUNTIME=local CLAUDE_ORCA_OPEN=0 CLAUDE_ORCA_PORT_BASE=7810
+    export CLAUDE_ORCA_RUNTIME_DIR="$E2E_ROOT/rt" CLAUDE_ORCA_PANE_SHELL=/bin/bash
+    export CLAUDE_ORCA_SSH="$E2E_BIN/ssh" CLAUDE_ORCA_SSH_KEYGEN="$E2E_BIN/ssh-keygen"
+    export CLAUDE_ORCA_SSHD_BIN="$E2E_BIN/sshd"
+    E2E_CLAUDE_DEV="$E2E_PROJECT/.claude-dev/bin/claude-dev"
+    E2E_CFG="$E2E_PROJECT/.claude-dev/state/ssh/config"
 }
 
-# The lowest display in a private range that Xvfb will actually take. Peers
-# hold :99, :100 and :102; asking Xvfb rather than trusting a file check is
-# what makes this race-free -- a display already in use makes it exit.
-e2e_start_xvfb() {
-    local n=140
-    E2E_DISPLAY=""
-    E2E_XVFB_PID=""
-    while [ "$n" -lt 180 ]; do
-        if [ ! -e "/tmp/.X11-unix/X$n" ] && [ ! -e "/tmp/.X$n-lock" ]; then
-            Xvfb ":$n" -screen 0 1280x900x24 -nolisten tcp \
-                > "$E2E_ROOT/xvfb.log" 2>&1 &
-            E2E_XVFB_PID=$!
-            sleep 2
-            if kill -0 "$E2E_XVFB_PID" 2>/dev/null && [ -e "/tmp/.X11-unix/X$n" ]; then
-                E2E_DISPLAY=":$n"
-                return 0
-            fi
-            kill -KILL "$E2E_XVFB_PID" 2>/dev/null || true
-            E2E_XVFB_PID=""
-        fi
-        n=$((n + 1))
-    done
-    return 1
+# The folder's own way down: close the ssh master, then the launcher's stop
+# for the local runtime. Used by the case and, as a net, by teardown.
+e2e_stop() {
+    if [ -f "$E2E_CFG" ]; then
+        "$E2E_BIN/ssh" -F "$E2E_CFG" -O exit "$(e2e_alias)" >/dev/null 2>&1 || true
+    fi
+    if [ -x "$E2E_CLAUDE_DEV" ]; then
+        timeout 60 "$E2E_CLAUDE_DEV" stop </dev/null >/dev/null 2>&1 || true
+    fi
+}
+
+# The Host alias the launcher wrote on the first line of the ssh config.
+e2e_alias() {
+    awk '/^Host /{print $2; exit}' "$E2E_CFG"
+}
+
+# Pids of every process whose argv carries this run's directory (pgrep
+# leaves itself out). Empty means the run left nothing behind.
+e2e_leftovers() {
+    pgrep -f -- "$E2E_ROOT" || true
 }
 
 teardown() {
-    if [ -n "${E2E_PROJECT:-}" ] && [ -x "$E2E_PROJECT/claude-dev" ]; then
-        ( cd "$E2E_PROJECT" && CLAUDE_ORCA_RUNTIME=local \
-            timeout 60 ./claude-dev stop ) >/dev/null 2>&1 || true
-    fi
-    # This run's Orca only, matched on this run's own user-data dir. Never
-    # a bare pkill of orca-ide: other sessions on this box run their own.
-    if [ -n "${E2E_USER_DATA:-}" ]; then
-        pkill -f -- "--user-data-dir=$E2E_USER_DATA" 2>/dev/null || true
-        sleep 1
-        pkill -KILL -f -- "--user-data-dir=$E2E_USER_DATA" 2>/dev/null || true
-    fi
-    if [ -n "${E2E_XVFB_PID:-}" ]; then
-        kill -TERM "$E2E_XVFB_PID" 2>/dev/null || true
-    fi
-    if [ -n "${E2E_ROOT:-}" ]; then
-        rm -rf "$E2E_ROOT"
-    fi
+    [ -n "${E2E_ROOT:-}" ] || return 0
+    e2e_stop
+    # Net: anything of THIS run still alive is killed -- only by the
+    # fixture dir in its argv, never by a bare process name.
+    pkill -f -- "$E2E_ROOT" 2>/dev/null || true
+    sleep 1
+    pkill -KILL -f -- "$E2E_ROOT" 2>/dev/null || true
+    rm -rf "$E2E_ROOT"
 }
 
-@test "end to end on the local runtime: the launcher starts the real entrypoint, Orca serves, and the published URL answers with Orca Web" {
-    [ -n "$E2E_DISPLAY" ]
+# e2e_register -- the entry bootstrap.sh ends on: `claude-dev register <dir>`.
+e2e_register() {
+    timeout "$E2E_TIMEOUT" "$E2E_CLAUDE_DEV" register "$E2E_PROJECT" </dev/null
+}
 
-    run env -u CLAUDE_ORCA_IMAGE \
-        CLAUDE_ORCA_RUNTIME=local \
-        CLAUDE_ORCA_OPEN=0 \
-        CLAUDE_ORCA_PORT_BASE=7810 \
-        CLAUDE_ORCA_WEBURL_TIMEOUT=180 \
-        DISPLAY="$E2E_DISPLAY" \
-        timeout "$E2E_TIMEOUT" \
-        "$E2E_PROJECT/.claude-dev/bin/claude-dev" register "$E2E_PROJECT"
+@test "end to end on the local runtime: register brings sshd up, ssh gets in with the host key verified, the doctor is green on the ssh rows, stop leaves nothing" {
+    run e2e_register
+    echo "$output" >&2
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"sshd is up"* ]]
+    [ -e "$E2E_PROJECT/.claude-dev/run/sshd.ready" ]
+    # The launcher's `ctr exec -u agent ... config-sync.sh` reached the real
+    # script (the local runtime once took "agent" for the container name).
+    [[ "$output" == *"config: already current"* || "$output" == *"config: re-synced"* ]]
+    [[ "$output" != *"could not re-sync"* ]]
+
+    # The config the launcher wrote is what ssh uses, untouched: strict host
+    # key checking stays on, so a first connection that works means the
+    # host key the entrypoint staged IS the one the launcher pinned.
+    [ -f "$E2E_CFG" ]
+    grep -Eq '^[[:space:]]*StrictHostKeyChecking[[:space:]]+yes' "$E2E_CFG"
+    alias_="$(e2e_alias)"
+    [ -n "$alias_" ]
+
+    run "$E2E_BIN/ssh" -F "$E2E_CFG" "$alias_" pwd
+    echo "$output" >&2
+    [ "$status" -eq 0 ]
+    [ "$output" = "$(cd "$E2E_PROJECT" && pwd -P)" ]
+    [[ "$output" != *"Permanently added"* ]]
+
+    # The master the call above started is up, then the doctor reads all
+    # three ssh rows green (the master row is asked before key auth).
+    run timeout 120 "$E2E_CLAUDE_DEV" --doctor </dev/null
+    echo "$output" >&2
+    [[ "$output" =~ \[ok\ +\]\ +sshd ]]
+    [[ "$output" =~ \[ok\ +\]\ +ssh\ master ]]
+    [[ "$output" =~ \[ok\ +\]\ +ssh\ key\ auth ]]
+
+    # The launcher's own stop, then nothing of this run is left running.
+    e2e_stop
+    local i=0
+    while [ "$i" -lt 20 ] && [ -n "$(e2e_leftovers)" ]; do
+        sleep 1
+        i=$((i + 1))
+    done
+    left="$(e2e_leftovers)"
+    [ -z "$left" ] || { ps -o pid,args -p "$(echo $left | tr ' ' ',')" >&2; false; }
+}
+
+@test "end to end on the local runtime: claude-dev pane, run on a real pty, gives a shell in the project and leaves the ssh master up" {
+    run e2e_register
+    echo "$output" >&2
     [ "$status" -eq 0 ]
 
-    # The handshake file, written by the entrypoint and nothing else. The
-    # fragment carries a pairing code, so the mode is part of the contract.
-    url_file="$E2E_PROJECT/.claude-dev/run/orca-web-url.txt"
-    [ -s "$url_file" ]
-    [ "$(stat -c '%a' "$url_file")" = "600" ]
-
-    url="$(head -1 "$url_file")"
-    [[ "$url" == http://127.0.0.1:* ]]
-    [[ "$url" == *"#pairing="* ]]
-
-    # Orca itself, over HTTP. The fragment is a browser-side thing and is
-    # not sent, so the request is the URL up to the '#'.
-    base="${url%%#*}"
-    run curl -sS --max-time 30 -o "$E2E_ROOT/body.html" -w '%{http_code}' "$base"
+    # The pane is `exec ssh -tt <alias>`, so it needs a terminal: a pty
+    # driver stands in for the Ghostty tab (it answers the kitty keyboard
+    # and XTVERSION probes the way Ghostty does), runs the pane, types one
+    # command line into it and prints what the terminal showed.
+    run timeout 180 python3 -I "$E2E_PTY_DRIVER" "$E2E_CLAUDE_DEV" pane "$E2E_PROJECT"
+    echo "$output" >&2
     [ "$status" -eq 0 ]
-    [ "$output" = "200" ]
-    grep -qF "Orca Web" "$E2E_ROOT/body.html"
+    real="$(cd "$E2E_PROJECT" && pwd -P)"
+    # `pwd` printed the project on a line of its own (the prompt shows the
+    # path too, so a bare substring match would prove nothing).
+    printf '%s\n' "$output" | grep -qx -- "$real"
+    [[ "$output" =~ PANE-OK-[0-9]+ ]]
+    # No master was up, so this was the launcher's whole-bring-up path.
+    grep -q ' slow ' "$E2E_PROJECT/.claude-dev/run/pane.log"
 
-    # And the launcher agrees the thing it started is up.
-    run env CLAUDE_ORCA_RUNTIME=local timeout 60 \
-        "$E2E_PROJECT/.claude-dev/bin/claude-dev" --doctor
+    # The pane left a ControlMaster behind (ControlPersist), under HOME's
+    # literal state dir -- the path the launcher's ssh config names.
+    run ls "$E2E_ROOT"/.local/state/claude-dev/cm-*
+    echo "$output" >&2
     [ "$status" -eq 0 ]
-    [[ "$output" == *"runtime"* ]]
-    [[ "$output" == *"local"* ]]
-    [[ "$output" == *"claude-orca-p (running)"* ]]
-    [[ "$output" == *"sshd"* ]]
+    run "$E2E_BIN/ssh" -F "$E2E_CFG" -O check "$(e2e_alias)"
+    [ "$status" -eq 0 ]
+
+    e2e_stop
+    local i=0
+    while [ "$i" -lt 20 ] && [ -n "$(e2e_leftovers)" ]; do
+        sleep 1
+        i=$((i + 1))
+    done
+    left="$(e2e_leftovers)"
+    [ -z "$left" ] || { ps -o pid,args -p "$(echo $left | tr ' ' ',')" >&2; false; }
 }

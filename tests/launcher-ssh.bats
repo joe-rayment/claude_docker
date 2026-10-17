@@ -98,7 +98,7 @@ run_wait_for_sshd_ready() {
     grep -qx '  StrictHostKeyChecking yes' "$cfg"
     grep -qx '  HostKeyAlias claude-dev-my-project' "$cfg"
     # The socket lives under the Mac user's home, not the long folder path.
-    grep -qxF '  ControlPath ~/.local/state/claude-dev/cm-%C' "$cfg"
+    grep -qxF "  ControlPath \"$HOME/.local/state/claude-dev/cm-%C\"" "$cfg"
     [ -d "$HOME/.local/state/claude-dev" ]
     [ "$(file_mode "$HOME/.local/state/claude-dev")" = "700" ]
     # The clipboard bridge's forward (claude-orca-9bh.9): the container's
@@ -108,6 +108,19 @@ run_wait_for_sshd_ready() {
     ! grep -q ExitOnForwardFailure "$cfg"
 
     [ ! -e "$HOME/.ssh" ]
+}
+
+# Guards:   the ssh config names the control-socket directory the launcher made as a literal path (a % doubled), never `~`, which ssh resolves through the passwd entry instead of $HOME
+# Fails if: ssh_write_config goes back to `ControlPath ~/...` (the master then cannot bind when HOME is not the passwd home), or a % in HOME is left single (ssh would read it as an escape)
+# Run:      bats -f 'literal path' tests/launcher-ssh.bats
+@test "the ControlPath is the literal path of the directory made, not a ~ that ssh resolves through passwd" {
+    export HOME="$BATS_TEST_TMPDIR/odd 100%home"
+    mkdir -p "$HOME"
+    open_folder "$PROJECT_DIR"
+
+    grep -qxF "  ControlPath \"$BATS_TEST_TMPDIR/odd 100%%home/.local/state/claude-dev/cm-%C\"" "$sd/config"
+    ! grep -q 'ControlPath ~' "$sd/config"
+    [ -d "$HOME/.local/state/claude-dev" ]
 }
 
 @test "docker run publishes sshd on the folder's port and moves Orca to the next one" {
