@@ -151,6 +151,10 @@ e2e_register() {
     [ "$status" -eq 0 ]
     [[ "$output" == *"sshd is up"* ]]
     [ -e "$E2E_PROJECT/.claude-dev/run/sshd.ready" ]
+    # The launcher's `ctr exec -u agent ... config-sync.sh` reached the real
+    # script (the local runtime once took "agent" for the container name).
+    [[ "$output" == *"config: already current"* || "$output" == *"config: re-synced"* ]]
+    [[ "$output" != *"could not re-sync"* ]]
 
     # The config the launcher wrote is what ssh uses, untouched: strict host
     # key checking stays on, so a first connection that works means the
@@ -175,6 +179,44 @@ e2e_register() {
     [[ "$output" =~ \[ok\ +\]\ +ssh\ key\ auth ]]
 
     # The launcher's own stop, then nothing of this run is left running.
+    e2e_stop
+    local i=0
+    while [ "$i" -lt 20 ] && [ -n "$(e2e_leftovers)" ]; do
+        sleep 1
+        i=$((i + 1))
+    done
+    left="$(e2e_leftovers)"
+    [ -z "$left" ] || { ps -o pid,args -p "$(echo $left | tr ' ' ',')" >&2; false; }
+}
+
+@test "end to end on the local runtime: claude-dev pane, run on a real pty, gives a shell in the project and leaves the ssh master up" {
+    run e2e_register
+    echo "$output" >&2
+    [ "$status" -eq 0 ]
+
+    # The pane is `exec ssh -tt <alias>`, so it needs a terminal: a pty
+    # driver stands in for the Ghostty tab (it answers the kitty keyboard
+    # and XTVERSION probes the way Ghostty does), runs the pane, types one
+    # command line into it and prints what the terminal showed.
+    run timeout 180 python3 -I "$E2E_PTY_DRIVER" "$E2E_CLAUDE_DEV" pane "$E2E_PROJECT"
+    echo "$output" >&2
+    [ "$status" -eq 0 ]
+    real="$(cd "$E2E_PROJECT" && pwd -P)"
+    # `pwd` printed the project on a line of its own (the prompt shows the
+    # path too, so a bare substring match would prove nothing).
+    printf '%s\n' "$output" | grep -qx -- "$real"
+    [[ "$output" =~ PANE-OK-[0-9]+ ]]
+    # No master was up, so this was the launcher's whole-bring-up path.
+    grep -q ' slow ' "$E2E_PROJECT/.claude-dev/run/pane.log"
+
+    # The pane left a ControlMaster behind (ControlPersist), under HOME's
+    # literal state dir -- the path the launcher's ssh config names.
+    run ls "$E2E_ROOT"/.local/state/claude-dev/cm-*
+    echo "$output" >&2
+    [ "$status" -eq 0 ]
+    run "$E2E_BIN/ssh" -F "$E2E_CFG" -O check "$(e2e_alias)"
+    [ "$status" -eq 0 ]
+
     e2e_stop
     local i=0
     while [ "$i" -lt 20 ] && [ -n "$(e2e_leftovers)" ]; do

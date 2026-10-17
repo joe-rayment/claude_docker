@@ -567,17 +567,38 @@ ctr_local_stop() {
     return 0
 }
 
+# The callers name the folder by its GUEST path (/workspace/<name>), which
+# only exists behind a container's mount; here the folder is where
+# <name>.project says, so a --workdir or argument under the guest path is
+# rewritten to the real one (config-sync.sh, provision status, the shell's
+# starting directory all live there).
 ctr_local_exec() {
-    local wd=""
+    local wd="" name="" proj="" guest="" a n i
     while [ "$#" -gt 0 ]; do
         case "$1" in
             -i|-t|-it|-ti)  shift ;;
             --workdir)      wd="${2:-}"; shift 2 ;;
             --workdir=*)    wd="${1#--workdir=}"; shift ;;
+            # -u/--user take a value (`exec -u agent NAME cmd`): dropping the
+            # flag alone would make the user name the container name and the
+            # container name the command.
+            -u|--user)      shift; [ "$#" -eq 0 ] || shift ;;
             -*)             shift ;;
-            *)              shift; break ;;
+            *)              name="$1"; shift; break ;;
         esac
     done
+    proj="$(cat "$(ctr_local_dir)/$name.project" 2>/dev/null || true)"
+    if [ -n "$proj" ]; then
+        guest="/workspace/$(derive_project_name "$proj")"
+        case "$wd" in "$guest"|"$guest"/*) wd="$proj${wd#"$guest"}" ;; esac
+        n="$#"; i=0
+        while [ "$i" -lt "$n" ]; do
+            a="$1"; shift
+            case "$a" in "$guest"|"$guest"/*) a="$proj${a#"$guest"}" ;; esac
+            set -- "$@" "$a"
+            i=$((i + 1))
+        done
+    fi
     [ -n "$wd" ] || wd="$PWD"
     [ "$#" -gt 0 ] || set -- "${SHELL:-/bin/sh}" -l
     ( cd "$wd" 2>/dev/null || cd /; exec "$@" )
