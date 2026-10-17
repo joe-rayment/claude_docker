@@ -49,6 +49,12 @@ _cdev_sshd_q() {
   esac
 }
 
+# Forwarding: only the Mac's clipboard bridge (ssh -R <sock>:<sock>, B4) is
+# allowed. sshd gates remote forwards of unix sockets on AllowTcpForwarding
+# too (OpenSSH 9.6 session.c: "XXX - streamlocal?"), so "no" refused the
+# bridge ("port forwarding refused") -- proved against the real sshd in
+# tests/container-sshd.bats. "remote" + PermitListen none keeps -L and every
+# TCP -R refused; unix-socket listens are not matched by PermitListen.
 cdev_sshd_config() {
   local rt=$1 proj=$2 port=$3 user=$4 fc=$5
   local sq="'\\''"
@@ -67,7 +73,8 @@ cdev_sshd_config() {
     'StrictModes no' \
     "AllowUsers $user" \
     'PermitRootLogin no' \
-    'AllowTcpForwarding no' \
+    'AllowTcpForwarding remote' \
+    'PermitListen none' \
     'X11Forwarding no' \
     'AllowAgentForwarding no' \
     'PermitTunnel no' \

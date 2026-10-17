@@ -16,6 +16,7 @@ OPENSSH_LIB="$OPENSSH_DIR/usr/lib/aarch64-linux-gnu"
 SSHD="$OPENSSH_DIR/usr/sbin/sshd"
 SSH="$OPENSSH_DIR/usr/bin/ssh"
 SSH_KEYGEN="$OPENSSH_DIR/usr/bin/ssh-keygen"
+HOME_REAL_NC="$HOME/.cache/claude-orca-test/netcat/bin/nc.openbsd"
 
 setup() {
   export PROJECT_DIR="$BATS_TEST_TMPDIR/project"
@@ -36,7 +37,7 @@ lib() { run "$BASH_BIN" -c 'source "$1"; shift; "$@"' _ "$LIB" "$@"; }
       'AuthorizedKeysFile "/tmp/my proj/.claude-dev/state/ssh/authorized_keys"' \
       'PubkeyAuthentication yes' 'PasswordAuthentication no' \
       'KbdInteractiveAuthentication no' 'UsePAM no' 'StrictModes no' \
-      'AllowUsers agent' 'PermitRootLogin no' 'AllowTcpForwarding no' \
+      'AllowUsers agent' 'PermitRootLogin no' 'AllowTcpForwarding remote' 'PermitListen none' \
       'X11Forwarding no' 'AllowAgentForwarding no' 'PermitTunnel no' \
       'AllowStreamLocalForwarding remote' 'StreamLocalBindUnlink yes' \
       'PermitUserEnvironment no' 'PrintMotd no' \
@@ -162,6 +163,10 @@ no_sshd() { ! pgrep -f "$D/sshd_config" >/dev/null; }
 sshd_child() { pgrep -P "$LOOP" -x sshd | head -n1; }
 new_child() { c=$(sshd_child); [ -n "$c" ] && [ "$c" != "$OLD" ]; }
 
+sshd_listening() { python3 -c 'import socket,sys;socket.create_connection(("127.0.0.1",int(sys.argv[1])),1)' "$PORT" 2>/dev/null; }
+local_sock_there() { [ -S "$D/local.sock" ]; }
+local_got_ping() { grep -Fxq ping "$D/local.got" 2>/dev/null; }
+
 ssh_marker() {
   LD_LIBRARY_PATH="$OPENSSH_LIB" "$SSH" -T -F /dev/null -i "$D/client" \
     -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=5 \
@@ -171,7 +176,7 @@ ssh_marker() {
 
 teardown() {
   [ -n "${LOOP:-}" ] && kill "$LOOP" 2>/dev/null
-  [ -n "${D:-}" ] && { pkill -f "$D/sshd_config" 2>/dev/null; rm -rf "$D"; }
+  [ -n "${D:-}" ] && { pkill -f "$D/sshd_config" 2>/dev/null; pkill -f "$D/client" 2>/dev/null; pkill -f "$D/local.sock" 2>/dev/null; rm -rf "$D"; }
   return 0
 }
 
@@ -232,4 +237,61 @@ teardown() {
   wait_for no_sshd
   [ -z "$(sshd_child)" ]
   LOOP=
+}
+
+# A unix-socket RemoteForward (the clipboard bridge's /tmp/cdev-clip.sock) onto
+# a path that already holds the dead socket of the last session.
+# Guards:   the real sshd lets `ssh -R <remote.sock>:<local.sock>` replace a stale socket file, so a bridge started after a crashed session still comes up
+# Fails if: sshd-lib.sh stops writing `StreamLocalBindUnlink yes` (or `AllowStreamLocalForwarding remote`): the forward is refused and ssh exits non-zero
+# Run:      bats -f 'stale socket' tests/container-sshd.bats
+@test "real sshd: a RemoteForward of a unix socket replaces a stale socket file and carries bytes" {
+  NC="$HOME_REAL_NC"
+  [ -x "$SSHD" ] && [ -x "$SSH" ] && [ -x "$SSH_KEYGEN" ] && [ -x "$NC" ] || skip "extracted OpenSSH / OpenBSD nc absent"
+  D="/tmp/cdev-u-$$"
+  rm -rf "$D"
+  mkdir -p "$D/rt/ssh" "$D/proj/.claude-dev/state/ssh"
+  export LD_LIBRARY_PATH="$OPENSSH_LIB"
+  "$SSH_KEYGEN" -q -t ed25519 -N '' -f "$D/rt/ssh/host_ed25519" -C host
+  "$SSH_KEYGEN" -q -t ed25519 -N '' -f "$D/client" -C client
+  cp "$D/client.pub" "$D/proj/.claude-dev/state/ssh/authorized_keys"
+  PORT=$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1])')
+  printf '[127.0.0.1]:%s %s\n' "$PORT" "$(cut -d' ' -f1,2 "$D/rt/ssh/host_ed25519.pub")" >"$D/known_hosts"
+  printf '#!/bin/sh\nexit 0\n' >"$D/pane-entry"
+  chmod +x "$D/pane-entry"
+
+  run "$BASH_BIN" -c 'source "$1"; shift; cdev_sshd_config "$@"' _ "$LIB" \
+    "$D/rt" "$D/proj" "$PORT" "$(id -un)" "$D/pane-entry"
+  [ "$status" -eq 0 ]
+  printf '%s\n' "$output" >"$D/sshd_config"
+  chmod 600 "$D/sshd_config"
+  "$SSHD" -t -f "$D/sshd_config"
+  "$SSHD" -f "$D/sshd_config" -E "$D/sshd.log"
+  wait_for sshd_listening
+
+  # The stale socket: a real unix socket inode, bound and abandoned without unlink.
+  python3 -c 'import socket,sys;s=socket.socket(socket.AF_UNIX);s.bind(sys.argv[1]);s.close()' "$D/remote.sock"
+  [ -S "$D/remote.sock" ]
+
+  # Mac side: a one-shot listener on the local socket that answers "pong".
+  (printf 'pong\n' | "$NC" -l -U "$D/local.sock" >"$D/local.got" 2>&1) &
+  wait_for local_sock_there
+
+  # ExitOnForwardFailure here (the launcher never sets it): a refused forward must fail this case.
+  run "$SSH" -N -f -F /dev/null -i "$D/client" -o IdentitiesOnly=yes -o BatchMode=yes \
+    -o ConnectTimeout=5 -o UserKnownHostsFile="$D/known_hosts" -o GlobalKnownHostsFile=/dev/null \
+    -o StrictHostKeyChecking=yes -o ExitOnForwardFailure=yes \
+    -R "$D/remote.sock:$D/local.sock" -p "$PORT" 127.0.0.1
+  [ "$status" -eq 0 ] || { echo "ssh: $output"; cat "$D/sshd.log"; false; }
+
+  run bash -c 'printf "ping\n" | "$1" -U -w 3 "$2"' _ "$NC" "$D/remote.sock"
+  [ "$output" = "pong" ]
+  wait_for local_got_ping
+  grep -Fxq ping "$D/local.got"
+
+  # Allowing remote forwards for the socket must not open TCP listeners in the container.
+  run "$SSH" -N -f -F /dev/null -i "$D/client" -o IdentitiesOnly=yes -o BatchMode=yes \
+    -o ConnectTimeout=5 -o UserKnownHostsFile="$D/known_hosts" -o GlobalKnownHostsFile=/dev/null \
+    -o StrictHostKeyChecking=yes -o ExitOnForwardFailure=yes \
+    -R "127.0.0.1:0:127.0.0.1:9" -p "$PORT" 127.0.0.1
+  [ "$status" -ne 0 ]
 }

@@ -525,3 +525,231 @@ healthy_folder() {
     [ "$(ssh_call 1)" = "$(printf '%s\n' -F "$sd/config" -O exit "$alias")" ]
     [ ! -e "$sd" ]
 }
+
+# ---- the clipboard bridge (claude-orca-9bh.9, B4c) ---------------------------
+# The ssh config forwards the container's /tmp/cdev-clip.sock back to a unix
+# socket on the Mac; the pane path starts the Mac listener (scripts/mac/
+# clip-listen) once; stop and teardown end it. Here the listener is a stand-in
+# (CLAUDE_ORCA_CLIP_LISTEN), because the real one needs a Mac clipboard.
+
+# The folder's clip file base, the way clip_base builds it (short names only).
+clip_base_of() { printf '%s\n' "$HOME/.local/state/claude-dev/clip-${alias#claude-dev-}"; }
+
+# CLAUDE_ORCA_CLIP_LISTEN: a stub named clip-listen (stop only signals a pid
+# whose command line says clip-listen). Like the real one it is handed
+# <base>.sock <ssh config> <alias>, writes its own <base>.pid, makes the sock
+# and log files, and then waits; each start appends one line to $CLIP_STUB_LOG
+# and its pid to $CLIP_STUB_PIDS (the bats teardown() below kills what is left).
+write_stub_clip_listen() {
+    mkdir -p "$BATS_TEST_TMPDIR/clipbin"
+    export CLIP_STUB_LOG="$BATS_TEST_TMPDIR/clip-stub.log"
+    export CLIP_STUB_PIDS="$BATS_TEST_TMPDIR/clip-stub.pids"
+    : > "$CLIP_STUB_LOG"
+    : > "$CLIP_STUB_PIDS"
+    export CLAUDE_ORCA_CLIP_LISTEN="$BATS_TEST_TMPDIR/clipbin/clip-listen"
+    cat > "$CLAUDE_ORCA_CLIP_LISTEN" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$CLIP_STUB_LOG"
+echo "$$" >> "$CLIP_STUB_PIDS"
+: > "$1"
+: > "${1%.sock}.log"
+echo "$$" > "${1%.sock}.pid"
+trap 'exit 0' TERM
+i=0
+while [ "$i" -lt 120 ]; do sleep 1; i=$((i + 1)); done
+STUB
+    chmod +x "$CLAUDE_ORCA_CLIP_LISTEN"
+}
+
+# Polls (up to ~5 s) until $1 exists, since the stub is started in the background.
+wait_for_file() {
+    local i=0
+    while [ ! -e "$1" ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
+    [ -e "$1" ]
+}
+
+# Polls (up to ~5 s) until pid $1 is gone.
+wait_for_exit() {
+    local i=0
+    while kill -0 "$1" 2>/dev/null && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
+    ! kill -0 "$1" 2>/dev/null
+}
+
+# bats runs this after every case in the file: no stub listener outlives its test.
+teardown() {
+    local p
+    [ -f "${CLIP_STUB_PIDS:-}" ] || return 0
+    while read -r p; do
+        [ -n "$p" ] && kill "$p" 2>/dev/null || true
+    done < "$CLIP_STUB_PIDS"
+    return 0
+}
+
+# Guards:   the folder's ssh config forwards /tmp/cdev-clip.sock in the container
+#           back to the Mac listener's socket by default, leaves the line out
+#           with "clipboard": false, never sets ExitOnForwardFailure, and the
+#           real OpenSSH client reads the forward back.
+# Fails if: the RemoteForward line goes missing or points at the wrong socket,
+#           "clipboard": false still writes it, ExitOnForwardFailure slips in
+#           (a forward that cannot bind would then stop every pane opening),
+#           or the line is something the real ssh cannot parse.
+# Run:      bats -f 'RemoteForward' tests/launcher-pane.bats
+@test "ssh config: RemoteForward of the clip socket by default, absent with clipboard:false, real ssh -G reads it" {
+    [ -x "$REAL_SSH_ROOT/usr/bin/ssh" ] || skip "extracted OpenSSH not at $REAL_SSH_ROOT"
+    open_folder "$PROJECT_DIR"
+    base="$(clip_base_of)"
+    grep -Fx "  RemoteForward /tmp/cdev-clip.sock \"$base.sock\"" "$sd/config"
+    ! grep -q ExitOnForwardFailure "$sd/config"
+    [ "$(grep -c RemoteForward "$sd/config")" = "1" ]
+
+    run env LD_LIBRARY_PATH="$REAL_SSH_ROOT/usr/lib/aarch64-linux-gnu" \
+        "$REAL_SSH_ROOT/usr/bin/ssh" -F "$sd/config" -G "$alias"
+    [ "$status" -eq 0 ]
+    printf '%s\n' "$output" | grep -qx "remoteforward /tmp/cdev-clip.sock $base.sock"
+    printf '%s\n' "$output" | grep -qx 'exitonforwardfailure no'
+
+    # Opt out: the key in claude-orca.json, then the config is written again.
+    jq '.clipboard = false' "$primary/.claude-dev/claude-orca.json" > "$BATS_TEST_TMPDIR/orca.json"
+    mv "$BATS_TEST_TMPDIR/orca.json" "$primary/.claude-dev/claude-orca.json"
+    run run_launcher_fn "$primary" ssh_write_config "$port"
+    [ "$status" -eq 0 ]
+    ! grep -q RemoteForward "$sd/config"
+    run env LD_LIBRARY_PATH="$REAL_SSH_ROOT/usr/lib/aarch64-linux-gnu" \
+        "$REAL_SSH_ROOT/usr/bin/ssh" -F "$sd/config" -G "$alias"
+    [ "$status" -eq 0 ]
+    ! printf '%s\n' "$output" | grep -qi '^remoteforward'
+}
+
+# Guards:   a pane starts the Mac clip-listen once with <base>.sock, the folder's
+#           ssh config and its alias, and a second pane starts nothing while
+#           the pid in its pidfile is alive; a dead pid is started afresh.
+# Fails if: every pane starts another listener (they would pile up), the
+#           listener gets other arguments, or a stale pidfile keeps the
+#           bridge down for good.
+# Run:      bats -f 'pane starts the clipboard listener' tests/launcher-pane.bats
+@test "pane starts the clipboard listener once, not again while its pid is alive, again when it is dead" {
+    open_folder "$PROJECT_DIR"
+    write_stub_ssh
+    write_stub_clip_listen
+    export CLAUDE_ORCA_PANE_FORCE_TTY=1 SSH_STUB_CHECK_RC=0
+    unset TERM_PROGRAM TERM_PROGRAM_VERSION COLORTERM
+    base="$(clip_base_of)"
+
+    run bash -c "cd '$primary' && ./claude-dev pane"
+    [ "$status" -eq 0 ]
+    wait_for_file "$base.pid"
+    pid="$(cat "$base.pid")"
+    kill -0 "$pid"
+    [ "$(cat "$CLIP_STUB_LOG")" = "$base.sock $sd/config $alias" ]
+
+    # Second and third pane: the pid is alive, so nothing new is started.
+    run bash -c "cd '$primary' && ./claude-dev pane"
+    [ "$status" -eq 0 ]
+    run bash -c "cd '$primary' && ./claude-dev pane"
+    [ "$status" -eq 0 ]
+    sleep 0.5
+    [ "$(wc -l < "$CLIP_STUB_LOG" | tr -d ' ')" = "1" ]
+    [ "$(cat "$base.pid")" = "$pid" ]
+
+    # The listener dies without cleaning up (pidfile left behind): next pane restarts it.
+    kill "$pid"
+    wait_for_exit "$pid"
+    run bash -c "cd '$primary' && ./claude-dev pane"
+    [ "$status" -eq 0 ]
+    i=0
+    while [ "$(wc -l < "$CLIP_STUB_LOG" | tr -d ' ')" -lt 2 ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
+    [ "$(wc -l < "$CLIP_STUB_LOG" | tr -d ' ')" = "2" ]
+}
+
+# Guards:   with "clipboard": false in claude-orca.json a pane starts no
+#           listener and leaves no clip files behind.
+# Fails if: the opt-out is ignored by the pane path, so a folder that said no
+#           to the clipboard bridge still gets a listener on the Mac.
+# Run:      bats -f 'clipboard false' tests/launcher-pane.bats
+@test "pane with clipboard false starts no clipboard listener" {
+    open_folder "$PROJECT_DIR"
+    write_stub_ssh
+    write_stub_clip_listen
+    export CLAUDE_ORCA_PANE_FORCE_TTY=1 SSH_STUB_CHECK_RC=0
+    unset TERM_PROGRAM TERM_PROGRAM_VERSION COLORTERM
+    base="$(clip_base_of)"
+    jq '.clipboard = false' "$primary/.claude-dev/claude-orca.json" > "$BATS_TEST_TMPDIR/orca.json"
+    mv "$BATS_TEST_TMPDIR/orca.json" "$primary/.claude-dev/claude-orca.json"
+
+    run bash -c "cd '$primary' && ./claude-dev pane"
+    [ "$status" -eq 0 ]
+    sleep 1
+    [ ! -s "$CLIP_STUB_LOG" ]
+    [ ! -e "$base.pid" ]
+    [ ! -e "$base.sock" ]
+    # The pane itself still ran (call 1 asked the master, call 2 is the pane).
+    [ "$(grep -c '^--- ssh$' "$SSH_STUB_LOG")" = "2" ]
+}
+
+# Guards:   `stop` ends the folder's clip-listen and removes its socket and
+#           pidfile, but only signals a pid that is really a clip-listen.
+# Fails if: stop leaves the listener running or its files behind, or signals
+#           whatever process now owns a recycled pid in the pidfile.
+# Run:      bats -f 'stop ends the clipboard listener' tests/launcher-pane.bats
+@test "stop ends the clipboard listener and removes its sock and pid files, and leaves a foreign pid alone" {
+    open_folder "$PROJECT_DIR"
+    write_stub_ssh
+    write_stub_clip_listen
+    export CLAUDE_ORCA_PANE_FORCE_TTY=1 SSH_STUB_CHECK_RC=0
+    unset TERM_PROGRAM TERM_PROGRAM_VERSION COLORTERM
+    base="$(clip_base_of)"
+    run bash -c "cd '$primary' && ./claude-dev pane"
+    [ "$status" -eq 0 ]
+    wait_for_file "$base.pid"
+    pid="$(cat "$base.pid")"
+    kill -0 "$pid"
+    [ -e "$base.sock" ]
+
+    run bash -c "cd '$primary' && ./claude-dev stop"
+    [ "$status" -eq 0 ]
+    wait_for_exit "$pid"
+    [ ! -e "$base.sock" ]
+    [ ! -e "$base.pid" ]
+    # stop keeps the log (teardown removes it).
+    [ -e "$base.log" ]
+
+    # A pidfile whose pid is some other process (not a clip-listen): the files
+    # go, the process lives.
+    sleep 30 >/dev/null 2>&1 &
+    other=$!
+    echo "$other" >> "$CLIP_STUB_PIDS"
+    echo "$other" > "$base.pid"
+    : > "$base.sock"
+    run bash -c "cd '$primary' && ./claude-dev stop"
+    [ "$status" -eq 0 ]
+    [ ! -e "$base.pid" ]
+    [ ! -e "$base.sock" ]
+    kill -0 "$other"
+    kill "$other"
+}
+
+# Guards:   teardown ends the folder's clip-listen and removes its socket,
+#           pidfile AND log, so nothing of the bridge outlives the folder.
+# Fails if: teardown leaves the listener running, or any of the three files.
+# Run:      bats -f 'teardown ends the clipboard listener' tests/launcher-pane.bats
+@test "teardown ends the clipboard listener and removes its sock, pid and log files" {
+    open_folder "$PROJECT_DIR"
+    write_stub_ssh
+    write_stub_clip_listen
+    export CLAUDE_ORCA_PANE_FORCE_TTY=1 SSH_STUB_CHECK_RC=0
+    unset TERM_PROGRAM TERM_PROGRAM_VERSION COLORTERM
+    base="$(clip_base_of)"
+    run bash -c "cd '$primary' && ./claude-dev pane"
+    [ "$status" -eq 0 ]
+    wait_for_file "$base.pid"
+    wait_for_file "$base.log"
+    pid="$(cat "$base.pid")"
+    kill -0 "$pid"
+
+    run bash -c "cd '$primary' && ./claude-dev --teardown"
+    [ "$status" -eq 0 ]
+    wait_for_exit "$pid"
+    [ ! -e "$base.sock" ]
+    [ ! -e "$base.pid" ]
+    [ ! -e "$base.log" ]
+}

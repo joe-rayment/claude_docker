@@ -897,9 +897,10 @@ ssh_host_alias() { printf 'claude-dev-%s\n' "$(derive_project_name "$1")"; }
 # rewrites authorized_keys and known_hosts from them on every call -- cheap,
 # and it heals a file somebody deleted. `restrict` turns off agent, X11 and
 # tcp forwarding for this key; pty and port-forwarding give back what a pane
-# and the later unix-socket RemoteForward need (sshd_config still denies tcp
-# forwarding). known_hosts is keyed by the alias, so there is no trust-on-
-# first-use prompt. Done BEFORE the container starts: sshd reads the host
+# and the clipboard bridge's unix-socket RemoteForward need (sshd-lib.sh's
+# sshd_config says `AllowTcpForwarding remote` + `PermitListen none`, so a
+# -R of a tcp port is still refused). known_hosts is keyed by the alias, so
+# there is no trust-on-first-use prompt. Done BEFORE the container starts: sshd reads the host
 # key and authorized_keys at boot.
 ssh_ensure_keys() {
     local dir="$1" sd name alias keygen which key pub type blob rest tmp
@@ -954,6 +955,80 @@ ssh_ensure_keys() {
     }
 }
 
+# The clipboard bridge (claude-orca-9bh.9). The Mac side is scripts/mac/
+# clip-listen: a unix socket under ~/.local/state/claude-dev that the
+# container reaches through the pane's ssh RemoteForward, answering the
+# Mac clipboard's IMAGE and nothing else. <base>.sock / .pid / .log are its
+# files. A unix socket path must stay under ~100 bytes, so a folder name too
+# long for that is replaced by a checksum of itself in the file name.
+clip_base() {
+    local dir base
+    dir="$HOME/.local/state/claude-dev"
+    base="$dir/clip-$(derive_project_name "$1")"
+    if [ "${#base}" -gt 90 ]; then
+        base="$dir/clip-$(derive_project_name "$1" | cksum | cut -d' ' -f1)"
+    fi
+    printf '%s\n' "$base"
+}
+
+# 0 unless claude-orca.json says "clipboard": false (read as data, by jq).
+# json_get cannot tell false from absent (`// empty`), hence the own jq.
+clip_enabled() {
+    local json
+    json="$(orca_json "$1")"
+    [ -f "$json" ] && command -v jq >/dev/null 2>&1 || return 0
+    [ "$(jq -r '.clipboard' "$json" 2>/dev/null)" != "false" ]
+}
+
+# Starts the folder's clip-listen unless the pid in its pidfile is alive --
+# the cost of the common case is one `kill -0`. Detached: nohup, so closing
+# the terminal that started it does not take it down (it ends by itself when
+# the folder's ssh master is gone), and setsid where the OS has one (macOS
+# does not). Never fatal: a pane without the bridge is still a pane.
+clip_listen_ensure() {
+    local dir="$1" base pid listen
+    clip_enabled "$dir" || return 0
+    base="$(clip_base "$dir")"
+    pid="$(cat "$base.pid" 2>/dev/null)" || pid=""
+    case "$pid" in
+        '' | *[!0-9]*) ;;
+        *) kill -0 "$pid" 2>/dev/null && return 0 ;;
+    esac
+    listen="${CLAUDE_ORCA_CLIP_LISTEN:-$SCRIPT_DIR/mac/clip-listen}"
+    [ -x "$listen" ] || return 0
+    mkdir -p "${base%/*}" && chmod 700 "${base%/*}" || return 0
+    if command -v setsid >/dev/null 2>&1; then
+        ( setsid nohup "$listen" "$base.sock" "$(ssh_state_dir "$dir")/config" \
+            "$(ssh_host_alias "$dir")" </dev/null >/dev/null 2>&1 & )
+    else
+        ( nohup "$listen" "$base.sock" "$(ssh_state_dir "$dir")/config" \
+            "$(ssh_host_alias "$dir")" </dev/null >/dev/null 2>&1 & )
+    fi
+    return 0
+}
+
+# Stops the folder's clip-listen and removes its socket and pidfile ($2 =
+# "log" removes the log too). The pid is signalled only when it is still a
+# clip-listen, so a pid the OS has since given to someone else is left alone.
+clip_listen_stop() {
+    local dir="$1" base pid
+    base="$(clip_base "$dir")"
+    pid="$(cat "$base.pid" 2>/dev/null)" || pid=""
+    case "$pid" in
+        '' | *[!0-9]*) ;;
+        *)
+            if kill -0 "$pid" 2>/dev/null; then
+                case "$(ps -p "$pid" -o args= 2>/dev/null)" in
+                    *clip-listen*) kill "$pid" 2>/dev/null || true ;;
+                esac
+            fi
+            ;;
+    esac
+    rm -f "$base.sock" "$base.pid"
+    if [ "${2:-}" = "log" ]; then rm -f "$base.log"; fi
+    return 0
+}
+
 # state/ssh/config, regenerated on every open: the one place the port, the
 # key paths and the multiplexing live, so a pane is `ssh -F config <alias>`
 # and nothing else. Paths are quoted because the folder may have spaces in
@@ -990,7 +1065,16 @@ ssh_write_config() {
         printf '  ForwardAgent no\n'
         printf '  ForwardX11 no\n'
         printf '  LogLevel ERROR\n'
-        printf '  # B4: RemoteForward goes here\n'
+        # The clipboard bridge: the container's /tmp/cdev-clip.sock is this
+        # session's way back to the Mac listener (clip_listen_ensure). Left
+        # out with "clipboard": false. No ExitOnForwardFailure: a forward
+        # that cannot bind must never stop the pane from opening.
+        if clip_enabled "$dir"; then
+            case "$(clip_base "$dir")" in
+                *'"'*) ;;
+                *) printf '  RemoteForward /tmp/cdev-clip.sock "%s.sock"\n' "$(clip_base "$dir")" ;;
+            esac
+        fi
     } > "$tmp" && chmod 644 "$tmp" && mv -f "$tmp" "$sd/config" || {
         rm -f "$tmp"
         echo "Error: cannot write $sd/config" >&2
@@ -1504,6 +1588,9 @@ pane_exec() {
     log="$dir/.claude-dev/run/pane.log"
     mkdir -p "$dir/.claude-dev/run" 2>/dev/null \
         && printf '%s %s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$mode" "$rel" >> "$log" 2>/dev/null || true
+    # Both paths end here, so this is the one place the clipboard bridge's
+    # listener is started (a no-op while the last one is still alive).
+    clip_listen_ensure "$dir"
     if [ -n "$setenv" ]; then
         exec "${CLAUDE_ORCA_SSH:-ssh}" -F "$cfg" -tt -o "SetEnv=$setenv" "$alias"
     fi
@@ -3299,6 +3386,7 @@ cmd_stop_v3() {
     dir="$(cd "$dir" && pwd -P)"
     ctr_init "$dir"
     name="$(container_name "$dir")"
+    clip_listen_stop "$dir"
     ctr stop "$name" >/dev/null
     echo "Stopped $name. './claude-dev' starts it again."
 }
@@ -3765,6 +3853,7 @@ cmd_teardown_v3() {
     if [ -f "$(ssh_state_dir "$dir")/config" ]; then
         "${CLAUDE_ORCA_SSH:-ssh}" -F "$(ssh_state_dir "$dir")/config" -O exit "$(ssh_host_alias "$dir")" >/dev/null 2>&1 || true
     fi
+    clip_listen_stop "$dir" log
     ctr stop "$name" >/dev/null 2>&1 || true
     ctr rm "$name" >/dev/null 2>&1 || true
     # Orca's user-data-dir is the one piece of folder state that lives in a
