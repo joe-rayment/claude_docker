@@ -93,6 +93,24 @@ fi
 # 4. mark the pane and hand over.
 export CDEV_PANE=1
 
+# The template's bin (the xclip/pbpaste shims, lane, tier-set...) goes ahead of
+# the system's.  config/.zshrc does the same, but only an interactive zsh reads
+# it: `zsh -lc cmd` (a command pane) never does, and on the local runtime the
+# pane's HOME may not be the folder home at all.  Same order as .zshrc: the
+# folder's clone, then the host copy, then the image's.
+for _pe_bin in "${PROJECT_DIR:-/nonexistent}/.claude-dev/template/bin" \
+               "${CLAUDE_ORCA_HOST_DIR:-/opt/claude-orca-host}/template/bin" \
+               /opt/claude-orca/bin; do
+  if [ -d "$_pe_bin" ]; then
+    case ":${PATH:-}:" in
+      *":$_pe_bin:"*) ;;
+      *) export PATH="$_pe_bin${PATH:+:$PATH}" ;;
+    esac
+    break
+  fi
+done
+unset _pe_bin
+
 _pe_shell=${CLAUDE_ORCA_PANE_SHELL:-}
 if [ -z "$_pe_shell" ]; then
   if [ -x /usr/bin/zsh ]; then _pe_shell=/usr/bin/zsh; else _pe_shell=$(command -v zsh || true); fi

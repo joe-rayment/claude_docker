@@ -89,6 +89,27 @@ run_pane() {
   [ -z "$output" ]
 }
 
+# Guards:   a pane (interactive, or `ssh host <command>`) finds the template's xclip shim before /usr/bin/xclip, because pane-entry itself puts the template bin on PATH
+# Fails if: pane-entry stops prepending the template bin (only config/.zshrc does, and a `zsh -lc cmd` pane never reads it), or lets it lose to a system xclip, or breaks the folder-clone / host-copy order
+# Run:      bats -f 'template bin' tests/pane-entry.bats
+@test "pane-entry: the template bin leads PATH for both the interactive and the SSH_ORIGINAL_COMMAND pane" {
+  local sys="$FIX/sysbin" own="$PROJECT_DIR/.claude-dev/template/bin" host="$FIX/host"
+  mkdir -p "$sys" "$own" "$host/template/bin"
+  printf '#!/bin/sh\n' > "$sys/xclip"; cp "$sys/xclip" "$own/xclip"; cp "$sys/xclip" "$host/template/bin/xclip"
+  chmod +x "$sys/xclip" "$own/xclip" "$host/template/bin/xclip"
+  printf '#!/usr/bin/env bash\ncommand -v xclip\n' > "$STUB"
+  # the folder's clone beats the system copy, interactive and command pane alike
+  run_pane PATH="$sys:/usr/bin:/bin" CLAUDE_ORCA_HOST_DIR="$host"
+  [ "$status" -eq 0 ]
+  [ "$output" = "$own/xclip" ]
+  run_pane PATH="$sys:/usr/bin:/bin" CLAUDE_ORCA_HOST_DIR="$host" SSH_ORIGINAL_COMMAND='xclip -o'
+  [ "$output" = "$own/xclip" ]
+  # no clone in the folder -> the host copy, still ahead of the system's
+  rm -rf "$PROJECT_DIR/.claude-dev"
+  run_pane PATH="$sys:/usr/bin:/bin" CLAUDE_ORCA_HOST_DIR="$host" SSH_ORIGINAL_COMMAND='xclip -o'
+  [ "$output" = "$host/template/bin/xclip" ]
+}
+
 # --- the .zshrc hooks, run in the real Z shell against a copy of config/.zshrc.
 # The whole file is sourced (it loads fine without plugins), then every function
 # on precmd_functions is called by hand, exactly as the prompt would.

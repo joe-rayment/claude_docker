@@ -35,7 +35,10 @@ REPO_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd -P)"
 
 # Read at file level, before setup() points HOME at the fixture.
 E2E_OPENSSH="${E2E_OPENSSH:-$HOME/.cache/claude-orca-test/openssh}"
+E2E_NC="${E2E_NC:-$HOME/.cache/claude-orca-test/netcat/bin/nc.openbsd}"
 E2E_PTY_DRIVER="$(cd "$(dirname "$BATS_TEST_FILENAME")" && pwd -P)/e2e-pty-pane.py"
+
+E2E_CLIP_PNG="$(cd "$(dirname "$BATS_TEST_FILENAME")" && pwd -P)/fixtures/clipboard/red-8x8.png"
 
 # The launcher's own wait for sshd is bounded; this is the outer belt.
 E2E_TIMEOUT=240
@@ -137,6 +140,8 @@ teardown() {
     pkill -f -- "$E2E_ROOT" 2>/dev/null || true
     sleep 1
     pkill -KILL -f -- "$E2E_ROOT" 2>/dev/null || true
+    # The clipboard case's RemoteForward ends at the host's own /tmp.
+    [ -z "${E2E_CLIP_USED:-}" ] || rm -f /tmp/cdev-clip.sock
     rm -rf "$E2E_ROOT"
 }
 
@@ -216,6 +221,138 @@ e2e_register() {
     [ "$status" -eq 0 ]
     run "$E2E_BIN/ssh" -F "$E2E_CFG" -O check "$(e2e_alias)"
     [ "$status" -eq 0 ]
+
+    e2e_stop
+    local i=0
+    while [ "$i" -lt 20 ] && [ -n "$(e2e_leftovers)" ]; do
+        sleep 1
+        i=$((i + 1))
+    done
+    left="$(e2e_leftovers)"
+    [ -z "$left" ] || { ps -o pid,args -p "$(echo $left | tr ' ' ',')" >&2; false; }
+}
+
+# e2e_clip_env -- the Mac half of the clipboard bridge, with the one thing
+# that cannot exist on Linux replaced: `osascript` (it reads the Mac
+# pasteboard). Everything else is the real code -- the launcher starts the
+# real scripts/mac/clip-listen (a real netcat on a unix socket) and
+# clip-serve, ssh's RemoteForward carries the socket into the "container",
+# and the pane's `xclip` is the real shim. The stub answers from a mode file
+# ($E2E_ROOT/clip.mode: "png" = an image on the pasteboard, anything else =
+# plain text) and logs every call so the case can see what the Mac was asked.
+e2e_clip_env() {
+    [ -x "$E2E_NC" ] || skip "no OpenBSD netcat at $E2E_NC"
+    cp "$E2E_NC" "$E2E_BIN/nc"
+    export E2E_ROOT E2E_CLIP_PNG
+    mkdir -p "$E2E_ROOT/stubs"
+    printf 'png\n' > "$E2E_ROOT/clip.mode"
+    cat > "$E2E_ROOT/stubs/osascript" <<'EOF'
+#!/bin/bash
+all="$*"
+printf 'osascript %s\n' "$all" >>"$E2E_ROOT/osascript.log"
+mode="$(cat "$E2E_ROOT/clip.mode" 2>/dev/null)"
+case "$all" in
+    *'clipboard info'*)
+        if [ "$mode" = png ]; then
+            printf '%s\n' '«class PNGf», 75, «class TIFF», 80'
+        else
+            printf '%s\n' '«class utf8», 12, string, 12'
+        fi
+        exit 0 ;;
+    *'open for access'*)
+        [ "$mode" = png ] || exit 1
+        dest=$(printf '%s\n' "$all" | sed -n 's/.*POSIX file "\([^"]*\)".*/\1/p')
+        [ -n "$dest" ] || exit 1
+        cp "$E2E_CLIP_PNG" "$dest"
+        exit 0 ;;
+esac
+exit 1
+EOF
+    chmod +x "$E2E_ROOT/stubs/osascript"
+    export CLAUDE_ORCA_OSASCRIPT="$E2E_ROOT/stubs/osascript"
+    export CLAUDE_ORCA_SIPS=/bin/false CLAUDE_ORCA_PBCOPY=/bin/false
+    # The listener ends by itself once the ssh master is gone; a short poll
+    # keeps the case's wait for that short.
+    export CLAUDE_ORCA_CLIP_WATCH_S=3
+    # The forward's far end is /tmp/cdev-clip.sock, and on the local runtime
+    # /tmp is the host's: teardown removes the socket this run left there.
+    E2E_CLIP_USED=1
+}
+
+# e2e_clip_pane_script -- what the pane runs: plain `xclip` (found through the
+# pane's own PATH, which is what the test then asserts is the template's shim)
+# giving its three answers with an image on the pasteboard, then with text.
+# Paths are baked in (the local
+# runtime shares the filesystem), so the heredoc is unquoted; the \$ ones are
+# the pane's own. The DONE marker is arithmetic so the typed command line
+# cannot satisfy a match on its output.
+e2e_clip_pane_script() {
+    cat > "$E2E_ROOT/pane-clip.sh" <<EOF
+echo "XCLIP-WHICH=\$(command -v xclip)"
+echo "PATH-HEAD=\${PATH%%:*}"
+echo "TARGETS-PNG=[\$(xclip -selection clipboard -t TARGETS -o)]"
+xclip -selection clipboard -t image/png -o | cmp - "$E2E_CLIP_PNG"
+echo "CMP-RC=\$?"
+echo "DONE1-\$((6*7))"
+echo text > "$E2E_ROOT/clip.mode"
+echo "TARGETS-TEXT=[\$(xclip -selection clipboard -t TARGETS -o)]"
+OUT="\$(xclip -selection clipboard -o)"
+echo "TEXTREAD-RC=\$? OUT=[\$OUT]"
+xclip -selection clipboard -t image/png -o >/dev/null
+echo "PNGREAD-AFTER-RC=\$?"
+echo "DONE2-\$((6*7))"
+EOF
+}
+
+# Guards:   the clipboard bridge end to end -- with an image on the (stubbed) Mac pasteboard, the shim `xclip` run INSIDE a real pane reads TARGETS=image/png and the exact PNG bytes through the pane's ssh RemoteForward, the real clip-listen and clip-serve; once the pasteboard holds text, the same calls get nothing, the Mac is asked only `clipboard info` (never to read the text out), and stop leaves no listener behind
+# Fails if: the launcher stops starting clip-listen on a pane, the config's RemoteForward line goes missing or points at the wrong socket, the shim speaks a different protocol than clip-serve, an image comes through altered, text on the pasteboard is ever served to the pane, or a stop leaves a clip-listen / nc of this run alive
+# Run:      bats -f 'clipboard bridge' tests/e2e-local.bats
+@test "end to end on the local runtime: clipboard bridge -- a pane's xclip gets the Mac's image bytes through the real forward, gets nothing for text, and stop leaves no listener" {
+    e2e_clip_env
+    run e2e_register
+    echo "$output" >&2
+    [ "$status" -eq 0 ]
+    e2e_clip_pane_script
+
+    # The pane runs the script and exits; the driver prints what it showed.
+    E2E_PANE_LINE="bash $E2E_ROOT/pane-clip.sh; exit" E2E_PANE_WAIT=60 \
+        run timeout 180 python3 -I "$E2E_PTY_DRIVER" "$E2E_CLAUDE_DEV" pane "$E2E_PROJECT"
+    echo "$output" >&2
+    [ "$status" -eq 0 ]
+    # The marker lines are computed (6*7), so the typed command line, which
+    # the terminal echoes, can never be mistaken for the output.
+    printf '%s\n' "$output" | grep -qx -- 'DONE1-42'
+    # Plain `xclip` in the pane is the template's shim, not /usr/bin/xclip:
+    # pane-entry puts the template bin on PATH for every pane.
+    printf '%s\n' "$output" | grep -qxF -- "XCLIP-WHICH=$E2E_PROJECT/.claude-dev/template/bin/xclip"
+    printf '%s\n' "$output" | grep -qx -- 'DONE2-42'
+
+    # Image on the pasteboard: TARGETS names it, the PNG is byte for byte.
+    printf '%s\n' "$output" | grep -qx -- 'TARGETS-PNG=\[image/png\]'
+    printf '%s\n' "$output" | grep -qx -- 'CMP-RC=0'
+    # Text on the pasteboard: no target, no text, no image -- every read fails.
+    printf '%s\n' "$output" | grep -qx -- 'TARGETS-TEXT=\[\]'
+    printf '%s\n' "$output" | grep -qx -- 'TEXTREAD-RC=1 OUT=\[\]'
+    printf '%s\n' "$output" | grep -qx -- 'PNGREAD-AFTER-RC=1'
+
+    # What the Mac side saw: the listener's own log, one line per request.
+    logf="$(ls "$E2E_ROOT"/.local/state/claude-dev/clip-*.log | head -n 1)"
+    [ -f "$logf" ]
+    cat "$logf" >&2
+    [ "$(grep -c 'GET /png -> 200' "$logf")" -eq 1 ]
+    n200="$(grep -c ' -> 200' "$logf")"
+    # The only 200s are the two answered while the pasteboard held an image
+    # (TARGETS and the PNG); after the switch there are only 204s and 404s.
+    [ "$n200" -eq 2 ]
+    grep -Eq 'GET /png -> (204|404)' "$logf"
+    # The Mac was never asked to read anything but the pasteboard's type
+    # list once the text was on it: the last `open for access` (a read of
+    # the image) is before the last `clipboard info`.
+    cat "$E2E_ROOT/osascript.log" >&2
+    last_open="$(grep -n 'open for access' "$E2E_ROOT/osascript.log" | tail -n 1 | cut -d: -f1)"
+    last_info="$(grep -n 'clipboard info' "$E2E_ROOT/osascript.log" | tail -n 1 | cut -d: -f1)"
+    [ -n "$last_open" ] && [ "$last_info" -gt "$last_open" ]
+    [ "$(grep -c 'open for access' "$E2E_ROOT/osascript.log")" -eq 1 ]
 
     e2e_stop
     local i=0
