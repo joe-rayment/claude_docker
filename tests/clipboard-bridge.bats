@@ -331,6 +331,7 @@ wait_gone() {
     return 1
 }
 
+# bats test_tags=size:medium
 @test "clip-listen serves 20 back-to-back TARGETS+PNG pairs on a private socket" {
     clip_png
     start_listener
@@ -348,6 +349,7 @@ wait_gone() {
     [ "$(grep -c 'clip-serve: GET .* -> 200' "$LOG")" = 40 ]
 }
 
+# bats test_tags=size:medium
 @test "clip-listen exits, and leaves no socket, fifo, pidfile or nc, once ssh -O check fails" {
     clip_png
     start_listener
@@ -364,6 +366,7 @@ wait_gone() {
     [ "$status" -eq 1 ]
 }
 
+# bats test_tags=size:medium
 @test "a second clip-listen for a live socket is a no-op; SIGTERM cleans up" {
     start_listener
     [ "$(cat "$SOCKDIR/sub/clip.pid")" = "$LPID" ]
@@ -381,6 +384,7 @@ wait_gone() {
     [ "$status" -eq 1 ]
 }
 
+# bats test_tags=size:medium
 @test "a pidfile naming a live process that is not clip-listen does not block start" {
     SOCKDIR=$(mktemp -d /tmp/cdev-clip-XXXXXX)
     mkdir "$SOCKDIR/sub"

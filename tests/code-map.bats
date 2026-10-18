@@ -922,6 +922,7 @@ fixture_docs_repo() {
     [[ "${lines[1]}" == *"verify before acting"* ]]
 }
 
+# bats test_tags=size:medium
 @test "prime: with no graph it emits one building line and the build really runs" {
     install_real_engine
     repo="$BATS_TEST_TMPDIR/repo"
@@ -1062,6 +1063,7 @@ fixture_docs_repo() {
 
 # ── prime's slow-refresh branch ──────────────────────────────────────────────
 
+# bats test_tags=size:medium
 @test "e2e: a refresh too slow for session start is detached and the block still prints" {
     # GNU coreutils' timeout; macOS ships none, so this case skips there
     # rather than failing for a reason that is about the box.

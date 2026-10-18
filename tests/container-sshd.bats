@@ -180,6 +180,7 @@ teardown() {
   return 0
 }
 
+# bats test_tags=size:medium
 @test "real sshd: loop starts it, a killed sshd is restarted, TERM leaves nothing" {
   [ -x "$SSHD" ] && [ -x "$SSH" ] && [ -x "$SSH_KEYGEN" ] || skip "extracted OpenSSH absent"
   D="/tmp/cdev-t-$$"
@@ -244,6 +245,7 @@ teardown() {
 # Guards:   the real sshd lets `ssh -R <remote.sock>:<local.sock>` replace a stale socket file, so a bridge started after a crashed session still comes up
 # Fails if: sshd-lib.sh stops writing `StreamLocalBindUnlink yes` (or `AllowStreamLocalForwarding remote`): the forward is refused and ssh exits non-zero
 # Run:      bats -f 'stale socket' tests/container-sshd.bats
+# bats test_tags=size:medium
 @test "real sshd: a RemoteForward of a unix socket replaces a stale socket file and carries bytes" {
   NC="$HOME_REAL_NC"
   [ -x "$SSHD" ] && [ -x "$SSH" ] && [ -x "$SSH_KEYGEN" ] && [ -x "$NC" ] || skip "extracted OpenSSH / OpenBSD nc absent"

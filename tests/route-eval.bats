@@ -6,6 +6,8 @@
 # Every case runs against a throwaway folder and a fake guard (tests/helpers/fake-guard.py)
 # on a free loopback port; no real key, no network, no model.
 
+# bats file_tags=size:medium
+
 EVAL="$BATS_TEST_DIRNAME/../scripts/route-eval.py"
 FAKE_GUARD="$BATS_TEST_DIRNAME/helpers/fake-guard.py"
 CLASSIFIER="$BATS_TEST_DIRNAME/../config/route/classifier.txt"

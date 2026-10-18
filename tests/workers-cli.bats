@@ -1,6 +1,8 @@
 # Guards: `workers` (list/wait/reply/tail/stop) reads the job dirs and the inbox honestly, with no Orca anywhere -- and the slot cap really queues extra dispatches
 # Fails if: list miscounts running/queued or hides a dead pid, wait double-delivers or skips an inbox line, a stall is reported twice, reply resumes a running job, or stop leaves the worker alive
 # Run: bats tests/workers-cli.bats
+# bats file_tags=size:medium
+
 bats_require_minimum_version 1.5.0
 
 setup() {

@@ -2,6 +2,8 @@
 # Guards:   sshd is the entrypoint's one long-running child: PID 1 waits on its supervisor, which retries (no keys yet, no sshd binary, an unusable runtime dir) instead of dying, starts a real sshd the moment the refusal clears, and a TERM takes everything down in under 5 s with exit 143
 # Fails if: start_sshd is not wired into entrypoint.sh, a refusal makes the boot die or leaves a stale sshd.ready, the supervisor does not retry, PID 1 exits while the supervisor lives (or outlives it), or a TERM leaves an sshd behind or exits with anything but 143
 # Run:      bats tests/container-entrypoint-sshd.bats
+# bats file_tags=size:medium
+
 bats_require_minimum_version 1.5.0
 #
 # The entrypoint runs NATIVELY here (no privilege drop, no setup, no

@@ -218,6 +218,7 @@ echo 'apt-get install -y fonts-liberation would run here'"
     [[ "$runline" == *" --dns 8.8.8.8 "* ]]
 }
 
+# bats test_tags=size:medium
 @test "the launcher stops waiting as soon as the container is gone" {
     mkdir -p "$PROJECT_DIR"
     primary="$(abspath "$PROJECT_DIR")"
@@ -264,6 +265,7 @@ wait_for_sshd_ready '$quiet' claude-orca-never-listed"
     [ "$elapsed" -lt 40 ]
 }
 
+# bats test_tags=size:medium
 @test "a failed start shows the tail of the toolchain install log" {
     mkdir -p "$PROJECT_DIR"
     primary="$(abspath "$PROJECT_DIR")"
@@ -302,6 +304,7 @@ cd '$primary' && ./claude-dev"
     [[ "$output" == *"E: Unable to locate package fonts-liberation"* ]]
 }
 
+# bats test_tags=size:medium
 @test "an early-exit start shows sshd's log tail" {
     # Guards:   a container that dies before sshd is listening shows sshd's
     #           own last words on the Mac side (run/sshd.log), and no longer

@@ -1,4 +1,6 @@
 #!/usr/bin/env bats
+# bats file_tags=size:medium
+
 bats_require_minimum_version 1.5.0
 #
 # Guards:   the entrypoint's config sync and project wiring: config-sync

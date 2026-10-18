@@ -81,6 +81,7 @@ teardown() {
     [ "$(grep -nE " mode=cli " "$log" | cut -d: -f1)" -lt "$(grep -nE " mode=quiet " "$log" | cut -d: -f1)" ]
 }
 
+# bats test_tags=size:medium
 @test "a busy worktree's log names the pid and cmdline that kept it" {
     [ -x "$GC" ]
     local proj="$TMP/project" wt="$TMP/wt-busy" log="$TMP/project/.claude-dev/run/worktree-gc.log"

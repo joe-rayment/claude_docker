@@ -46,6 +46,7 @@ run_wait_for_sshd_ready() {
     bash -c 'set -euo pipefail; source "$1"; shift; wait_for_sshd_ready "$@"' _ "$lib" "$dir" "$@"
 }
 
+# bats test_tags=size:medium
 @test "open makes the client and host keys once and keeps them on the next open" {
     open_folder "$PROJECT_DIR"
     [ -s "$sd/client_ed25519" ]

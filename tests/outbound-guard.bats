@@ -157,6 +157,7 @@ make_no_gh_path() {
     [[ "$(deny_reason)" == *"GitHub connection"* ]]
 }
 
+# bats test_tags=size:medium
 @test "git push is denied when the connection check times out" {
     stub_gh "$BATS_TEST_TMPDIR/bin" 0 3
     export OUTBOUND_GUARD_GH_TIMEOUT=1

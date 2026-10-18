@@ -105,6 +105,7 @@ http.server.HTTPServer(('127.0.0.1', $port),
     [ "$status" -eq 0 ]
 }
 
+# bats test_tags=size:medium
 @test "an openrouter bind with a live guard says nothing about auth" {
     start_stub_guard "$CLAUDE_ORCA_GUARD_PORT" tok-abc || skip "could not bind a port"
     run "$TSET" worker openrouter:z-ai/glm-5.3-flash

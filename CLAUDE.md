@@ -11,8 +11,9 @@ This file provides instructions and context for AI coding agents working on this
 ## Build & Test
 
 ```bash
-./run-tests.sh           # the fast subset -- the everyday run, ~2 minutes
-./run-tests.sh --all     # every file, ~4 minutes (CLAUDE_ORCA_TEST_ALL=1 does the same)
+./run-tests.sh           # the fast set: small tests, not flaky, 60 s limit each
+./run-tests.sh --medium  # small + medium (they sleep, poll or run servers), 300 s each
+./run-tests.sh --all     # everything, flaky included (CLAUDE_ORCA_TEST_ALL=1 does the same)
 bats tests/*.bats        # the whole suite, directly
 bats tests/docs.bats     # one file
 bats -f 'git push' tests/outbound-guard.bats   # only the cases whose name contains "git push"
@@ -25,12 +26,12 @@ when you report it. A red file you did not touch is one line in your
 reply, never work. `tests/INDEX.md` says, for every file, what it guards,
 whether it checks behavior or only wording, and how to read a failure.
 
-The default run skips the dozen-odd files that stand up real processes or
-churn through big fixtures -- the slow set was picked by timing every file,
-and `run-tests.sh` names it in `SLOW_FILES` and prints how many it skipped.
-Both times assume GNU `parallel` (`brew install parallel`), which lets
-`run-tests.sh` run files side by side; one file at a time they are ~8 and
-~15 minutes on a 4-core Linux box.
+Tests follow `config/testing-standard.md` (shipped as `~/.claude/TESTING.md`):
+every test is small, medium or large by what it does, tagged
+`# bats test_tags=size:medium` (or `file_tags=` for a whole file); untagged
+is small. The fast set is 1,338 of 1,536 cases, ~7 minutes one file at a
+time on this box; GNU `parallel` (`brew install parallel`) lets
+`run-tests.sh` run files side by side.
 There is no CI in this repo: the image is built on the machine that runs it,
 so a red test must never stop a fix from reaching that machine.
 `scripts/container/smoke.sh` (the image's own check) and `tests/mac-e2e.sh`

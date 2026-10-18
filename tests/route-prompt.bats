@@ -1,4 +1,6 @@
 #!/usr/bin/env bats
+# bats file_tags=size:medium
+
 bats_require_minimum_version 1.5.0
 # Guards:   the route-prompt hook asks the guard once per prompt, prints one "[route] ..." line saying where the work should go, never blocks or leaks, and goes quiet when anything fails
 # Fails if: the request loses its model/system prompt/previous reply, a level maps to the wrong lane, the confidence floor stops raising a level, a floor word or short follow-up still makes a call, a worker or "router": false still routes, a slow guard stalls the prompt, or the guard token reaches output or the log

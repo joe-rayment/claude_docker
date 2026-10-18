@@ -146,6 +146,7 @@ teardown() {
     git -C "$proj" worktree list --porcelain | grep -qF "worktree $wt"
 }
 
+# bats test_tags=size:medium
 @test "sweep keeps a worktree that a running process has as its cwd" {
     [ -x "$STEP" ]
     local proj="$TMP/project" wt="$TMP/wt-busy"

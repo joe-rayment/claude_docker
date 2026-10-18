@@ -48,6 +48,7 @@ wait_runner() {
 
 jobdir_of() { printf '%s' "$1" | jq -r '.job' | { read -r j; printf '%s/.claude-dev/run/workers/%s' "$ROOTD" "$j"; }; }
 
+# bats test_tags=size:medium
 @test "creates worktree and branch work/<bead> and prints one JSON receipt" {
     run --separate-stderr "$DISPATCH" demo-1
     [ "$status" -eq 0 ]
@@ -86,6 +87,7 @@ jobdir_of() { printf '%s' "$1" | jq -r '.job' | { read -r j; printf '%s/.claude-
     [ ! -e "$FIX/wt/demo-1" ]
 }
 
+# bats test_tags=size:medium
 @test "writes job.json and a private spec.md under .claude-dev/run/workers/<job>" {
     run --separate-stderr "$DISPATCH" demo-1
     [ "$status" -eq 0 ]
@@ -126,6 +128,7 @@ jobdir_of() { printf '%s' "$1" | jq -r '.job' | { read -r j; printf '%s/.claude-
     [ "$(cat "$(jobdir_of "$output")/spec.md")" = "just do the thing" ]
 }
 
+# bats test_tags=size:medium
 @test "starts the runner detached with the job dir as its only argument" {
     run --separate-stderr "$DISPATCH" demo-1
     [ "$status" -eq 0 ]

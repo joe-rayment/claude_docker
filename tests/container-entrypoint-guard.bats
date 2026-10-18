@@ -15,6 +15,8 @@
 # environment IS what an ssh pane inherits. Nothing here touches openrouter.ai:
 # OPENROUTER_UPSTREAM points the guard at a python3 stdlib stub.
 
+# bats file_tags=size:medium
+
 load helpers/entrypoint-boot
 
 # The key that must never be visible to an agent terminal.

@@ -723,6 +723,7 @@ STUB
 
 # ── ps: job listing ──────────────────────────────────────────────────────
 
+# bats test_tags=size:medium
 @test "ps: lists a running job (pid alive, no receipt) and a done job (receipt present, retained)" {
     repo="$BATS_TEST_TMPDIR/repo"
     make_repo "$repo"

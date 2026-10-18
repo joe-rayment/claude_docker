@@ -197,6 +197,7 @@ line_of() { printf '%s\n' "$output" | grep -n -- "$1" | head -1 | cut -d: -f1; }
     absent_out 'EPIC READY'
 }
 
+# bats test_tags=size:medium
 @test "a worker that never reports ends the run after CLAUDE_ORCA_EPIC_IDLE_S: exit 5" {
     mklist A
     mkbead A "do a"

@@ -288,6 +288,7 @@ mkguard() {
     absent guardtoken-test-123 "$JOBDIR/log.jsonl"
 }
 
+# bats test_tags=size:medium
 @test "slots: with one slot a second job is marked queued while the first runs, then both finish" {
     export CLAUDE_ORCA_MAX_WORKERS=1
     mkjob s1; J1="$JOBDIR"
@@ -309,6 +310,7 @@ mkguard() {
     [ "$(wc -l <"$INBOX")" -eq 2 ]
 }
 
+# bats test_tags=size:medium
 @test "slots: six parallel runs on six slots leave six whole JSON lines in the inbox" {
     export CLAUDE_ORCA_MAX_WORKERS=6
     local n pids=""
@@ -325,6 +327,7 @@ mkguard() {
     [ "$(for n in 1 2 3 4 5 6; do jq -r .state "$WORKERS/p$n/job.json"; done | sort -u)" = "done" ]
 }
 
+# bats test_tags=size:medium
 @test "TERM: kills the agent's group, marks the job stopped, exits 143 and frees the slot" {
     export CLAUDE_ORCA_MAX_WORKERS=1
     mkjob t1; J1="$JOBDIR"
@@ -447,6 +450,7 @@ jobset() {
     [ "$(jv "$JOBDIR/receipt.json" .variant)" = "high" ]
 }
 
+# bats test_tags=size:medium
 @test "slot false: a job that opts out of the slot cap runs while the only slot is held, and records no slot" {
     # Guards:   a job with slot:false (delegate's runs have their own cap) neither waits for nor takes a worker-run slot
     # Fails if: slot:false still queues behind a running job, job.json gains a .slot, or the opted-out job disturbs the running one

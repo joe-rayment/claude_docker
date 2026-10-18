@@ -202,6 +202,7 @@ export_provision_test_env() {  # export_provision_test_env <project> <port>
 # Guards:   a provisioning step that fails (exit 3) leaves its own code in its status file, does not stop the steps after it, and does not take the sshd supervisor down with it
 # Fails if: a failing step aborts the runner or the entrypoint, flattens the exit code, or kills the supervisor (sshd is what a person ssh-es in through)
 # Run:      bats -f 'does not stop later steps or sshd' tests/provision.bats
+# bats test_tags=size:medium
 @test "a step that exits non-zero leaves its status file non-zero and does not stop later steps or sshd" {
     [ -x "$ENTRYPOINT" ]
 
@@ -247,6 +248,7 @@ export_provision_test_env() {  # export_provision_test_env <project> <port>
 # Guards:   sshd is started and run/port (the file the Mac side dials) is written before provisioning begins, so a person can ssh in while the steps run. The old assertion was about Orca's web URL; sshd has no URL, so the port file is the equivalent handshake
 # Fails if: provision-run.sh is started before start_sshd and the run/port write, so a step sees no port file or no "sshd supervisor started" line yet
 # Run:      bats -f 'sshd is started' tests/provision.bats
+# bats test_tags=size:medium
 @test "sshd is started (run/port written) BEFORE the first step runs" {
     [ -x "$ENTRYPOINT" ]
 
@@ -309,6 +311,7 @@ export_provision_test_env() {  # export_provision_test_env <project> <port>
 # Guards:   a folder whose sshd cannot start (no keys staged yet) is still provisioned: the steps run, their status is readable, and PID 1 keeps waiting instead of dying
 # Fails if: provisioning is skipped or the entrypoint exits when sshd has no keys, so the folder that most needs its status has none
 # Run:      bats -f 'whose sshd cannot start' tests/provision.bats
+# bats test_tags=size:medium
 @test "a folder whose sshd cannot start is still provisioned and the entrypoint keeps waiting" {
     [ -x "$ENTRYPOINT" ]
 
@@ -336,6 +339,7 @@ export_provision_test_env() {  # export_provision_test_env <project> <port>
     kill -0 "$(cat "$TMP/ep.pgid")"
 }
 
+# bats test_tags=size:medium
 @test "a step that hangs is bounded by CLAUDE_ORCA_PROVISION_TIMEOUT and the steps after it still run" {
     [ -x "$PROVISION_RUN" ]
 
@@ -356,6 +360,7 @@ export_provision_test_env() {  # export_provision_test_env <project> <port>
     grep -qF 'still got here' "$pdir/20-after.log"
 }
 
+# bats test_tags=size:medium
 @test "the real OpenRouter key reaches the guard step and no other step" {
     [ -x "$PROVISION_RUN" ]
 
@@ -379,6 +384,7 @@ export_provision_test_env() {  # export_provision_test_env <project> <port>
     [ "$output" = "0" ]
 }
 
+# bats test_tags=size:medium
 @test "config-sync serialises concurrent runs with a flock" {
     [ -x "$CONFIG_SYNC" ]
     command -v flock >/dev/null 2>&1
@@ -578,6 +584,7 @@ wait_tcp_closed() {  # wait_tcp_closed <port>
     return 1
 }
 
+# bats test_tags=size:medium
 @test "the guard step restarts a guard that has died, on the same token, and a live one is left alone" {
     [ -x "$GUARD_STEP" ]
     [ -f "$GUARD_PY" ]

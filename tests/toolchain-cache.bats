@@ -294,6 +294,7 @@ lacks() {
     contains "$body" "chown_agent_tree"
 }
 
+# bats test_tags=size:medium
 @test "a build that says nothing is reported as such, with the clock and a way out" {
     # `==> Building ...` and then nothing was the whole of the output while
     # two wedged pulls of the same image sat with no network activity for

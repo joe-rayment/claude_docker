@@ -7,17 +7,22 @@
 # applies here -- there is no baked image, and every suite lives at
 # tests/*.bats in the checkout being tested.
 #
-# FAST BY DEFAULT. The whole suite is ~15 minutes one file at a time (~4
-# with GNU parallel on 4 cores), and the bulk of that is a
-# handful of files that stand up real processes (a real local end-to-end
-# start, sshd) or churn through big fixtures. Those live in SLOW_FILES
-# below -- chosen by timing every file, not by guessing -- and are skipped
-# unless you ask for them:
+# SIZED, PER ~/.claude/TESTING.md (config/testing-standard.md). Every test
+# is small, medium or large, by what it is allowed to do: small touches only
+# its own temp files and the programs it waits for; medium may sleep, poll,
+# or run background processes and localhost services; large may reach the
+# network. A test or file says so with `# bats test_tags=size:medium` or
+# `# bats file_tags=size:medium`; untagged counts as small. `flaky` marks a
+# test that flipped with no code change -- it leaves the fast set until fixed.
 #
-#   ./run-tests.sh              # the fast subset (the everyday run)
-#   ./run-tests.sh --all        # every file, as before
-#   CLAUDE_ORCA_TEST_ALL=1 ./run-tests.sh   # the same thing
+#   ./run-tests.sh              # the fast set: small, not flaky, 60 s per test
+#   ./run-tests.sh --medium     # small + medium, not flaky, 300 s per test
+#   ./run-tests.sh --all        # everything, flaky included, 900 s per test
+#   CLAUDE_ORCA_TEST_ALL=1 ./run-tests.sh   # the same as --all
 #   bats tests/*.bats           # also still the whole suite, directly
+#
+# A test that hits its limit fails with "timeout after Ns": it is not the
+# size it claims -- tag it larger or make it faster.
 #
 # PARALLEL WHEN IT CAN BE. With GNU parallel installed (brew install
 # parallel), test files run side by side, one per CPU core; the cases
@@ -31,45 +36,29 @@ set -e
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TEST_DIR="$REPO_ROOT/tests"
 
-# Measured on the dev box (bats per file, seconds): code-map 37,
-# first-start-dns 33, container-entrypoint 32, prime-hook 31,
-# container-image 30, bootstrap 29, fresh-project 19, bd-guard 18,
-# launcher-v3-build 16, toolchain-cache 14, update-hygiene 11.
-# Re-timed on a 4-core Linux box without Docker (Sept 2026), where the
-# files that need it skip in under a second: container-entrypoint 158,
-# bd-guard 89, launcher-v3 72, bootstrap 51, first-start-dns 35,
-# launcher-v3-build 33, code-map 27. The list stays as it is: each file is
-# slow where the tools it needs are installed. Every name below is a file
-# that exists in tests/ (tests/INDEX.md's Speed column lists the same set).
-# Everything else is under 9s and most of it under 1s. e2e-local is quick
-# but starts a real local run, so it goes here too.
-SLOW_FILES="
-bd-guard.bats
-bootstrap.bats
-code-map.bats
-container-entrypoint.bats
-container-image.bats
-e2e-local.bats
-first-start-dns.bats
-fresh-project.bats
-launcher-v3-build.bats
-prime-hook.bats
-toolchain-cache.bats
-update-hygiene.bats
-"
-
 RUN_ALL="${CLAUDE_ORCA_TEST_ALL:-0}"
+RUN_MEDIUM=0
 for arg in "$@"; do
     case "$arg" in
         --all) RUN_ALL=1 ;;
+        --medium) RUN_MEDIUM=1 ;;
         -h|--help)
-            sed -n '3,22p' "$0" | sed 's/^# \{0,1\}//'
+            sed -n '3,30p' "$0" | sed 's/^# \{0,1\}//'
             exit 0 ;;
         *)
-            echo "Error: unknown argument '$arg' (expected --all)." >&2
+            echo "Error: unknown argument '$arg' (expected --medium or --all)." >&2
             exit 2 ;;
     esac
 done
+
+if [ "$RUN_ALL" = "1" ]; then
+    SET="everything"; LIMIT=900; FILTER=""
+elif [ "$RUN_MEDIUM" = "1" ]; then
+    SET="small + medium, not flaky"; LIMIT=300; FILTER="!size:large,!flaky"
+else
+    SET="the fast set: small, not flaky"; LIMIT=60; FILTER="!size:medium,!size:large,!flaky"
+fi
+export BATS_TEST_TIMEOUT="${BATS_TEST_TIMEOUT:-$LIMIT}"
 
 if ! command -v bats >/dev/null 2>&1; then
     echo "Error: bats not found." >&2
@@ -81,19 +70,9 @@ if [ ! -d "$TEST_DIR" ]; then
     exit 1
 fi
 
-# The file list, and the count of what got left out.
 FILES=""
-SKIPPED=0
 for f in "$TEST_DIR"/*.bats; do
     [ -e "$f" ] || continue
-    if [ "$RUN_ALL" != "1" ]; then
-        base="$(basename "$f")"
-        case "$SLOW_FILES" in
-            *"
-$base
-"*) SKIPPED=$((SKIPPED + 1)); continue ;;
-        esac
-    fi
     FILES="$FILES
 $f"
 done
@@ -147,6 +126,8 @@ if [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
     fi
 fi
 
+NFILES=$#
+
 # Files side by side when GNU parallel is here (bats needs it for --jobs).
 JOBS="${CLAUDE_ORCA_TEST_JOBS:-}"
 if [ -z "$JOBS" ]; then
@@ -159,6 +140,10 @@ if [ "$JOBS" -gt 1 ] && [ "$#" -gt 1 ] && command -v parallel >/dev/null 2>&1; t
 else
     JOBS=1
 fi
+if [ -n "$FILTER" ]; then
+    set -- --filter-tags "$FILTER" "$@"
+fi
+echo "==> $SET, ${BATS_TEST_TIMEOUT}s per test"
 
 START=$(date +%s)
 STATUS=0
@@ -176,11 +161,10 @@ fi
 ELAPSED=$(( $(date +%s) - START ))
 
 echo ""
-[ "$JOBS" -gt 1 ] && shift 3   # the count below is of files, not flags
-if [ "$SKIPPED" -gt 0 ]; then
-    echo "==> $# test files run in ${ELAPSED}s; $SKIPPED slow file(s) skipped -- run them with ./run-tests.sh --all"
+if [ "$RUN_ALL" = "1" ]; then
+    echo "==> $NFILES test files run in ${ELAPSED}s: $SET"
 else
-    echo "==> $# test files run in ${ELAPSED}s; none skipped (this was the full suite)"
+    echo "==> $NFILES test files run in ${ELAPSED}s: $SET -- larger tests: ./run-tests.sh --medium or --all"
 fi
 
 exit "$STATUS"

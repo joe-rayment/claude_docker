@@ -3,6 +3,8 @@
 # Fails if: a text `xclip -o` reaches the socket, the PNG bytes come back altered, a 204/404 prints anything or exits 0, the 3 tries 0.1 s apart stop (or a real HTTP answer gets retried), or bin/xclip stops winning over /usr/bin/xclip on a pane's PATH
 # Run:      bats tests/clipboard-xclip.bats
 
+# bats file_tags=size:medium
+
 ROOT="$BATS_TEST_DIRNAME/.."
 XCLIP="$ROOT/scripts/container/xclip"
 SERVER="$ROOT/tests/helpers/clip-fake-server.py"

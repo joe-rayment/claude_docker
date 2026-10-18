@@ -203,6 +203,7 @@ teardown() {
     [ "$(git -C "$proj" symbolic-ref --short HEAD)" = "side" ]
 }
 
+# bats test_tags=size:medium
 @test "gc sweeps home/ and config/ of a finished delegate job but keeps its receipt, log, branch and env; a job with a live pid is untouched" {
     [ -x "$GC" ]
     local proj="$TMP/project" done_job="$TMP/project/.claude-dev/delegate/job-done" \

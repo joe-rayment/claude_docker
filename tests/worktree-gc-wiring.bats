@@ -242,6 +242,7 @@ teardown() {
     [[ "$output" == *"STRANDED branch wt-stray: 1 commit(s) not in main (worktree $wt kept: uncommitted changes)"* ]]
 }
 
+# bats test_tags=size:medium
 @test "worktree-gc keeps a merged worktree as busy when an idle shell whose parent is orca-ide sits in it" {
     [ -x "$GC" ]
     local proj="$TMP/project" wt="$TMP/wt-idle"

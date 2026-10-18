@@ -72,6 +72,7 @@ put_config() {
     [ "$(cat "$REC")" = "$(printf 'config=%s\ncreated=1\nadded_newline=0\nversion=1' "$CFG")" ]
 }
 
+# bats test_tags=size:medium
 @test "installing twice changes no byte and no file mtime" {
     gsetup
     put_config "$CFG" 'font-size = 14\n'

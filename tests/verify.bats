@@ -233,6 +233,7 @@ PY
     [ -n "$GUARD_PORT" ]
 }
 
+# bats test_tags=size:medium
 @test "verify-folder says the openrouter guard is listening when it answers 401 without its token (claude-orca-0v6)" {
     # Guards:   a running guard (it answers 401 to a tokenless probe) is reported ok, not "nothing answers"
     # Fails if: the probe goes back to `curl -f`, which turns any 4xx into "down"

@@ -195,6 +195,7 @@ JSON
     [ "$dir" = "/some/other/dir" ]
 }
 
+# bats test_tags=size:medium
 @test "opencode's exit code is the exit code, and a timeout is 124" {
     export STUB_EXIT=7
     run --separate-stderr "$RECON" "q"
@@ -214,6 +215,7 @@ JSON
 # on the same model share one log/receipt -- each truncates the shared log
 # and parses the other's events.
 # Run: bats tests/recon.bats -f 'same-second'
+# bats test_tags=size:medium
 @test "two same-second runs each get their own log and their own answer" {
     export STUB_ANSWER_WORD=1
     "$RECON" "which callers check tier-roles-first alpha" >"$T/out1" 2>"$T/err1" &

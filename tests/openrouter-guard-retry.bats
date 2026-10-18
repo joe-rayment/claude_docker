@@ -13,6 +13,8 @@
 # the Retry-After case uses a real "Retry-After: 1" header and asserts
 # sleep_s == 1 in the guard's JSON log.
 
+# bats file_tags=size:medium
+
 REPO_ROOT="${BATS_TEST_DIRNAME:-.}"
 REPO_ROOT="$(cd "$REPO_ROOT/.." && pwd)"
 

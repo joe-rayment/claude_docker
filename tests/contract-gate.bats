@@ -494,6 +494,7 @@ VERIFIED: PASS — verifier $CORROB_ID"
 # discoverable store and an uncorroborated note: bd non-zero, bd emitting
 # unparseable JSON, and bd hanging past the subprocess timeout. (Unparseable
 # stdin and a missing bd are cases (g)/(h).) [PASS-IF clause 4]
+# bats test_tags=size:medium
 @test "(u) bd non-zero / bad JSON / timeout still fail open silently" {
     export CONTRACT_GATE_TRANSCRIPT_ROOT="$BATS_TEST_TMPDIR/store"
     fake_transcript "$CONTRACT_GATE_TRANSCRIPT_ROOT" "$CORROB_ID" beads_claude_docker-4y6 "$PASS_VERDICT"

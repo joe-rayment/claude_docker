@@ -13,6 +13,8 @@
 # The allowlist is read from the SHIPPED config/provider-policy.json, so the
 # policy file and the guard can never drift apart without this failing.
 
+# bats file_tags=size:medium
+
 REPO_ROOT="${BATS_TEST_DIRNAME:-.}"
 REPO_ROOT="$(cd "$REPO_ROOT/.." && pwd)"
 

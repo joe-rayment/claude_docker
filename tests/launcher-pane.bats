@@ -627,6 +627,7 @@ teardown() {
 #           listener gets other arguments, or a stale pidfile keeps the
 #           bridge down for good.
 # Run:      bats -f 'pane starts the clipboard listener' tests/launcher-pane.bats
+# bats test_tags=size:medium
 @test "pane starts the clipboard listener once, not again while its pid is alive, again when it is dead" {
     open_folder "$PROJECT_DIR"
     write_stub_ssh
@@ -666,6 +667,7 @@ teardown() {
 # Fails if: the opt-out is ignored by the pane path, so a folder that said no
 #           to the clipboard bridge still gets a listener on the Mac.
 # Run:      bats -f 'clipboard false' tests/launcher-pane.bats
+# bats test_tags=size:medium
 @test "pane with clipboard false starts no clipboard listener" {
     open_folder "$PROJECT_DIR"
     write_stub_ssh
@@ -691,6 +693,7 @@ teardown() {
 # Fails if: stop leaves the listener running or its files behind, or signals
 #           whatever process now owns a recycled pid in the pidfile.
 # Run:      bats -f 'stop ends the clipboard listener' tests/launcher-pane.bats
+# bats test_tags=size:medium
 @test "stop ends the clipboard listener and removes its sock and pid files, and leaves a foreign pid alone" {
     open_folder "$PROJECT_DIR"
     write_stub_ssh
@@ -732,6 +735,7 @@ teardown() {
 #           pidfile AND log, so nothing of the bridge outlives the folder.
 # Fails if: teardown leaves the listener running, or any of the three files.
 # Run:      bats -f 'teardown ends the clipboard listener' tests/launcher-pane.bats
+# bats test_tags=size:medium
 @test "teardown ends the clipboard listener and removes its sock, pid and log files" {
     open_folder "$PROJECT_DIR"
     write_stub_ssh

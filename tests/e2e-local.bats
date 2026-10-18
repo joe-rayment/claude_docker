@@ -31,6 +31,8 @@
 #   * Peers on this box run their own sessions, so teardown matches only
 #     processes whose argv carries THIS run's directory, never a bare name.
 
+# bats file_tags=size:medium
+
 REPO_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd -P)"
 
 # Read at file level, before setup() points HOME at the fixture.

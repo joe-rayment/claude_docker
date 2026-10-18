@@ -148,6 +148,7 @@ calls_of() { grep -c "^$1 " "$CALLS" || true; }
     ! grep -q 'repo create' "$CALLS"
 }
 
+# bats test_tags=size:medium
 @test "a live lock keeps a second --pane quiet; a dead-pid lock is taken over" {
     # Guards:   two panes opened at once do not both interrogate the user
     # Fails if: a live lock is ignored, or a stale lock blocks the menu forever
@@ -172,6 +173,7 @@ calls_of() { grep -c "^$1 " "$CALLS" || true; }
 # Guards:   the menu waits while this boot's provisioning is running (so beads/GitHub are asked after 55-git-init), says so, and asks once it is done
 # Fails if: the menu asks before the running marker disappears, or prints no "Finishing"/"setup finished" lines
 # Run:      bats -f 'waits for a running provision' tests/startup-menu.bats
+# bats test_tags=size:medium
 @test "the menu waits for a running provision to finish before asking anything" {
     local pd="$P/.claude-dev/run/provision"
     mkdir -p "$pd"
@@ -208,6 +210,7 @@ calls_of() { grep -c "^$1 " "$CALLS" || true; }
 # Guards:   a setup that never finishes cannot hold the menu forever: after CLAUDE_ORCA_STARTUP_WAIT seconds it says so and asks anyway
 # Fails if: the timeout is ignored (the menu hangs) or the beads question is never asked
 # Run:      bats -f 'still running' tests/startup-menu.bats
+# bats test_tags=size:medium
 @test "a provision that never finishes: after CLAUDE_ORCA_STARTUP_WAIT the menu says so and asks anyway" {
     local pd="$P/.claude-dev/run/provision"
     mkdir -p "$pd"
