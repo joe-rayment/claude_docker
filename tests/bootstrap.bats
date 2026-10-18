@@ -289,6 +289,29 @@ shadow_path_without() {
     [ ! -s "$OPEN_STUB_LOG" ]
 }
 
+# Guards:   the README's line (`... | bash`) typed in a terminal ends inside the folder's first pane, where a new folder's startup menu runs, not back at the Mac prompt
+# Fails if: bootstrap hands register the piped script as stdin, so register sees no terminal and only prints "ready: run ./claude-dev pane"
+# Run:      bats -f 'typed in a terminal' tests/bootstrap.bats
+@test "bootstrap typed in a terminal makes that terminal the folder's first pane" {
+    command -v script >/dev/null 2>&1 || skip "needs script(1) for a real terminal"
+    mkdir -p "$PROJECT_DIR"
+    local calls="$BATS_TEST_TMPDIR/pane-ssh.calls"
+    cat >"$STUB_BIN/pane-ssh" <<EOF
+#!/bin/sh
+case " \$* " in
+    *" -tt "*) { printf 'ssh %s\n' "\$*"; [ -t 0 ] && echo stdin-is-a-terminal; } >>"$calls" ;;
+esac
+exit 0
+EOF
+    chmod +x "$STUB_BIN/pane-ssh"
+    export STUB_UNAME_S=Linux STUB_UNAME_M=aarch64 CLAUDE_ORCA_SSH="$STUB_BIN/pane-ssh"
+    run script -qec "cd '$PROJECT_DIR' && cat '$REPO_ROOT/bootstrap.sh' | bash" /dev/null
+    [ "$status" -eq 0 ]
+    grep -q -- ' -tt ' "$calls"
+    grep -q stdin-is-a-terminal "$calls"
+    [[ "$output" != *"ready: run ./claude-dev pane in a terminal"* ]]
+}
+
 # The .gitignore seeding moved into the container (startup v4,
 # claude-orca-qa2.9): the entrypoint owns it now, and
 # tests/container-entrypoint.bats exercises it natively rather than through

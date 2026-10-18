@@ -426,4 +426,11 @@ if [ "$UNAME_S" = "Darwin" ]; then
     "$HOST/bin/claude-dev" ghostty || true
 fi
 
+# The terminal that ran the bootstrap line becomes the folder's first pane
+# (on a new folder, the startup menu). Under `| bash` stdin is this script, so
+# register would see no terminal and only print the pane command; /dev/tty is
+# the terminal itself, the one sudo and gh auth login read above.
+if [ -t 1 ] && ( : </dev/tty ) 2>/dev/null; then
+    exec "$HOST/bin/claude-dev" register "$PROJECT" </dev/tty
+fi
 exec "$HOST/bin/claude-dev" register "$PROJECT"

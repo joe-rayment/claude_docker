@@ -46,11 +46,13 @@ gh api repos/joe-rayment/claude_orca/contents/bootstrap.sh -H "Accept: applicati
 It installs what is missing, clones this template into `.claude-dev/template`,
 writes the `./claude-dev` launcher, runs `claude-dev ghostty` (below), builds
 the image and starts the container. You see the steps print, then `sshd is up
-(3s)` and `ready: run ./claude-dev pane in a terminal`. Re-running is safe; to
+(3s)`, and this terminal becomes the folder's first pane: on a new folder, the
+startup menu (step 2). Without a terminal it prints `ready: run ./claude-dev
+pane in a terminal` instead. Re-running is safe; to
 isolate another folder, run the same line from inside it. The folder need not
 be a git repository: the first start makes one on `main` with a seed commit.
 
-**2. Open a pane.** Open a new Ghostty tab in the folder, or type
+**2. More panes.** Open a new Ghostty tab in the folder, or type
 `./claude-dev pane` in any terminal. You land at a prompt in
 `/workspace/<name>`; `cd ..` shows that one folder and nothing else. On a new
 folder the first pane opens a startup menu that offers to set up beads, then
