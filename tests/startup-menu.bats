@@ -38,16 +38,17 @@ stub() {
 menu() { bash "$MENU" "$@"; }
 calls_of() { grep -c "^$1 " "$CALLS" || true; }
 
-@test "a new folder: n, 2 inits beads once without asking, never creates a repo or starts claude, writes the marker" {
-    # Guards:   the happy first-run path: beads set up unasked, GitHub no, stay in the shell
+@test "a new folder: n inits beads once without asking, never creates a repo, ends in claude, writes the marker" {
+    # Guards:   the happy first-run path: beads set up unasked, GitHub no, then straight into Claude Code
     # Fails if: bd init is skipped or run twice, the GitHub default flips to yes, or the marker is not written
-    # Run:      bats -f 'a new folder: n, 2' tests/startup-menu.bats
-    run bash -c "printf 'n\n2\n' | bash '$MENU'"
+    # Run:      bats -f 'a new folder: n inits' tests/startup-menu.bats
+    run bash -c "printf 'n\n' | bash '$MENU'"
     [ "$status" -eq 0 ]
     [ "$(grep -c '^bd init --prefix demo$' "$CALLS")" -eq 1 ]
     [ "$(calls_of bd)" -eq 1 ]
     ! grep -q 'repo create' "$CALLS"
-    [ "$(calls_of claude)" -eq 0 ]
+    [ "$(calls_of claude)" -eq 1 ]
+    [[ "$output" != *"What next?"* ]]
     [ -f "$P/.claude-dev/run/startup-menu.done" ]
     run menu --due
     [ "$status" -eq 1 ]
@@ -98,7 +99,7 @@ calls_of() { grep -c "^$1 " "$CALLS" || true; }
     run bash -c "printf '2\n' | bash '$MENU' --pane"
     [ "$status" -eq 0 ]
     [[ "$output" == *"beads: already set up"* ]]
-    [[ "$output" == *"What next?"* ]]
+    [[ "$output" == *"Starting Claude Code"* ]]
     [ "$(calls_of bd)" -eq 0 ]
     [ -f "$P/.claude-dev/run/startup-menu.done" ]
     run bash -c "bash '$MENU' --pane </dev/null"
@@ -126,16 +127,13 @@ calls_of() { grep -c "^$1 " "$CALLS" || true; }
     grep -qxF "gh repo create demo --private --source $P --remote origin --push" "$CALLS"
 }
 
-@test "What next: 1 and an empty line both start claude with --dangerously-skip-permissions" {
-    # Guards:   Claude Code is the default way out of the menu
-    # Fails if: the default stops launching claude, or drops the flag
-    # Run:      bats -f 'What next: 1' tests/startup-menu.bats
-    run bash -c "printf 'n\n1\n' | bash '$MENU'"
+@test "the menu ends in claude --dangerously-skip-permissions without asking" {
+    # Guards:   Claude Code is where the menu always lands -- no "What next?" question
+    # Fails if: the menu asks again before launching, stops launching claude, or drops the flag
+    # Run:      bats -f 'ends in claude' tests/startup-menu.bats
+    run bash -c "printf 'n\n' | bash '$MENU'"
     [ "$status" -eq 0 ]
-    grep -qxF "claude --dangerously-skip-permissions" "$CALLS"
-    : >"$CALLS"
-    rm -f "$P/.claude-dev/run/startup-menu.done"
-    run bash -c "printf 'n\n\n' | bash '$MENU'"
+    [[ "$output" != *"What next?"* ]]
     grep -qxF "claude --dangerously-skip-permissions" "$CALLS"
 }
 

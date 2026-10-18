@@ -10,7 +10,7 @@
 # NEW = no run/startup-menu.done: a folder that never saw the menu, even one
 # whose .beads an older boot created silently (every folder before bg9). Input is stdin: an empty line
 # takes the default, EOF skips everything left (never a yes), `q` skips the
-# remaining setup steps. Runs only inside the container; always exits 0 except
+# remaining setup steps; otherwise the menu ends in Claude Code. Runs only inside the container; always exits 0 except
 # --due.
 
 if [ -z "${PROJECT_DIR:-}" ]; then
@@ -217,11 +217,10 @@ write_done
 printf '\nRun startup-menu any time to see this again.\n'
 printf '%s━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━%s\n' "$B" "$N"
 
+# Straight into Claude Code -- no question; quitting it leaves this shell.
+# Input that ended (EOF) or a q still means nobody is there to use it.
 if [ "$EOF_SEEN" = 0 ] && [ "$QUIT" = 0 ]; then
-    if ask "What next?  [1] Claude Code (default)  [2] this shell " 1; then
-        case "$ANS" in
-        1) claude --dangerously-skip-permissions || true ;;
-        esac
-    fi
+    printf 'Starting Claude Code (quit it for this shell)...\n'
+    claude --dangerously-skip-permissions || true
 fi
 exit 0
