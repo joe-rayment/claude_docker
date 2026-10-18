@@ -30,8 +30,8 @@
 # re-runs all of them.
 #
 # Environment:
-#   PROJECT_DIR   required; the bind-mounted project, same absolute path
-#                 as on the Mac.
+#   PROJECT_DIR   required; the bind-mounted project, at /workspace/<name>
+#                 (the Mac path rides in as CLAUDE_ORCA_HOST_PROJECT_DIR).
 #   CLAUDE_ORCA_SSHD_PORT     sshd's port (default 2222); mirrored to
 #                 run/port.
 #   HOST_UID      the Mac uid owning the bind mount; `agent` is re-mapped

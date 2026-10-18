@@ -17,7 +17,7 @@ and names what changed. If everything behaves, it stays **green** (passes).
 
 - A **test case** is one check (one `@test "…"` block).
 - A **test file** (`tests/<name>.bats`) groups the cases for one script or feature.
-- The **suite** is all of them: 106 files, 1,474 cases.
+- The **suite** is all of them: 106 files, 1,476 cases.
 
 ### What bats is
 
@@ -121,7 +121,7 @@ Those checks are run by hand:
 
 ## Part 2 — the map
 
-106 files, 1,474 cases: 87 files check behavior only, 15 mix behavior with
+106 files, 1,476 cases: 87 files check behavior only, 15 mix behavior with
 a few config checks, and 4 are config checks only. **Speed** is from
 `run-tests.sh`'s timing: `slow` files are skipped by the everyday run.
 
@@ -240,7 +240,7 @@ too, once Orca was removed from the project.
 | `update-hygiene.bats` | 5 | slow | `claude-dev --update` reports the image id it actually moved to, deletes only its own untagged/superseded image layers, and clears only run/ results — never auth, config or home. | behavior | — |
 | `variant-carry.bats` | 8 | fast | A role's reasoning-effort variant (e.g. `@high`) actually reaches opencode's generated config on both the headless-worker path (workers_opencode_command) and batch `delegate run --route`; `config/delegate-routes.json` ships luna and luna-high. | behavior | — |
 | `verifier-doc.bats` | 2 | fast | The verifier agent definition documents its "C6 unseen-case" check, and `delegate-routes.json` ships the flash-class scout routes with the right shape. | mixed | 2 config checks: verifier's C6 section, delegate-routes.json shape |
-| `verify.bats` | 9 | fast | `claude-dev verify`/`verify-folder.sh` read back whether a folder's setup (hooks, rulebook, git identity, OpenRouter guard) actually succeeded, failing loudly instead of silently looking fine. | behavior | — |
+| `verify.bats` | 11 | fast | `claude-dev verify`/`verify-folder.sh` read back whether a folder's setup (hooks, rulebook, git identity, OpenRouter guard -- a guard answering 401 without its token counts as listening) actually succeeded, failing loudly instead of silently looking fine. | behavior | — |
 | `workers-cli.bats` | 7 | fast | `workers` (list/wait/reply/tail/stop) reads the job dirs and the inbox honestly -- no double-delivered or skipped inbox line, no hidden dead pid -- and the slot cap really queues extra dispatches. | behavior | — |
 | `workers-dispatch.bats` | 14 | fast | scripts/dispatch.sh turns a bead into a worktree, a job directory and a started (stub) runner, honours tier.json, and prints one valid receipt line. | behavior | — |
 | `workers-handoff-spec.bats` | 2 | fast | A dispatch folds the last HANDOFF-AT block of its bead's notes into the next worker's spec, once; a bead with no such block gets a spec byte-identical to one without notes. | behavior | — |
