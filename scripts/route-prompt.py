@@ -227,7 +227,7 @@ def bulk_for(level, rundir):
     if level == "answer":
         return "you, inline"
     if level == "lookup":
-        return named("one scout%s", "recon")
+        return named("one scout%s, or inline for one search", "recon")
     if level == "build":
         return named("one executor%s", "worker")
     return named("you plan; executors%s take slices", "worker")

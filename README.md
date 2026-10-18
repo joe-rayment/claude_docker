@@ -190,6 +190,8 @@ them:
 - **`clipboard`**: `false` turns the clipboard bridge off.
 - **`route`**: `false` makes the Ghostty router leave this folder alone, so
   tabs opened in it stay Mac shells.
+- **`router`**: `false` turns the per-prompt `[route]` hint off (not the
+  same as `route` above); `routerModel` picks a different OpenRouter model.
 - **`extraMounts`**: `host:guest` pairs, mounted **read-only**, always.
 
 Apply a change with `./claude-dev --update`, which recreates the container.
@@ -203,6 +205,11 @@ one that asked rather than guessed); `dispatch --epic <id>` runs an epic's
 ready children in waves, and a failed blocker blocks its dependents. None of
 it needs anything but the container. The playbook is
 [knowledge-base/TIERED_ORCHESTRATION.md](knowledge-base/TIERED_ORCHESTRATION.md).
+
+Before each prompt, a hook makes one cheap model call (about a second, about
+$0.0001) and tells the session which lane it looks like and who should do the
+bulk of the work; it only advises, and it errs upward. See "Prompt router" in
+the playbook above.
 
 A bead can also name a route; Claude writes the brief and dispatches headless:
 

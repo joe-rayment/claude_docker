@@ -143,7 +143,7 @@ calls_log() { cat "$RUN/route/calls.log" 2>/dev/null || true; }
 @test "route-prompt: lookup prints lane express with one scout on the recon tier model" {
   start_guard; reply lookup 0.9
   route "where is the sshd supervisor retry loop defined"
-  [[ "$output" == "[route] lookup (0.90) -> lane express; bulk: one scout (haiku) -- because it is so" ]]
+  [[ "$output" == "[route] lookup (0.90) -> lane express; bulk: one scout (haiku), or inline for one search -- because it is so" ]]
 }
 
 @test "route-prompt: build prints lane standard with one executor on the worker tier model" {
