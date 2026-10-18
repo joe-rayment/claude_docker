@@ -69,6 +69,9 @@ SECRET_PATTERNS = (
     re.compile(r"\bBearer\s+\S+", re.IGNORECASE),
 )
 LONG_RUN = re.compile(r"[A-Za-z0-9+/=_-]{40,}")
+# A key-named assignment loses its value whatever its length: the long-run
+# rule judges each side of an "=" alone, so it would keep a short value.
+ASSIGN_SECRET = re.compile(r"\b([A-Za-z][A-Za-z0-9_]*(?:API_KEY|TOKEN|SECRET|PASSWORD))=\S+")
 
 
 def note(msg):
@@ -109,6 +112,7 @@ def redact_text(text, extra=()):
             text = text.replace(secret, "[redacted]")
     for pat in SECRET_PATTERNS:
         text = pat.sub("[redacted]", text)
+    text = ASSIGN_SECRET.sub(r"\1=[redacted]", text)
 
     def judge(run):
         if len(run) < 40:
