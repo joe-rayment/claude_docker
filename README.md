@@ -54,8 +54,8 @@ be a git repository: the first start makes one on `main` with a seed commit.
 
 **2. More panes.** Open a new Ghostty tab in the folder, or type
 `./claude-dev pane` in any terminal. You land at a prompt in
-`/workspace/<name>`; `cd ..` shows that one folder and nothing else. On a new
-folder the first pane opens a startup menu that offers to set up beads, then
+`/workspace/<name>`; `cd ..` shows that one folder and nothing else. The first
+pane a folder ever gets (an existing folder too) opens a startup menu that offers to set up beads, then
 GitHub, then starts Claude Code; say no to any of it, and `startup-menu` runs
 it again whenever you want.
 

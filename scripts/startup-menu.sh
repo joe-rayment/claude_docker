@@ -7,7 +7,8 @@
 #                         menu when the folder is NEW, else one identity line
 #   startup-menu --due    exit 0 if the folder is NEW, 1 if not; prints nothing
 #
-# NEW = no .beads and no run/startup-menu.done. Input is stdin: an empty line
+# NEW = no run/startup-menu.done: a folder that never saw the menu, even one
+# whose .beads an older boot created silently (every folder before bg9). Input is stdin: an empty line
 # takes the default, EOF skips everything left (never a yes), `q` skips the
 # remaining setup steps. Runs only inside the container; always exits 0 except
 # --due.
@@ -27,7 +28,7 @@ done_file="$run/startup-menu.done"
 log="$run/startup-menu.log"
 lock="$run/startup-menu.lock"
 
-is_new() { [ ! -e "$PROJECT_DIR/.beads" ] && [ ! -e "$done_file" ]; }
+is_new() { [ ! -e "$done_file" ]; }
 
 identity() {
     printf '● %s · claude-dev sandbox (Linux container, %s) · cs starts Claude Code · startup-menu sets up beads/GitHub\n' "$name" "$PROJECT_DIR"

@@ -75,16 +75,32 @@ calls_of() { grep -c "^$1 " "$CALLS" || true; }
     [ -f "$P/.claude-dev/run/startup-menu.done" ]
 }
 
-@test "--pane on a folder that is not new prints exactly the identity line and calls nothing" {
+@test "--pane on a folder that already saw the menu prints exactly the identity line and calls nothing" {
     # Guards:   later panes only say where they are
-    # Fails if: --pane runs the menu for a folder that already has .beads, or prints more than one line
-    # Run:      bats -f 'not new prints exactly' tests/startup-menu.bats
-    mkdir "$P/.beads"
+    # Fails if: --pane runs the menu again once the marker exists, or prints more than one line
+    # Run:      bats -f 'already saw the menu' tests/startup-menu.bats
+    mkdir -p "$P/.claude-dev/run"
+    : >"$P/.claude-dev/run/startup-menu.done"
     run bash -c "bash '$MENU' --pane </dev/null"
     [ "$status" -eq 0 ]
     [ "${#lines[@]}" -eq 1 ]
     [ "$output" = "● demo · claude-dev sandbox (Linux container, $P) · cs starts Claude Code · startup-menu sets up beads/GitHub" ]
     [ ! -s "$CALLS" ]
+}
+
+@test "--pane on a folder that has .beads but never saw the menu still opens it, once" {
+    # Guards:   the user's real folders all got .beads from an older silent boot step; they must still get the menu
+    # Fails if: the menu is gated on .beads again -- this folder then prints only the identity line
+    # Run:      bats -f 'has .beads but never saw' tests/startup-menu.bats
+    mkdir "$P/.beads"
+    run bash -c "printf '2\n' | bash '$MENU' --pane"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"beads: already set up"* ]]
+    [[ "$output" == *"What next?"* ]]
+    [ "$(calls_of bd)" -eq 0 ]
+    [ -f "$P/.claude-dev/run/startup-menu.done" ]
+    run bash -c "bash '$MENU' --pane </dev/null"
+    [ "${#lines[@]}" -eq 1 ]
 }
 
 @test "an origin already set means no GitHub question and no repo create" {
