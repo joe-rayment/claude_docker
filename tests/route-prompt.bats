@@ -209,7 +209,7 @@ calls_log() { cat "$RUN/route/calls.log" 2>/dev/null || true; }
   start_guard; reply build 0.9
   route "rename the helper foo to bar in scripts/x.sh"
   [ "$(n_requests)" = 1 ]
-  route "thanks"
+  route "go on"
   [ "$output" = "[route] build -> lane standard (kept from the last prompt)" ]
   [ "$(n_requests)" = 1 ]
   [[ "$(calls_log)" == *" kept level=build "* ]]
@@ -217,11 +217,24 @@ calls_log() { cat "$RUN/route/calls.log" 2>/dev/null || true; }
 
 @test "route-prompt: a short prompt with no earlier route in the session is silent" {
   start_guard; reply build 0.9
-  route "thanks"
+  route "go on"
   [ "$status" -eq 0 ]
   [ -z "$output" ]
   [ "$(n_requests)" = 0 ]
   [[ "$(calls_log)" == *" skip "*"reason=no_state"* ]]
+}
+
+@test "route-prompt: a thank-you is an answer with no call, and the next 'go on' still keeps the real route" {
+  start_guard; reply design 0.9
+  route "we keep losing data on restart, figure out why" s-ack
+  [ "$(n_requests)" = 1 ]
+  route "great, thanks!" s-ack
+  [[ "$output" == "[route] answer (1.00) -> lane express;"* ]]
+  [ "$(n_requests)" = 1 ]
+  [[ "$(calls_log)" == *" ack level=answer "* ]]
+  route "go on" s-ack
+  [ "$output" = "[route] design -> lane deep (kept from the last prompt)" ]
+  [ "$(n_requests)" = 1 ]
 }
 
 @test "route-prompt: a slash command keeps the last route and never calls" {

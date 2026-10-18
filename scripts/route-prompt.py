@@ -17,7 +17,8 @@ lane reminder stands. Silent and unlogged when: the session is a headless worker
 in <root>/.claude-dev/claude-orca.json, config/route/{classifier.txt,router.json}
 missing, or no guard token.
 
-Before any call: a slash command or a short follow-up (<= 4 words, no verb of
+Before any call: a thank-you alone ("thanks!", "great, thank you") is an
+answer with no call, and leaves the saved route alone; a slash command or a short follow-up (<= 4 words, no verb of
 work, no "?") keeps the last route (line "... (kept from the last prompt)", or
 nothing when there is none); the words plan / thorough(ly) / audit / security /
 migrate / migration route to design with no call. Level -> lane: answer,lookup
@@ -67,6 +68,11 @@ WORK_VERBS = frozenset((
     "deploy commit merge push pull review investigate look read search move copy edit patch "
     "set get open close start stop restart revert undo redo split combine replace try "
     "figure diagnose analyze analyse compare verify document design"
+).split())
+# A thank-you alone is an answer, not more of the last route's work; it
+# leaves the saved route alone, so a later "go on" still keeps it.
+ACK_WORDS = frozenset((
+    "thanks thank you thx ty cool nice great perfect awesome lovely cheers brilliant much"
 ).split())
 SECRET_PATTERNS = (
     re.compile(r"sk-or-[A-Za-z0-9_-]+"),
@@ -416,6 +422,11 @@ def run(hook):
     except OSError:
         return
     model = router["model"]
+    words = re.findall(r"[a-z']+", prompt.lower())
+    if words and len(words) <= 4 and set(words) <= ACK_WORDS:
+        emit("answer", 1.0, bulk_for("answer", rundir), "an acknowledgement, nothing to do")
+        log_line(routedir, "ack", "answer", 1.0, model)
+        return
     if prompt.lstrip().startswith("/") or (not FLOOR_WORDS.search(prompt) and keep_last(prompt)):
         last = load_state(routedir, sid)
         if last:
