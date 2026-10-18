@@ -38,11 +38,11 @@ stub() {
 menu() { bash "$MENU" "$@"; }
 calls_of() { grep -c "^$1 " "$CALLS" || true; }
 
-@test "a new folder: y, n, 2 inits beads once, never creates a repo or starts claude, writes the marker" {
-    # Guards:   the happy first-run path: beads yes, GitHub no, stay in the shell
+@test "a new folder: n, 2 inits beads once without asking, never creates a repo or starts claude, writes the marker" {
+    # Guards:   the happy first-run path: beads set up unasked, GitHub no, stay in the shell
     # Fails if: bd init is skipped or run twice, the GitHub default flips to yes, or the marker is not written
-    # Run:      bats -f 'a new folder: y, n, 2' tests/startup-menu.bats
-    run bash -c "printf 'y\nn\n2\n' | bash '$MENU'"
+    # Run:      bats -f 'a new folder: n, 2' tests/startup-menu.bats
+    run bash -c "printf 'n\n2\n' | bash '$MENU'"
     [ "$status" -eq 0 ]
     [ "$(grep -c '^bd init --prefix demo$' "$CALLS")" -eq 1 ]
     [ "$(calls_of bd)" -eq 1 ]
@@ -59,19 +59,21 @@ calls_of() { grep -c "^$1 " "$CALLS" || true; }
     # Run:      bats -f 'bd init never reads' tests/startup-menu.bats
     printf '#!/bin/sh\necho "bd $*" >> "%s"\nif IFS= read -r l; then echo "bd-read $l" >> "%s"; fi\nexit 0\n' "$CALLS" "$CALLS" >"$STUBS/bd"
     chmod +x "$STUBS/bd"
-    run bash -c "printf 'y\ny\n2\n' | bash '$MENU'"
+    run bash -c "printf 'y\n2\n' | bash '$MENU'"
     [ "$status" -eq 0 ]
     ! grep -q '^bd-read' "$CALLS"
     grep -q 'repo create demo --private' "$CALLS"
 }
 
-@test "EOF on the first prompt calls nothing and still writes the marker" {
-    # Guards:   a pane with no reader never blocks and never counts as a yes
-    # Fails if: EOF is treated as the default answer, or the marker is not written
-    # Run:      bats -f 'EOF on the first prompt' tests/startup-menu.bats
+@test "EOF on the first prompt creates no repo, starts nothing, and still writes the marker" {
+    # Guards:   a pane with no reader never blocks and never counts as a yes (beads is set up without asking)
+    # Fails if: EOF is treated as a yes to GitHub or Claude Code, or the marker is not written
+    # Run:      bats -f 'EOF on the first prompt creates' tests/startup-menu.bats
     run bash -c "bash '$MENU' </dev/null"
     [ "$status" -eq 0 ]
-    [ ! -s "$CALLS" ]
+    [ "$(calls_of bd)" -eq 1 ]
+    ! grep -q 'repo create' "$CALLS"
+    [ "$(calls_of claude)" -eq 0 ]
     [ -f "$P/.claude-dev/run/startup-menu.done" ]
 }
 
@@ -108,7 +110,7 @@ calls_of() { grep -c "^$1 " "$CALLS" || true; }
     # Fails if: the origin check is dropped, or the output stops naming the origin URL
     # Run:      bats -f 'origin already set' tests/startup-menu.bats
     git -C "$P" remote add origin https://example.test/me/demo.git
-    run bash -c "printf 'n\n2\n' | bash '$MENU'"
+    run bash -c "printf '2\n' | bash '$MENU'"
     [ "$status" -eq 0 ]
     [[ "$output" == *"origin is https://example.test/me/demo.git"* ]]
     [[ "$output" != *"Create a private GitHub repo"* ]]
@@ -119,7 +121,7 @@ calls_of() { grep -c "^$1 " "$CALLS" || true; }
     # Guards:   the one outward-facing action is exactly a private repo from this folder
     # Fails if: --private, --source, --remote or the upload flag changes or goes missing
     # Run:      bats -f 'GitHub yes runs gh' tests/startup-menu.bats
-    run bash -c "printf 'n\ny\n2\n' | bash '$MENU'"
+    run bash -c "printf 'y\n2\n' | bash '$MENU'"
     [ "$status" -eq 0 ]
     grep -qxF "gh repo create demo --private --source $P --remote origin --push" "$CALLS"
 }
@@ -128,12 +130,12 @@ calls_of() { grep -c "^$1 " "$CALLS" || true; }
     # Guards:   Claude Code is the default way out of the menu
     # Fails if: the default stops launching claude, or drops the flag
     # Run:      bats -f 'What next: 1' tests/startup-menu.bats
-    run bash -c "printf 'n\nn\n1\n' | bash '$MENU'"
+    run bash -c "printf 'n\n1\n' | bash '$MENU'"
     [ "$status" -eq 0 ]
     grep -qxF "claude --dangerously-skip-permissions" "$CALLS"
     : >"$CALLS"
     rm -f "$P/.claude-dev/run/startup-menu.done"
-    run bash -c "printf 'n\nn\n\n' | bash '$MENU'"
+    run bash -c "printf 'n\n\n' | bash '$MENU'"
     grep -qxF "claude --dangerously-skip-permissions" "$CALLS"
 }
 
@@ -142,7 +144,7 @@ calls_of() { grep -c "^$1 " "$CALLS" || true; }
     # Fails if: gh auth login runs anyway, or the step carries on to create a repo
     # Run:      bats -f 'gh not signed in' tests/startup-menu.bats
     stub gh 1
-    run bash -c "printf 'n\nn\n2\n' | bash '$MENU'"
+    run bash -c "printf 'n\n2\n' | bash '$MENU'"
     [ "$status" -eq 0 ]
     ! grep -q 'auth login' "$CALLS"
     ! grep -q 'repo create' "$CALLS"
@@ -157,15 +159,15 @@ calls_of() { grep -c "^$1 " "$CALLS" || true; }
     sleep 30 &
     local live=$!
     echo "$live" >"$lock/pid"
-    run bash -c "printf 'y\ny\ny\n' | bash '$MENU' --pane"
+    run bash -c "printf 'y\ny\n' | bash '$MENU' --pane"
     kill "$live" 2>/dev/null || true
     [ "$status" -eq 0 ]
     [ "${#lines[@]}" -eq 1 ]
     [ ! -s "$CALLS" ]
     echo 999999 >"$lock/pid"
-    run bash -c "printf 'n\nn\n2\n' | bash '$MENU' --pane"
+    run bash -c "printf 'n\n2\n' | bash '$MENU' --pane"
     [ "$status" -eq 0 ]
-    [[ "$output" == *"Initialize beads"* ]]
+    [[ "$output" == *"[1/2] Beads"* ]]
     [ ! -e "$lock" ]
 }
 
@@ -181,7 +183,7 @@ calls_of() { grep -c "^$1 " "$CALLS" || true; }
     printf '#!/bin/sh\necho "bd $*" >> "%s"\nif [ -e "%s" ]; then echo "bd-saw-running" >> "%s"; fi\nexit 0\n' "$CALLS" "$pd/running" "$CALLS" >"$STUBS/bd"
     chmod +x "$STUBS/bd"
     ( sleep 2; rm -f "$pd/running" ) &
-    run bash -c "printf 'y\nn\n2\n' | bash '$MENU'"
+    run bash -c "printf 'n\n2\n' | bash '$MENU'"
     [ "$status" -eq 0 ]
     [[ "$output" == *"Finishing this sandbox's setup: 15-claude-on-path"* ]]
     [[ "$output" == *"✓ setup finished"* ]]
@@ -198,11 +200,11 @@ calls_of() { grep -c "^$1 " "$CALLS" || true; }
     sleep 0 & local dead=$!
     wait "$dead"
     printf '%s 55-git-init\n' "$dead" >"$pd/running"
-    run bash -c "printf 'y\nn\n2\n' | bash '$MENU'"
+    run bash -c "printf 'n\n2\n' | bash '$MENU'"
     [ "$status" -eq 0 ]
     [[ "$output" != *"Finishing"* ]]
     [[ "$output" != *"setup finished"* ]]
-    [[ "$output" == *"Initialize beads"* ]]
+    [[ "$output" == *"[1/2] Beads"* ]]
 }
 
 # Guards:   a setup that never finishes cannot hold the menu forever: after CLAUDE_ORCA_STARTUP_WAIT seconds it says so and asks anyway
@@ -217,7 +219,7 @@ calls_of() { grep -c "^$1 " "$CALLS" || true; }
     CLAUDE_ORCA_STARTUP_WAIT=1 run bash -c "printf 'n\nn\n2\n' | bash '$MENU'"
     [ "$status" -eq 0 ]
     [[ "$output" == *"Setup is still running (provision status shows it); asking anyway."* ]]
-    [[ "$output" == *"Initialize beads"* ]]
+    [[ "$output" == *"[1/2] Beads"* ]]
 }
 
 teardown() {

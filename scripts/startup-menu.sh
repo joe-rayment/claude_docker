@@ -35,6 +35,15 @@ identity() {
 }
 
 mode="${1:-}"
+
+# A pane's terminal can arrive in raw mode (the Mac's ssh hands its own raw
+# settings to the remote pty): bare LFs staircase every line and Enter never
+# ends a read. The menu is line-oriented, so it puts the terminal back to
+# cooked first; zsh picks the settings up after it. Not for --due.
+if [ "$mode" != "--due" ] && [ -t 0 ]; then
+    stty sane 2>/dev/null || true
+fi
+
 case "$mode" in
 --due) is_new; exit $? ;;
 --pane) if ! is_new; then identity; exit 0; fi ;;
@@ -99,7 +108,11 @@ ask() {
 }
 is_yes() { case "$1" in y | yes) return 0 ;; *) return 1 ;; esac; }
 
-printf 'claude-dev · %s\n' "$name"
+# Bold headings on a terminal, so the menu stands apart from the launcher's
+# own start-up lines above it.
+B="" N=""
+if [ -t 1 ]; then B=$'\e[1m' N=$'\e[0m'; fi
+printf '\n%s━━━ claude-dev · %s · first-time setup ━━━%s\n' "$B" "$name" "$N"
 printf 'This tab is a shell inside %s'\''s sandbox -- a Linux container, not the Mac.\n' "$name"
 if [ -n "${CLAUDE_ORCA_HOST_PROJECT_DIR:-}" ]; then
     printf 'The folder is %s here (%s on your Mac).\n' "$PROJECT_DIR" "$CLAUDE_ORCA_HOST_PROJECT_DIR"
@@ -140,34 +153,29 @@ wait_for_provision() {
 wait_for_provision
 
 # Step 1/2: beads
-printf '\n[1/2] Beads\n'
+printf '\n%s[1/2] Beads%s\n' "$B" "$N"
 if [ -e "$PROJECT_DIR/.beads" ]; then
     printf '✓ beads: already set up\n'
     beads_ans="already"
 elif ! command -v bd >/dev/null 2>&1; then
     printf 'beads: bd is not installed here, skipping\n'
     beads_ans="no-bd"
-elif ask "Initialize beads, the task tracker, in this folder (prefix '$name')? [Y/n] " y; then
-    if is_yes "$ANS"; then
-        beads_ans="yes"
-        printf 'Setting up beads (takes a few seconds)...\n'
-        # </dev/null: on a terminal bd init asks "Contributing to someone else's
-        # repo? [y/N]" into the log, where nobody sees it, and eats the next answer.
-        if (cd "$PROJECT_DIR" && env -u BEADS_DIR bd init --prefix "$name") </dev/null >>"$log" 2>&1; then
-            printf '✓ beads initialized (prefix %s)\n' "$name"
-        else
-            printf "beads: bd init failed -- see %s; run 'bd init' here later\n" "$log"
-            beads_ans="failed"
-        fi
-    else
-        beads_ans="no"
-    fi
 else
-    beads_ans="skipped"
+    # No question: beads is always wanted, with the folder's name as prefix.
+    printf 'Setting up beads, the task tracker (prefix %s)...\n' "$name"
+    # </dev/null: on a terminal bd init asks "Contributing to someone else's
+    # repo? [y/N]" into the log, where nobody sees it, and eats the next answer.
+    if (cd "$PROJECT_DIR" && env -u BEADS_DIR bd init --prefix "$name") </dev/null >>"$log" 2>&1; then
+        printf '✓ beads initialized (prefix %s)\n' "$name"
+        beads_ans="yes"
+    else
+        printf "beads: bd init failed -- see %s; run 'bd init' here later\n" "$log"
+        beads_ans="failed"
+    fi
 fi
 
 # Step 2/2: GitHub
-printf '\n[2/2] GitHub\n'
+printf '\n%s[2/2] GitHub%s\n' "$B" "$N"
 github_step() {
     if [ "$EOF_SEEN" = 1 ] || [ "$QUIT" = 1 ]; then gh_ans="skipped"; return; fi
     if ! git -C "$PROJECT_DIR" rev-parse --verify -q HEAD >/dev/null 2>&1; then
@@ -207,6 +215,7 @@ github_step
 
 write_done
 printf '\nRun startup-menu any time to see this again.\n'
+printf '%s━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━%s\n' "$B" "$N"
 
 if [ "$EOF_SEEN" = 0 ] && [ "$QUIT" = 0 ]; then
     if ask "What next?  [1] Claude Code (default)  [2] this shell " 1; then
