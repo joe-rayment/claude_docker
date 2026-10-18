@@ -1278,6 +1278,52 @@ lands as soon as the staged copy is refreshed.) Until then the chain above (work
 `LANE_STATE_DIR`) is the strongest available check — the same
 staged-artifact staleness trap documented in `CONFIG_SYNC.md`.
 
+## Prompt router (claude-orca-f6o, 2026-10-18)
+
+The lane is the session's own call, made after it has read the prompt. The
+prompt router moves a first guess in front of that: a `UserPromptSubmit` hook
+(`scripts/route-prompt.py`, wired right after `lane`) makes **one cheap model
+call per prompt** and prints one line the session reads as context:
+
+    [route] build (0.80) -> lane standard; bulk: one executor (sonnet) -- <reason>
+
+Four levels: `answer` (inline, express), `lookup` (one scout, or inline for
+one search; express), `build` (one executor; standard), `design` (the session
+plans, executors take slices; deep). The level names the lane and **who does
+the bulk of the work**. The session's own model never changes: the router
+advises, `lane` and the delegation gate still decide, and the rulebook tells the
+session to take the lane, go up freely, and never put the bulk on a smaller tier.
+
+**Safety rules.** The small model only ever gets read-only lookups. Unsure
+goes up: a reply below the confidence floor (0.65, `config/route/router.json`)
+moves one level up (design stays), and a failed, slow or unparsable call prints
+nothing, so the lane reminder stands. Floor words (`plan`, `thorough(ly)`,
+`audit`, `security`, `migrate`, `migration`) route straight to `design` with no
+call. A thank-you alone is an `answer` with no call; a slash command or a short
+follow-up (4 words or fewer, no verb of work, no `?`) keeps the last route.
+Headless workers are silent. Three fallbacks in a row pause the calls for 300 s.
+
+**Measured** (2026-10-18, 61 real prompts and 39 synthetic, two runs each,
+through the guard, `anthropic/claude-haiku-5.5` with reasoning off): zero hard
+under-routes at floor 0.65, 82% exact on the real prompts, p50/p95 707/975 ms,
+about $0.0001 a prompt (`router.json` `"measured"`). In a real Claude Code
+session the hook took 0.9-1.0 s per prompt, and the `[route]` line was in the
+request the model received. It errs upward: a "just tell me the command"
+rename came back `build`.
+
+**Off / other model.** `"router": false` in `.claude-dev/claude-orca.json`
+turns it off; `"routerModel": "<openrouter id>"` swaps the model.
+
+**Log.** `.claude-dev/run/route/calls.log`, one line per prompt (time, outcome,
+level, confidence, model, ms, tokens, cost, reason code) — never prompt text,
+never the token. Per-session state is `.claude-dev/run/route/<session_id>.json`.
+
+**Re-measure.** Score any models against the labeled set with
+`scripts/route-eval.py --set tests/fixtures/route/eval.jsonl --models a,b`
+(it makes the hook's exact call and prints accuracy, hard under-routes, latency
+and cost per model plus the lowest safe floor). Design:
+`.claude/plans/prompt-router.md`.
+
 ## Rollback
 
 All changes are repo files, reversible via git; and the live state is
