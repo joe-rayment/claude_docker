@@ -190,7 +190,9 @@ rm -f "$CONFIG_DIR"/.orca-statusline-*
 sed "s#__HOST__#$host#g" "$TEMPLATE_CONFIG/claude-settings.json" > "$CONFIG_DIR/settings.json"
 
 cp "$TEMPLATE_CONFIG/claude-user-memory.md" "$CONFIG_DIR/CLAUDE.md"
-cp "$TEMPLATE_CONFIG/testing-standard.md" "$CONFIG_DIR/TESTING.md"
+if [ -f "$TEMPLATE_CONFIG/testing-standard.md" ]; then
+    cp "$TEMPLATE_CONFIG/testing-standard.md" "$CONFIG_DIR/TESTING.md"
+fi
 cp "$TEMPLATE_CONFIG/statusline.sh" "$CONFIG_DIR/statusline.sh"
 chmod +x "$CONFIG_DIR/statusline.sh"
 
