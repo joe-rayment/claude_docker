@@ -193,9 +193,19 @@ if command -v jq >/dev/null 2>&1 && [ -f "$opencode_cfg" ]; then
     guard_url="$(jq -r '.provider.openrouter.options.baseURL // empty' "$opencode_cfg" 2>/dev/null)"
 fi
 
+# Any HTTP status at all means something listens: the live guard answers
+# 401 to a request without its token, and the probe must not carry that
+# token (it is not needed and never printed). Only "no connection" -- curl
+# reports http_code 000 on a refused connection or a timeout -- is down
+# (claude-orca-0v6).
+guard_code=""
+if [ -n "$guard_url" ]; then
+    guard_code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "${guard_url%/api/v1}/" 2>/dev/null)"
+fi
+
 if [ -z "$guard_url" ]; then
     skip "openrouter guard" "opencode is not configured to use one"
-elif curl -fsS --max-time 5 "${guard_url%/api/v1}/" >/dev/null 2>&1; then
+elif [ -n "$guard_code" ] && [ "$guard_code" != "000" ]; then
     ok "openrouter guard" "listening on $guard_url; agents hold its token, not the key"
 else
     bad "openrouter guard" "opencode.json names the guard at $guard_url but nothing answers there -- run 'opencode auth login openrouter' then restart the container (the guard token is fixed when the container starts), or set a key at $AGENT_HOME/.openrouter.key (mode 600) and restart, or run './claude-dev key openrouter' on the Mac (same file)"
