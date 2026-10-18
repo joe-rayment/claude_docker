@@ -5,6 +5,9 @@
 # under scripts/, bin/, config/ or tests/ still names it, the shipped
 # settings.json no longer wires a card hook (and stays valid, non-empty),
 # and the README no longer documents it.
+# One deliberate edit since: case 2 now expects the off-ramp Stop check
+# (claude-orca-ngq.1) beside export-logs -- a later feature, not a pass
+# forced on the card removal.
 
 REPO_ROOT="$(cd "$BATS_TEST_DIRNAME/.." && pwd)"
 SETTINGS="$REPO_ROOT/config/claude-settings.json"
@@ -32,8 +35,11 @@ CARD_PATTERN='(^|[^a-z])card([^a-z]|$)'
     # Orca's own managed entries (e.g. under ~/.orca/agent-hooks/) are
     # injected by config-sync into a synced project, not shipped in this
     # template file -- so the invariant here is simply that removing the
-    # card entry didn't touch anything else in the array.
-    run jq -e '.hooks.Stop[0].hooks | length' "$SETTINGS"
+    # card entry didn't touch anything else in the array: what is left is
+    # export-logs, then the off-ramp's Stop check (claude-orca-ngq.1).
+    run jq -r '.hooks.Stop[0].hooks[].command' "$SETTINGS"
     [ "$status" -eq 0 ]
-    [ "$output" -eq 1 ]
+    [ "${#lines[@]}" -eq 2 ]
+    [[ "${lines[0]}" == *'bin/export-logs'* ]]
+    [[ "${lines[1]}" == *'bin/offramp" --stop'* ]]
 }
