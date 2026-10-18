@@ -1,0 +1,39 @@
+{"prompt": "thanks, that makes sense", "previous_reply": "The retry waits 2 seconds, then 4, then 8, and gives up after the fourth try, so a flaky network no longer fails the upload on the first error.", "gold": "answer", "why": "thanks after an explanation"}
+{"prompt": "Is the build still running?", "previous_reply": "I started the build in the background and will check on it when you ask.", "gold": "answer", "why": "status question"}
+{"prompt": "what does idempotent mean again?", "previous_reply": "", "gold": "answer", "why": "general knowledge question"}
+{"prompt": "Did the tests pass?", "previous_reply": "Ran the auth tests: 12 ok, 0 failed.", "gold": "answer", "why": "answer is in the last reply"}
+{"prompt": "Why did you pick a mutex there instead of a channel?", "previous_reply": "I wrapped the counter in a mutex because three goroutines update it and none of them need to wait for another.", "gold": "answer", "why": "asks for the reasoning just given"}
+{"prompt": "never mind, skip that", "previous_reply": "I fixed the typo. Want me to bump the version number too?", "gold": "answer", "why": "declines an offer"}
+{"prompt": "What did you just change?", "previous_reply": "Edited three files: renamed the helper, updated both callers, and fixed the import.", "gold": "answer", "why": "recap of the last reply"}
+{"prompt": "sounds good, what's next on the list?", "previous_reply": "Item 2 of 5 is finished and the tests are green.", "gold": "answer", "why": "chat about progress"}
+{"prompt": "Where is the retry logic for failed uploads implemented?", "previous_reply": "", "gold": "lookup", "why": "find where something lives"}
+{"prompt": "List every script that reads the DEPLOY_ENV variable.", "previous_reply": "", "gold": "lookup", "why": "read-only search"}
+{"prompt": "Summarize what the scripts folder contains, one line per file.", "previous_reply": "", "gold": "lookup", "why": "read-only summary"}
+{"prompt": "Which tests cover the login redirect?", "previous_reply": "", "gold": "lookup", "why": "find tests, read only"}
+{"prompt": "How many TODO comments are in src and which files have the most?", "previous_reply": "", "gold": "lookup", "why": "count and list, read only"}
+{"prompt": "Find where the cache directory gets created.", "previous_reply": "", "gold": "lookup", "why": "find one place in the code"}
+{"prompt": "Show me every caller of parse_config.", "previous_reply": "", "gold": "lookup", "why": "list callers"}
+{"prompt": "Explain how the retry logic in fetch.py works.", "previous_reply": "", "gold": "lookup", "why": "needs reading one file"}
+{"prompt": "Change the default page size in src/list.py from 20 to 50.", "previous_reply": "", "gold": "build", "why": "one exact edit"}
+{"prompt": "Add a --verbose flag to scripts/sync.sh that prints each file it copies.", "previous_reply": "", "gold": "build", "why": "small clear feature"}
+{"prompt": "yes please", "previous_reply": "I can run the formatter over src/ so the style check passes. Shall I?", "gold": "build", "why": "agrees to a file change"}
+{"prompt": "Fix the typo in the error message in server.js: 'recieved' should be 'received'.", "previous_reply": "", "gold": "build", "why": "exact one-word edit"}
+{"prompt": "Make the footer link open in a new tab.", "previous_reply": "The footer link is in templates/footer.html, line 14.", "gold": "build", "why": "known file, clear change"}
+{"prompt": "Write a test that checks the help text mentions --dry-run.", "previous_reply": "", "gold": "build", "why": "one clear new test"}
+{"prompt": "Bump the version in VERSION to 2.4.1 and add a changelog line saying the upload retry is fixed.", "previous_reply": "", "gold": "build", "why": "two exact edits"}
+{"prompt": "Use the same timeout as the other calls, 30 seconds, in fetch.py.", "previous_reply": "", "gold": "build", "why": "one value, given"}
+{"prompt": "Fix the failing test you just listed.", "previous_reply": "One test fails: test_empty_cart expects 0 but gets None. The function returns None for an empty list.", "gold": "build", "why": "known cause, small fix"}
+{"prompt": "The checkout page sometimes charges customers twice and I have no idea why. Figure it out and fix it.", "previous_reply": "", "gold": "design", "why": "unknown cause, money"}
+{"prompt": "We need to move the users table to a new schema with no downtime. How should we do it?", "previous_reply": "", "gold": "design", "why": "migration, tradeoffs"}
+{"prompt": "Plan the move from cron jobs to a real queue system, and be thorough.", "previous_reply": "", "gold": "design", "why": "asks for a plan, thorough"}
+{"prompt": "Audit the whole repo for places that handle passwords and make sure they are safe.", "previous_reply": "", "gold": "design", "why": "audit, security"}
+{"prompt": "Should live updates use websockets or polling? Then build whichever you pick.", "previous_reply": "", "gold": "design", "why": "tradeoff, then several parts"}
+{"prompt": "Add multi-tenant support: separate data per customer, separate config, and billing per tenant.", "previous_reply": "", "gold": "design", "why": "several parts"}
+{"prompt": "Our API times out under load and I don't know if it's the database or the network. Dig in and fix it.", "previous_reply": "", "gold": "design", "why": "unknown cause"}
+{"prompt": "Rewrite the importer so it handles CSV, JSON and Excel, with error reports and resume support.", "previous_reply": "", "gold": "design", "why": "several parts"}
+{"prompt": "Delete every order older than a year from the orders table, and the backups too.", "previous_reply": "", "gold": "design", "why": "irreversible data deletion"}
+{"prompt": "Think carefully about how we roll out the new login flow to existing users.", "previous_reply": "", "gold": "design", "why": "rollout, tradeoffs"}
+{"prompt": "Refactor the config handling in all the services so they share one schema.", "previous_reply": "", "gold": "design", "why": "cross-cutting, several parts"}
+{"prompt": "The worker leaks memory after a few hours. Find the cause and fix it.", "previous_reply": "", "gold": "design", "why": "unknown cause"}
+{"prompt": "Implement everything left in the backlog.", "previous_reply": "Five tickets are open: search filters, CSV export, dark mode, a retry fix and rate limiting.", "gold": "design", "why": "many parts"}
+{"prompt": "Set up deploys to production whenever the main branch changes.", "previous_reply": "", "gold": "design", "why": "production, hard to reverse"}
