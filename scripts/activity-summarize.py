@@ -110,12 +110,26 @@ def redact_text(text, extra=()):
     for pat in SECRET_PATTERNS:
         text = pat.sub("[redacted]", text)
 
-    def long_run(m):
-        run = m.group(0)
+    def judge(run):
+        if len(run) < 40:
+            return run
         if "/" in run and not re.search(r"[+=]", run):
             return run  # a path (dir/dir/agent-abc123...), not base64: keep it readable
         mixed = re.search(r"\d", run) and re.search(r"[A-Za-z]", run)
         return "[redacted]" if mixed else run
+
+    def split_run(run, is_value=False):
+        # std-base64 has "=" only as trailing padding, so an "=" before that is
+        # an assignment (S=/tmp/...) or a path, never one key: judge each side.
+        if "=" in run.rstrip("="):
+            head, _, val = run.partition("=")
+            return judge(head) + "=" + split_run(val, True)
+        if is_value and run.startswith("/"):
+            return run  # an assigned value that starts with "/" is a path
+        return judge(run)
+
+    def long_run(m):
+        return split_run(m.group(0))
     return LONG_RUN.sub(long_run, text)
 
 

@@ -87,14 +87,29 @@ _ASSIGN_RE = re.compile(r"\b([A-Za-z][A-Za-z0-9_]*(?:API_KEY|TOKEN|SECRET|PASSWO
 _RUN_RE = re.compile(r"(?<![A-Za-z0-9_+=/-])[A-Za-z0-9_+=/-]{40,}(?![A-Za-z0-9_+=/-])")
 
 
-def _long_run(m):
-    s = m.group(0)
+def _judge(s):
+    """One piece of a long run: a key becomes [redacted], a path or a word stays."""
+    if len(s) < 40:
+        return s
     if "/" in s:
         # a path, unless it is std-base64: mixed case + digit, and + or =
         ok = (re.search(r"[A-Z]", s) and re.search(r"[a-z]", s) and re.search(r"[0-9]", s)
               and re.search(r"[+=]", s))
         return "[redacted]" if ok and not s.startswith("/") else s
     return "[redacted]" if re.search(r"[0-9]", s) else s
+
+
+def _long_run_str(s):
+    # std-base64 has "=" only as trailing padding, so an "=" before that is an
+    # assignment (S=/tmp/...) or a path, never one key: judge each side alone.
+    if "=" in s.rstrip("="):
+        head, _, val = s.partition("=")
+        return _judge(head) + "=" + _long_run_str(val)
+    return _judge(s)
+
+
+def _long_run(m):
+    return _long_run_str(m.group(0))
 
 
 def redact(s):
