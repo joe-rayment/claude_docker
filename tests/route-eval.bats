@@ -88,3 +88,103 @@ last_body() { tail -n 1 "$G/requests.jsonl" | jq -c '.body'; }
   [ "$(last_body | jq -r '.messages[1].content | fromjson | .previous_reply | length')" = "1500" ]
   [ "$(last_body | jq -r '.messages[1].content | fromjson | .previous_reply | test("^z+$")')" = "true" ]
 }
+
+@test "the confidence floor bumps a low-confidence reply one level up before scoring" {
+  guard_config '{"reply":"{\"level\":\"answer\",\"confidence\":0.5,\"reason\":\"small\"}"}'
+  one_row lookup
+  evalrun --floor 0.6
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"accuracy 100.0% (1/1)"* ]]
+  evalrun --floor 0.4
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"under-routes 1 (hard 0)"* ]]
+}
+
+@test "an under-route on a gold design prompt is listed, counted hard, and the best floor is named" {
+  guard_config '{"reply":"{\"level\":\"build\",\"confidence\":0.9,\"reason\":\"looks small\"}"}'
+  one_row design "build the whole thing"
+  evalrun
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"under-routes 1 (hard 1)"* ]]
+  [[ "$output" == *"under row 1  gold design -> build"* ]]
+  [[ "$output" == *"best floor (lowest with zero hard under-routes): 0.95"* ]]
+}
+
+@test "over-routes are listed only with --list-wrong" {
+  guard_config '{"reply":"{\"level\":\"design\",\"confidence\":0.9,\"reason\":\"big\"}"}'
+  one_row answer "what does ls -la show"
+  evalrun
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"over-routes 1"* ]]
+  [[ "$output" != *"over  row 1"* ]]
+  evalrun --list-wrong
+  [[ "$output" == *"over  row 1  gold answer -> design"* ]]
+}
+
+@test "a reply that is not the JSON object, an HTTP 500, and an unknown level are failures, not crashes" {
+  one_row build
+  guard_config '{"reply":"I think it is a build"}'
+  evalrun
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"0 scored, 1 failed"* ]]
+  [[ "$output" == *"badreply"* ]]
+  guard_config '{"status":500}'
+  evalrun
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"0 scored, 1 failed"* ]]
+  [[ "$output" == *"http500"* ]]
+  guard_config '{"reply":"{\"level\":\"wizard\",\"confidence\":0.9,\"reason\":\"x\"}"}'
+  evalrun
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"0 scored, 1 failed"* ]]
+  [[ "$output" == *"badreply"* ]]
+}
+
+@test "a fenced reply with trailing text still parses, and usage becomes tokens and cost per call" {
+  guard_config '{"reply":"```json\n{\"level\":\"build\",\"confidence\":0.9,\"reason\":\"x\"}\n```\n<|assistant|>","usage":{"prompt_tokens":100,"completion_tokens":10,"cost":0.00002}}'
+  one_row build
+  evalrun
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"accuracy 100.0% (1/1)"* ]]
+  [[ "$output" == *"tokens in/out 100/10"* ]]
+  [[ "$output" == *'$/call 0.000020'* ]]
+}
+
+@test "--out writes one JSON line per call and never the token" {
+  guard_config '{"reply":"{\"level\":\"build\",\"confidence\":0.9,\"reason\":\"x\"}"}'
+  one_row build
+  evalrun --runs 2 --out "$BATS_TEST_TMPDIR/calls.jsonl"
+  [ "$status" -eq 0 ]
+  [ "$(wc -l < "$BATS_TEST_TMPDIR/calls.jsonl" | tr -d ' ')" = "2" ]
+  [ "$(jq -r '.level' "$BATS_TEST_TMPDIR/calls.jsonl" | sort -u)" = "build" ]
+  run grep -c "$FAKE_TOKEN" "$BATS_TEST_TMPDIR/calls.jsonl"
+  [ "$output" = "0" ]
+}
+
+@test "the committed eval set: every row has string prompt and previous_reply and a gold in the four levels, all four present" {
+  [ -s "$SET" ]
+  run jq -e -s 'all(.[]; (.prompt|type)=="string" and (.previous_reply|type)=="string" and ((.gold)|IN("answer","lookup","build","design")))' "$SET"
+  [ "$status" -eq 0 ]
+  [ "$(jq -r '.gold' "$SET" | sort -u | tr '\n' ' ')" = "answer build design lookup " ]
+}
+
+@test "a set with an invalid gold label, or no rows, or a missing file exits 2 without calling the guard" {
+  printf '%s\n' '{"prompt":"x","previous_reply":"","gold":"wizard"}' > "$BATS_TEST_TMPDIR/bad.jsonl"
+  run python3 -I "$EVAL" --set "$BATS_TEST_TMPDIR/bad.jsonl" --models fake/model --base-url "$URL" --root "$ROOT"
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"gold"* ]]
+  : > "$BATS_TEST_TMPDIR/empty.jsonl"
+  run python3 -I "$EVAL" --set "$BATS_TEST_TMPDIR/empty.jsonl" --models fake/model --base-url "$URL" --root "$ROOT"
+  [ "$status" -eq 2 ]
+  run python3 -I "$EVAL" --set "$BATS_TEST_TMPDIR/nope.jsonl" --models fake/model --base-url "$URL" --root "$ROOT"
+  [ "$status" -eq 2 ]
+  [ ! -e "$G/requests.jsonl" ]
+}
+
+@test "the classifier names all four levels and the JSON reply shape" {
+  [ -s "$CLASSIFIER" ]
+  run grep -c -E 'answer|lookup|build|design' "$CLASSIFIER"
+  [ "$output" -ge 4 ]
+  run grep -q '"confidence"' "$CLASSIFIER"
+  [ "$status" -eq 0 ]
+}

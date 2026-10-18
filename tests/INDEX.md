@@ -17,7 +17,7 @@ and names what changed. If everything behaves, it stays **green** (passes).
 
 - A **test case** is one check (one `@test "…"` block).
 - A **test file** (`tests/<name>.bats`) groups the cases for one script or feature.
-- The **suite** is all of them: 106 files, 1,478 cases.
+- The **suite** is all of them: 107 files, 1,490 cases.
 
 ### What bats is
 
@@ -121,7 +121,7 @@ Those checks are run by hand:
 
 ## Part 2 — the map
 
-106 files, 1,478 cases: 87 files check behavior only, 15 mix behavior with
+107 files, 1,490 cases: 87 files check behavior only, 16 mix behavior with
 a few config checks, and 4 are config checks only. **Speed** is from
 `run-tests.sh`'s timing: `slow` files are skipped by the everyday run.
 
@@ -212,6 +212,7 @@ too, once Orca was removed from the project.
 | `provision-git-init.bats` | 15 | fast | provision.d/55-git-init makes every folder a git repo with a commit on main/master so worktrees have a base branch, without touching the user's files. | behavior | — |
 | `provision.bats` | 16 | fast | scripts/container/provision-run.sh runs numbered provision.d steps idempotently, logs each one, keeps a failing step from blocking later steps or sshd (sshd and run/port come up before the first step), and guards the OpenRouter key. | behavior | — |
 | `recon.bats` | 11 | fast | scripts/recon.sh runs a synchronous, read-only headless opencode question on the tier's recon model and reports tokens/cost, falling back to scout when the recon role isn't a headless opencode one (or there is no tier.json or guard token). | behavior | — |
+| `route-eval.bats` | 12 | fast | `scripts/route-eval.py` (the prompt-router bake-off) makes exactly the interface's call to a fake guard (model, temperature 0, classifier as system, trimmed user JSON, reasoning flag, guard token), applies the confidence floor, lists under- and over-routes, counts a bad reply or an HTTP error as a failure instead of crashing, rejects a bad eval set with exit 2, and never writes the token to `--out`. | mixed | 2 file checks: the committed eval set's shape, and the classifier names the four levels |
 | `run-logs.bats` | 6 | fast | container.log, setup.sh and entrypoint.sh stamp every mirrored line with a wall-clock/elapsed time and drop noisy per-second `docker inspect` polls, so a slow start can be diagnosed. | behavior | — |
 | `scratch-volumes-container.bats` | 9 | fast | Container-side scripts (volume-dirs.sh, entrypoint.sh, provision.d/45-scratch-volumes) correctly identify, chown and migrate data onto the four scratch docker volumes (.cache, .npm, opencode data, worktrees). | behavior | — |
 | `scratch-volumes.bats` | 6 | fast | claude-dev's launcher mounts four docker volumes (cache/npm/opencode/worktrees) under the agent home, recreates a container predating them, and removes them all on teardown. | behavior | — |
