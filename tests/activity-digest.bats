@@ -186,6 +186,29 @@ append() { printf '%s\n' "$2" >>"$1"; }   # append one JSON line to a fixture co
   [ "$(jq -r .request.text "$BATS_TEST_TMPDIR/json.out" | grep -c 'The mirror key is \[redacted\] so keep it out')" -eq 1 ]
 }
 
+# Guards:   a shell assignment like S=/tmp/<session>/scratchpad is a path, not a key; real keys in the same events still go
+# Fails if: the assignment reads "ran: [redacted]; cat > f", or the TOKEN= value or the 44-char base64 run (with "+" and "==") reaches --json
+# Run:      bats -f 'VAR=/path command keeps its path' tests/activity-digest.bats
+@test "redaction: a VAR=/path command keeps its path readable, while a planted key and a std-base64 run are still redacted" {
+  local tok="aB3dE6gH9jK2mN5pQ8sT1vW4yZ7bC0eF3hJ6kM9nP2rS5uV8"   # 48 chars
+  local b64="aB3dE6gH9jK2mN5pQ8sT1vW4yZ7bC0eF3hJ6kM9+n2=="       # 44 chars, "+" and "==" padding
+  [ "${#tok}" -eq 48 ]
+  [ "${#b64}" -eq 44 ]
+  local f="$SDIR/main-0001/subagents/agent-aaaa1111.jsonl" n=0 cmd
+  for cmd in "S=/tmp/claude-501/-workspace-x/d185fd60-fd0e-4c58-85f0-a4b5699430eb/scratchpad; cat > f" \
+             "TOKEN=$tok" "echo $b64"; do
+    n=$((n + 1))
+    append "$f" "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"model\":\"m\",\"content\":[{\"type\":\"tool_use\",\"id\":\"tu_s$n\",\"name\":\"Bash\",\"input\":{\"command\":\"$cmd\"}}]},\"timestamp\":\"2026-10-17T13:02:2${n}Z\",\"isSidechain\":true,\"agentId\":\"aaaa1111\"}"
+  done
+  digest_json
+  # the path survives, the old "ran: [redacted]; cat" reading does not
+  [ "$(grep -c 'S=/tmp/claude-501/-workspace-x/d185fd60-fd0e-4c58-85f0-a4b5699430eb/scratchpad' "$J")" -eq 1 ]
+  [ "$(grep -c 'ran: \[redacted\]; cat' "$J" || true)" -eq 0 ]
+  # both planted keys went, each leaving a [redacted] in its event
+  [ "$(grep -c 'aB3dE6gH9jK2' "$J" || true)" -eq 0 ]
+  [ "$(jq -r '[.sources[].events[] | select(test("^13:02 ran: (TOKEN=|echo )\\[redacted\\]$"))] | length' "$J")" -eq 2 ]
+}
+
 @test "cap: a small CLAUDE_ORCA_ACTIVITY_MAX_BYTES drops old events and old sources, keeps newest events, stays valid JSON" {
   digest_json
   jq -c '[.sources[] | {id, e: .events[-1]}]' "$J" >"$BATS_TEST_TMPDIR/full-last.json"

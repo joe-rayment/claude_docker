@@ -127,6 +127,27 @@ print(eval(sys.argv[2]))' "$G/requests.jsonl" "$1"
   [ "$status" -eq 1 ]
 }
 
+# Guards:   the summarizer's second redaction pass leaves a VAR=/path assignment readable, while a 48-char key and a 44-char std-base64 run in the same digest still never reach the request
+# Fails if: the request body carries "[redacted]; cat > f" in place of the S=/tmp/... path, or the key, the base64 run or a short FOO_TOKEN= value is sent to the guard
+# Run:      bats -f 'VAR=/path assignment' tests/activity-summarize.bats
+@test "a VAR=/path assignment stays readable in the request body, while a long key and a base64 run are still blanked" {
+  start_guard
+  guard_config '{"reply":"Working."}'
+  local tok="aB3dE6gH9jK2mN5pQ8sT1vW4yZ7bC0eF3hJ6kM9nP2rS5uV8"   # 48 chars
+  local b64="aB3dE6gH9jK2mN5pQ8sT1vW4yZ7bC0eF3hJ6kM9+n2=="       # 44 chars, "+" and "==" padding
+  local path="/tmp/claude-501/-workspace-x/d185fd60-fd0e-4c58-85f0-a4b5699430eb/scratchpad"
+  write_digest "$BATS_TEST_TMPDIR/d.json" fp1 ep1 "ran: S=$path; cat > f; FOO=$tok; echo $b64; FOO_TOKEN=zq7shortvalue9x"
+  run python3 -I "$SUMMARIZE" --digest "$BATS_TEST_TMPDIR/d.json"
+  [ "$output" = "updated" ]
+  [ "$(n_requests)" = "1" ]
+  run grep -c "S=$path; cat > f" "$G/requests.jsonl"
+  [ "$output" != "0" ]
+  run grep -c 'aB3dE6gH9jK2' "$G/requests.jsonl"
+  [ "$output" = "0" ]
+  run grep -c 'zq7shortvalue9x' "$G/requests.jsonl"
+  [ "$output" = "0" ]
+}
+
 @test "a long markdown reply comes out plain, within rows-2 lines of cols characters" {
   start_guard
   python3 - "$G/config.json" <<'PY'
