@@ -17,7 +17,7 @@ and names what changed. If everything behaves, it stays **green** (passes).
 
 - A **test case** is one check (one `@test "…"` block).
 - A **test file** (`tests/<name>.bats`) groups the cases for one script or feature.
-- The **suite** is all of them: 106 files, 1,476 cases.
+- The **suite** is all of them: 106 files, 1,478 cases.
 
 ### What bats is
 
@@ -121,7 +121,7 @@ Those checks are run by hand:
 
 ## Part 2 — the map
 
-106 files, 1,476 cases: 87 files check behavior only, 15 mix behavior with
+106 files, 1,478 cases: 87 files check behavior only, 15 mix behavior with
 a few config checks, and 4 are config checks only. **Speed** is from
 `run-tests.sh`'s timing: `slow` files are skipped by the everyday run.
 
