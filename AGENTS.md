@@ -138,12 +138,13 @@ bats tests/docs.bats     # one file
 bats -f 'git push' tests/outbound-guard.bats   # only the cases whose name contains "git push"
 ```
 
-**The full suite is the user's to run** -- by hand, or by asking (`/test`
-runs it and explains every failure in plain English). While working, run
-only the file(s) covering what you changed, and say what each one guards
-when you report it. A red file you did not touch is one line in your
-reply, never work. `tests/INDEX.md` says, for every file, what it guards,
-whether it checks behavior or only wording, and how to read a failure.
+**Tests are the user's to run** -- in the central Test Hub
+(joe-rayment/test-suite), by hand, or by asking (`/test` runs them and
+explains every failure in plain English). Agents write or run a test only
+when the prompt asks (rulebook § Tests); otherwise they check a change by
+running the real thing. `tests/INDEX.md` says, for every file, what it
+guards, whether it checks behavior or only wording, and how to read a
+failure.
 
 Tests follow `config/testing-standard.md` (shipped as `~/.claude/TESTING.md`):
 every test is small, medium or large by what it does, tagged

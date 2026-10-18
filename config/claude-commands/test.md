@@ -3,7 +3,7 @@ description: "Run the project's tests and explain the results in plain English: 
 argument-hint: "[explain] [file | test name | words]"
 ---
 
-The user asked for this run — it is the one time the whole suite is yours to run (rulebook § Tests). The user is new to automated tests: every answer below is written for someone who has never read a test before. Gloss any jargon the first time you use it (test suite, test case, fixture, stub, assertion…).
+The user asked for this run — that ask is what makes running tests yours (rulebook § Tests). The user is new to automated tests: every answer below is written for someone who has never read a test before. Gloss any jargon the first time you use it (test suite, test case, fixture, stub, assertion…).
 
 Arguments: `$ARGUMENTS`
 
