@@ -39,6 +39,7 @@ End with one question only when there are failures: which of them the user wants
 For each test (or, for a big file, each group of similar tests):
 - **What it checks**, in one plain sentence — the real behavior, not the code.
 - **How**: what it sets up, what it does, what it expects — one line each.
+- **Size**: small, medium or large (its `size:` tag; untagged is small) — what it is allowed to do and its time limit, per `~/.claude/TESTING.md`.
 - **Kind**: *behavior* (runs the code and checks what happens) or *wording* (only checks that some text or document says certain words). Say plainly that wording tests protect phrasing, not behavior.
 - **Run it:** the exact command for this one file or test.
 - **Pass / fail means:** what the user learns from each.

@@ -21,6 +21,7 @@
 #   claude-settings.json  -> .claude/settings.json (__HOST__ rewritten, then
 #                             settings.local.json merged in -- local wins)
 #   claude-user-memory.md -> .claude/CLAUDE.md
+#   testing-standard.md   -> .claude/TESTING.md (the rulebook's § Tests standard)
 #   statusline.sh         -> .claude/statusline.sh (executable)
 #   agents/*.md           -> .claude/agents/
 #   claude-commands/*.md  -> .claude/commands/
@@ -189,6 +190,7 @@ rm -f "$CONFIG_DIR"/.orca-statusline-*
 sed "s#__HOST__#$host#g" "$TEMPLATE_CONFIG/claude-settings.json" > "$CONFIG_DIR/settings.json"
 
 cp "$TEMPLATE_CONFIG/claude-user-memory.md" "$CONFIG_DIR/CLAUDE.md"
+cp "$TEMPLATE_CONFIG/testing-standard.md" "$CONFIG_DIR/TESTING.md"
 cp "$TEMPLATE_CONFIG/statusline.sh" "$CONFIG_DIR/statusline.sh"
 chmod +x "$CONFIG_DIR/statusline.sh"
 
