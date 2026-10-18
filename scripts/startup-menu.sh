@@ -214,6 +214,17 @@ github_step() {
 github_step
 
 write_done
+
+# Ghostty is set up from the Mac side (scripts/mac/ghostty-install.sh); this
+# container cannot see whether it already is, so the menu always says how.
+printf '\n%sGhostty%s (on your Mac, once): every new tab in this folder then opens in its sandbox.\n' "$B" "$N"
+if [ -n "${CLAUDE_ORCA_HOST_PROJECT_DIR:-}" ]; then
+    printf "    cd '%s' && ./claude-dev ghostty\n" "$CLAUDE_ORCA_HOST_PROJECT_DIR"
+else
+    printf '    cd <this folder on your Mac> && ./claude-dev ghostty\n'
+fi
+printf '    (--check says whether it is set up; --uninstall puts Ghostty back as it was)\n'
+
 printf '\nRun startup-menu any time to see this again.\n'
 printf '%s━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━%s\n' "$B" "$N"
 
