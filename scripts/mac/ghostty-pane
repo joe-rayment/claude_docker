@@ -14,8 +14,10 @@
 # calls, no jq (a fresh Mac may not have one):
 #   1. Walk up from $PWD (at most 40 levels, stopping at /) to the first
 #      folder holding .claude-dev/claude-orca.json.
-#   2. If that file says "route": false, or <folder>/claude-dev is not
-#      executable, fall through.
+#   2. If that file says "route": false, <folder>/claude-dev is not
+#      executable, or the folder's launcher predates `pane` (a folder whose
+#      template was never updated: its claude-dev answers "Unknown option:
+#      pane" and the pane dies), fall through.
 #   3. Otherwise `exec <folder>/claude-dev pane <folder>`.
 # Fall-through, and every doubt (no folder, unreadable or deleted $PWD, a
 # relative $PWD): `exec "$SHELL" -l`, the user's normal Mac login shell.
@@ -70,6 +72,12 @@ if grep -q '"route"[[:space:]]*:[[:space:]]*false' "$found/.claude-dev/claude-or
     mac_shell "route:false in $found"
 fi
 [ -x "$found/claude-dev" ] || mac_shell "$found/claude-dev is not executable"
+# The stub execs .claude-dev/bin/claude-dev, the template's launcher.sh; one
+# that has never heard of cmd_pane_v3 has no `pane` to run.
+launcher="$found/.claude-dev/bin/claude-dev"
+if [ -f "$launcher" ] && ! grep -q cmd_pane_v3 "$launcher" 2>/dev/null; then
+    mac_shell "$found's launcher predates pane"
+fi
 
 trace "route $found"
 exec "$found/claude-dev" pane "$found"

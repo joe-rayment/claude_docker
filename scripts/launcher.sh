@@ -2167,6 +2167,8 @@ cmd_open_v3() {
 # becomes a Mac login shell under a banner that says it is NOT sandboxed, so
 # a new tab is never a dead one. Exit codes: whatever the shell exits with
 # (it is exec'd); 0 when there is no terminal and the pane was only announced.
+# Keep the name: scripts/mac/ghostty-pane greps a folder's launcher for
+# cmd_pane_v3 to tell one that has `pane` from one that predates it.
 cmd_pane_v3() {
     local start d="" cand cfg alias reason="" rc
     start="$(cd "${1:-$PWD}" 2>/dev/null && pwd -P)" || start=""
