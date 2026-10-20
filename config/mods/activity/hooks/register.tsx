@@ -16,6 +16,7 @@ const TICK_MS = 10_000 // redraw the frame
 const SUMMARY_MS = 60_000 // ask for a new page
 const MIN_GAP_MS = 20_000 // never two summarizer runs closer than this
 const SCRIPT_TIMEOUT_MS = 30_000
+const SIDEBAR_COLS = 44 // a narrow sidebar on the right (docks only under the fullscreen tui)
 
 const view = atom({ plugin: 'activity', key: 'view' } as const, {
   frame: '',
@@ -153,7 +154,7 @@ export const register: Register = on => {
       })
       lastRun = 0
       // On a narrow terminal the pane waits undrawn; every tick is a no-op until it is placed.
-      void $.ui.open({ id: PANE, title: 'Activity' })
+      void $.ui.open({ id: PANE, title: 'Activity', columns: SIDEBAR_COLS })
       start($)
     }
 
@@ -162,7 +163,7 @@ export const register: Register = on => {
 
   on('command.run', { command: 'activity' }, async $ => {
     lastRun = 0
-    await $.ui.open({ id: PANE, title: 'Activity' })
+    await $.ui.open({ id: PANE, title: 'Activity', columns: SIDEBAR_COLS })
     start($)
 
     return { text: 'Activity pane opened.' }
