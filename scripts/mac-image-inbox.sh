@@ -164,10 +164,16 @@ for p in "${paths[@]}"; do
     fi
 
     printf '%s' "$p" > "$tmp/path"
-    code="$(curl -sS --connect-timeout 2 --max-time 30 --unix-socket "$SOCK" \
-        -X POST -H 'Expect:' -H 'Content-Type: application/octet-stream' \
-        --data-binary @"$tmp/path" -o "$tmp/body" -w '%{http_code}' http://clip/file)"
-    code="${code:-000}"
+    # No HTTP answer at all (000) is the Mac listener re-arming between
+    # connections: try again, as bin/xclip does.
+    for try in 1 2 3; do
+        code="$(curl -sS --connect-timeout 2 --max-time 30 --unix-socket "$SOCK" \
+            -X POST -H 'Expect:' -H 'Content-Type: application/octet-stream' \
+            --data-binary @"$tmp/path" -o "$tmp/body" -w '%{http_code}' http://clip/file 2>/dev/null)"
+        code="${code:-000}"
+        [ "$code" = 000 ] || break
+        sleep 0.2
+    done
 
     case "$code" in
         200)
