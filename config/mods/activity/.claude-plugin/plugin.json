@@ -1,0 +1,6 @@
+{
+  "name": "activity",
+  "version": "0.1.0",
+  "description": "Opens an Activity pane beside the chat at every interactive session start: a one-page plain-English summary of what Claude Code is doing, written by Haiku through the session's own client. /activity reopens it.",
+  "types": "./types/index.d.ts"
+}

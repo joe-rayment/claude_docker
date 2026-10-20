@@ -9,7 +9,8 @@
     "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION": "false",
     "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "1000000",
     "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "50",
-    "BEADS_ACTOR": "claude"
+    "BEADS_ACTOR": "claude",
+    "CLAUDE_CODE_PLUGIN_DIRS": "__HOST__/template/config/mods/activity"
   },
   "statusLine": {
     "type": "command",

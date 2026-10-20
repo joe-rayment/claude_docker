@@ -507,40 +507,52 @@ def fallback_page(digest, from_p1, why, root, rows, cols, token):
     return page or "Nothing to show yet.\n"
 
 
+def no_call_reason(args, config, digest, why, meta, in_backoff):
+    """(reason, backoff_until): why NO model is called for this digest, or (None, None).
+    Shared by the guard path (decide) and by --request, where the caller owns the model."""
+    sources = (digest or {}).get("sources")
+    if config.get("activity") is False:
+        return "turned off in claude-orca.json", None
+    if digest is None:
+        return why, None
+    if not sources and not digest.get("request"):
+        return "nothing to summarize yet", None
+    if in_backoff and not args.force:
+        return (meta.get("reason") or "the summary service failed a moment ago; trying again soon",
+                meta.get("backoff_until"))
+    return None, None
+
+
+def previous_page(actdir, meta, digest):
+    """The page the model is shown as 'previous': only a model page of the same episode."""
+    if meta.get("source") == "model" and meta.get("episode") == digest.get("episode"):
+        try:
+            with open(os.path.join(actdir, "page.md"), encoding="utf-8") as fh:
+                return fh.read()
+        except OSError:
+            return ""
+    return ""
+
+
 def decide(args, root, actdir, config, digest, why, meta, in_backoff, token):
     """(kind, page, fields): kind is updated|fallback; fields feed meta.json."""
     from_p1 = not args.digest
     fields = {"model": None, "reason": None, "usage": None, "backoff_until": None}
-    reason = None
     model = pick_model(config, root)
     base = (os.environ.get("CLAUDE_ORCA_ACTIVITY_URL") or os.environ.get("OPENROUTER_BASE_URL")
             or DEFAULT_URL)
     host = urllib.parse.urlparse(base).hostname
-    sources = (digest or {}).get("sources")
-    if config.get("activity") is False:
-        reason = "turned off in claude-orca.json"
-    elif digest is None:
-        reason = why
-    elif not sources and not digest.get("request"):
-        reason = "nothing to summarize yet"
-    elif in_backoff and not args.force:
-        reason = meta.get("reason") or "the summary service failed a moment ago; trying again soon"
-        fields["backoff_until"] = meta.get("backoff_until")
-    elif not model:
-        reason = "no summary model is configured"
-    elif not token:
-        reason = "no guard token is available for the summary model"
-    elif host not in LOOPBACK:
-        reason = "the summary service address is not a local guard; the token is not sent elsewhere"
+    reason, fields["backoff_until"] = no_call_reason(args, config, digest, why, meta, in_backoff)
+    if reason is None:
+        if not model:
+            reason = "no summary model is configured"
+        elif not token:
+            reason = "no guard token is available for the summary model"
+        elif host not in LOOPBACK:
+            reason = "the summary service address is not a local guard; the token is not sent elsewhere"
     if reason is None:
         timeout = env_int("CLAUDE_ORCA_ACTIVITY_TIMEOUT_S", 45)
-        prev = ""
-        if meta.get("source") == "model" and meta.get("episode") == digest.get("episode"):
-            try:
-                with open(os.path.join(actdir, "page.md"), encoding="utf-8") as fh:
-                    prev = fh.read()
-            except OSError:
-                prev = ""
+        prev = previous_page(actdir, meta, digest)
         res = call_model(base, token, model, system_prompt(args.rows, args.cols),
                          user_message(prev, digest, token), timeout)
         log_call(actdir, model, res)
@@ -555,8 +567,18 @@ def decide(args, root, actdir, config, digest, why, meta, in_backoff, token):
     return "fallback", fallback_page(digest, from_p1, why, root, args.rows, args.cols, token), fields
 
 
-def run(args, root, actdir):
-    rundir = os.path.join(root, ".claude-dev", "run")
+def write_result(actdir, args, digest, fp, kind, page, fields):
+    out = {"updated": iso(now_utc()), "episode": digest.get("episode") if digest else None,
+           "fingerprint": fp, "model": fields["model"],
+           "source": "model" if kind == "updated" else "fallback",
+           "reason": fields["reason"], "usage": fields["usage"],
+           "rows": args.rows, "cols": args.cols, "backoff_until": fields["backoff_until"]}
+    atomic_write(os.path.join(actdir, "page.md"), page)
+    atomic_write(os.path.join(actdir, "meta.json"), json.dumps(out, indent=2) + "\n")
+
+
+def prelude(args, root, actdir):
+    """What every run starts from: (config, digest, from_p1, why, meta, in_backoff, fp, same)."""
     config = read_json(os.path.join(root, ".claude-dev", "claude-orca.json")) or {}
     digest, from_p1, why = load_digest(args.digest, root)
     meta = read_json(os.path.join(actdir, "meta.json")) or {}
@@ -566,17 +588,80 @@ def run(args, root, actdir):
     same = (fp is not None and fp == meta.get("fingerprint")
             and meta.get("rows") == args.rows and meta.get("cols") == args.cols
             and os.path.exists(os.path.join(actdir, "page.md")))
+    return config, digest, from_p1, why, meta, in_backoff, fp, same
+
+
+def run(args, root, actdir):
+    rundir = os.path.join(root, ".claude-dev", "run")
+    config, digest, from_p1, why, meta, in_backoff, fp, same = prelude(args, root, actdir)
     if same and not args.force and (meta.get("source") == "model" or in_backoff):
         return "unchanged"
     token = pick_token(rundir)
     kind, page, fields = decide(args, root, actdir, config, digest, why, meta, in_backoff, token)
-    out = {"updated": iso(now_utc()), "episode": digest.get("episode") if digest else None,
-           "fingerprint": fp, "model": fields["model"],
-           "source": "model" if kind == "updated" else "fallback",
-           "reason": fields["reason"], "usage": fields["usage"],
-           "rows": args.rows, "cols": args.cols, "backoff_until": fields["backoff_until"]}
-    atomic_write(os.path.join(actdir, "page.md"), page)
-    atomic_write(os.path.join(actdir, "meta.json"), json.dumps(out, indent=2) + "\n")
+    write_result(actdir, args, digest, fp, kind, page, fields)
+    return kind
+
+
+# --- the caller makes the model call: --request, then --reply --------------------
+
+PENDING = "request.json"  # what --request saw, so --reply files the page under THAT digest
+
+
+def run_request(args, root, actdir):
+    """No network, no token needed. Returns the JSON object to print."""
+    rundir = os.path.join(root, ".claude-dev", "run")
+    config, digest, from_p1, why, meta, in_backoff, fp, same = prelude(args, root, actdir)
+    if same and not args.force and (meta.get("source") == "model" or in_backoff):
+        return {"status": "unchanged"}
+    reason, until = no_call_reason(args, config, digest, why, meta, in_backoff)
+    token = pick_token(rundir)
+    if reason is not None:  # the viewer still gets the deterministic page, with the reason
+        fields = {"model": None, "reason": reason, "usage": None, "backoff_until": until}
+        page = fallback_page(digest, from_p1, why, root, args.rows, args.cols, token)
+        write_result(actdir, args, digest, fp, "fallback", page, fields)
+        return {"status": "off", "reason": reason}
+    prev = previous_page(actdir, meta, digest)
+    atomic_write(os.path.join(actdir, PENDING), json.dumps(
+        {"fingerprint": fp, "episode": digest.get("episode"), "rows": args.rows,
+         "cols": args.cols, "at": time.time()}) + "\n")
+    return {"status": "request", "system": system_prompt(args.rows, args.cols),
+            "user": user_message(prev, digest, token), "max_tokens": MAX_TOKENS}
+
+
+def run_reply(args, root, actdir):
+    """The caller's model reply is on stdin; empty means its call failed. Returns the word."""
+    rundir = os.path.join(root, ".claude-dev", "run")
+    config, digest, from_p1, why, meta, in_backoff, fp, same = prelude(args, root, actdir)
+    pend = read_json(os.path.join(actdir, PENDING)) or {}
+    took = 0
+    if pend.get("rows") == args.rows and pend.get("cols") == args.cols:
+        fp = pend.get("fingerprint", fp)
+        if digest is not None:
+            digest = dict(digest, episode=pend.get("episode", digest.get("episode")))
+        if isinstance(pend.get("at"), (int, float)):
+            took = int((time.time() - pend["at"]) * 1000)
+    token = pick_token(rundir)
+    model = (args.model or "haiku").strip() or "haiku"
+    text = sys.stdin.read(1 << 20)
+    page = shape_page(redact_text(text, (token,)), args.rows, args.cols) if text.strip() else ""
+    fields = {"model": None, "reason": None, "usage": None, "backoff_until": None}
+    if page:
+        fields["model"] = model
+        kind = "updated"
+        log_call(actdir, model, {"status": None, "usage": None, "ms": took, "error": None})
+    else:
+        kind = "fallback"
+        fields["reason"] = args.why.strip() if args.why and args.why.strip() else \
+            failure_reason({"error": "empty"}, 0)
+        wait = env_int("CLAUDE_ORCA_ACTIVITY_BACKOFF_S", 300)
+        fields["backoff_until"] = iso(now_utc() + timedelta(seconds=wait))
+        log_call(actdir, model, {"status": None, "usage": None, "ms": took, "error": "empty"})
+        page = fallback_page(digest, from_p1, why, root, args.rows, args.cols, token)
+    write_result(actdir, args, digest, fp, kind, page, fields)
+    try:
+        os.unlink(os.path.join(actdir, PENDING))
+    except OSError:
+        pass
     return kind
 
 
@@ -589,7 +674,17 @@ def main(argv=None):
     ap.add_argument("--root", help="project folder (default: CLAUDE_ORCA_ROOT, PROJECT_DIR, git top level)")
     ap.add_argument("--digest", metavar="FILE", help="read this digest JSON instead of running the digest script")
     ap.add_argument("--force", action="store_true", help="summarize even if nothing changed")
+    ap.add_argument("--request", action="store_true",
+                    help="no model call: print the request JSON for the caller to send, or why there is none")
+    ap.add_argument("--reply", action="store_true",
+                    help="the caller's model reply is on stdin (empty = its call failed): write the page")
+    ap.add_argument("--model", help="with --reply: the model that wrote the reply (default haiku)")
+    ap.add_argument("--why", help="with --reply and an empty stdin: the plain-words reason it failed")
     args = ap.parse_args(argv)
+    if args.request and args.reply:
+        die("--request and --reply are two separate runs")
+    if (args.model or args.why) and not args.reply:
+        die("--model and --why go with --reply")
     if args.rows < 4 or args.cols < 20:
         die("--rows must be at least 4 and --cols at least 20")
     root = resolve_root(args.root)
@@ -604,10 +699,15 @@ def main(argv=None):
     try:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
-        print("busy")
+        print(json.dumps({"status": "busy"}) if args.request else "busy")
         return 0
     try:
-        word = run(args, root, actdir)
+        if args.request:
+            word = json.dumps(run_request(args, root, actdir), ensure_ascii=False)
+        elif args.reply:
+            word = run_reply(args, root, actdir)
+        else:
+            word = run(args, root, actdir)
     except OSError as exc:
         die("cannot write under %s: %s" % (actdir, exc.strerror), 1)
     print(word)
