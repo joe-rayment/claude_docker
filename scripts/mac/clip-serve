@@ -13,8 +13,9 @@
 #                  204 with no body. An image is «class PNGf», or
 #                  «class furl» whose file has an image extension
 #                  (png jpg jpeg gif webp heic heif tif tiff bmp), or
-#                  «class TIFF». Order: PNGf first; a furl decides on its own
-#                  (a Finder file copy is the file, not its icon); TIFF last.
+#                  «class TIFF». Order: a furl first and decides on its own
+#                  (a Finder file copy is the file, not its icon); then PNGf;
+#                  TIFF last.
 #   GET  /png      200 image/png bytes: PNGf written by osascript; TIFF run
 #                  through `sips -s format png`; a furl PNG served as is, any
 #                  other furl image through sips. Over 32 MB -> 413.
@@ -118,17 +119,19 @@ probe() {
     KIND=none
     FURL_PATH=
     info=$("$OSASCRIPT" -e 'clipboard info' 2>/dev/null) || return 0
+    # furl before PNGf: a Finder file copy carries both, and its PNGf is the
+    # file's icon. A furl that is not an image is no image at all.
     case "$info" in
-        *"class PNGf"*)
-            KIND=png
-            return 0
-            ;;
         *"class furl"*)
             p=$("$OSASCRIPT" -e "POSIX path of (the clipboard as ${LQ}class furl${RQ})" 2>/dev/null) || return 0
             if [ -n "$p" ] && [ -f "$p" ] && is_image_ext "$p"; then
                 KIND=furl
                 FURL_PATH=$p
             fi
+            return 0
+            ;;
+        *"class PNGf"*)
+            KIND=png
             return 0
             ;;
         *"class TIFF"*)
