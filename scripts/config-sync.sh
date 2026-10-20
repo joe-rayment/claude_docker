@@ -191,7 +191,7 @@ rm -f "$CONFIG_DIR"/.orca-statusline-*
 # host dir.
 sed "s#__HOST__#$host#g" "$TEMPLATE_CONFIG/claude-settings.json" > "$CONFIG_DIR/settings.json"
 
-# keybindings.json: the template's chords (ctrl+q toggles the Activity
+# keybindings.json: the template's chords (ctrl+\ toggles the Activity
 # sidebar) merged under the person's own -- a chord they bound themselves,
 # in any context, wins, and every binding of theirs survives the sync.
 if [ -f "$TEMPLATE_CONFIG/claude-keybindings.json" ]; then

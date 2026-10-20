@@ -12,7 +12,7 @@ import type { ActivityView } from '../types'
 //
 // It changes only when a turn of the main chat ends -- never on a timer -- so
 // nothing is spent while nothing happens, and the text holds still while the
-// person reads it. ctrl+q (config/claude-keybindings.json) or /activity
+// person reads it. ctrl+\\ (config/claude-keybindings.json) or /activity
 // toggles it; hidden, it is fully off: no summary, no model call, and it opens
 // again on the one-line intro, keeping nothing. Interactive sessions only: a
 // headless one (claude -p, a worker) opens no pane, so no process starts there.
@@ -20,11 +20,11 @@ import type { ActivityView } from '../types'
 const PANE = 'activity'
 const SCRIPT_TIMEOUT_MS = 30_000
 const SETTLE_MS = 2_000 // after a turn ends, before its transcript is read
-const SIDEBAR_COLS = 44 // a narrow sidebar on the right (docks only under the fullscreen tui)
+const SIDEBAR_COLS = 34 // a narrow sidebar on the right (docks only under the fullscreen tui)
 const OPEN = { id: PANE, title: 'Activity', columns: SIDEBAR_COLS }
 
-const INTRO = 'What Claude is doing, after each reply.'
-const HINT = ['ctrl+q hides this']
+const INTRO = ['What Claude is doing.', 'Updates after each reply.']
+const HINT = ['ctrl+\\ hides this']
 
 const view = atom({ plugin: 'activity', key: 'view' } as const, {
   frame: '',
@@ -152,7 +152,7 @@ export const register: Register = on => {
       cwd = e.cwd
       await $.command.register({
         name: 'activity',
-        description: 'Show or hide the Activity sidebar (ctrl+q)',
+        description: 'Show or hide the Activity sidebar (ctrl+\\)',
       })
       await show($)
     }
@@ -194,10 +194,10 @@ export const register: Register = on => {
     const { frame, isFailed } = await read($, view)
     const body =
       frame !== ''
-        ? frame.split('\n').map(line => <Text>{line}</Text>)
+        ? frame.split('\n').map(line => <Text>{line === '' ? ' ' : line}</Text>) // an empty Text draws no row
         : isFailed
           ? [<Text dimColor>Could not read what Claude Code is doing.</Text>]
-          : [<Text dimColor>{INTRO}</Text>]
+          : INTRO.map(line => <Text dimColor>{line}</Text>)
 
     return (
       <Box flexDirection="column" flexGrow={1}>
