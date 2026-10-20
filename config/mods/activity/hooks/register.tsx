@@ -1,42 +1,50 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register, Timer } from 'claude-code'
+import type { EngineInterface, Register } from 'claude-code'
 
 import type { ActivityView } from '../types'
 
 // The Activity pane (claude-orca-nnr): a one-page plain-English summary of what
-// Claude Code is doing, beside the chat. The page is written by Haiku through
-// the session's own client ($.model.complete); the template's scripts only
-// build the request and shape the reply (scripts/activity-summarize.py
-// --request / --reply) and draw the frame (scripts/activity.py --frame).
-// Interactive sessions only: a headless session (claude -p, a worker) opens no
-// pane, so no timer and no process ever starts there.
+// Claude Code is doing, in a narrow sidebar beside the chat. The page is
+// written by Haiku through the session's own client ($.model.complete); the
+// template's scripts only build the request and shape the reply
+// (scripts/activity-summarize.py --request / --reply) and lay out the page
+// (scripts/activity.py --frame).
+//
+// It changes only when a turn of the main chat ends -- never on a timer -- so
+// nothing is spent while nothing happens, and the text holds still while the
+// person reads it. A session starts on a short note saying what the pane is
+// for. Interactive sessions only: a headless one (claude -p, a worker) opens
+// no pane, so no process ever starts there.
 
 const PANE = 'activity'
-const TICK_MS = 10_000 // redraw the frame
-const SUMMARY_MS = 60_000 // ask for a new page
-const MIN_GAP_MS = 20_000 // never two summarizer runs closer than this
 const SCRIPT_TIMEOUT_MS = 30_000
+const SETTLE_MS = 2_000 // after a turn ends, before its transcript is read
 const SIDEBAR_COLS = 44 // a narrow sidebar on the right (docks only under the fullscreen tui)
+const OPEN = { id: PANE, title: 'Activity', columns: SIDEBAR_COLS }
+
+const INTRO = [
+  'What Claude is working on.',
+  ' ',
+  'After each reply in the chat, a short plain-English note lands here: what is done, what is running now, and what comes next.',
+]
+// A pane takes keys once focused (ctrl+x tab); ctrl+x x then closes it.
+const HINT = ['Hide: ctrl+x tab, then ctrl+x x', 'Show again: /activity']
 
 const view = atom({ plugin: 'activity', key: 'view' } as const, {
   frame: '',
   isFailed: false,
 } as ActivityView)
 
-// Module state: timers, the pane's size (a render must not write state, so it
-// leaves the size here) and the run bookkeeping. A hot reload drops them, and
-// register runs again, which is fine: the next tick starts over.
+// Module state: whether this is an interactive session, the pane's size (a
+// render must not write state, so it leaves the size here) and the run
+// bookkeeping. A hot reload drops them and session.start sets them again.
+type Ctx = EngineInterface
+let isInteractive = false
 let cwd = ''
 let rows = 30
-let cols = 70
+let cols = SIDEBAR_COLS
 let isRunning = false
-let lastRun = 0
-let lastSize = ''
-let isSized = false // no summary until the pane has drawn once and told us its size
-let timers: Timer[] = []
-let ticks = 0
-
-type Ctx = EngineInterface
+let isOwed = false // a turn ended while the pane was hidden or a summary was running
 
 const script = ($: Ctx, name: string) => `${$.plugin.root}/../../../scripts/${name}`
 
@@ -53,24 +61,30 @@ async function py($: Ctx, name: string, args: string[], stdin?: string): Promise
   }
 }
 
-const sizeArgs = () => ['--rows', String(rows), '--cols', String(cols)]
+// The hint and the blank row above it take the pane's last rows; the page gets the rest.
+const sizeArgs = () => ['--rows', String(Math.max(4, rows - HINT.length - 1)), '--cols', String(cols)]
 
-async function showFrame($: Ctx, isFailed = false) {
+async function showFrame($: Ctx, isFailed: boolean) {
   const out = await py($, 'activity.py', ['--frame', ...sizeArgs()])
-  // The viewer's own footer ("... · q quits") means nothing in a pane.
-  const frame = out.replace(/\s*·\s*q quits\s*$/, '').replace(/\s+$/, '')
+  // Drop the viewer's own footer ("updated 40 s ago · haiku · q quits"): the
+  // pane does not redraw on a clock, so an age would only go stale, and it is
+  // not closed with q. The hint line takes its place.
+  const lines = out.replace(/\s+$/, '').split('\n')
+  if (/q quits\s*$/.test(lines[lines.length - 1] ?? '')) lines.pop()
+  const frame = lines.join('\n').replace(/\s+$/, '')
   await update($, view, () => ({ frame, isFailed: isFailed || frame === '' }))
 }
 
 // One cycle: build the request, ask Haiku through the session's client, file
-// the reply, then redraw. Any failure files an empty reply, which writes the
-// deterministic page and backs off, so the pane never shows a blank.
+// the reply, then lay the page out. A failed call files an empty reply, which
+// writes the deterministic page and backs off, so the pane never goes blank.
 async function summarize($: Ctx) {
   const size = sizeArgs()
   let isFailed = false
   try {
     const out = await py($, 'activity-summarize.py', ['--request', ...size])
     const req = out ? (JSON.parse(out.trim().split('\n').pop() ?? '{}') as Record<string, unknown>) : {}
+    if (req.status === 'unchanged' || req.status === 'busy') return
     if (req.status === 'request') {
       let text = ''
       let why = 'the summary model did not answer'
@@ -98,7 +112,6 @@ async function summarize($: Ctx) {
   } catch {
     isFailed = true
   }
-  lastSize = size.join(' ')
   await showFrame($, isFailed)
 }
 
@@ -110,89 +123,80 @@ async function isPlaced($: Ctx): Promise<boolean> {
   }
 }
 
-async function tick($: Ctx, isSummaryDue: boolean) {
-  if (!isSized || !(await isPlaced($))) return
-  ticks += 1
-  const now = Date.now()
-  const isStale = lastSize !== sizeArgs().join(' ')
-  const canRun = !isRunning && now - lastRun >= MIN_GAP_MS
-  if (canRun && (lastRun === 0 || isSummaryDue || isStale)) {
-    isRunning = true
-    lastRun = now
-    try {
-      await summarize($)
-    } finally {
-      isRunning = false
-      lastRun = Date.now()
-    }
-  } else if (!isRunning) {
-    await showFrame($)
+// Summarize once, now, unless the pane is out of sight or a run is in flight;
+// either way the turn is owed, and the next chance (the run ending, the pane
+// coming back) pays it. Turns that end during one run make one more run.
+async function refresh($: Ctx) {
+  if (isRunning || !(await isPlaced($))) {
+    isOwed = true
+    return
   }
-}
-
-function start($: Ctx) {
-  stop()
-  timers = [
-    $.clock.every(TICK_MS, () => void tick($, false)),
-    $.clock.every(SUMMARY_MS, () => void tick($, true)),
-  ]
-  void tick($, true)
-}
-
-function stop() {
-  for (const timer of timers) timer.cancel()
-  timers = []
+  isRunning = true
+  isOwed = false
+  try {
+    await summarize($)
+  } finally {
+    isRunning = false
+  }
+  if (isOwed) void refresh($)
 }
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     if (e.isInteractive) {
+      isInteractive = true
       cwd = e.cwd
+      isOwed = false
+      await update($, view, () => ({ frame: '', isFailed: false }))
       await $.command.register({
         name: 'activity',
-        description: 'Open the Activity pane: a plain-English summary of what Claude Code is doing',
+        description: 'Show the Activity sidebar: a plain-English note of what Claude is working on',
       })
-      lastRun = 0
-      // On a narrow terminal the pane waits undrawn; every tick is a no-op until it is placed.
-      void $.ui.open({ id: PANE, title: 'Activity', columns: SIDEBAR_COLS })
-      start($)
+      // On a terminal under 144 columns the pane waits undrawn until /activity.
+      void $.ui.open(OPEN)
     }
 
     return next(e)
   })
 
-  on('command.run', { command: 'activity' }, async $ => {
-    lastRun = 0
-    await $.ui.open({ id: PANE, title: 'Activity', columns: SIDEBAR_COLS })
-    start($)
+  // The only trigger: the end of a main-chat turn. A subagent's turn
+  // (agentId set) is part of the main turn that spawned it. The summary runs
+  // from a timer of its own so it outlives this hook's dispatch, a moment
+  // after the end so the turn's last message is in the transcript it reads.
+  on('turn.complete', async ($, e, next) => {
+    const ended = await next(e)
+    if (isInteractive && e.agentId === undefined) $.clock.after(SETTLE_MS, () => void refresh($))
 
-    return { text: 'Activity pane opened.' }
+    return ended
   })
 
-  on('ui.close', { id: PANE }, async ($, e, next) => {
-    stop()
+  on('command.run', { command: 'activity' }, async $ => {
+    await $.ui.open(OPEN)
+    if (isOwed) $.clock.after(1, () => void refresh($))
 
-    return next(e)
+    return { text: 'Activity sidebar shown.' }
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text } = $.ui.resolve(e)
     rows = Math.max(4, e.props.scroll.bodyRows)
     cols = Math.max(20, e.props.bodyColumns)
-    isSized = true
     const { frame, isFailed } = await read($, view)
-    if (frame === '') {
-      return (
-        <Text dimColor>
-          {isFailed ? 'Could not read what Claude Code is doing.' : 'Reading what Claude Code is doing…'}
-        </Text>
-      )
-    }
+    const body =
+      frame !== ''
+        ? frame.split('\n').map(line => <Text>{line}</Text>)
+        : isFailed
+          ? [<Text dimColor>Could not read what Claude Code is doing.</Text>]
+          : INTRO.map(line => <Text dimColor={line !== INTRO[0]}>{line}</Text>)
 
     return (
-      <Box flexDirection="column">
-        {frame.split('\n').map(line => (
-          <Text wrap="truncate">{line}</Text>
+      <Box flexDirection="column" flexGrow={1}>
+        <Box flexDirection="column" flexGrow={1}>
+          {body}
+        </Box>
+        <Text> </Text>
+        {HINT.map(line => (
+          <Text dimColor>{line}</Text>
         ))}
       </Box>
     )
