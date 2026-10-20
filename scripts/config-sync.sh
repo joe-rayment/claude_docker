@@ -20,6 +20,8 @@
 # Populates (from $HOST/template/config/):
 #   claude-settings.json  -> .claude/settings.json (__HOST__ rewritten, then
 #                             settings.local.json merged in -- local wins)
+#   claude-keybindings.json -> .claude/keybindings.json (merged under the
+#                             person's own bindings -- theirs win)
 #   claude-user-memory.md -> .claude/CLAUDE.md
 #   testing-standard.md   -> .claude/TESTING.md (the rulebook's § Tests standard)
 #   statusline.sh         -> .claude/statusline.sh (executable)
@@ -188,6 +190,27 @@ rm -f "$CONFIG_DIR"/.orca-statusline-*
 # (config/claude-settings.json), rewritten here to this project's actual
 # host dir.
 sed "s#__HOST__#$host#g" "$TEMPLATE_CONFIG/claude-settings.json" > "$CONFIG_DIR/settings.json"
+
+# keybindings.json: the template's chords (ctrl+q toggles the Activity
+# sidebar) merged under the person's own -- a chord they bound themselves,
+# in any context, wins, and every binding of theirs survives the sync.
+if [ -f "$TEMPLATE_CONFIG/claude-keybindings.json" ]; then
+    kb="$CONFIG_DIR/keybindings.json"
+    if [ -f "$kb" ] && jq -e . "$kb" >/dev/null 2>&1; then
+        kb_tmp=$(mktemp "$kb.XXXXXX")
+        if jq -s 'def bymap: reduce (.bindings // [])[] as $b ({}; .[$b.context] += $b.bindings);
+                  (.[0] | bymap) as $t | (.[1] | bymap) as $u
+                  | .[1] + {"$schema": .[0]["$schema"],
+                            bindings: [($t * $u) | to_entries[] | {context: .key, bindings: .value}]}' \
+                "$TEMPLATE_CONFIG/claude-keybindings.json" "$kb" > "$kb_tmp" 2>/dev/null; then
+            mv "$kb_tmp" "$kb"
+        else
+            rm -f "$kb_tmp"
+        fi
+    else
+        cp "$TEMPLATE_CONFIG/claude-keybindings.json" "$kb"
+    fi
+fi
 
 cp "$TEMPLATE_CONFIG/claude-user-memory.md" "$CONFIG_DIR/CLAUDE.md"
 if [ -f "$TEMPLATE_CONFIG/testing-standard.md" ]; then

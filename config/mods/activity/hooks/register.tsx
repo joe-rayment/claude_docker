@@ -12,9 +12,10 @@ import type { ActivityView } from '../types'
 //
 // It changes only when a turn of the main chat ends -- never on a timer -- so
 // nothing is spent while nothing happens, and the text holds still while the
-// person reads it. A session starts on a short note saying what the pane is
-// for. Interactive sessions only: a headless one (claude -p, a worker) opens
-// no pane, so no process ever starts there.
+// person reads it. ctrl+q (config/claude-keybindings.json) or /activity
+// toggles it; hidden, it is fully off: no summary, no model call, and it opens
+// again on the one-line intro, keeping nothing. Interactive sessions only: a
+// headless one (claude -p, a worker) opens no pane, so no process starts there.
 
 const PANE = 'activity'
 const SCRIPT_TIMEOUT_MS = 30_000
@@ -22,29 +23,24 @@ const SETTLE_MS = 2_000 // after a turn ends, before its transcript is read
 const SIDEBAR_COLS = 44 // a narrow sidebar on the right (docks only under the fullscreen tui)
 const OPEN = { id: PANE, title: 'Activity', columns: SIDEBAR_COLS }
 
-const INTRO = [
-  'What Claude is working on.',
-  ' ',
-  'After each reply in the chat, a short plain-English note lands here: what is done, what is running now, and what comes next.',
-]
-// A pane takes keys once focused (ctrl+x tab); ctrl+x x then closes it.
-const HINT = ['Hide: ctrl+x tab, then ctrl+x x', 'Show again: /activity']
+const INTRO = 'What Claude is doing, after each reply.'
+const HINT = ['ctrl+q hides this']
 
 const view = atom({ plugin: 'activity', key: 'view' } as const, {
   frame: '',
   isFailed: false,
 } as ActivityView)
 
-// Module state: whether this is an interactive session, the pane's size (a
-// render must not write state, so it leaves the size here) and the run
-// bookkeeping. A hot reload drops them and session.start sets them again.
+// Module state: whether the pane is open, the pane's size (a render must not
+// write state, so it leaves the size here) and the run bookkeeping. A hot
+// reload drops them and session.start sets them again.
 type Ctx = EngineInterface
-let isInteractive = false
+let isOpen = false
 let cwd = ''
 let rows = 30
 let cols = SIDEBAR_COLS
 let isRunning = false
-let isOwed = false // a turn ended while the pane was hidden or a summary was running
+let isOwed = false // a turn ended while a summary was running
 
 const script = ($: Ctx, name: string) => `${$.plugin.root}/../../../scripts/${name}`
 
@@ -123,11 +119,12 @@ async function isPlaced($: Ctx): Promise<boolean> {
   }
 }
 
-// Summarize once, now, unless the pane is out of sight or a run is in flight;
-// either way the turn is owed, and the next chance (the run ending, the pane
-// coming back) pays it. Turns that end during one run make one more run.
+// Summarize once, now -- nothing at all while the pane is hidden, or placed
+// nowhere (a terminal too narrow to seat it). Turns that end during a run
+// make one more run once it is done.
 async function refresh($: Ctx) {
-  if (isRunning || !(await isPlaced($))) {
+  if (!isOpen || !(await isPlaced($))) return
+  if (isRunning) {
     isOwed = true
     return
   }
@@ -138,22 +135,26 @@ async function refresh($: Ctx) {
   } finally {
     isRunning = false
   }
-  if (isOwed) void refresh($)
+  if (isOwed && isOpen) void refresh($)
+}
+
+async function show($: Ctx) {
+  isOpen = true
+  isOwed = false
+  await update($, view, () => ({ frame: '', isFailed: false }))
+  // On a terminal under 144 columns (110 once asked) the pane waits undrawn.
+  await $.ui.open(OPEN)
 }
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     if (e.isInteractive) {
-      isInteractive = true
       cwd = e.cwd
-      isOwed = false
-      await update($, view, () => ({ frame: '', isFailed: false }))
       await $.command.register({
         name: 'activity',
-        description: 'Show the Activity sidebar: a plain-English note of what Claude is working on',
+        description: 'Show or hide the Activity sidebar (ctrl+q)',
       })
-      // On a terminal under 144 columns the pane waits undrawn until /activity.
-      void $.ui.open(OPEN)
+      await show($)
     }
 
     return next(e)
@@ -165,16 +166,25 @@ export const register: Register = on => {
   // after the end so the turn's last message is in the transcript it reads.
   on('turn.complete', async ($, e, next) => {
     const ended = await next(e)
-    if (isInteractive && e.agentId === undefined) $.clock.after(SETTLE_MS, () => void refresh($))
+    if (isOpen && e.agentId === undefined) $.clock.after(SETTLE_MS, () => void refresh($))
 
     return ended
   })
 
+  // A toggle, quiet either way: the sidebar appearing or going is the answer.
   on('command.run', { command: 'activity' }, async $ => {
-    await $.ui.open(OPEN)
-    if (isOwed) $.clock.after(1, () => void refresh($))
+    if (isOpen) await $.ui.close({ id: PANE })
+    else await show($)
 
-    return { text: 'Activity sidebar shown.' }
+    return {}
+  })
+
+  // However it goes (this toggle, the pane's own close mark), hidden is off.
+  on('ui.close', { id: PANE }, async ($, e, next) => {
+    isOpen = false
+    isOwed = false
+
+    return next(e)
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
@@ -187,7 +197,7 @@ export const register: Register = on => {
         ? frame.split('\n').map(line => <Text>{line}</Text>)
         : isFailed
           ? [<Text dimColor>Could not read what Claude Code is doing.</Text>]
-          : INTRO.map(line => <Text dimColor={line !== INTRO[0]}>{line}</Text>)
+          : [<Text dimColor>{INTRO}</Text>]
 
     return (
       <Box flexDirection="column" flexGrow={1}>
