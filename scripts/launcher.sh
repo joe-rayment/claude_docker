@@ -2542,6 +2542,16 @@ cmd_update_v3() {
         echo "  template: already up to date (${after:0:7})"
     else
         echo "  template: ${before:0:7} -> ${after:0:7}"
+        # This process is still the launcher the pull just replaced: bash
+        # read it before the pull, so everything below -- the image, the
+        # container, and how open ends (an old Orca-era launcher never
+        # reaches a pane) -- would run the old code. Hand the rest of the
+        # update to the new launcher; its own pull is a no-op, so it does
+        # not hand off again (and the variable caps it at once regardless).
+        if [ -z "${CLAUDE_ORCA_UPDATE_HANDOFF:-}" ] && [ -x "$HOST_DIR/bin/claude-dev" ]; then
+            echo "==> Continuing with the updated launcher"
+            CLAUDE_ORCA_UPDATE_HANDOFF=1 exec "$HOST_DIR/bin/claude-dev" --update "$dir"
+        fi
     fi
 
     echo "==> Relinking $HOST_DIR/bin"
