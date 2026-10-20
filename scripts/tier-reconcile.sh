@@ -84,6 +84,19 @@ if [ -f "$LOCAL_SETTINGS" ] && jq -e '(.env // {}) | keys | map(select(test("^AN
     fi
 fi
 
+# 1b) A folder with no tier.json yet starts on the presets file's "default"
+#     preset, bound through tier-set exactly as `/tier <preset>` would (so it
+#     is pinned and the picker shows it as current). Silent, like the rest.
+if [ ! -f "$STATE_FILE" ]; then
+    PRESETS_FILE="${TIER_PRESETS_FILE:-$SCRIPT_DIR/../config/tier-presets.json}"
+    TIER_SET="${TIER_SET:-}"
+    [ -n "$TIER_SET" ] || TIER_SET=$(command -v tier-set 2>/dev/null) || TIER_SET="$SCRIPT_DIR/tier-set.sh"
+    default_preset=$(jq -r '.default // empty | select(type == "string")' "$PRESETS_FILE" 2>/dev/null)
+    if [ -n "$default_preset" ] && [ -x "$TIER_SET" ]; then
+        TIER_STATE_FILE="$STATE_FILE" TIER_PRESETS_FILE="$PRESETS_FILE" "$TIER_SET" "$default_preset" >/dev/null 2>&1
+    fi
+fi
+
 # 2) Re-derive worker/recon (and refresh the recorded top) in tier.json from
 #    the live .model -- unless pinned, .model is unset, or .model is
 #    off-ladder (never clobber a binding we can't place on the ladder).
