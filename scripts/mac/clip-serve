@@ -19,6 +19,15 @@
 #                  through `sips -s format png`; a furl PNG served as is, any
 #                  other furl image through sips. Over 32 MB -> 413.
 #                  No image -> 404.
+#   POST /file     body: one absolute Mac path (Content-Length 1..4096, one
+#                  trailing newline stripped); served like a furl image (PNG
+#                  as is, any other image through sips; over 32 MB -> 413).
+#                  400 on a bad length, a path not starting with "/" or one
+#                  holding a newline. 403 unless the path has an image
+#                  extension, is a regular file, and is EXACTLY one of the
+#                  file URLs now on the general or the drag pasteboard (a
+#                  Finder cmd+c, a drag): the container reads no other Mac
+#                  file, and the pasteboard list is never sent back.
 #   POST /copy     body (Content-Length <= 1 MB) piped to pbcopy -> 204.
 #   anything else  404.
 #
@@ -64,6 +73,7 @@ reply() {
         200) msg='OK' ;;
         204) msg='No Content' ;;
         400) msg='Bad Request' ;;
+        403) msg='Forbidden' ;;
         404) msg='Not Found' ;;
         413) msg='Payload Too Large' ;;
         *) msg='Internal Server Error' ;;
@@ -168,6 +178,48 @@ route_targets() {
     fi
 }
 
+# send_png FILE -- FILE is the PNG to serve: 404 when missing or empty, 413
+# over the cap, else 200 with its bytes.
+send_png() {
+    [ -f "$1" ] || {
+        reply 404
+        return 0
+    }
+    n=$(size_of "$1")
+    if [ "${n:-0}" -le 0 ]; then
+        reply 404
+    elif [ "$n" -gt "$MAX_BYTES" ]; then
+        reply 413
+    else
+        reply 200 image/png "$n"
+        cat "$1"
+    fi
+    return 0
+}
+
+# serve_file FILE -- an image file served as PNG: 413 over the cap, a PNG as
+# is, anything else through `sips -s format png`.
+serve_file() {
+    mk_tmp || {
+        reply 500
+        return 0
+    }
+    if [ "$(size_of "$1")" -gt "$MAX_BYTES" ]; then
+        reply 413
+        return 0
+    fi
+    if is_png "$1"; then
+        send_png "$1"
+    else
+        "$SIPS" -s format png "$1" --out "$tmp/clip.png" >/dev/null 2>&1 || {
+            reply 404
+            return 0
+        }
+        send_png "$tmp/clip.png"
+    fi
+    return 0
+}
+
 route_png() {
     probe
     if [ "$KIND" = none ]; then
@@ -197,32 +249,83 @@ route_png() {
             }
             ;;
         furl)
-            if [ "$(size_of "$FURL_PATH")" -gt "$MAX_BYTES" ]; then
-                reply 413
-                return 0
-            fi
-            if is_png "$FURL_PATH"; then
-                out=$FURL_PATH
-            else
-                "$SIPS" -s format png "$FURL_PATH" --out "$out" >/dev/null 2>&1 || {
-                    reply 404
-                    return 0
-                }
-            fi
+            serve_file "$FURL_PATH"
+            return 0
             ;;
     esac
-    [ -f "$out" ] || {
-        reply 404
-        return 0
+    send_png "$out"
+    return 0
+}
+
+# JXA_PB_PATHS -- one POSIX path per line on stdout, for every file URL on the
+# general pasteboard then the drag pasteboard. The requested path is never
+# spliced into it (the comparison is in pb_has_file); a path holding a newline
+# is left out so it cannot pose as two lines.
+JXA_PB_PATHS='ObjC.import("AppKit");
+function paths(pb) {
+    var out = [];
+    if (!pb) return out;
+    var a = pb.readObjectsForClassesOptions($.NSArray.arrayWithObject($.NSURL), $({}));
+    if (!a || a.isNil()) return out;
+    for (var i = 0; i < a.count; i++) {
+        var u = a.objectAtIndex(i);
+        if (u.isFileURL) {
+            var p = ObjC.unwrap(u.path);
+            if (p.indexOf("\n") < 0) out.push(p);
+        }
     }
-    n=$(size_of "$out")
-    if [ "${n:-0}" -le 0 ]; then
-        reply 404
-    elif [ "$n" -gt "$MAX_BYTES" ]; then
-        reply 413
+    return out;
+}
+var all = paths($.NSPasteboard.generalPasteboard).concat(paths($.NSPasteboard.pasteboardWithName($.NSPasteboardNameDrag)));
+$.NSFileHandle.fileHandleWithStandardOutput.writeData($(all.join("\n") + "\n").dataUsingEncoding($.NSUTF8StringEncoding));'
+
+# pb_has_file PATH -- 0 when PATH is, string for string, one of those paths.
+pb_has_file() {
+    pbl=$("$OSASCRIPT" -l JavaScript -e "$JXA_PB_PATHS" 2>/dev/null) || return 1
+    nl=$'\n'
+    case "$nl$pbl$nl" in
+        *"$nl$1$nl"*) return 0 ;;
+    esac
+    return 1
+}
+
+route_file() {
+    case "$clen" in
+        '' | *[!0-9]* | ??????????*)
+            reply 400
+            return 0
+            ;;
+    esac
+    if [ "$clen" -lt 1 ] || [ "$clen" -gt 4096 ]; then
+        reply 400
+        return 0
+    fi
+    # The trailing x keeps $(...) from eating newlines: exactly one is stripped.
+    body=$(
+        head -c "$clen"
+        printf x
+    )
+    body=${body%x}
+    case "$body" in
+        *$'\n') body=${body%$'\n'} ;;
+    esac
+    case "$body" in
+        /*) ;;
+        *)
+            reply 400
+            return 0
+            ;;
+    esac
+    case "$body" in
+        *$'\n'*)
+            reply 400
+            return 0
+            ;;
+    esac
+    if is_image_ext "$body" && [ -f "$body" ] && pb_has_file "$body"; then
+        serve_file "$body"
     else
-        reply 200 image/png "$n"
-        cat "$out"
+        reply 403
     fi
     return 0
 }
@@ -271,6 +374,7 @@ done
 case "$method $path" in
     'GET /targets') route_targets ;;
     'GET /png') route_png ;;
+    'POST /file') route_file ;;
     'POST /copy') route_copy ;;
     *) reply 404 ;;
 esac
