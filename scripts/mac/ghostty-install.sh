@@ -31,6 +31,16 @@
 #     created/added_newline answers.
 #   - ghostty_refresh_if_stale never installs uninvited (no record -> nothing)
 #     and never fails: it runs at the top of every `open`.
+#   - Self-test before any write: the template's `command =` line is run the
+#     way Ghostty runs it, once with no router and once with a router that
+#     exits 3; both must still reach the Mac shell. A template whose command
+#     line would lock the user out of a shell is refused (return 1, nothing
+#     touched).
+#   - Revision refresh, upgrade only: a `# revision N` line (first 5 lines,
+#     missing -> 1) lets a template change reach folders whose record already
+#     says the same version; a LOWER installed revision is re-applied, an equal
+#     or higher one never is. The version stays v1 on purpose: older templates
+#     re-apply on ANY version difference, so bumping it would downgrade them.
 #   - Test seams: HOME, XDG_CONFIG_HOME, CLAUDE_ORCA_GHOSTTY_CONFIG_DIR (the
 #     one directory searched/created instead of the four paths above),
 #     CLAUDE_ORCA_GHOSTTY_BIN (Ghostty's CLI), GHOSTTY_TEMPLATE_ROOT.
@@ -131,6 +141,53 @@ _gh_mode() {
     stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1" 2>/dev/null
 }
 
+# Run the template's `command =` line the way Ghostty does (a login bash
+# exec's it, stdin closed) under a throwaway HOME whose $SHELL just prints a
+# token. Twice: no router at all, and a router that exits 3. Both must land in
+# that shell. 0 = both did; 1 = one did not, or the line is missing. A command
+# that execs its router would fail here, and that is the lock-out this guards.
+_gh_selftest() {
+    local cmd h out tok="CLAUDE-DEV-SELFTEST" rc=0
+    cmd="$(sed -n 's/^command = //p' "$_GH_TMPL" 2>/dev/null)"
+    [ -n "$cmd" ] || return 1
+    h="$(mktemp -d "${TMPDIR:-/tmp}/cdev-selftest.XXXXXX")" || return 1
+    printf '#!/bin/sh\necho %s\n' "$tok" > "$h/shell" && chmod 755 "$h/shell" || { rm -rf "$h"; return 1; }
+    out="$(HOME="$h" SHELL="$h/shell" /bin/bash --noprofile --norc -c "exec -l $cmd" </dev/null 2>/dev/null)" || true
+    case "$out" in *"$tok"*) ;; *) rc=1 ;; esac
+    if mkdir -p "$h/.local/share/claude-dev" \
+        && printf '#!/bin/sh\nexit 3\n' > "$h/.local/share/claude-dev/ghostty-pane" \
+        && chmod 755 "$h/.local/share/claude-dev/ghostty-pane"; then
+        out="$(HOME="$h" SHELL="$h/shell" /bin/bash --noprofile --norc -c "exec -l $cmd" </dev/null 2>/dev/null)" || true
+        case "$out" in *"$tok"*) ;; *) rc=1 ;; esac
+    else
+        rc=1
+    fi
+    rm -rf "$h"
+    return "$rc"
+}
+
+# A file's revision (a `# revision N` line within its first 5 lines) -> _GH_REV;
+# 1 when the file, the line or the number is missing or malformed. Builtins
+# only: the stale check runs on every `open`.
+_gh_revision() {
+    local l r n=0
+    _GH_REV=1
+    [ -f "$1" ] && [ -r "$1" ] || return 0
+    while [ "$n" -lt 5 ] && { IFS= read -r l || [ -n "$l" ]; }; do
+        n=$((n + 1))
+        case "$l" in
+            "# revision "*)
+                r="${l#\# revision }"
+                case "$r" in
+                    ""|*[!0-9]*) ;;
+                    *) _GH_REV="$r"; return 0 ;;
+                esac
+                ;;
+        esac
+    done < "$1"
+    return 0
+}
+
 # The install itself, quiet. 0 = installed (version in _GH_TVER, config in
 # _GH_CFG), 1 = refused or failed (the reason on stderr, nothing half-done
 # for a refusal).
@@ -140,6 +197,10 @@ _gh_install_core() {
     _gh_template_version
     if [ -z "$_GH_TVER" ] || [ ! -f "$_GH_SRC_ROUTER" ]; then
         echo "claude-dev ghostty: the template's include or router is missing ($_GH_TMPL)" >&2
+        return 1
+    fi
+    if ! _gh_selftest; then
+        echo "claude-dev ghostty: the template's command line does not fall back to a shell (self-test failed) -- nothing installed" >&2
         return 1
     fi
     _gh_find_config
@@ -231,21 +292,36 @@ _gh_uninstall_core() {
     return 0
 }
 
-# Runs at the top of every `open`. Bash builtins only until the versions
-# differ: no record (the user never ran `claude-dev ghostty`) -> nothing; a
-# record made by an older template -> re-apply it and say so in one line.
+# Runs at the top of every `open`. Bash builtins only until something differs:
+# no record (the user never ran `claude-dev ghostty`) -> nothing; a record made
+# by an older template version -> re-apply it and say so in one line; the same
+# version but a LOWER installed revision -> re-apply likewise (never the other
+# way round: an equal or higher revision is left alone).
 # Always returns 0: a failed refresh must never stop a folder opening.
 ghostty_refresh_if_stale() {
-    local rec_ver
+    local rec_ver trev cfg
     _gh_paths
     [ -f "$_GH_REC" ] || return 0
     _gh_template_version
     [ -n "$_GH_TVER" ] || return 0
     _gh_rec_get version
     rec_ver="$_GH_VAL"
-    [ "$rec_ver" != "$_GH_TVER" ] || return 0
-    if _gh_install_core 2>/dev/null; then
-        echo "Ghostty settings updated to v$_GH_TVER -- new panes use them"
+    if [ "$rec_ver" != "$_GH_TVER" ]; then
+        if _gh_install_core 2>/dev/null; then
+            echo "Ghostty settings updated to v$_GH_TVER -- new panes use them"
+        fi
+        return 0
+    fi
+    _gh_revision "$_GH_TMPL"
+    trev="$_GH_REV"
+    _gh_rec_get config
+    cfg="$_GH_VAL"
+    [ -n "$cfg" ] || return 0
+    _gh_revision "${cfg%/*}/claude-dev.ghostty"
+    if [ "$_GH_REV" -lt "$trev" ]; then
+        if _gh_install_core 2>/dev/null; then
+            echo "Ghostty settings updated to v$_GH_TVER revision $trev -- new panes use them"
+        fi
     fi
     return 0
 }
