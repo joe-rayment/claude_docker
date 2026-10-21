@@ -2157,7 +2157,8 @@ cmd_open_v3() {
 }
 
 # `claude-dev pane [dir]`: make THIS terminal a sandbox pane for the folder
-# that contains dir (default $PWD) -- what Ghostty's new tabs and splits run.
+# that contains dir (default $PWD) -- what a Ghostty tab or split runs in a
+# folder whose claude-orca.json says "route": true.
 # Fast path: the folder's ssh master connection answers `-O check`, so the
 # pane is one `exec ssh` and not a single docker call (ctr_init is NOT run:
 # the ssh_* helpers and derive_project_name never touch docker). Otherwise it
@@ -2760,8 +2761,8 @@ cmd_teardown_v3() {
 print_how_to_run_v3() {
     cat <<'HOWTO'
   ./claude-dev            start this folder's sandbox and wait for its sshd
-  ./claude-dev pane       open a shell inside it (what a Ghostty tab runs)
-  ./claude-dev ghostty    set Ghostty up so every new tab lands in the sandbox
+  ./claude-dev pane       open a shell inside it, from any terminal
+  ./claude-dev ghostty    set Ghostty up so new tabs in a "route": true folder land in it
   ./claude-dev --doctor   say what is wrong when one of those does not work
 HOWTO
 }
@@ -2785,8 +2786,9 @@ Usage:
                                 hooks and git identity
   claude-dev logs               Follow the container's output
   claude-dev ghostty [--uninstall|--check]
-                                Route Ghostty panes into sandboxed folders
-                                (one include line in your Ghostty config);
+                                Let Ghostty panes open "route": true folders in
+                                their sandbox (one include line in your Ghostty
+                                config; every other pane stays a Mac shell);
                                 --uninstall gives the config back unchanged
   claude-dev key openrouter     Store this folder's OpenRouter key (not
                                 echoed) for the delegate routes

@@ -3,7 +3,8 @@
 #
 # ghostty-pane -- the router behind Ghostty's `command`
 # (config/ghostty/claude-dev.ghostty). Every new pane, split, tab and window
-# starts here. Installed by `claude-dev ghostty` as a COPY at
+# starts here, and is a plain Mac shell unless the folder opted in with
+# "route": true. Installed by `claude-dev ghostty` as a COPY at
 # ~/.local/share/claude-dev/ghostty-pane (never a symlink into a project, so
 # deleting a project can never break Ghostty).
 #
@@ -14,11 +15,13 @@
 # calls, no jq (a fresh Mac may not have one):
 #   1. Walk up from $PWD (at most 40 levels, stopping at /) to the first
 #      folder holding .claude-dev/claude-orca.json.
-#   2. If that file says "route": false, <folder>/claude-dev is not
-#      executable, or the folder's launcher predates `pane` (a folder whose
-#      template was never updated: its claude-dev answers "Unknown option:
-#      pane" and the pane dies), fall through.
-#   3. Otherwise `exec <folder>/claude-dev pane <folder>`.
+#   2. Routing is opt-in: unless that file says "route": true (a missing key,
+#      false or anything else included), fall through. The sandbox is entered
+#      on purpose, with `./claude-dev pane`, from any terminal.
+#   3. If <folder>/claude-dev is not executable, or the folder's launcher
+#      predates `pane` (a folder whose template was never updated: its
+#      claude-dev answers "Unknown option: pane" and the pane dies), fall
+#      through. Otherwise `exec <folder>/claude-dev pane <folder>`.
 # Fall-through, and every doubt (no folder, unreadable or deleted $PWD, a
 # relative $PWD): `exec "$SHELL" -l`, the user's normal Mac login shell.
 # It never exits with an error of its own and never prints to the pane.
@@ -68,8 +71,9 @@ done
 
 [ -n "$found" ] || mac_shell "no sandboxed folder above $PWD"
 
-if grep -q '"route"[[:space:]]*:[[:space:]]*false' "$found/.claude-dev/claude-orca.json" 2>/dev/null; then
-    mac_shell "route:false in $found"
+# Opt-in: only an explicit "route": true sends a pane into the container.
+if ! grep -q '"route"[[:space:]]*:[[:space:]]*true' "$found/.claude-dev/claude-orca.json" 2>/dev/null; then
+    mac_shell "route is not true in $found"
 fi
 [ -x "$found/claude-dev" ] || mac_shell "$found/claude-dev is not executable"
 # The stub execs .claude-dev/bin/claude-dev, the template's launcher.sh; one

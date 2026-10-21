@@ -52,8 +52,9 @@ pane in a terminal` instead. Re-running is safe; to
 isolate another folder, run the same line from inside it. The folder need not
 be a git repository: the first start makes one on `main` with a seed commit.
 
-**2. More panes.** Open a new Ghostty tab in the folder, or type
-`./claude-dev pane` in any terminal. You land at a prompt in
+**2. More panes.** Type `./claude-dev pane` in any terminal, or open a new
+Ghostty tab in a folder whose `claude-orca.json` says `"route": true`. You land
+at a prompt in
 `/workspace/<name>`; `cd ..` shows that one folder and nothing else. The first
 pane a folder ever gets (an existing folder too) opens a startup menu that sets up beads, offers
 GitHub, then starts Claude Code; say no to any of it, and `startup-menu` runs
@@ -64,19 +65,21 @@ the Mac and paste the code back. That is the whole first run.
 
 **Ghostty.** `./claude-dev ghostty` adds one line to your Ghostty config
 (`config-file = ?claude-dev.ghostty`) and installs a small router. After that
-every tab, split and window opened inside a sandboxed folder lands in its
-container, and anywhere else is your normal Mac shell. `cmd+n` (a new window)
-starts in your home folder, a Mac shell: the one-keystroke way out. The router
-honours `"route": false` in `claude-orca.json`. `./claude-dev ghostty --check`
-asks Ghostty whether the include applies; `--uninstall` gives your config back
-byte for byte.
+a new tab, split or window is your normal Mac shell, so you can still run your
+app in your own project folder. Only inside a folder whose `claude-orca.json`
+says `"route": true` does it land in that folder's container; everywhere else,
+`./claude-dev pane` enters the sandbox on purpose. `cmd+n` (a new window)
+starts in your home folder, a Mac shell. `./claude-dev ghostty --check` asks
+Ghostty whether the include applies; `--uninstall` gives your config back byte
+for byte.
 
 **What is Claude doing?** Type `activity` in any sandbox pane for one
 plain-English page of what Claude Code and its executors are doing right now,
 written by a cheap model through the guard, and only while the panel is open.
 `"activity": false` in `claude-orca.json` turns the model off. Open it beside
 your work with Ghostty's own split (cmd+d), then type `activity` in the new
-pane; `q` quits.
+pane (it opens as a Mac shell unless the folder says `"route": true`, so run
+`./claude-dev pane` in it first); `q` quits.
 
 **How to tell where you are.** A sandbox pane has `/workspace/<name>` as its
 path. If the container cannot come up, the pane falls back to a Mac shell and
@@ -117,7 +120,7 @@ them is about *this* folder:
 ```bash
 ./claude-dev                  # start the container (creates it as needed), wait for sshd
 ./claude-dev pane [dir]       # a sandbox pane in this terminal (fast when one is up)
-./claude-dev ghostty          # route Ghostty tabs into sandboxed folders; --check, --uninstall
+./claude-dev ghostty          # set Ghostty up (tabs in a "route": true folder enter the sandbox); --check, --uninstall
 ./claude-dev stop             # stop this folder's container
 ./claude-dev shell            # a login shell through docker, no ssh (the fallback)
 ./claude-dev logs             # follow the container's output
@@ -190,8 +193,9 @@ them:
 - **`dns`**: the resolver the container starts with, `1.1.1.1` by default;
   `auto` passes no flag. `CLAUDE_ORCA_DNS` overrides it for one run.
 - **`clipboard`**: `false` turns the clipboard bridge off.
-- **`route`**: `false` makes the Ghostty router leave this folder alone, so
-  tabs opened in it stay Mac shells.
+- **`route`**: `true` routes new Ghostty tabs, splits and windows opened in
+  this folder into its container; missing or `false` leaves them Mac shells,
+  the default.
 - **`router`**: `false` turns the per-prompt `[route]` hint off (not the
   same as `route` above); `routerModel` picks a different OpenRouter model.
 - **`extraMounts`**: `host:guest` pairs, mounted **read-only**, always.

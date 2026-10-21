@@ -96,9 +96,10 @@ SessionStart hook prints the FAILED rows only.
 `run/sshd.ready`. `./claude-dev pane` opens a shell in it (fast through the
 ssh master; when it cannot, it says `== Mac shell -- NOT sandboxed ==`).
 `./claude-dev ghostty [--check|--uninstall]` installs the Ghostty include and
-the `ghostty-pane` router, so every new tab in a sandboxed folder lands in its
-container. `--how-to-run` prints that how-to; `--update` migrates an old Orca
-folder (removes its Orca state volume, creates the ssh keys). Keys and
+the `ghostty-pane` router; a new tab is a Mac shell unless the folder's
+`claude-orca.json` says `"route": true`, which lands it in the container.
+`--how-to-run` prints that how-to; `--update` migrates an old Orca folder
+(removes its Orca state volume, creates the ssh keys). Keys and
 `known_hosts` live in `state/ssh` -- no trust-on-first-use, nothing in
 `~/.ssh`. `state/ssh/config` sets `ControlMaster auto`, `ControlPersist`, a
 `ControlPath` under `~/.local/state/claude-dev` (a literal path) and, unless
