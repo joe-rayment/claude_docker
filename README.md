@@ -40,7 +40,7 @@ and starts in seconds.
 **1. Type this in the folder you want to isolate:**
 
 ```bash
-gh api repos/joe-rayment/claude_orca/contents/bootstrap.sh -H "Accept: application/vnd.github.raw" | bash
+gh api repos/joe-rayment/claude_docker/contents/bootstrap.sh -H "Accept: application/vnd.github.raw" | bash
 ```
 
 It installs what is missing, clones this template into `.claude-dev/template`,

@@ -10,7 +10,7 @@
 # shell-rc hook.
 #
 #   cd /path/to/your/project
-#   gh api repos/joe-rayment/claude_orca/contents/bootstrap.sh \
+#   gh api repos/joe-rayment/claude_docker/contents/bootstrap.sh \
 #       -H "Accept: application/vnd.github.raw" | bash
 #
 # Or bootstrap a different directory:
@@ -314,7 +314,7 @@ fi
 # --- install ---------------------------------------------------------------
 
 HOST="$PROJECT/.claude-dev"
-TEMPLATE_URL="${CLAUDE_ORCA_TEMPLATE_URL:-https://github.com/joe-rayment/claude_orca.git}"
+TEMPLATE_URL="${CLAUDE_ORCA_TEMPLATE_URL:-https://github.com/joe-rayment/claude_docker.git}"
 
 step "Installing the claude_orca template under $HOST/template"
 
@@ -376,6 +376,12 @@ if [ -d "$HOST/template/.git" ]; then
         else
             echo "      could not stash them; the pull below may fail" >&2
         fi
+    fi
+    # A clone made before the template moved repos (claude_orca ->
+    # claude_docker) still points at the old one; follow TEMPLATE_URL.
+    if [ "$(git -C "$HOST/template" remote get-url origin 2>/dev/null)" != "$TEMPLATE_URL" ]; then
+        echo "    pointing the template clone at $TEMPLATE_URL"
+        git -C "$HOST/template" remote set-url origin "$TEMPLATE_URL"
     fi
     git -C "$HOST/template" pull --ff-only
 else
