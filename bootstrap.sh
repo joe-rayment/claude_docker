@@ -434,9 +434,17 @@ fi
 
 # The terminal that ran the bootstrap line becomes the folder's first pane
 # (on a new folder, the startup menu). Under `| bash` stdin is this script, so
-# register would see no terminal and only print the pane command; /dev/tty is
-# the terminal itself, the one sudo and gh auth login read above.
-if [ -t 1 ] && ( : </dev/tty ) 2>/dev/null; then
-    exec "$HOST/bin/claude-dev" register "$PROJECT" </dev/tty
+# register would see no terminal and only print the pane command. The pane is
+# fed the terminal's own device (ttyname of stdout, e.g. /dev/ttys003), NOT
+# /dev/tty: that is an alias macOS cannot poll(2), and ssh polls its stdin, so
+# a pane reading /dev/tty prints fine but never receives a keystroke -- not
+# even ctrl-c. (sudo and gh auth login above only read() it, which works.)
+TTY_DEV=""
+if [ -t 1 ]; then
+    # Inside $( ) fd 1 is the capture pipe, so ask through a copy of stdout.
+    { TTY_DEV="$(tty <&3 2>/dev/null)" || TTY_DEV=""; } 3>&1
+fi
+if [ -n "$TTY_DEV" ] && [ "$TTY_DEV" != "/dev/tty" ] && ( : <"$TTY_DEV" ) 2>/dev/null; then
+    exec "$HOST/bin/claude-dev" register "$PROJECT" <"$TTY_DEV"
 fi
 exec "$HOST/bin/claude-dev" register "$PROJECT"
