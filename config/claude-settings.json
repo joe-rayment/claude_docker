@@ -1,6 +1,7 @@
 {
   "model": "opus",
   "effortLevel": "high",
+  "modelSettings": { "opus": { "effortLevel": "high" } },
   "tui": "fullscreen",
   "respondToBashCommands": false,
   "skipDangerousModePermissionPrompt": true,
